@@ -3,9 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.runs import DuplicateSubmissionError, Executor, FailurePhase, RunStatus
+from kkrunner.runs import DuplicateSubmissionError, FailurePhase, RunStatus
+from kkrunner.backends.contracts import JobAttachment
+from kkrunner.client.run_parts import RunParts
 from kkrunner import ExecutionOutcome, RunState, RunStore
-from kkrunner.backends import ExecutorPool
+from kkrunner.client.pool import BackendPool
 from kkrunner.runs.manager import RunManager
 
 
@@ -57,7 +59,7 @@ class _RawRunner:
         pass
 
 
-class _Executor(Executor):
+class _Executor:
     name = "test"
 
     def __init__(self):
@@ -65,10 +67,11 @@ class _Executor(Executor):
         self.status_calls = []
         self.on_submit = None
 
-    def create_managed_run(self, spec, *, run_id, callback=None):
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
         runner = _RawRunner(on_submit=self.on_submit)
+        runner.spec = spec
         self.runners.append(runner)
-        return runner
+        return RunParts(runner)
 
     def status(self, *runs):
         self.status_calls.append(runs)
@@ -86,7 +89,7 @@ def _spec(tmp_path, *, dataset="case"):
 
 
 def _manager(tmp_path):
-    return RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool())
+    return RunManager(RunStore(tmp_path / "runs"), backend_pool=BackendPool())
 
 
 def test_submit_persists_submitting_before_backend_call(tmp_path):
@@ -146,7 +149,7 @@ def test_completion_postprocesses_only_successful_execution(tmp_path, return_cod
 def test_refresh_batches_status_queries(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
-    endpoint = manager.register_executor(executor)
+    endpoint = manager.register_backend(executor)
     records = []
     for index in range(2):
         record = manager.new_record(
@@ -159,7 +162,7 @@ def test_refresh_batches_status_queries(tmp_path):
         records.append(record)
     refreshed = manager.refresh(records)
     assert [record.state for record in refreshed] == [RunState.RUNNING, RunState.RUNNING]
-    assert executor.status_calls == [tuple(records)]
+    assert executor.status_calls == [tuple(JobAttachment(record.execution, record.files) for record in records)]
 
 
 def test_duplicate_submission_is_blocked_by_persisted_namespace(tmp_path):
