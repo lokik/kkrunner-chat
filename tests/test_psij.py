@@ -771,8 +771,8 @@ def test_psij_recovery_rejects_ambiguous_live_jobs(monkeypatch, tmp_path):
         psij_backend,
         "_scheduler_output",
         lambda argv: (
-            f"123|{psij_backend._submission_marker('duplicate')}|RUNNING|/one\\n"
-            f"124|{psij_backend._submission_marker('duplicate')}|PENDING|/two\\n"
+            f"123|{psij_backend._submission_marker('duplicate')}|RUNNING|/one\n"
+            f"124|{psij_backend._submission_marker('duplicate')}|PENDING|/two\n"
         ),
     )
     with pytest.raises(RuntimeError, match="Multiple live Slurm jobs"):
