@@ -277,7 +277,7 @@ class LocalExecutor(Executor):
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         from kkrunner.backends.local_managed import _local_status_from_facts
-        from kkrunner.remote.service import recover_remote
+        from kkrunner.backends.process.operations import recover_remote
 
         reply = recover_remote(
             run_id,
@@ -308,12 +308,12 @@ class LocalExecutor(Executor):
         )
 
     def acknowledge_submission(self, run):
-        from kkrunner.remote.service import acknowledge_submission
+        from kkrunner.backends.process.operations import acknowledge_submission
 
         acknowledge_submission(run.id)
 
     def acknowledge(self, run):
-        from kkrunner.remote.service import acknowledge_remote
+        from kkrunner.backends.process.operations import acknowledge_remote
 
         acknowledge_remote(run.execution.backend_id)
 

@@ -32,7 +32,7 @@ from kkrunner.runs.base import (
 )
 from kkrunner.runs.model import WorkingDirectory
 
-_REMOTE_BACKENDS = {"local", "psij"}
+_REMOTE_BACKENDS = {"process", "psij"}
 
 
 def _relative_local_path(path, local_root):
@@ -410,7 +410,7 @@ class RemoteEndpointExecutor(Executor):
         self,
         transport,
         *,
-        backend="local",
+        backend="process",
         backend_options=None,
         command=None,
         filesystem_id=None,
@@ -536,7 +536,7 @@ class RemoteEndpointExecutor(Executor):
     async def _submit(self, request):
         launch = request.get("launch") or {}
         mpi = launch.get("mpi") or {}
-        if self.backend == "local" and mpi.get("autodetect") and not mpi.get("required") and mpi.get("warning", True):
+        if self.backend == "process" and mpi.get("autodetect") and not mpi.get("required") and mpi.get("warning", True):
             resolved = await self._json_request("resolve-mpi", payload={"mpi": "auto"})
             if not resolved.get("mpi"):
                 warnings.warn(
@@ -571,7 +571,7 @@ class RemoteEndpointExecutor(Executor):
 
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
-        return _run_sync(self._json_request("ack-submit", run.id))
+        return _run_sync(self._json_request("ack-submit", self.backend, run.id))
 
     def acknowledge(self, run):
         """Release a delivered receipt only after durable RunRecord completion."""

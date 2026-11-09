@@ -13,7 +13,8 @@ from threading import Event, Lock
 
 from kkrunner.files.availability import discover_local_files
 from kkrunner.files.paths import file_path
-from kkrunner.remote.service import _decode_handle, cancel_remote, follow_remote, status_remote, submit_remote
+from kkrunner.backends.handles import _decode_handle
+from kkrunner.backends.process.operations import cancel_remote, follow_remote, status_remote, submit_remote
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionSpec,
