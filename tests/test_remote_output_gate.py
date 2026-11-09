@@ -1,193 +1,138 @@
+"""Backend outcome and client file delivery have independent lifecycles."""
+
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
-from kkrunner import ExecutionSpec, RunState
-from kkrunner.files import FileEntry, FileManifest
-from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.remote.runner import RemoteRunner
+from kkrunner import ExecutionSpec, Run, RunState
+from kkrunner.client.remote_job import RemoteJob
+from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.client.transport import LocalTransport
+from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
+from kkrunner.runs.base import FailurePhase
 
 
 class _Follow:
-    def __init__(self, output=b"streamed\n", error=b""):
-        self.terminal = None
+    terminal = None
+
+    def __init__(self, output=b"streamed\n"):
         self.stdout = asyncio.StreamReader()
         self.stderr = asyncio.StreamReader()
         self.stdout.feed_data(output)
         self.stdout.feed_eof()
-        self.stderr.feed_data(error)
         self.stderr.feed_eof()
 
     async def wait(self):
         return 0
 
+    def terminate(self):
+        pass
 
-class _Executor:
+
+class _Context:
+    backend = "process"
     output_files = FileSyncPolicy.NEVER
 
-    def __init__(self, state):
+    def __init__(self, state=RunState.FINISHED):
         self.backend_state = RunState(state)
-        self.sync_calls = 0
+        self.transport = LocalTransport()
+        self.status_error = None
+        self.follow_error = None
+        self.follow_calls = 0
 
-    async def _follow(self, directory, run_id, reference=None, *, offsets=None):
+    async def _follow(self, *args, **kwargs):
+        self.follow_calls += 1
+        if self.follow_error is not None:
+            raise self.follow_error
         return _Follow()
 
-    async def _status(self, directory, run_id, reference=None):
+    async def _status(self, *args, **kwargs):
+        if self.status_error is not None:
+            raise self.status_error
         return {
             "state": self.backend_state.value,
-            "return_code": 0 if self.backend_state == RunState.FINISHED else None,
-            "failure_phase": None,
+            "return_code": 17 if self.backend_state == RunState.FAILED else (
+                0 if self.backend_state == RunState.FINISHED else None
+            ),
+            "failure_phase": "execution" if self.backend_state == RunState.FAILED else None,
+            "error": "application failed" if self.backend_state == RunState.FAILED else None,
         }
 
 
-class _GateRunner(RemoteRunner):
-    async def _sync_output_files(self, required):
-        self.executor.sync_calls += 1
-        await super()._sync_output_files(required)
-
-    async def _sync_cache_files(self):
-        self.executor.sync_calls += 1
-        await super()._sync_cache_files()
-
-
-def _run(tmp_path, state, *, original=b"old\n"):
+def _run(tmp_path, state=RunState.FINISHED):
     destination = tmp_path / "calculation.out"
-    destination.write_bytes(original)
+    remote = tmp_path / "authoritative.out"
+    remote.write_bytes(b"streamed\n")
     output = destination.open("wb")
-    executor = _Executor(state)
-    runner = _GateRunner(
-        executor,
-        ExecutionSpec(argv=(), input_file=None, output_file=output, directory=str(tmp_path)),
-        backend_id="opaque-handle",
-        remote_directory="/work/case",
-        files=FileManifest(stdout=FileEntry(str(destination), "/work/case/calculation.out")).initialize_availability(),
-        state=RunState.RUNNING,
+    spec = ExecutionSpec(argv=(), output_file=output, directory=tmp_path)
+    files = FileManifest(
+        stdout=FileEntry(str(destination), str(remote)),
+    ).initialize_availability()
+    context = _Context(state)
+    session = RemoteFileSession(context, spec, files=files, remote_directory="/work/case")
+    job = RemoteJob(
+        context, spec, backend_id="opaque-handle", remote_directory="/work/case",
+        status={"state": "running"},
     )
-    return (runner, executor, destination, output)
+    return Run(job, file_session=session), context, destination, output
 
 
-def test_terminal_remote_state_may_publish_streamed_output(tmp_path):
-    runner, executor, destination, output = _run(tmp_path, RunState.FINISHED)
-    result = asyncio.run(runner._monitor())
-    assert runner.state == RunState.FINISHED
-    assert result.return_code == 0
+def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
+    run, context, destination, output = _run(tmp_path)
+    assert run.run().return_code == 0
+    assert run.state == RunState.FINISHED
     assert destination.read_bytes() == b"streamed\n"
-    assert output.closed is True
-    assert executor.sync_calls == 2
-    assert runner.files.availability_state == "available"
-    assert runner.files.availability_message is None
+    assert output.closed
+    assert run.files.availability_state == "available"
+    assert context.follow_calls == 1
 
 
-def test_unknown_remote_state_does_not_publish_or_download_output(tmp_path):
-    runner, executor, destination, output = _run(tmp_path, RunState.UNKNOWN)
-    asyncio.run(runner._monitor())
-    assert runner.state == RunState.UNKNOWN
-    assert runner.failure_phase is None
+def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_path):
+    run, _, destination, output = _run(tmp_path, RunState.UNKNOWN)
+    def fail_sync(*args):
+        raise AssertionError("Unknown execution must not download results")
+    run._file_session.synchronize = fail_sync
+    outcome = run.run()
+    assert outcome.output_file == str(destination)
+    assert run.state == RunState.UNKNOWN
     assert destination.read_bytes() == b"streamed\n"
-    assert output.closed is True
-    assert not list(tmp_path.glob(".*.tmp"))
-    assert executor.sync_calls == 0
-
-
-async def _unavailable_output(required):
-    raise OSError("remote output could not be downloaded")
+    assert output.closed
 
 
 @pytest.mark.parametrize(
-    "backend_state, expected_state, expected_phase",
+    "state, expected_phase",
     [
-        pytest.param(RunState.FINISHED, RunState.FAILED, "download", id="finished-backend-download-failed"),
-        pytest.param(RunState.FAILED, RunState.FAILED, "execution", id="execution-failed-diagnostics-unavailable"),
-        pytest.param(RunState.CANCELLED, RunState.CANCELLED, None, id="cancelled-diagnostics-unavailable"),
+        (RunState.FINISHED, FailurePhase.DOWNLOAD),
+        (RunState.FAILED, FailurePhase.EXECUTION),
+        (RunState.CANCELLED, None),
     ],
 )
-def test_diagnostic_download_failure_preserves_backend_outcome(tmp_path, backend_state, expected_state, expected_phase):
-    runner, executor, destination, output = _run(tmp_path, backend_state)
-    runner._sync_output_files = _unavailable_output
-    if backend_state is RunState.FAILED:
-
-        async def failed_status(*_args):
-            return {
-                "state": "failed",
-                "return_code": 17,
-                "failure_phase": "execution",
-                "error": "SPR-KKR exited with status 17",
-            }
-
-        executor._status = failed_status
-    if backend_state is RunState.FINISHED:
-        with pytest.raises(OSError, match="could not be downloaded"):
-            asyncio.run(runner._monitor())
-        assert runner.return_code == 0
+def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, expected_phase):
+    run, _, _, output = _run(tmp_path, state)
+    def unavailable(*args):
+        raise OSError("download unavailable")
+    run._file_session.synchronize = unavailable
+    if state == RunState.FINISHED:
+        with pytest.raises(OSError, match="download unavailable"):
+            run.run()
+        assert run.state == RunState.FAILED
     else:
-        result = asyncio.run(runner._monitor())
-        if backend_state is RunState.FAILED:
-            assert result.return_code == 17
-            assert runner.failure_message == "SPR-KKR exited with status 17"
-    assert runner.state is expected_state
-    assert (None if runner.failure_phase is None else runner.failure_phase.value) == expected_phase
-    assert runner.files.availability_state == "failed"
-    assert "could not be downloaded" in runner.files.availability_message
-    assert destination.read_bytes() == b"streamed\n"
-    assert output.closed is True
-
-
-def test_remote_stderr_incomplete_after_success_is_download_failure(tmp_path):
-    """FINISHED must not hide a truncated stderr FOLLOW stream."""
-    from kkrunner.remote.executor import _RemoteRun
-    from kkrunner.runs.base import FailurePhase
-
-    stdout_path = tmp_path / "run.out"
-    stderr_path = tmp_path / "run.err"
-    output = stdout_path.open("wb")
-    error = stderr_path.open("wb")
-
-    class Transport:
-        async def file_signature(self, remote):
-            return (len(b"streamed\n") if remote.endswith(".out") else 8, 0)
-
-        async def file_digest(self, remote):
-            import hashlib
-
-            return hashlib.sha256(b"streamed\n").hexdigest()
-
-    executor = _Executor(RunState.FINISHED)
-    executor.transport = Transport()
-    runner = _RemoteRun(
-        executor,
-        ExecutionSpec(argv=(), input_file=None, output_file=output, error_file=error, directory=str(tmp_path)),
-        backend_id="opaque-handle",
-        remote_directory="/work/case",
-        files=FileManifest(
-            stdout=FileEntry(str(stdout_path), "/work/case/run.out"),
-            stderr=FileEntry(str(stderr_path), "/work/case/run.err"),
-        ).initialize_availability(),
-        state=RunState.RUNNING,
-    )
-    with pytest.raises(RuntimeError, match="stderr size does not match"):
-        asyncio.run(runner._monitor())
-    assert runner.state == RunState.FAILED
-    assert runner.failure_phase == FailurePhase.DOWNLOAD
-    assert runner.files.stderr.availability_state == "failed"
-    assert runner.files.stdout.availability_state == "available"
-    assert stdout_path.read_bytes() == b"streamed\n"
-    assert stderr_path.read_bytes() == b""
-    assert output.closed and error.closed
+        run.run()
+        assert run.state == state
+    assert run.failure_phase == expected_phase
+    assert output.closed
 
 
 def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
-    """Two clients consuming the same chunks must not duplicate the output."""
-    from kkrunner.remote.runner import RemoteRunner
-
     destination = tmp_path / "output"
     destination.write_bytes(b"abc")
-    first = destination.open("ab")
-    second = destination.open("ab")
+    context = _Context(RunState.RUNNING)
+    a_stream = destination.open("ab")
+    b_stream = destination.open("ab")
     try:
-        spec1 = ExecutionSpec(argv=(), input_file=None, output_file=first, directory=str(tmp_path))
-        spec2 = ExecutionSpec(argv=(), input_file=None, output_file=second, directory=str(tmp_path))
-        a = RemoteRunner(_Executor(RunState.RUNNING), spec1)
-        b = RemoteRunner(_Executor(RunState.RUNNING), spec2)
+        a = RemoteFileSession(context, ExecutionSpec(argv=(), output_file=a_stream, directory=tmp_path))
+        b = RemoteFileSession(context, ExecutionSpec(argv=(), output_file=b_stream, directory=tmp_path))
         a._stream_positions = {"out": 3}
         b._stream_positions = {"out": 3}
         a._write_output(b"def", "out")
@@ -199,24 +144,19 @@ def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
             b._write_output(b"wrong", "out")
         assert destination.read_bytes() == b"abcdef"
     finally:
-        first.close()
-        second.close()
+        a_stream.close()
+        b_stream.close()
 
 
-@pytest.mark.parametrize(
-    "stage, exception_type, message",
-    [("_follow", ConnectionError, "SSH disconnected"), ("_status", OSError, "SSH lost during status query")],
-)
-def test_remote_transport_failure_is_recoverable_unknown(tmp_path, stage, exception_type, message):
-    runner, executor, destination, output = _run(tmp_path, RunState.RUNNING)
-
-    async def unavailable(*_args, **_kwargs):
-        raise exception_type(message)
-
-    setattr(executor, stage, unavailable)
-    result = asyncio.run(runner._monitor())
+@pytest.mark.parametrize("kind", ("follow", "status"))
+def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
+    run, context, _, output = _run(tmp_path, RunState.RUNNING)
+    if kind == "follow":
+        context.follow_error = ConnectionError("SSH disconnected")
+    else:
+        context.status_error = OSError("SSH status unavailable")
+    result = run.run()
     assert result.return_code is None
-    assert runner._state == RunState.UNKNOWN
-    assert runner.failure_phase is None
-    assert runner.failure_message == message
+    assert run.state == RunState.UNKNOWN
+    assert run.failure_phase is None
     assert output.closed
