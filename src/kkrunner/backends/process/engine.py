@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from threading import Event, Lock, Thread
 
-from kkrunner.backends.local_process import materialize_local_spec, pump_stream, start_local_process, stop_local_process
+from kkrunner.backends.process.primitives import materialize_local_spec, pump_stream, start_local_process, stop_local_process
 from kkrunner.files.availability import clear_declared_outputs, discover_local_files, validate_output_collisions
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.paths import file_path
@@ -266,7 +266,7 @@ class LocalExecutor(Executor):
         return LocalRunner(materialize_local_spec(spec), callback=callback)
 
     def create_managed_run(self, spec: ExecutionSpec, *, run_id: str, callback=None):
-        from kkrunner.backends.local_managed import ManagedLocalRunner
+        from kkrunner.backends.process.managed import ManagedLocalRunner
 
         return ManagedLocalRunner(
             self,
@@ -276,7 +276,7 @@ class LocalExecutor(Executor):
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
-        from kkrunner.backends.local_managed import _local_status_from_facts
+        from kkrunner.backends.process.managed import _local_status_from_facts
         from kkrunner.backends.process.operations import recover_remote
 
         reply = recover_remote(
@@ -297,7 +297,7 @@ class LocalExecutor(Executor):
         )
 
     def attach(self, run, callback=None, output_listener=None, start=True):
-        from kkrunner.backends.local_managed import attach_local
+        from kkrunner.backends.process.managed import attach_local
 
         return attach_local(
             self,
@@ -318,7 +318,7 @@ class LocalExecutor(Executor):
         acknowledge_remote(run.execution.backend_id)
 
     def status(self, *runs):
-        from kkrunner.backends.local_managed import local_status
+        from kkrunner.backends.process.managed import local_status
 
         statuses = []
         for run in runs:

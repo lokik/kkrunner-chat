@@ -82,7 +82,7 @@ def _clean_request_outputs(spec, directory, output_path=None, error_path=None):
 def _local_submit(request):
     if os.name != "posix":
         raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
-    from kkrunner.backends.local import materialize_local_spec
+    from kkrunner.backends.process.primitives import materialize_local_spec
 
     # Everything here happens before launching a supervisor. A failed local
     # filesystem setup proves that submission never started, unlike a lost

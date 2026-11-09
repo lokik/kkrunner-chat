@@ -11,7 +11,7 @@ from kkrunner.runs.base import FailurePhase, RunState
 from kkrunner.support.growing_file_tail import follow_job_files
 
 def _psij_executor(options):
-    from kkrunner.backends.psij import PsijExecutor
+    from kkrunner.backends.scheduler.engine import PsijExecutor
 
     options = options or {}
     return PsijExecutor(options.get("backend") or "slurm", url=options.get("url"))
@@ -57,7 +57,7 @@ def status_remote(remote_id):
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
     if str(handle["backend"]).lower() == "slurm" and handle.get("url") is None:
-        from kkrunner.backends.psij import _slurm_status_native
+        from kkrunner.backends.scheduler.engine import _slurm_status_native
         status = _slurm_status_native(handle["native_id"])
     else:
         executor = _psij_executor(handle)
@@ -116,7 +116,7 @@ def recover_remote(run_id, request, *, submitted_at=None):
 
 async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval):
     """Follow scheduler-owned files while PSI/J waits for terminal completion."""
-    from kkrunner.backends.psij import _psij_state
+    from kkrunner.backends.scheduler.engine import _psij_state
 
     handle = _decode_handle(remote_id)
     executor = _psij_executor(handle)

@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 from kkrunner.backends.endpoint import ExecutorEndpoint
 
 if TYPE_CHECKING:
-    from kkrunner.backends.local import LocalExecutor
+    from kkrunner.backends.process.engine import LocalExecutor
     from kkrunner.backends.pool import ExecutorPool, default_executor_pool
-    from kkrunner.backends.psij import PsijExecutor
+    from kkrunner.backends.scheduler.engine import PsijExecutor
 
 # Run contracts use endpoint metadata. Load implementations only on request so
 # importing those contracts does not load backends or create an import cycle.

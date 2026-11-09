@@ -74,8 +74,8 @@ class ExecutorEndpoint:
 
 def endpoint_for_executor(executor) -> ExecutorEndpoint:
     """Describe a live executor without persisting launch/staging policy."""
-    from kkrunner.backends.local import LocalExecutor
-    from kkrunner.backends.psij import PsijExecutor
+    from kkrunner.backends.process.engine import LocalExecutor
+    from kkrunner.backends.scheduler.engine import PsijExecutor
     from kkrunner.remote.executor import RemoteEndpointExecutor
     from kkrunner.remote.transport import SshTransport
 
@@ -140,8 +140,8 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
 
 def create_executor_from_endpoint(endpoint: ExecutorEndpoint):
     """Reconstruct a standard executor from persisted endpoint identity."""
-    from kkrunner.backends.local import LocalExecutor
-    from kkrunner.backends.psij import PsijExecutor
+    from kkrunner.backends.process.engine import LocalExecutor
+    from kkrunner.backends.scheduler.engine import PsijExecutor
     from kkrunner.remote.executor import RemoteEndpointExecutor
     from kkrunner.remote.transport import SshTransport
 
