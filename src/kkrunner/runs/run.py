@@ -355,11 +355,14 @@ class Run:
             if self._file_session is not None:
                 self._file_session.close()
             if self.backend_id is not None:
+                # The backend identity is recoverable, but this client did not
+                # establish a working completion observer. Persist uncertainty
+                # instead of accepting a raw terminal state as Run completion.
                 self._record = self.manager.transition(
                     self._record,
-                    state=self._observed_submission_state(),
+                    state=RunState.UNKNOWN,
                     execution=self.execution,
-                    failure_phase=self.failure_phase,
+                    failure_phase=None,
                 )
             # Without a backend identity, SUBMITTING remains unresolved.
             raise
