@@ -281,6 +281,19 @@ class Run:
         self._thread = Thread(target=self._finish, daemon=True)
         self._thread.start()
 
+    def _observed_submission_state(self):
+        """Persist execution progress, never a premature client completion.
+
+        A backend can finish between submit()/start() and the Run monitor
+        starting. Backend terminal status is only a raw execution fact:
+        output synchronization and optional postprocessing still belong to
+        _finish(), which alone may publish the terminal Run outcome.
+        """
+        state = self._job.state
+        if state.is_terminal:
+            return RunState.RUNNING
+        return state
+
     def submit(self):
         if self._started:
             raise RuntimeError("Run already submitted")
@@ -344,7 +357,7 @@ class Run:
             if self.backend_id is not None:
                 self._record = self.manager.transition(
                     self._record,
-                    state=self._job.state,
+                    state=self._observed_submission_state(),
                     execution=self.execution,
                     failure_phase=self.failure_phase,
                 )
@@ -390,7 +403,7 @@ class Run:
         if self.manager is None:
             return
         with self._completion_lock:
-            state = self._job.state
+            state = self._observed_submission_state()
             if not self._completion_persisted and self.backend_id is not None and state != RunState.NEW:
                 self._record = self.manager.transition(
                     self._record, state=state, execution=self.execution,
