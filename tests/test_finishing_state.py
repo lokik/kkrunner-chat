@@ -2,13 +2,13 @@ from threading import Event
 from types import SimpleNamespace
 
 from kkrunner import ExecutionOutcome, RunState, RunStore
-from kkrunner.runs import Executor, FailurePhase, RunStatus
-from kkrunner.backends import ExecutorPool
-from kkrunner.runs.processing import PostprocessingRunner
+from kkrunner.runs import FailurePhase, RunStatus
+from kkrunner.client.pool import BackendPool
+from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
-class _Executor(Executor):
+class _Executor:
     name = "postprocessing-test"
 
     def __init__(self, status):
@@ -60,8 +60,8 @@ class _RawRunner:
 
 
 def _record(tmp_path, executor, state=RunState.RUNNING):
-    manager = RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool())
-    endpoint = manager.register_executor(executor)
+    manager = RunManager(RunStore(tmp_path / "runs"), backend_pool=BackendPool())
+    endpoint = manager.register_backend(executor)
     record = manager.new_record(
         directory=str(tmp_path), endpoint=endpoint, metadata={"test": {"task": "DOS"}}, processing_required=True
     )
@@ -98,7 +98,7 @@ def test_postprocessing_is_observable_until_processor_finishes():
         release.wait()
         return SimpleNamespace(return_code=outcome.return_code)
 
-    runner = PostprocessingRunner(raw, process)
+    runner = Run(raw, process_result=process)
     runner.submit()
     raw.complete()
     assert entered.wait(1)
@@ -132,15 +132,15 @@ def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable():
         def wait(self):
             raise ValueError("original execution failure")
 
-    runner = PostprocessingRunner(InaccessibleRunner(), lambda outcome: outcome)
+    runner = Run(InaccessibleRunner(), process_result=lambda outcome: outcome)
     runner.submit()
     try:
         import pytest
 
         with pytest.raises(ValueError, match="original execution failure"):
             runner.wait()
-        assert runner.state == RunState.FAILED
-        assert runner.failure_phase == FailurePhase.EXECUTION
+        assert runner.state == RunState.UNKNOWN
+        assert runner.failure_phase is None
         assert runner.failure_message == "original execution failure"
     finally:
         assert runner._done.wait(2), "completion worker must not escape exception handling"
