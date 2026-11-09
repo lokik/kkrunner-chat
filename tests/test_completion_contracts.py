@@ -27,7 +27,7 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
             assert manager.store.get(record.id).state == terminal_state
             calls.append(record.id)
 
-    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
+    monkeypatch.setattr(manager, "backend_for", lambda record: Backend())
     record = manager.new_record(directory=tmp_path)
     manager.store.save(record)
     finished = manager.update(record, RunStatus(terminal_state, backend_id="receipt", return_code=0))
@@ -38,8 +38,8 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
 def test_completion_callback_can_read_its_own_finished_result(tmp_path):
     from threading import Event
 
-    from kkrunner import ExecutionSpec
-    from kkrunner.backends import LocalExecutor
+    from kkrunner import ExecutionSpec, Run
+    from kkrunner.backends import ProcessBackend
 
     ended, results = Event(), []
     run = None
@@ -48,7 +48,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         results.append(run.wait())
         ended.set()
 
-    run = LocalExecutor().create_run(ExecutionSpec(["true"], directory=tmp_path), callback=completed)
+    run = Run.direct(ProcessBackend(), ExecutionSpec(["true"], directory=tmp_path), callback=completed)
     run.submit()
     assert ended.wait(3), "completion callback deadlocked waiting for its own completion event"
     assert results == [run.result]
@@ -64,7 +64,7 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
             if len(calls) == 1:
                 raise OSError("temporarily disconnected")
 
-    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
+    monkeypatch.setattr(manager, "backend_for", lambda record: Backend())
     record = manager.new_record(directory=tmp_path)
     record = manager.complete(
         record, state=RunState.FINISHED, return_code=0, execution=record.execution.submitted("receipt")
@@ -102,7 +102,7 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
     manager = RunManager(RunStore(tmp_path / "runs"))
     acknowledgements = []
     backend = type("Backend", (), {"acknowledge": lambda self, record: acknowledgements.append(record.id)})()
-    monkeypatch.setattr(manager, "executor_for", lambda record: backend)
+    monkeypatch.setattr(manager, "backend_for", lambda record: backend)
     path = tmp_path / "out"
     record = manager.new_record(
         directory=tmp_path,
@@ -134,32 +134,17 @@ def test_attach_rejects_durable_terminal_record_before_backend_access(tmp_path, 
         manager.attach(stale)
 
 
-def test_other_observer_completion_cannot_deliver_raw_application_result(tmp_path):
-    from kkrunner import ExecutionOutcome, ProcessingPending
-    from kkrunner.runs.manager import PersistentRunner
-    from kkrunner.runs.processing import PostprocessingRunner
+def test_completed_durable_result_cannot_be_postprocessed_again(tmp_path):
+    from kkrunner import ProcessingPending
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    stale = manager.new_record(directory=tmp_path, processing_required=True)
-    stale = manager.transition(stale, state=RunState.RUNNING)
-    manager.complete(stale, state=RunState.FINISHED, return_code=0)
+    record = manager.new_record(directory=tmp_path, processing_required=True)
+    record = manager.transition(record, state=RunState.RUNNING)
+    completed = manager.complete(record, state=RunState.FINISHED, return_code=0)
+    assert completed.state == RunState.FINISHED
 
-    class Raw:
-        state = RunState.UNKNOWN
-        result = ExecutionOutcome(return_code=0)
-        exception = None
-        backend_id = None
-
-        def wait(self):
-            return self.result
-
-    observed = PostprocessingRunner(Raw(), None)
-    run = PersistentRunner(manager, object(), observed, stale)
-    delivered = []
-    observed.callback = lambda result: manager._complete(run, result, delivered.append)
-    run.start()
-    with pytest.raises(ProcessingPending, match="another observer"):
-        run.wait()
-    assert delivered == [None]
-    assert run.result is None
-    assert run.state == RunState.FINISHED
+    called = []
+    with pytest.raises(ValueError, match="Only postprocessing failures"):
+        manager.retry_postprocessing(completed.id, lambda outcome: called.append(outcome))
+    assert called == []
+    assert manager.store.get(completed.id).state == RunState.FINISHED
