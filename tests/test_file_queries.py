@@ -198,9 +198,9 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
         Observed(),
         declared_cache_files=tuple(workdir / name for name in ("*.pot", "*.cache", "exact", "missing")),
     )
-    runner = executor.create_run(spec)
+    files = executor.create_run_parts(spec).files
     try:
-        asyncio.run(runner._prepare_cache_files({}, FileManifest.from_spec(spec)))
+        asyncio.run(files._prepare_cache_files({}, FileManifest.from_spec(spec)))
         remote = remote_root / "calculation"
         assert calls == [
             (
@@ -208,9 +208,9 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
                 str(remote_root),
             ),
         ]
-        assert len(runner._cache_before) == 3
-        assert runner._cache_targets[str(workdir / "exact")][1] == queries.local_file_signature(remote / "exact")
-        assert runner._cache_targets[str(workdir / "missing")][1] is None
+        assert len(files._cache_before) == 3
+        assert files._cache_targets[str(workdir / "exact")][1] == queries.local_file_signature(remote / "exact")
+        assert files._cache_targets[str(workdir / "missing")][1] is None
     finally:
         spec.input_file.close()
         spec.output_file.close()
