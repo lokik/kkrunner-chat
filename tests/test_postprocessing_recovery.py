@@ -9,7 +9,6 @@ from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase
 from kkrunner.client.run_parts import RunParts
 from kkrunner.runs.manager import RunManager
-from kkrunner.runs.processing import ProcessingPending
 
 
 class _RawRunner:
@@ -107,7 +106,7 @@ def test_retry_does_not_overwrite_concurrent_record_update(tmp_path, during_retr
         processing_required=True,
     )
     record = manager.transition(
-        record, state=RunState.POSTPROCESSING, execution=record.execution.submitted("existing-backend")
+        record, state=RunState.RUNNING, execution=record.execution.submitted("existing-backend")
     )
     failed = manager.complete(
         record,
@@ -131,18 +130,12 @@ def test_retry_does_not_overwrite_concurrent_record_update(tmp_path, during_retr
             )
         return outcome
 
-    if during_retry == "refreshed":
-        manager.retry_postprocessing(failed.id, concurrent_change)
-    else:
-        with pytest.raises(ProcessingPending, match="no longer owns completion"):
-            manager.retry_postprocessing(failed.id, concurrent_change)
+    # A competing observer cannot replace the processing owner's state,
+    # even if it attempts to publish a terminal result mid-callback.
+    manager.retry_postprocessing(failed.id, concurrent_change)
     latest = manager.store.get(failed.id)
-    if during_retry == "refreshed":
-        assert latest.state == RunState.FINISHED
-        assert latest.message == "external refresh"
-    else:
-        assert latest.state == (RunState.FINISHED if during_retry == "finished" else RunState.FAILED)
-        assert latest.message == "external terminal update"
+    assert latest.state == RunState.FINISHED
+    assert latest.message is None
 
 
 def test_retry_exception_does_not_overwrite_concurrent_completion(tmp_path):
@@ -158,7 +151,7 @@ def test_retry_exception_does_not_overwrite_concurrent_completion(tmp_path):
         processing_required=True,
     )
     record = manager.transition(
-        record, state=RunState.POSTPROCESSING, execution=record.execution.submitted("existing-backend")
+        record, state=RunState.RUNNING, execution=record.execution.submitted("existing-backend")
     )
     failed = manager.complete(
         record,
@@ -174,11 +167,12 @@ def test_retry_exception_does_not_overwrite_concurrent_completion(tmp_path):
         )
         raise ValueError("parser error")
 
-    with pytest.raises(ProcessingPending, match="no longer owns completion"):
+    with pytest.raises(ValueError, match="parser error"):
         manager.retry_postprocessing(failed.id, interrupted)
     current = manager.store.get(failed.id)
-    assert current.state == RunState.FINISHED
-    assert current.message == "external success"
+    assert current.state == RunState.FAILED
+    assert current.failure_phase == FailurePhase.POSTPROCESSING
+    assert current.message == "parser error"
 
 
 @pytest.mark.parametrize("input_change", ("overwritten", "missing"))
@@ -198,7 +192,7 @@ def test_postprocessing_retry_accepts_unchanged_output_with_stale_input(tmp_path
         processing_required=True,
     )
     prepared = manager.transition(
-        record, state=RunState.POSTPROCESSING, execution=record.execution.submitted("existing-backend")
+        record, state=RunState.RUNNING, execution=record.execution.submitted("existing-backend")
     )
     failed = manager.complete(
         prepared,
