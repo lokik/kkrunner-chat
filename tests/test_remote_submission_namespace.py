@@ -4,7 +4,7 @@ import pytest
 
 from kkrunner import ExecutionSpec
 from kkrunner.runs import LaunchSpec
-from kkrunner.remote.executor import RemoteEndpointExecutor
+from kkrunner.client.agent import AgentBackendProxy
 
 
 class _Transport:
@@ -22,7 +22,7 @@ class _Transport:
     ids=("target-a", "target-b", "implicit-home", "explicit-home"),
 )
 def test_remote_submission_directory_uses_target_namespace_without_io(tmp_path, relative, remote_root, expected):
-    executor = RemoteEndpointExecutor(_Transport())
+    executor = AgentBackendProxy(_Transport())
     directory = tmp_path / relative
     directory.mkdir(parents=True)
     options = {} if remote_root is None else {"remote_root": remote_root}
@@ -46,7 +46,7 @@ def test_context_and_submission_directory_share_local_path_resolution(tmp_path, 
     directory = local_root / "case"
     directory.mkdir(parents=True)
     (local_root / "case-alias").symlink_to(directory, target_is_directory=True)
-    executor = RemoteEndpointExecutor(_Transport())
+    executor = AgentBackendProxy(_Transport())
     launch = LaunchSpec(local_root=local_root, remote_root="/scratch/project")
     spec = ExecutionSpec(argv=("true",), directory=local_root / name, input_file=None, output_file=None, launch=launch)
     context = executor._context(executor, launch)
@@ -66,7 +66,7 @@ def test_context_and_submission_directory_reject_symlink_escaping_root(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
     (local_root / "escape").symlink_to(outside, target_is_directory=True)
-    executor = RemoteEndpointExecutor(_Transport())
+    executor = AgentBackendProxy(_Transport())
     launch = LaunchSpec(local_root=local_root, remote_root="/scratch/project")
     spec = ExecutionSpec(
         argv=("true",), directory=local_root / "escape", input_file=None, output_file=None, launch=launch
