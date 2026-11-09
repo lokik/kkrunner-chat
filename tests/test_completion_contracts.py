@@ -148,3 +148,61 @@ def test_completed_durable_result_cannot_be_postprocessed_again(tmp_path):
         manager.retry_postprocessing(completed.id, lambda outcome: called.append(outcome))
     assert called == []
     assert manager.store.get(completed.id).state == RunState.FINISHED
+
+
+class _ImmediatelyFinishedJob:
+    """Fake backend that finishes before Run persists its submitted identity."""
+
+    state = RunState.NEW
+    backend_id = None
+    exception = None
+    failure_phase = None
+    failure_message = None
+    return_code = 0
+    output_error = None
+
+    def __init__(self):
+        from kkrunner import ExecutionSpec
+        self.spec = ExecutionSpec(("instant",))
+        self.result = None
+
+    def submit(self):
+        self.backend_id = "native-1"
+        self.state = RunState.FINISHED
+
+    def start(self):
+        self.state = RunState.FINISHED
+
+    def wait(self):
+        from kkrunner import ExecutionOutcome
+        return ExecutionOutcome(return_code=0)
+
+
+@pytest.mark.parametrize("operation", ["submit", "start"])
+def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, monkeypatch, operation):
+    from kkrunner import Run
+    from kkrunner.backends import ProcessBackend
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    backend = ProcessBackend()
+    job = _ImmediatelyFinishedJob()
+    if operation == "start":
+        job.backend_id = "native-1"
+    record = manager.new_record(directory=tmp_path, processing_required=True)
+    if operation == "start":
+        record = manager.transition(
+            record, state=RunState.RUNNING,
+            execution=record.execution.submitted(job.backend_id),
+        )
+    manager.register_backend(backend, record.execution.endpoint)
+    run = Run(
+        job, backend=backend, manager=manager, record=record,
+        process_result=lambda outcome: outcome,
+    )
+    # Freeze the monitor at the point where its creation normally races with
+    # persistence, then explicitly deliver its result after checking the store.
+    monkeypatch.setattr(run, "_start_completion", lambda: setattr(run, "_started", True))
+    getattr(run, operation)()
+    assert manager.store.get(run.id).state == RunState.RUNNING
+    run._finish()
+    assert manager.store.get(run.id).state == RunState.FINISHED
