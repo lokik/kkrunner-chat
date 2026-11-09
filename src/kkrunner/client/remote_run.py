@@ -25,7 +25,7 @@ from kkrunner.runs.base import (
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
-class RemoteRunner:
+class RemoteRunSession:
     """Client-side raw execution identified by an opaque backend ID.
 
     The remote target owns only backend facts. This runner owns staging,

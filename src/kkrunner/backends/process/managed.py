@@ -108,7 +108,7 @@ class _ObserverSink:
         pass
 
 
-class ManagedLocalRunner:
+class SupervisedProcessJob:
     """Managed local process with supervisor-based follow and reattach."""
 
     def __init__(
@@ -345,7 +345,7 @@ def attach_local(executor, run, *, callback=None, output_listener=None, start=Tr
         directory=run.execution.directory.local,
     )
     status = local_status(backend_id, files)
-    runner = ManagedLocalRunner(
+    runner = SupervisedProcessJob(
         executor,
         spec,
         callback=callback,

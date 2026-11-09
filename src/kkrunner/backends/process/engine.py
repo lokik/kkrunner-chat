@@ -24,7 +24,7 @@ from kkrunner.runs.base import (
 )
 
 
-class LocalRunner:
+class ProcessJob:
     """One local subprocess execution.
 
     The runner owns only process lifecycle, output-file writing and raw output
@@ -257,22 +257,17 @@ class LocalRunner:
         return await asyncio.to_thread(self.wait)
 
 
-class LocalExecutor(Executor):
+class ProcessBackend(Executor):
     """Create raw runners executed as local subprocesses."""
 
     name = "local"
 
-    def create_run(self, spec: ExecutionSpec, callback=None):
-        return LocalRunner(materialize_local_spec(spec), callback=callback)
-
-    def create_managed_run(self, spec: ExecutionSpec, *, run_id: str, callback=None):
-        from kkrunner.backends.process.managed import ManagedLocalRunner
-
-        return ManagedLocalRunner(
-            self,
-            spec,
-            run_id=run_id,
-            callback=callback,
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        if submission_key is None:
+            return ProcessJob(materialize_local_spec(spec), callback=callback)
+        from kkrunner.backends.process.managed import SupervisedProcessJob
+        return SupervisedProcessJob(
+            self, spec, run_id=submission_key, callback=callback,
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
@@ -296,7 +291,7 @@ class LocalExecutor(Executor):
             submission.files,
         )
 
-    def attach(self, run, callback=None, output_listener=None, start=True):
+    def open_job(self, run, callback=None, output_listener=None, start=True):
         from kkrunner.backends.process.managed import attach_local
 
         return attach_local(

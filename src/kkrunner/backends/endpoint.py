@@ -74,26 +74,26 @@ class ExecutorEndpoint:
 
 def endpoint_for_executor(executor) -> ExecutorEndpoint:
     """Describe a live executor without persisting launch/staging policy."""
-    from kkrunner.backends.process.engine import LocalExecutor
-    from kkrunner.backends.scheduler.engine import PsijExecutor
-    from kkrunner.client.agent import RemoteEndpointExecutor
+    from kkrunner.backends.process.engine import ProcessBackend
+    from kkrunner.backends.scheduler.engine import PsijBackend
+    from kkrunner.client.agent import AgentBackendProxy
     from kkrunner.client.transport import SshTransport
 
-    if isinstance(executor, LocalExecutor):
+    if isinstance(executor, ProcessBackend):
         return ExecutorEndpoint()
-    if isinstance(executor, PsijExecutor):
+    if isinstance(executor, PsijBackend):
         return ExecutorEndpoint(
             executor="psij",
             psij_backend=executor.backend,
             psij_url=executor.url,
         )
-    if isinstance(executor, RemoteEndpointExecutor):
+    if isinstance(executor, AgentBackendProxy):
         transport = executor.transport
         psij_backend = None
         psij_url = None
         if executor.backend == "psij":
             options = executor.backend_options or {}
-            # ``RemoteEndpointExecutor(..., backend="psij")`` is a complete
+            # ``AgentBackendProxy(..., backend="psij")`` is a complete
             # public configuration even when no options are supplied: the
             # target-side PSI/J backend then defaults to Slurm. Persist that
             # default explicitly so restart reconstruction cannot silently
@@ -140,18 +140,18 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
 
 def create_executor_from_endpoint(endpoint: ExecutorEndpoint):
     """Reconstruct a standard executor from persisted endpoint identity."""
-    from kkrunner.backends.process.engine import LocalExecutor
-    from kkrunner.backends.scheduler.engine import PsijExecutor
-    from kkrunner.client.agent import RemoteEndpointExecutor
+    from kkrunner.backends.process.engine import ProcessBackend
+    from kkrunner.backends.scheduler.engine import PsijBackend
+    from kkrunner.client.agent import AgentBackendProxy
     from kkrunner.client.transport import SshTransport
 
     if isinstance(endpoint, dict):
         endpoint = ExecutorEndpoint(**endpoint)
 
     if endpoint.executor == "local":
-        return LocalExecutor()
+        return ProcessBackend()
     if endpoint.executor == "psij":
-        return PsijExecutor(
+        return PsijBackend(
             endpoint.psij_backend or "slurm",
             url=endpoint.psij_url,
         )
@@ -167,7 +167,7 @@ def create_executor_from_endpoint(endpoint: ExecutorEndpoint):
                 "backend": endpoint.psij_backend or "slurm",
                 "url": endpoint.psij_url,
             }
-        return RemoteEndpointExecutor(
+        return AgentBackendProxy(
             SshTransport(
                 endpoint.host,
                 options=endpoint.ssh_options,

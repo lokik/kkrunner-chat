@@ -799,7 +799,7 @@ class RunManager:
             run_id=run_id,
         )
         self.register_executor(backend, endpoint)
-        job = backend.create_managed_run(spec, run_id=record.id)
+        job = backend.create_job(spec, submission_key=record.id)
         set_manifest = getattr(job, "set_manifest", None)
         if set_manifest is not None:
             set_manifest(record.files)
@@ -843,7 +843,7 @@ class RunManager:
         backend = self.executor_for(record) if executor is None else executor
         if executor is not None:
             self.register_executor(backend, record.execution.endpoint)
-        job = backend.attach(record, output_listener=output_listener, start=False)
+        job = backend.open_job(record, output_listener=output_listener, start=False)
         attached = Run(
             job, backend=backend, manager=self, record=record,
             process_result=process_result, callback=callback,

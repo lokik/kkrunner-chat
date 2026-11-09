@@ -263,7 +263,7 @@ def _slurm_status_native(native_id):
     )
 
 
-class PsijRunner:
+class PsijJob:
     """One raw job managed by a PSI/J executor."""
 
     def __init__(
@@ -628,7 +628,7 @@ class PsijRunner:
         return request_cancellation(self, self._job.cancel)
 
 
-class PsijExecutor(Executor):
+class PsijBackend(Executor):
     """Execute calculations through a PSI/J backend such as Slurm or PBS."""
 
     name = "psij"
@@ -656,18 +656,10 @@ class PsijExecutor(Executor):
         self._jobs_lock = RLock()
         self._max_idle_jobs = 64
 
-    def create_run(self, spec: ExecutionSpec, callback=None):
-        runner = PsijRunner(self, spec, callback=callback)
-        runner.set_manifest(FileManifest.from_spec(spec))
-        return runner
-
-    def create_managed_run(self, spec: ExecutionSpec, *, run_id, callback=None):
-        return PsijRunner(
-            self,
-            spec,
-            callback=callback,
-            run_id=run_id,
-        )
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        job = PsijJob(self, spec, callback=callback, run_id=submission_key)
+        job.set_manifest(FileManifest.from_spec(spec))
+        return job
 
     def status(self, *runs):
         from kkrunner.backends.endpoint import endpoint_for_executor
@@ -899,7 +891,7 @@ class PsijExecutor(Executor):
             failure_phase=FailurePhase.EXECUTION if state == RunState.FAILED else None,
         )
 
-    def attach(self, run, callback=None, output_listener=None, start=True):
+    def open_job(self, run, callback=None, output_listener=None, start=True):
         from kkrunner.backends.endpoint import endpoint_for_executor
 
         if run.execution.endpoint != endpoint_for_executor(self):
@@ -915,7 +907,7 @@ class PsijExecutor(Executor):
             error_file=None if run.files.stderr is None else run.files.stderr.local_path,
             directory=run.execution.directory.local,
         )
-        runner = PsijRunner(
+        runner = PsijJob(
             self,
             spec,
             callback=callback,

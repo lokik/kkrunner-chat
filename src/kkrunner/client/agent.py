@@ -15,7 +15,7 @@ from kkrunner.backends.endpoint import endpoint_for_executor
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
 from kkrunner.files.versions import file_digest
 from kkrunner.remote.protocol import control_command, json_request
-from kkrunner.client.remote_run import RemoteRunner, _run_sync
+from kkrunner.client.remote_run import RemoteRunSession, _run_sync
 from kkrunner.remote.stream import FramedRunningCommand
 from kkrunner.runs.base import (
     ExecutionResources,
@@ -76,7 +76,7 @@ def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     )
 
 
-class _RemoteRun(RemoteRunner):
+class _AgentRunSession(RemoteRunSession):
     """One remote run whose persistent lifecycle is owned by the client."""
 
     def __init__(self, *args, run_id=None, **kwargs):
@@ -242,7 +242,7 @@ class _RemoteRun(RemoteRunner):
         start_monitor(self, missing_backend="Run has no backend reference")
 
 
-class _RemoteRunContext:
+class _AgentRunContext:
     """Per-run filesystem and synchronization policy."""
 
     def __init__(self, endpoint, launch):
@@ -316,8 +316,8 @@ class _RemoteRunContext:
             offsets=offsets,
         )
 
-    def create_run(self, spec, callback=None, *, run_id=None):
-        return _RemoteRun(self, spec, callback=callback, run_id=run_id)
+    def create_job(self, spec, callback=None, *, run_id=None):
+        return _AgentRunSession(self, spec, callback=callback, run_id=run_id)
 
     async def attach(self, run, callback=None, output_listener=None, start=True):
         execution = run.execution
@@ -378,7 +378,7 @@ class _RemoteRunContext:
                     output_sync=self.output_files.value,
                 ),
             )
-            runner = _RemoteRun(
+            runner = _AgentRunSession(
                 self,
                 spec,
                 callback=callback,
@@ -401,7 +401,7 @@ class _RemoteRunContext:
             return runner
 
 
-class RemoteEndpointExecutor(Executor):
+class AgentBackendProxy(Executor):
     """Reusable remote endpoint with client-owned lifecycle state."""
 
     name = "remote"
@@ -446,7 +446,7 @@ class RemoteEndpointExecutor(Executor):
     def _context(endpoint, launch):
         if not isinstance(launch, LaunchSpec):
             launch = LaunchSpec(**dict(launch))
-        return _RemoteRunContext(endpoint, launch)
+        return _AgentRunContext(endpoint, launch)
 
     def _validate_run(self, run):
         if run.execution.endpoint != endpoint_for_executor(self):
@@ -642,11 +642,10 @@ class RemoteEndpointExecutor(Executor):
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
-    def create_run(self, spec, callback=None):
-        return self._context(self, spec.launch).create_run(spec, callback=callback)
-
-    def create_managed_run(self, spec, *, run_id, callback=None):
-        return self._context(self, spec.launch).create_run(spec, callback=callback, run_id=run_id)
+    def create_job(self, spec, *, submission_key=None, callback=None):
+        return self._context(self, spec.launch).create_job(
+            spec, callback=callback, run_id=submission_key,
+        )
 
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
@@ -735,7 +734,7 @@ class RemoteEndpointExecutor(Executor):
             start=start,
         )
 
-    def attach(self, run, callback=None, output_listener=None, start=True):
+    def open_job(self, run, callback=None, output_listener=None, start=True):
         return _run_sync(
             self._attach(
                 run,

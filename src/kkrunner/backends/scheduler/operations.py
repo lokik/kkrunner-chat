@@ -11,15 +11,15 @@ from kkrunner.runs.base import FailurePhase, RunState
 from kkrunner.support.growing_file_tail import follow_job_files
 
 def _psij_executor(options):
-    from kkrunner.backends.scheduler.engine import PsijExecutor
+    from kkrunner.backends.scheduler.engine import PsijBackend
 
     options = options or {}
-    return PsijExecutor(options.get("backend") or "slurm", url=options.get("url"))
+    return PsijBackend(options.get("backend") or "slurm", url=options.get("url"))
 
 def _psij_submit(request):
     executor = _psij_executor(request.get("executor_options"))
     spec = _request_spec(request)
-    runner = executor.create_managed_run(spec, run_id=request["id"]) if request.get("id") else executor.create_run(spec)
+    runner = executor.create_job(spec, submission_key=request.get("id"))
     # PSI/J's _prepare_io() owns cleanup of its complete declared manifest.
     # Running a second cleanup here would duplicate it and risk wildcard caches.
     runner.submit()

@@ -686,18 +686,10 @@ class Executor:
     def recover_submission(self, run_id, submission, *, submitted_at=None) -> Optional[RunStatus]:
         raise NotImplementedError(f"{type(self).__name__} cannot recover an uncertain submission")
 
-    def create_managed_run(self, spec: ExecutionSpec, *, run_id: str, callback=None) -> Runner:
-        """Create backend execution for a caller-supplied persistent run ID.
-
-        RunManager owns the durable record; project membership is optional.
-        Backends can override this hook to provide supervision and receipts.
-        """
-        return self.create_run(spec, callback=callback)
-
-    def create_run(self, spec: ExecutionSpec, callback=None) -> Runner:
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None) -> Runner:
         raise NotImplementedError
 
-    def attach(
+    def open_job(
         self,
         run,
         callback=None,

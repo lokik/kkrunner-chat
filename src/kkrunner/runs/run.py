@@ -57,7 +57,7 @@ class Run:
     @classmethod
     def direct(cls, backend, spec, *, process_result=None, callback=None):
         """Create one untracked Run with the same client lifecycle."""
-        return cls(backend.create_run(spec), backend=backend,
+        return cls(backend.create_job(spec), backend=backend,
                    process_result=process_result, callback=callback)
 
     @property
