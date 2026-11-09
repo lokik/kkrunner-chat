@@ -15,7 +15,7 @@ from kkrunner.backends.endpoint import endpoint_for_executor
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
 from kkrunner.files.versions import file_digest
 from kkrunner.remote.protocol import control_command, json_request
-from kkrunner.remote.runner import RemoteRunner, _run_sync
+from kkrunner.client.remote_run import RemoteRunner, _run_sync
 from kkrunner.remote.stream import FramedRunningCommand
 from kkrunner.runs.base import (
     ExecutionResources,

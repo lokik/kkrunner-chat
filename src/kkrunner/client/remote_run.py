@@ -10,7 +10,7 @@ from threading import Event, Lock
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.files.paths import file_path, has_file_magic
 from kkrunner.files.versions import file_digest
-from kkrunner.remote.transport import expand_local_files
+from kkrunner.client.transport import expand_local_files
 from kkrunner.runs.base import (
     ExecutionOutcome,
     FailurePhase,

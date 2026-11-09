@@ -76,8 +76,8 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
     """Describe a live executor without persisting launch/staging policy."""
     from kkrunner.backends.process.engine import LocalExecutor
     from kkrunner.backends.scheduler.engine import PsijExecutor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import SshTransport
+    from kkrunner.client.agent import RemoteEndpointExecutor
+    from kkrunner.client.transport import SshTransport
 
     if isinstance(executor, LocalExecutor):
         return ExecutorEndpoint()
@@ -142,8 +142,8 @@ def create_executor_from_endpoint(endpoint: ExecutorEndpoint):
     """Reconstruct a standard executor from persisted endpoint identity."""
     from kkrunner.backends.process.engine import LocalExecutor
     from kkrunner.backends.scheduler.engine import PsijExecutor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import SshTransport
+    from kkrunner.client.agent import RemoteEndpointExecutor
+    from kkrunner.client.transport import SshTransport
 
     if isinstance(endpoint, dict):
         endpoint = ExecutorEndpoint(**endpoint)

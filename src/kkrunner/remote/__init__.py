@@ -6,8 +6,8 @@ Imports of this package are lightweight; concrete interfaces load on demand.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import LocalTransport, RunningCommand, SshTransport, Transport
+    from kkrunner.client.agent import RemoteEndpointExecutor
+    from kkrunner.client.transport import LocalTransport, RunningCommand, SshTransport, Transport
 
 __all__ = [
     "LocalTransport",
