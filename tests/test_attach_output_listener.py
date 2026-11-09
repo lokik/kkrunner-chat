@@ -1,11 +1,14 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
-from kkrunner.backends.endpoint import ExecutorEndpoint
-from kkrunner.backends.local import LocalExecutor
-from kkrunner.backends.psij import PsijExecutor, PsijRunner
+from kkrunner.backends import ProcessBackend, PsijBackend
+from kkrunner.backends.contracts import JobAttachment
+from kkrunner.backends.scheduler.engine import PsijJob
+from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.client.run_parts import RunParts
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
-from kkrunner.remote.executor import _RemoteRun, _RemoteRunContext
+from kkrunner.client.agent import _AgentRunContext
+from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import LaunchSpec, RunState
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.model import Execution, WorkingDirectory
@@ -37,17 +40,14 @@ class _AttachedRunner:
         pass
 
 
-class _AttachExecutor(LocalExecutor):
+class _AttachExecutor(ProcessBackend):
     def acknowledge(self, run):
         pass
 
-    def attach(self, run, callback=None, output_listener=None, start=True):
+    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         if output_listener is not None:
-            output_listener("manager replay\n", "out")
-        runner = _AttachedRunner(run)
-        if start:
-            runner.start()
-        return runner
+            output_listener("manager replay\\n", "out")
+        return RunParts(_AttachedRunner(attachment))
 
 
 def test_manager_attach_forwards_initial_output_listener(tmp_path):
@@ -58,7 +58,7 @@ def test_manager_attach_forwards_initial_output_listener(tmp_path):
     output = []
     runner = manager.attach(
         record,
-        executor=_AttachExecutor(),
+        backend=_AttachExecutor(),
         process_result=lambda result: result,
         output_listener=lambda text, kind: output.append((text, kind)),
     )
@@ -69,7 +69,7 @@ def test_manager_attach_forwards_initial_output_listener(tmp_path):
 def _remote_context(tmp_path):
 
     class Endpoint:
-        backend = "local"
+        backend = "process"
         backend_options = {}
         command = ("kkrunner",)
         computer = "host"
@@ -85,14 +85,14 @@ def _remote_context(tmp_path):
                 "output_file": "/remote/work/output.out",
             }
 
-    context = _RemoteRunContext(Endpoint(), LaunchSpec(local_root=str(tmp_path), remote_root="/remote"))
+    context = _AgentRunContext(Endpoint(), LaunchSpec(local_root=str(tmp_path), remote_root="/remote"))
     run = RunRecord(
         id="run",
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutorEndpoint(executor="ssh", host="host"),
+            ExecutionEndpoint(executor="ssh", host="host"),
             WorkingDirectory(str(tmp_path / "work"), "/remote/work"),
             "run",
         ),
@@ -115,18 +115,19 @@ def test_remote_attach_installs_listener_before_monitor(monkeypatch, tmp_path):
             self.callback(self.result)
         self._done.set()
 
-    monkeypatch.setattr(_RemoteRun, "_thread_main", immediate_monitor)
+    monkeypatch.setattr(RemoteJob, "_thread_main", immediate_monitor)
     context, run = _remote_context(tmp_path)
     import asyncio
 
-    runner = asyncio.run(
-        context.attach(
-            run,
-            callback=lambda result: events.append(("finished", None)),
-            output_listener=lambda text, kind: events.append((text, kind)),
-        )
-    )
+    parts = asyncio.run(context.attach_run_parts(
+        JobAttachment(run.execution, run.files),
+        callback=lambda result: events.append(("finished", None)),
+        output_listener=lambda text, kind: events.append((text, kind)),
+    ))
+    runner = parts.job
+    runner.start()
     runner._done.wait(1)
+    parts.files.close()
     assert events == [("remote replay\n", "out"), ("finished", None)]
 
 
@@ -137,17 +138,20 @@ def test_remote_attach_can_defer_monitor_start(monkeypatch, tmp_path):
         self._output_observers.emit_bytes(b"remote replay\n", "out")
         self._done.set()
 
-    monkeypatch.setattr(_RemoteRun, "_thread_main", immediate_monitor)
+    monkeypatch.setattr(RemoteJob, "_thread_main", immediate_monitor)
     context, run = _remote_context(tmp_path)
     import asyncio
 
-    runner = asyncio.run(
-        context.attach(run, output_listener=lambda text, kind: events.append((text, kind)), start=False)
-    )
+    parts = asyncio.run(context.attach_run_parts(
+        JobAttachment(run.execution, run.files),
+        output_listener=lambda text, kind: events.append((text, kind)),
+    ))
+    runner = parts.job
     assert runner._thread is None
     assert events == []
     runner.start()
     runner._done.wait(1)
+    parts.files.close()
     assert events == [("remote replay\n", "out")]
 
 
@@ -162,7 +166,7 @@ def _psij_executor():
         def attach(self, job, native_id):
             job.native_id = native_id
 
-    executor = object.__new__(PsijExecutor)
+    executor = object.__new__(PsijBackend)
     executor.backend = "slurm"
     executor.url = None
     executor.poll_interval = 0.01
@@ -185,7 +189,7 @@ def _psij_run(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutorEndpoint(executor="psij", psij_backend="slurm"), WorkingDirectory(str(tmp_path)), "42"
+            ExecutionEndpoint(executor="psij", psij_backend="slurm"), WorkingDirectory(str(tmp_path)), "42"
         ),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "output.out")),
@@ -205,9 +209,9 @@ def test_psij_attach_installs_listener_before_monitor(monkeypatch, tmp_path):
             self.callback(self.result)
         self._done.set()
 
-    monkeypatch.setattr(PsijRunner, "_thread_main", immediate_monitor)
-    runner = _psij_executor().attach(
-        _psij_run(tmp_path),
+    monkeypatch.setattr(PsijJob, "_thread_main", immediate_monitor)
+    runner = _psij_executor().open_job(
+        JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files),
         callback=lambda result: events.append(("finished", None)),
         output_listener=lambda text, kind: events.append((text, kind)),
     )
@@ -222,9 +226,10 @@ def test_psij_attach_can_defer_monitor_start(monkeypatch, tmp_path):
         self._output_observers.emit_bytes(b"psij replay\n", "out")
         self._done.set()
 
-    monkeypatch.setattr(PsijRunner, "_thread_main", immediate_monitor)
-    runner = _psij_executor().attach(
-        _psij_run(tmp_path), output_listener=lambda text, kind: events.append((text, kind)), start=False
+    monkeypatch.setattr(PsijJob, "_thread_main", immediate_monitor)
+    runner = _psij_executor().open_job(
+        JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files),
+        output_listener=lambda text, kind: events.append((text, kind)), start=False,
     )
     assert runner._thread is None
     assert events == []
