@@ -355,7 +355,10 @@ class Run:
 
     def run(self):
         if not self._started:
-            self.start()
+            if self._record is None or self._record.state == RunState.NEW:
+                self.submit()
+            else:
+                self.start()
         return self.wait()
 
     async def run_async(self):
