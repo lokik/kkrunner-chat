@@ -29,6 +29,8 @@ class _Job:
 
 
 class _Backend:
+    name = "fake"
+
     def __init__(self):
         self.acknowledgements = []
 
