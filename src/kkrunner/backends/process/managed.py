@@ -289,6 +289,9 @@ class SupervisedProcessJob:
                         if self._state == RunState.FINISHED:
                             self._state = RunState.FAILED
                             self._failure_phase = FailurePhase.ARTIFACTS
+                        elif not self._state.is_terminal:
+                            self._state = RunState.UNKNOWN
+                            self._failure_phase = None
         finally:
             finish_monitor(self)
 
@@ -297,7 +300,7 @@ class SupervisedProcessJob:
             return [path for value in values if (path := _file_path(value, self.spec.directory)) is not None]
 
         return {
-            "executor": "local",
+            "executor": "process",
             "id": self._run_id,
             "detached": True,
             "directory": os.fspath(self.spec.directory),

@@ -8,9 +8,6 @@ import base64
 import binascii
 import json
 import re
-import os
-from pathlib import Path
-
 from kkrunner.support.process_identity import ProcessIdentity
 
 def _encode_handle(data):
@@ -53,24 +50,4 @@ def _decode_handle(value):
     if not valid:
         raise ValueError("Invalid remote execution id")
     return data
-
-def remote_stream_paths(remote_id):
-    """Return declared output streams carried by a backend handle, if known.
-
-    Historical handles have no file metadata. This does not query or persist
-    runner lifecycle state; paths are hints for user-facing observation only.
-    """
-    handle = _decode_handle(remote_id)
-    directory = handle.get("directory")
-
-    def absolute(name):
-        if name is None:
-            return None
-        path = Path(name)
-        if not path.is_absolute() and directory is not None:
-            path = Path(directory) / path
-        return os.fspath(path)
-
-    return {"output_file": absolute(handle.get("output_file")),
-            "error_file": absolute(handle.get("error_file"))}
 

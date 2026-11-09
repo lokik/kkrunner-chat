@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
+import subprocess
 from threading import Event, Lock
 
 from kkrunner.files.manifest import FileSyncPolicy
@@ -620,8 +621,9 @@ class RemoteRunSession:
                     self._files,
                     offsets=offsets,
                 )
-            except (OSError, ConnectionError) as exc:
-                # An unreachable transport is not a failed calculation.
+            except (OSError, ConnectionError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+                # A failed or malformed observation request is not proof that
+                # the remote calculation itself has failed.
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
                 self._failure_message = str(exc)
@@ -651,7 +653,7 @@ class RemoteRunSession:
                         self._backend_id,
                         self._files,
                     )
-                except (OSError, ConnectionError) as exc:
+                except (OSError, ConnectionError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
                     self._state = RunState.UNKNOWN
                     self._failure_phase = None
                     self._failure_message = str(stream_error or exc)
@@ -760,8 +762,20 @@ class RemoteRunSession:
         except BaseException as exc:
             self._exception = exc
         finally:
-            self._output_observers.finish_bytes()
-            finish_monitor(self)
+            try:
+                self._output_observers.finish_bytes()
+            except BaseException as exc:
+                if self._exception is None:
+                    self._exception = exc
+                self._failure_message = self._failure_message or str(exc)
+                if self._state == RunState.FINISHED:
+                    self._state = RunState.FAILED
+                    self._failure_phase = FailurePhase.DOWNLOAD
+                elif not self._state.is_terminal:
+                    self._state = RunState.UNKNOWN
+                    self._failure_phase = None
+            finally:
+                finish_monitor(self)
 
     def start(self):
         if self._backend_id is None:

@@ -6,7 +6,6 @@ from kkrunner.backends.handles import _decode_handle
 
 _BACKENDS = {
     "process": "kkrunner.backends.process.operations",
-    "local": "kkrunner.backends.process.operations",
     "psij": "kkrunner.backends.scheduler.operations",
 }
 

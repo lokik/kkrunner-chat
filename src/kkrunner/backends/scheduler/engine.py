@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shlex
@@ -147,8 +148,13 @@ def _slurm_details(native_id):
     return fields
 
 
+def _submission_marker(run_id):
+    """Short, scheduler-safe lookup marker for an arbitrary valid Run ID."""
+    return "kkrunner:" + hashlib.blake2s(run_id.encode("utf8"), digest_size=16).hexdigest()
+
+
 def _slurm_current_matches(run_id):
-    marker = f"kkrunner:{run_id}"
+    marker = _submission_marker(run_id)
     output = _scheduler_output(("squeue", "--noheader", "--me", "--format=%i|%k|%T|%Z"))
     matches = []
     for line in output.splitlines():
@@ -179,7 +185,7 @@ def _slurm_time(value):
 
 
 def _slurm_accounting_matches(run_id, submitted_at):
-    marker = f"kkrunner:{run_id}"
+    marker = _submission_marker(run_id)
     output = _scheduler_output(
         (
             "sacct",
@@ -336,7 +342,7 @@ class PsijJob:
         environment = {"KKRunner_RUN_ID": self._run_id}
         attributes = None
         if self.executor.backend.lower() == "slurm":
-            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": f"kkrunner:{self._run_id}"})
+            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": _submission_marker(self._run_id)})
         return environment, attributes
 
     def _create_job(self):
@@ -575,20 +581,28 @@ class PsijJob:
                 self._failure_message = str(exc)
         return self.result
 
+    def _record_observation_error(self, exc):
+        if self._exception is None:
+            self._exception = exc
+        if self._observed_state not in (RunState.FAILED, RunState.CANCELLED):
+            # Neither monitor failure nor output observer cleanup proves that
+            # the scheduler job failed; result delivery remains inconclusive.
+            self._observed_state = RunState.UNKNOWN
+            self._failure_phase = None
+        self._failure_message = self._failure_message or str(exc)
+
     def _thread_main(self):
         try:
             asyncio.run(self._monitor())
         except BaseException as exc:
-            self._exception = exc
-            if self._observed_state not in (RunState.FAILED, RunState.CANCELLED):
-                # Even a known successful scheduler exit does not prove that
-                # this observer completed output delivery and finalization.
-                self._observed_state = RunState.UNKNOWN
-                self._failure_phase = None
-            self._failure_message = self._failure_message or str(exc)
+            self._record_observation_error(exc)
         finally:
-            self._output_observers.finish_bytes()
-            finish_monitor(self)
+            try:
+                self._output_observers.finish_bytes()
+            except BaseException as exc:
+                self._record_observation_error(exc)
+            finally:
+                finish_monitor(self)
 
     def start(self):
         if self._attached:

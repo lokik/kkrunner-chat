@@ -6,7 +6,6 @@ in this module.
 """
 
 from kkrunner.backends.factory import backend_for_kind, backend_for_ref, backend_for_request
-from kkrunner.backends.handles import remote_stream_paths
 
 
 def submit_remote(request):

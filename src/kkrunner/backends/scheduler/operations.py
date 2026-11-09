@@ -32,9 +32,6 @@ def _psij_submit(request):
             "backend": executor.backend,
             "url": executor.url,
             "native_id": backend_id,
-            "directory": request["directory"],
-            "output_file": runner.result.output_file,
-            "error_file": runner.result.error_file,
         }
     )
     return {

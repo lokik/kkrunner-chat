@@ -170,16 +170,18 @@ def _local_submit(request):
                 "identity": identity.to_dict(),
                 "receipt_id": receipt_id,
                 "socket_path": socket_path,
-                "directory": os.fspath(directory),
-                "output_file": output_path,
-                "error_file": error_path,
             }
         )
 
         # Durable identity precedes releasing the supervisor. Until this
         # receipt is safely stored, the child cannot launch a calculation.
         if request.get("detached"):
-            _publish_submission(run_id, {"remote_id": remote_id})
+            _publish_submission(run_id, {
+                "remote_id": remote_id,
+                "directory": os.fspath(directory),
+                "output_file": output_path,
+                "error_file": error_path,
+            })
             published = True
 
         os.write(release_fd, b"1")

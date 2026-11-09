@@ -10,7 +10,7 @@ from concurrent.futures import Future
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from threading import Event, Lock, Thread, current_thread
-from typing import Any, Optional, Protocol, Sequence, Tuple, TypeVar
+from typing import Any, Optional, Sequence, Tuple
 
 from kkrunner.files.manifest import FileManifest, FileSyncPolicy
 from kkrunner.files.paths import file_path
@@ -598,51 +598,4 @@ class ExecutionSpec:
             "mpi_uses_stdin": self.mpi_uses_stdin,
             "launch": asdict(self.launch),
         }
-
-
-ResultT = TypeVar("ResultT")
-
-
-class Runner(Protocol[ResultT]):
-    """One concrete calculation run."""
-
-    result: ResultT
-
-    @property
-    def state(self) -> RunState: ...
-
-    @property
-    def backend_id(self) -> Optional[str]: ...
-
-    @property
-    def exception(self) -> Optional[BaseException]: ...
-
-    def submit(self) -> None: ...
-    def wait(self) -> ResultT: ...
-    def run(self) -> ResultT: ...
-    def cancel(self) -> None: ...
-    def add_output_listener(self, callback) -> None: ...
-    def add_output_error_listener(self, callback) -> None: ...
-
-
-class BackendRunner(Runner[ExecutionOutcome], Protocol):
-    """Raw execution plus facts consumed by persistent orchestration."""
-
-    spec: ExecutionSpec
-    files: Optional[FileManifest]
-    execution: Optional[Execution]
-    return_code: Optional[int]
-    failure_phase: Optional[FailurePhase]
-    failure_message: Optional[str]
-
-
-class ManagedRunner(Runner[ResultT], Protocol[ResultT]):
-    """A persistent observer with explicit start, refresh and detach support."""
-
-    id: str
-
-    def start(self) -> None: ...
-    def refresh(self): ...
-    def stop_observation(self) -> None: ...
-
 

@@ -288,7 +288,7 @@ class ProcessBackend:
         reply = recover_remote(
             run_id,
             {
-                "executor": "local",
+                "executor": "process",
                 "directory": submission.execution.directory.local,
             },
         )
