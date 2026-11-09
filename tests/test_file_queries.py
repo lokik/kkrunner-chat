@@ -137,15 +137,15 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
 
 
 def test_remote_endpoint_reuses_configured_file_service_command():
-    from kkrunner.backends.endpoint import create_executor_from_endpoint, endpoint_for_executor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
+    from kkrunner.client.endpoint import create_backend_from_endpoint, endpoint_for_backend
+    from kkrunner.client.agent import AgentBackendProxy
     from kkrunner.client.transport import SshTransport
 
     command = (sys.executable, "-m", "kkrunner")
     transport = SshTransport("host")
-    executor = RemoteEndpointExecutor(transport, command=command)
+    executor = AgentBackendProxy(transport, command=command)
     assert transport.command == executor.command == command
-    restored = create_executor_from_endpoint(endpoint_for_executor(executor))
+    restored = create_backend_from_endpoint(endpoint_for_backend(executor))
     assert restored.transport.command == restored.command == command
 
 
