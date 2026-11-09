@@ -100,7 +100,7 @@ class RemoteRunSession:
         """Query target execution, not client-side downloading/processing."""
         from kkrunner.backends.contracts import job_status_from_facts
         if self.backend_id is None:
-            return job_status_from_facts(RunState.NEW)
+            return job_status_from_facts(self._state)
         raw = _run_sync(self.executor._status(
             self._remote_directory, self.backend_id, self._files,
         ))

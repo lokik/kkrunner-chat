@@ -189,12 +189,19 @@ class Run:
                 raw_state = self._job.state
             except Exception:
                 raw_state = RunState.UNKNOWN
-            if raw_state == RunState.UNKNOWN:
+            if raw_state == RunState.CANCELLED:
+                self._state = RunState.CANCELLED
+                self._failure_phase = None
+            elif raw_state == RunState.FAILED:
+                self._state = RunState.FAILED
+                self._failure_phase = getattr(self._job, "failure_phase", None) or FailurePhase.EXECUTION
+            else:
+                # wait() may have failed because observation, output delivery,
+                # or a local observer failed. Neither RUNNING nor even a
+                # separately confirmed FINISHED job proves this client Run
+                # can safely complete after that exception.
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
-            else:
-                self._state = RunState.CANCELLED if raw_state == RunState.CANCELLED else RunState.FAILED
-                self._failure_phase = getattr(self._job, "failure_phase", None) or FailurePhase.EXECUTION
             self._failure_message = getattr(self._job, "failure_message", None) or str(exc)
         finally:
             self._settled = True
@@ -281,6 +288,16 @@ class Run:
     def start(self):
         if self._started:
             return
+        if self._record is not None:
+            if self._record.state.is_terminal:
+                raise RuntimeError("A completed Run cannot be started again")
+            if self._record.execution.backend_id is None:
+                # After an uncertain submit, calling start()/run() must never
+                # fall back to Job.start() -> Job.submit() and launch a second
+                # calculation. Recover or resolve the durable identity first.
+                raise RuntimeError(
+                    "Run has no persisted backend identity; recover the submission before attaching"
+                )
         start = getattr(self._job, "start", None)
         if start is not None:
             start()

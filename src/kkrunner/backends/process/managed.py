@@ -321,8 +321,12 @@ class SupervisedProcessJob:
             raise RuntimeError("Managed run has no run id")
         from kkrunner.runs.base import SubmissionNotStarted
 
+        # Constructing the request is preflight. Once submit_remote begins,
+        # a thrown exception might mean an accepted but unacknowledged job.
+        request = self._request()
+        self._state = RunState.SUBMITTING
         try:
-            reply = submit_remote(self._request())
+            reply = submit_remote(request)
         except SubmissionNotStarted as exc:
             self._state = RunState.FAILED
             self._failure_phase = FailurePhase.SUBMISSION

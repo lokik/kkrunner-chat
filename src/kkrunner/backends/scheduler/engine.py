@@ -308,6 +308,7 @@ class PsijJob:
         self._failure_message = None
         self._thread = None
         self._attached = attached
+        self._submission_attempted = False
         self._files = None
         self._cancel_future = None
         self._observed_state = None
@@ -374,6 +375,10 @@ class PsijJob:
             return self._observed_state
         if self._exception is not None:
             # Monitor exceptions are not evidence of scheduler failure.
+            return RunState.UNKNOWN
+        if self._submission_attempted and self.backend_id is None and self._thread is None:
+            # A submission error may have occurred after scheduler acceptance.
+            # PSI/J's still-NEW native status is not proof of non-submission.
             return RunState.UNKNOWN
         return _psij_state(self._job.status, attached=self._attached, return_code=self.return_code)
 
@@ -613,8 +618,8 @@ class PsijJob:
         with self._submit_lock:
             if self._attached:
                 raise RuntimeError("Cannot submit an attached PSI/J job")
-            if self._thread is not None or self.state != RunState.NEW:
-                raise RuntimeError(f"Run is already {self.state.value}")
+            if self._submission_attempted or self._thread is not None or self.state != RunState.NEW:
+                raise RuntimeError("PSI/J job has already been submitted or submission is uncertain")
             try:
                 self._prepare_io()
             except Exception as exc:
@@ -622,9 +627,9 @@ class PsijJob:
                 self._failure_phase = FailurePhase.SUBMISSION
                 self._failure_message = str(exc)
                 raise SubmissionNotStarted(str(exc)) from exc
-            # An exception from PSI/J submit does not prove that the scheduler
-            # rejected the job. Leave project submission recoverable even when
-            # the native ID has not reached this process.
+            # Mark the boundary before calling PSI/J: a raised exception may
+            # follow scheduler acceptance, so never submit this Job twice.
+            self._submission_attempted = True
             self.executor._job_executor.submit(self._job)
             self.executor._cache_submitted_job(self._job)
             start_monitor(self)

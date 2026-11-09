@@ -146,7 +146,9 @@ def job_status_from_facts(state, *, return_code=None, failure_phase=None, messag
     """
     value = state.value if hasattr(state, "value") else state
     if value == "submitting":
-        value = "new"
+        # An attempted submit without a confirmed identity is uncertainty,
+        # not evidence that the job has never been launched.
+        value = "unknown"
     phase = failure_phase.value if hasattr(failure_phase, "value") else failure_phase
     if phase == "artifacts":
         phase = "output"

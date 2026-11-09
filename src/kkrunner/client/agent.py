@@ -210,21 +210,21 @@ class _AgentRunSession(RemoteRunSession):
 
         self._path_spec = self._path_spec or self.spec
         try:
-            # This is local-only preparation. A failure here proves that no
-            # backend submit has been attempted, unlike an exception from
-            # transport._submit(), which may have lost an accepted reply.
+            # Both operations are local-only. No request can have reached the
+            # backend yet, so any ordinary setup exception is a proven
+            # non-submission, not an uncertain lost-reply situation.
             self.spec = materialize_output_streams(self._path_spec)
-        except (OSError, ValueError) as exc:
+            self._output_resources = ExecutionResources(
+                *(
+                    getattr(self.spec, name)
+                    for name in ("output_file", "error_file")
+                    if isinstance(getattr(self._path_spec, name), (str, os.PathLike))
+                )
+            )
+        except Exception as exc:
             self._failure_phase = FailurePhase.SUBMISSION
             self._failure_message = str(exc)
             raise SubmissionNotStarted(str(exc)) from exc
-        self._output_resources = ExecutionResources(
-            *(
-                getattr(self.spec, name)
-                for name in ("output_file", "error_file")
-                if isinstance(getattr(self._path_spec, name), (str, os.PathLike))
-            )
-        )
         request["detached"] = self._run_id is not None
         status = await self.executor._submit(request)
         remote_id = status.get("remote_id")
@@ -236,8 +236,15 @@ class _AgentRunSession(RemoteRunSession):
         with self._lock:
             if self._state != RunState.NEW:
                 raise RuntimeError(f"Run is already {self._state.value}")
+            # Even a lost submit response must make a retry on this session
+            # impossible. Definitive preflight failures get FAILED below.
+            self._state = RunState.SUBMITTING
             try:
                 remote_id, manifest, status, request = _run_sync(self._submit_async())
+            except SubmissionNotStarted:
+                self._state = RunState.FAILED
+                self._output_resources.close(suppress_errors=True)
+                raise
             except BaseException:
                 self._output_resources.close(suppress_errors=True)
                 raise
