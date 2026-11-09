@@ -262,6 +262,12 @@ class RunManager:
         expected_processing_attempt=None,
     ):
         def merge(latest):
+            if latest.state == RunState.POSTPROCESSING and expected_processing_attempt is None:
+                # An external observation cannot complete or fail a run after
+                # its processor has claimed ownership. This check must live
+                # inside the RunStore update lock; checking before transition
+                # leaves a race between refresh and the processing claim.
+                return latest
             if expected_processing_attempt is not None and (
                 latest.processing_attempt != expected_processing_attempt or latest.state != RunState.POSTPROCESSING
             ):
@@ -427,6 +433,12 @@ class RunManager:
                 raise DuplicateSubmissionError(record, conflicts)
 
     def update(self, record, status: RunStatus):
+        # Backend refresh is observational. It cannot retract local processing
+        # or a terminal result, including when a scheduler returns stale data.
+        latest = self.store.get(record.id)
+        if latest.state.is_terminal or latest.state == RunState.POSTPROCESSING:
+            return latest
+        record = latest
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
         state = (
@@ -848,7 +860,14 @@ class RunManager:
             if record.execution.backend_id is None and self._is_stale_submitting(record):
                 record = self.recover_submitting(record)
                 current[record.id] = record
-            if record.execution.backend_id is None:
+            if record.execution.backend_id is None or record.state.is_terminal:
+                # Recovery may have completed this record and acknowledged
+                # its backend receipt. Do not immediately observe it again.
+                continue
+            if record.state == RunState.POSTPROCESSING:
+                # Execution has already completed and the client owns the
+                # processing attempt. Re-querying backend status could
+                # overwrite local processing state with a stale failure.
                 continue
             executor = self.backend_for(record)
             groups.setdefault(executor, []).append(record)

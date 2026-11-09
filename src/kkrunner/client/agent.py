@@ -209,7 +209,15 @@ class _AgentRunSession(RemoteRunSession):
             request, manifest = self._prepared
 
         self._path_spec = self._path_spec or self.spec
-        self.spec = materialize_output_streams(self._path_spec)
+        try:
+            # This is local-only preparation. A failure here proves that no
+            # backend submit has been attempted, unlike an exception from
+            # transport._submit(), which may have lost an accepted reply.
+            self.spec = materialize_output_streams(self._path_spec)
+        except (OSError, ValueError) as exc:
+            self._failure_phase = FailurePhase.SUBMISSION
+            self._failure_message = str(exc)
+            raise SubmissionNotStarted(str(exc)) from exc
         self._output_resources = ExecutionResources(
             *(
                 getattr(self.spec, name)
