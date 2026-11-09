@@ -371,7 +371,7 @@ class Run:
             if not self._completion_persisted:
                 self._record = self.manager.transition(
                     self._record,
-                    state=self._job.state,
+                    state=self._observed_submission_state(),
                     execution=self.execution,
                     failure_phase=self.failure_phase,
                     files=self.files if self.files is not None else _UNCHANGED,
@@ -498,7 +498,7 @@ class Run:
                 with self._completion_lock:
                     if not self._completion_persisted:
                         self._record = self.manager.transition(
-                            self._record, state=self._job.state,
+                            self._record, state=self._observed_submission_state(),
                             execution=self.execution,
                             failure_phase=self.failure_phase,
                         )
