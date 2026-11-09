@@ -7,9 +7,9 @@ execution calls these operations directly; the remote agent only dispatches.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
-import re
 import shutil
 import signal
 import socket
@@ -30,9 +30,18 @@ from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync
 from kkrunner.support.process_identity import ProcessIdentity
 
 def _submission_ticket(run_id):
-    if not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+    """A stable, filename-safe ticket for any valid client Run identity.
+
+    RunRecord permits more than UUID-hex IDs. Hashing the whole identity keeps
+    the receipt namespace independent of path separators and user-facing IDs.
+    """
+    if (
+        not isinstance(run_id, str) or not run_id or run_id in (".", "..")
+        or any(char in run_id for char in ("/", "\\", "\x00"))
+    ):
         raise ValueError("Invalid persistent run id")
-    return _state_root() / "remote-submissions" / (run_id + ".json")
+    name = hashlib.sha256(run_id.encode("utf8")).hexdigest()
+    return _state_root() / "remote-submissions" / (name + ".json")
 
 def _publish_submission(run_id, reply):
     """Temporary identity handoff, never a target-side run lifecycle record."""

@@ -3,15 +3,15 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.backends.contracts import Backend, Job, JobRef, JobStatus
+    from kkrunner.backends.contracts import Backend, Job, JobAttachment, JobRef, JobStatus
     from kkrunner.backends.process.engine import ProcessBackend
     from kkrunner.backends.scheduler.engine import PsijBackend
 
-__all__ = ["Backend", "Job", "JobRef", "JobStatus", "ProcessBackend", "PsijBackend"]
+__all__ = ["Backend", "Job", "JobAttachment", "JobRef", "JobStatus", "ProcessBackend", "PsijBackend"]
 
 
 def __getattr__(name):
-    if name in ("Backend", "Job", "JobRef", "JobStatus"):
+    if name in ("Backend", "Job", "JobAttachment", "JobRef", "JobStatus"):
         from . import contracts
         value = getattr(contracts, name)
     elif name == "ProcessBackend":

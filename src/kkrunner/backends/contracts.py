@@ -12,7 +12,9 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from kkrunner.files.manifest import FileManifest
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
+    from kkrunner.runs.model import Execution
 
 
 class JobState(str, Enum):
@@ -48,6 +50,19 @@ class JobRef:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"JobRef.{name} must be a nonempty string")
+
+
+@dataclass(frozen=True)
+class JobAttachment:
+    """Reattach context without passing a persisted RunRecord to a backend.
+
+    The backend needs the execution endpoint, working directory and declared
+    files to reconstruct its observation; client lifecycle state, processing
+    attempts and project metadata are deliberately excluded.
+    """
+
+    execution: Execution
+    files: FileManifest
 
 
 @dataclass(frozen=True)
@@ -176,15 +191,17 @@ class Backend(Protocol):
 
 
 class ReopenableBackend(Backend, Protocol):
-    def open_job(self, run, *, callback=None, output_listener=None, start=True) -> Job: ...
+    def open_job(self, attachment: JobAttachment, *, callback=None, output_listener=None, start=True) -> Job: ...
 
 
 class RecoverableBackend(ReopenableBackend, Protocol):
-    def recover_submission(self, submission_key: str, submission, *, submitted_at=None) -> RecoveryResult: ...
+    def recover_submission(
+        self, submission_key: str, submission: JobAttachment, *, submitted_at=None,
+    ) -> RecoveryResult: ...
 
 
 __all__ = [
-    "Backend", "Job", "JobFailurePhase", "JobRef", "JobState", "JobStatus",
+    "Backend", "Job", "JobAttachment", "JobFailurePhase", "JobRef", "JobState", "JobStatus",
     "ObservationUnavailable", "RecoverableBackend", "RecoveryDisposition",
     "RecoveryResult", "ReopenableBackend", "UnsupportedCapability",
     "job_status_from_facts",

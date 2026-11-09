@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
+from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
 from kkrunner.client.pool import default_backend_pool
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileManifest
@@ -333,11 +334,11 @@ class RunManager:
         if not self._is_stale_submitting(record):
             return record
         executor = self.backend_for(record)
-        from kkrunner.backends.contracts import RecoveryDisposition
         from kkrunner.runs.model import WorkingDirectory
         try:
             recovery = executor.recover_submission(
-                record.id, record, submitted_at=record.updated_at,
+                record.id, JobAttachment(record.execution, record.files),
+                submitted_at=record.updated_at,
             )
         except NotImplementedError:
             return record
@@ -356,13 +357,18 @@ class RunManager:
                     execution,
                     directory=WorkingDirectory(execution.directory.local, recovery.directory),
                 )
-            files = record.files.with_remote_stream_paths(
-                stdout=recovery.output_file, stderr=recovery.error_file,
-            )
+            files = record.files
+            if endpoint.executor in ("psij", "ssh"):
+                files = files.with_remote_stream_paths(
+                    stdout=recovery.output_file, stderr=recovery.error_file,
+                )
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
             attached = self.transition(record, execution=execution, files=files)
-            return self.update(attached, executor.status(attached)[0])
+            return self.update(
+                attached,
+                executor.status(JobAttachment(attached.execution, attached.files))[0],
+            )
         if recovery.disposition is not RecoveryDisposition.ABSENT:
             return record
 
@@ -848,7 +854,9 @@ class RunManager:
             groups.setdefault(executor, []).append(record)
 
         for executor, group in groups.items():
-            statuses = executor.status(*group)
+            statuses = executor.status(
+                *(JobAttachment(record.execution, record.files) for record in group)
+            )
             if len(statuses) != len(group):
                 raise RuntimeError("Executor returned wrong number of run statuses")
             for record, status in zip(group, statuses):
@@ -870,7 +878,10 @@ class RunManager:
             raise RuntimeError(f"Run {record.id} has no backend reference")
         backend = self.backend_for(record) if backend is None else backend
         self.register_backend(backend, record.execution.endpoint)
-        job = backend.open_job(record, output_listener=output_listener, start=False)
+        job = backend.open_job(
+            JobAttachment(record.execution, record.files),
+            output_listener=output_listener, start=False,
+        )
         attached = Run(
             job, backend=backend, manager=self, record=record,
             process_result=process_result, callback=callback,

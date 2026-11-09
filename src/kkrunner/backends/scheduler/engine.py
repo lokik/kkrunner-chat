@@ -364,10 +364,11 @@ class PsijJob:
 
     @property
     def state(self):
-        if self._exception is not None:
-            return RunState.FAILED
         if self._observed_state is not None:
             return self._observed_state
+        if self._exception is not None:
+            # Monitor exceptions are not evidence of scheduler failure.
+            return RunState.UNKNOWN
         return _psij_state(self._job.status, attached=self._attached, return_code=self.return_code)
 
     @property
@@ -579,7 +580,11 @@ class PsijJob:
             asyncio.run(self._monitor())
         except BaseException as exc:
             self._exception = exc
-            self._failure_phase = self._failure_phase or FailurePhase.EXECUTION
+            if self._observed_state not in (RunState.FAILED, RunState.CANCELLED):
+                # Even a known successful scheduler exit does not prove that
+                # this observer completed output delivery and finalization.
+                self._observed_state = RunState.UNKNOWN
+                self._failure_phase = None
             self._failure_message = self._failure_message or str(exc)
         finally:
             self._output_observers.finish_bytes()

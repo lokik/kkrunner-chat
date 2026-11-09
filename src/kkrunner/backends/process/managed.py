@@ -267,20 +267,28 @@ class SupervisedProcessJob:
         # Monitoring and both cleanups must be attempted independently; a
         # secondary cleanup error must not hide an earlier monitor failure.
         try:
-            for action in (
-                self._monitor,
-                self._output_observers.finish_bytes,
-                lambda: close_output_files(self.spec.output_file, self.spec.error_file),
+            for action, observation_only in (
+                (self._monitor, True),
+                (self._output_observers.finish_bytes, False),
+                (lambda: close_output_files(self.spec.output_file, self.spec.error_file), False),
             ):
                 try:
                     action()
                 except BaseException as exc:
                     if self._exception is None:
                         self._exception = exc
-            if self._exception is not None:
-                self._failure_message = str(self._exception)
-                self._failure_phase = self._failure_phase or FailurePhase.EXECUTION
-                self._state = RunState.FAILED
+                        self._failure_message = str(exc)
+                    if observation_only:
+                        # FOLLOW or status loss cannot prove a job failed.
+                        if self._state not in (RunState.FAILED, RunState.CANCELLED):
+                            self._state = RunState.UNKNOWN
+                            self._failure_phase = None
+                    else:
+                        # Failing to finalize local output is an output failure
+                        # only if execution was otherwise known to succeed.
+                        if self._state == RunState.FINISHED:
+                            self._state = RunState.FAILED
+                            self._failure_phase = FailurePhase.ARTIFACTS
         finally:
             finish_monitor(self)
 
