@@ -80,7 +80,8 @@ def _run(tmp_path, state=RunState.FINISHED):
 
 def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
     run, context, destination, output = _run(tmp_path)
-    assert run.run().return_code == 0
+    run.start()
+    assert run.wait().return_code == 0
     assert run.state == RunState.FINISHED
     assert destination.read_bytes() == b"streamed\n"
     assert output.closed
@@ -93,7 +94,8 @@ def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_
     def fail_sync(*args):
         raise AssertionError("Unknown execution must not download results")
     run._file_session.synchronize = fail_sync
-    outcome = run.run()
+    run.start()
+    outcome = run.wait()
     assert outcome.output_file == str(destination)
     assert run.state == RunState.UNKNOWN
     assert destination.read_bytes() == b"streamed\n"
@@ -114,11 +116,13 @@ def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, ex
         raise OSError("download unavailable")
     run._file_session.synchronize = unavailable
     if state == RunState.FINISHED:
+        run.start()
         with pytest.raises(OSError, match="download unavailable"):
-            run.run()
+            run.wait()
         assert run.state == RunState.FAILED
     else:
-        run.run()
+        run.start()
+        run.wait()
         assert run.state == state
     assert run.failure_phase == expected_phase
     assert output.closed
@@ -155,7 +159,8 @@ def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
         context.follow_error = ConnectionError("SSH disconnected")
     else:
         context.status_error = OSError("SSH status unavailable")
-    result = run.run()
+    run.start()
+    result = run.wait()
     assert result.return_code is None
     assert run.state == RunState.UNKNOWN
     assert run.failure_phase is None
