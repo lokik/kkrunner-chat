@@ -46,7 +46,7 @@ class _AttachExecutor(ProcessBackend):
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         if output_listener is not None:
-            output_listener("manager replay\\n", "out")
+            output_listener("manager replay\n", "out")
         return RunParts(_AttachedRunner(attachment))
 
 
