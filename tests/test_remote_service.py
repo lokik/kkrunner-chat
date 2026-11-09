@@ -154,7 +154,7 @@ def test_status_distinguishes_launch_and_execution_failure(tmp_path, monkeypatch
 def test_slurm_status_is_native_and_does_not_use_psij_job_cache(tmp_path, monkeypatch):
     _, remote_id = _psij_handle(tmp_path)
     monkeypatch.setattr(
-        remote_service, "_psij_executor", lambda opts: pytest.fail("local Slurm status must not initialize PSI/J")
+        scheduler_operations, "_psij_executor", lambda opts: pytest.fail("local Slurm status must not initialize PSI/J")
     )
     monkeypatch.setattr(psij, "_slurm_details", lambda native_id: {"JobState": "RUNNING", "ExitCode": "0:0"})
     status = remote_service.status_remote(remote_id)
@@ -198,7 +198,7 @@ def test_psij_cancellation_does_not_invent_terminal_state(monkeypatch, tmp_path)
 
     monkeypatch.setattr(scheduler_operations, "_psij_executor", lambda _: Backend())
     monkeypatch.setattr(
-        remote_service,
+        scheduler_operations,
         "status_remote",
         lambda _: {"state": RunState.RUNNING.value, "return_code": None, "failure_phase": None},
     )
@@ -235,7 +235,7 @@ def test_follow_waits_for_psij_terminal_without_repeated_status_probes(tmp_path,
         checks.append(_remote_id)
         return {"state": RunState.FINISHED.value, "return_code": 0}
 
-    monkeypatch.setattr(remote_service, "status_remote", status)
+    monkeypatch.setattr(scheduler_operations, "status_remote", status)
     outcome = remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
     assert outcome["state"] == RunState.FINISHED.value
     assert observed == [("attach", "42"), "wait"]
@@ -252,7 +252,7 @@ def test_follow_uses_native_terminal_when_status_query_is_transient_unknown(tmp_
         checks.append(_remote_id)
         return {"state": RunState.UNKNOWN.value}
 
-    monkeypatch.setattr(remote_service, "status_remote", status)
+    monkeypatch.setattr(scheduler_operations, "status_remote", status)
     outcome = remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
     assert outcome["state"] == RunState.FAILED.value
     assert outcome["return_code"] == 7
@@ -265,7 +265,7 @@ def test_follow_fallback_treats_completed_nonzero_psij_as_failed(tmp_path, monke
     _, remote_id = _psij_handle(tmp_path)
     observed = []
     _stub_terminal_psij_job(monkeypatch, "COMPLETED", 7, observed)
-    monkeypatch.setattr(remote_service, "status_remote", lambda _remote_id: {"state": RunState.UNKNOWN.value})
+    monkeypatch.setattr(scheduler_operations, "status_remote", lambda _remote_id: {"state": RunState.UNKNOWN.value})
     outcome = remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
     assert outcome == {
         "state": RunState.FAILED.value,
@@ -350,7 +350,7 @@ def test_uncertain_submit_uses_only_temporary_identity_ticket(tmp_path, monkeypa
     recovered = remote_service.recover_remote(run_id, {"executor": "process", "directory": str(tmp_path)})
     assert recovered["remote_id"] == handle
     assert remote_service.acknowledge_submission("process", run_id) == {"acknowledged": True}
-    assert remote_service.recover_remote(run_id, {"executor": "local"}) is None
+    assert remote_service.recover_remote(run_id, {"executor": "process"}) is None
     assert remote_service.acknowledge_submission("process", run_id) == {"acknowledged": False}
 
 
@@ -856,7 +856,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 
     _, remote_id, _ = _process_handle(tmp_path)
     facts = replies._status_reply(state, 127, failure_phase=phase)
-    monkeypatch.setattr(remote_service, "status_remote", lambda handle: facts)
+    monkeypatch.setattr(process_operations, "status_remote", lambda handle: facts)
 
     async def closed_socket(path, offsets, on_chunk):
         reader = asyncio.StreamReader()
@@ -882,7 +882,7 @@ def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_p
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
-        remote_service, "status_remote",
+        process_operations, "status_remote",
         lambda handle: replies._status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH),
     )
 
@@ -903,7 +903,7 @@ def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, m
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
-        remote_service, "status_remote",
+        process_operations, "status_remote",
         lambda handle: replies._status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH),
     )
 
