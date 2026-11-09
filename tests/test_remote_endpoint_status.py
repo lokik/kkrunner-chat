@@ -1,14 +1,12 @@
 """Backend execution status and recovery remain separate from client file transfer."""
 
-from dataclasses import replace
-
 import pytest
 
 from kkrunner import RunState
 from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.client.agent import AgentBackendProxy
 from kkrunner.client.endpoint import endpoint_for_backend
-from kkrunner.files import FileEntry, FileManifest
+from kkrunner.files import FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
 
