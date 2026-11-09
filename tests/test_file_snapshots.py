@@ -73,10 +73,13 @@ def test_snapshot_validates_declarations_and_submission(tmp_path):
         manager.snapshot_file(run, "result.dat")
     with pytest.raises(ValueError, match="concrete file"):
         manager.snapshot_file(run, "*.dat")
-    new = replace(run, state=RunState.NEW, execution=replace(run.execution, backend_id=None))
-    manager.store.update(run, lambda current: new)
+    new = manager.new_record(
+        directory=local, endpoint=run.execution.endpoint,
+        files=run.files, remote_directory=run.execution.directory.remote,
+    )
+    manager.store.save(new)
     with pytest.raises(RuntimeError, match="not been submitted"):
-        manager.snapshot_file(run.id, "result.dat")
+        manager.snapshot_file(new.id, "result.dat")
 
 
 def test_snapshot_destination_cannot_overwrite_run_files(tmp_path):
