@@ -1,7 +1,6 @@
 """Live snapshots do not disturb run artifacts or historical state."""
 
 import asyncio
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
