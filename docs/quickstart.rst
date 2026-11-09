@@ -2,7 +2,7 @@ Run a program
 ===============
 
 An :class:`~kkrunner.ExecutionSpec` describes a command and its files.
-An :class:`~kkrunner.runs.Executor` creates a runner; ``run()`` submits and waits,
+A :class:`~kkrunner.Run` coordinates a backend job; ``run()`` submits and waits,
 while ``submit()`` followed by ``wait()`` separates those steps.
 Commands are argument sequences, so shell expansion is not performed.
 
@@ -12,7 +12,8 @@ Commands are argument sequences, so shell expansion is not performed.
    import tempfile
    from pathlib import Path
    from kkrunner import ExecutionSpec
-   from kkrunner.backends import LocalExecutor
+   from kkrunner import Run
+   from kkrunner.backends import ProcessBackend
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
@@ -21,7 +22,7 @@ Commands are argument sequences, so shell expansion is not performed.
        directory=directory,
        output_file="stdout.txt",
    )
-   runner = LocalExecutor().create_run(spec)
+   runner = Run.direct(ProcessBackend(), spec)
    outcome = runner.run()
    print(outcome.return_code)
    print(Path(outcome.output_file).read_text().strip())
@@ -44,7 +45,7 @@ stream paths. It contains no application-specific parsed result. Required
 outputs must exist after a successful command; declare optional outputs with
 :class:`~kkrunner.TaskFile` as described in :doc:`files`.
 
-``create_run()`` alone does not submit the program. Output paths are opened at
+``Run.direct()`` alone does not submit the program. Output paths are opened at
 submission. Supplied streams remain the caller's responsibility unless ownership
 is explicitly transferred with :class:`~kkrunner.runs.base.ExecutionResources` and
 :class:`~kkrunner.runs.base.ResourceOwnedRunner`.
