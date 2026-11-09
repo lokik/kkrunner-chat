@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 
 from kkrunner import RunState, RunStore
-from kkrunner.backends import LocalExecutor
-from kkrunner.backends.endpoint import endpoint_for_executor
+from kkrunner.backends import ProcessBackend
+from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
-from kkrunner.remote import LocalTransport, RemoteEndpointExecutor
+from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.transport import LocalTransport
 from kkrunner.runs import RunManager
 
 from .test_transport import _LoopbackSshTransport
@@ -22,13 +23,13 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     local.mkdir(parents=True)
     if remote:
         target.mkdir(parents=True)
-        executor = RemoteEndpointExecutor(LocalTransport())
+        executor = AgentBackendProxy(LocalTransport())
         mapping = FileMapping(str(local.parent), str(target.parent))
     else:
-        executor = LocalExecutor()
+        executor = ProcessBackend()
         mapping = None
     manager = RunManager(RunStore(tmp_path / "history"))
-    manager.register_executor(executor)
+    manager.register_backend(executor)
     files = FileManifest(
         outputs=(FileEntry(str(local / output), str(target / output) if remote else None),),
         caches=(CacheEntry(FileEntry(str(local / "cache.bin"), str(target / "cache.bin") if remote else None)),),
@@ -37,7 +38,7 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     )
     record = manager.new_record(
         directory=local, remote_directory=str(target) if remote else None,
-        endpoint=endpoint_for_executor(executor), files=files,
+        endpoint=endpoint_for_backend(executor), files=files,
     )
     record = replace(record, state=RunState.RUNNING, execution=record.execution.submitted("job-123"))
     manager.store.save(record)
@@ -73,7 +74,7 @@ def test_snapshot_validates_declarations_and_submission(tmp_path):
     with pytest.raises(ValueError, match="concrete file"):
         manager.snapshot_file(run, "*.dat")
     new = replace(run, state=RunState.NEW, execution=replace(run.execution, backend_id=None))
-    manager.store.save(new)
+    manager.store.update(run, lambda current: new)
     with pytest.raises(RuntimeError, match="not been submitted"):
         manager.snapshot_file(run.id, "result.dat")
 
@@ -139,7 +140,7 @@ def test_snapshot_runner_convenience(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "history"))
     run = manager.create_run(
-        LocalExecutor(),
+        ProcessBackend(),
         ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"),
     )
     run.run()
