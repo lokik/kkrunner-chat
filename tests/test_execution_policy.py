@@ -3,14 +3,14 @@ import sys
 
 import pytest
 
-from kkrunner.backends.endpoint import endpoint_for_executor
-from kkrunner.backends.local import LocalExecutor, LocalRunner
+from kkrunner.client.endpoint import endpoint_for_backend
+from kkrunner.backends.process.engine import ProcessBackend, ProcessJob
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
 from kkrunner.remote.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
-from kkrunner.runs.manager import PersistentRunner, RunManager
-from kkrunner.runs.processing import PostprocessingRunner
+from kkrunner.runs.manager import RunManager
+from kkrunner.runs.run import Run
 from kkrunner.runs.records import RunStore
 
 
@@ -25,7 +25,7 @@ def _local_spec(tmp_path, code="print('ok')"):
 
 
 def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path):
-    runner = LocalRunner(_local_spec(tmp_path))
+    runner = ProcessJob(_local_spec(tmp_path))
     observer_errors = []
 
     def broken_observer(*_):
@@ -42,12 +42,12 @@ def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path)
 
 
 def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
-    raw = LocalRunner(_local_spec(tmp_path))
+    raw = ProcessJob(_local_spec(tmp_path))
 
     def fail(_outcome):
         raise ValueError("parser failed")
 
-    runner = PostprocessingRunner(raw, fail)
+    runner = Run(raw, process_result=fail)
     runner.submit()
     with pytest.raises(ValueError, match="parser failed"):
         runner.wait()
@@ -57,7 +57,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
-    runner = LocalRunner(
+    runner = ProcessJob(
         _local_spec(tmp_path), callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed"))
     )
     runner.submit()
@@ -90,7 +90,7 @@ class _UnknownRunner:
 def test_unknown_raw_state_is_preserved_and_not_postprocessed():
     raw = _UnknownRunner()
     processed = []
-    runner = PostprocessingRunner(raw, lambda outcome: processed.append(outcome))
+    runner = Run(raw, process_result=lambda outcome: processed.append(outcome))
     runner.submit()
     assert runner.wait() is raw.result
     assert processed == []
@@ -124,12 +124,12 @@ class _UncertainRunner(_NotStartedRunner):
 
 def _project_wrapper(tmp_path, runner):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    executor = LocalExecutor()
-    endpoint = endpoint_for_executor(executor)
+    executor = ProcessBackend()
+    endpoint = endpoint_for_backend(executor)
     record = manager.new_record(
         directory=tmp_path, endpoint=endpoint, metadata={"test": {"task": "SCF"}}, processing_required=True
     )
-    return (manager, PersistentRunner(manager, executor, runner, record))
+    return (manager, Run(runner, manager=manager, backend=executor, record=record))
 
 
 def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):
@@ -227,11 +227,11 @@ def test_file_path_strict_contract_preserves_optional_none(tmp_path):
 
 
 def test_strict_runner_path_errors_remain_backend_specific(tmp_path):
-    from kkrunner.backends.psij import _path as psij_path
-    from kkrunner.remote.runner import RemoteRunner
+    from kkrunner.backends.scheduler.engine import _path as psij_path
+    from kkrunner.client.remote_files import RemoteFileSession
 
     spec = ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path))
-    runner = RemoteRunner(object(), spec)
+    runner = RemoteFileSession(object(), spec)
     with pytest.raises(ValueError, match="Remote execution requires named files"):
         runner._local_path(object())
     with pytest.raises(ValueError, match="Remote execution requires named files"):
