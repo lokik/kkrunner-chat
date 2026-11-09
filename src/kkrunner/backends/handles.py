@@ -8,6 +8,8 @@ import base64
 import binascii
 import json
 import re
+import os
+from pathlib import Path
 
 from kkrunner.support.process_identity import ProcessIdentity
 
