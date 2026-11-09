@@ -20,7 +20,7 @@ from kkrunner.files.paths import file_path, has_file_magic
 from kkrunner.files.versions import file_digest
 from kkrunner.runs.base import (
     ExecutionOutcome, ExecutionResources, RunState, SubmissionNotStarted,
-    materialize_output_streams,
+    close_output_files, materialize_output_streams,
 )
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
@@ -720,4 +720,14 @@ class RemoteFileSession:
         _run_sync(self._synchronize(state))
 
     def close(self):
-        self._output_resources.close(suppress_errors=True)
+        """Flush and close both streams even when supplied by the caller.
+
+        RemoteFileSession owns streaming output until Run completion; after
+        detaching or a failed preparation the original stream handles must
+        not survive. The previous combined remote runner closed these handles
+        in its monitor's finally clause.
+        """
+        try:
+            close_output_files(self.spec.output_file, self.spec.error_file)
+        finally:
+            self._output_resources.close(suppress_errors=True)
