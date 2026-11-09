@@ -274,6 +274,16 @@ class ProcessBackend:
     name = "process"
     supports_result_file_retrieval = False
 
+    def create_run_parts(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        from kkrunner.client.run_parts import RunParts
+        return RunParts(self.create_job(spec, submission_key=submission_key, callback=callback))
+
+    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
+        from kkrunner.client.run_parts import RunParts
+        return RunParts(self.open_job(
+            attachment, callback=callback, output_listener=output_listener, start=False,
+        ))
+
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         if submission_key is None:
             return ProcessJob(materialize_local_spec(spec), callback=callback)

@@ -842,13 +842,14 @@ class RunManager:
             run_id=run_id,
         )
         self.register_backend(backend, endpoint)
-        job = backend.create_job(spec, submission_key=record.id)
-        set_manifest = getattr(job, "set_manifest", None)
-        if set_manifest is not None:
-            set_manifest(record.files)
+        parts = backend.create_run_parts(spec, submission_key=record.id)
+        if parts.files is None:
+            set_manifest = getattr(parts.job, "set_manifest", None)
+            if set_manifest is not None:
+                set_manifest(record.files)
         return Run(
-            job, backend=backend, manager=self, record=record,
-            process_result=process_result, callback=callback,
+            parts.job, backend=backend, manager=self, record=record,
+            process_result=process_result, callback=callback, file_session=parts.files,
         )
 
     def refresh(self, records=None):
@@ -897,14 +898,24 @@ class RunManager:
             raise RuntimeError(f"Run {record.id} has no backend reference")
         backend = self.backend_for(record) if backend is None else backend
         self.register_backend(backend, record.execution.endpoint)
-        job = backend.open_job(
+        parts = backend.open_run_parts(
             JobAttachment(record.execution, record.files),
-            output_listener=output_listener, start=False,
+            output_listener=output_listener,
         )
-        attached = Run(
-            job, backend=backend, manager=self, record=record,
-            process_result=process_result, callback=callback,
-        )
-        attached.start()
+        try:
+            attached = Run(
+                parts.job, backend=backend, manager=self, record=record,
+                process_result=process_result, callback=callback, file_session=parts.files,
+            )
+            attached.start()
+        except BaseException:
+            # Opening an attachment transfers stream ownership to Run only
+            # once its observer has started. Do not leak file descriptors when
+            # constructing or starting the attached observer fails.
+            if parts.files is not None and not parts.job.observing:
+                # A running monitor still needs these streams; its Run
+                # completion owns the eventual close.
+                parts.files.close()
+            raise
         return attached
 

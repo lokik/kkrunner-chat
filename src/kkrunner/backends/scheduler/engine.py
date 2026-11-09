@@ -692,6 +692,16 @@ class PsijBackend:
         self._jobs_lock = RLock()
         self._max_idle_jobs = 64
 
+    def create_run_parts(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        from kkrunner.client.run_parts import RunParts
+        return RunParts(self.create_job(spec, submission_key=submission_key, callback=callback))
+
+    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
+        from kkrunner.client.run_parts import RunParts
+        return RunParts(self.open_job(
+            attachment, callback=callback, output_listener=output_listener, start=False,
+        ))
+
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         job = PsijJob(self, spec, callback=callback, run_id=submission_key)
         job.set_manifest(FileManifest.from_spec(spec))

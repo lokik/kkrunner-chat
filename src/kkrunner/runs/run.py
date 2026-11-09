@@ -25,13 +25,14 @@ class Run:
 
     def __init__(
         self, job, *, backend=None, manager=None, record=None,
-        process_result=None, callback=None,
+        process_result=None, callback=None, file_session=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
         if record is not None and process_result is not None and not record.processing_required:
             raise ValueError("Result processing was not declared in RunRecord")
         self._job = job
+        self._file_session = file_session
         self.backend = backend
         self.manager = manager
         self._record = record
@@ -57,7 +58,8 @@ class Run:
     @classmethod
     def direct(cls, backend, spec, *, process_result=None, callback=None):
         """Create one untracked Run with the same client lifecycle."""
-        return cls(backend.create_job(spec), backend=backend,
+        parts = backend.create_run_parts(spec)
+        return cls(parts.job, backend=backend, file_session=parts.files,
                    process_result=process_result, callback=callback)
 
     @property
@@ -70,7 +72,7 @@ class Run:
 
     @property
     def spec(self):
-        return self._job.spec
+        return self._job.spec if self._file_session is None else self._file_session.spec
 
     @property
     def backend_id(self):
@@ -78,6 +80,8 @@ class Run:
 
     @property
     def execution(self):
+        if self._file_session is not None:
+            return self._file_session.execution(self.backend_id)
         proposed = getattr(self._job, "execution", None)
         if proposed is not None:
             return proposed
@@ -87,6 +91,8 @@ class Run:
 
     @property
     def files(self):
+        if self._file_session is not None:
+            return self._file_session.files
         return getattr(self._job, "files", None)
 
     @property
@@ -116,7 +122,9 @@ class Run:
             current = RunState.POSTPROCESSING
         else:
             current = self._job.state
-            if current == RunState.FINISHED and self._started:
+            if current == RunState.FINISHED and self._started and self._file_session is not None:
+                current = RunState.DOWNLOADING
+            elif current == RunState.FINISHED and self._started:
                 if self._process_result is not None or (
                     self._record is not None and self._record.processing_required
                 ):
@@ -139,10 +147,45 @@ class Run:
             raise RuntimeError("Snapshot of an untracked Run requires a workspace")
         return self.manager.snapshot_file(self.id, file, destination=destination)
 
+    def _prepare_remote_job(self):
+        """Wire local streams to the job before crossing the submit boundary."""
+        try:
+            request = self._file_session.prepare_job()
+            self._job.configure_submission(request, **self._file_session.observation())
+        except SubmissionNotStarted:
+            raise
+        except Exception as exc:
+            # No remote submit has been attempted by this method.
+            raise SubmissionNotStarted(str(exc)) from exc
+
     def _finish(self):
         try:
             outcome = self._job.wait()
             raw_state = self._job.state
+            if self._file_session is not None:
+                # Even an uncertain or failed raw execution has partial local
+                # output files. Expose their paths through the Run outcome.
+                outcome = self._file_session.result
+                outcome.return_code = self._job.return_code
+            self.result = outcome
+            if self._file_session is not None and raw_state.is_terminal:
+                self._state = RunState.DOWNLOADING
+                try:
+                    if raw_state == RunState.FINISHED and self._job.output_error is not None:
+                        raise self._job.output_error
+                    self._file_session.synchronize(raw_state)
+                except Exception as exc:
+                    if raw_state == RunState.FINISHED:
+                        self._file_session.mark_transfer_failed(str(exc))
+                        self._exception = exc
+                        self._state = RunState.FAILED
+                        self._failure_phase = FailurePhase.DOWNLOAD
+                        self._failure_message = str(exc)
+                        return
+                    # Diagnostic transfer errors cannot replace a failed or
+                    # cancelled backend outcome.
+                outcome = self._file_session.result
+                outcome.return_code = self._job.return_code
             self.result = outcome
             if raw_state == RunState.UNKNOWN:
                 self._state = RunState.UNKNOWN
@@ -204,6 +247,8 @@ class Run:
                 self._failure_phase = None
             self._failure_message = getattr(self._job, "failure_message", None) or str(exc)
         finally:
+            if self._file_session is not None:
+                self._file_session.close()
             self._settled = True
             if self.manager is not None and self._record.state != RunState.NEW:
                 try:
@@ -226,7 +271,15 @@ class Run:
         if self._started:
             raise RuntimeError("Run already submitted")
         if self.manager is None:
-            self._job.submit()
+            if self._file_session is not None:
+                try:
+                    self._prepare_remote_job()
+                    self._job.submit()
+                except BaseException:
+                    self._file_session.close()
+                    raise
+            else:
+                self._job.submit()
             self._start_completion()
             return
 
@@ -239,18 +292,30 @@ class Run:
         self._record = self.manager.reserve(self._record)
         self._monitor_record_version = self._record.updated_at
         try:
-            prepare = getattr(self._job, "prepare_submission", None)
-            if prepare is not None:
-                prepare()
+            if self._file_session is not None:
+                self._file_session.prepare_submission()
                 self._record = self.manager.transition(
                     self._record,
                     execution=self.execution,
                     files=self.files if self.files is not None else _UNCHANGED,
                 )
                 self._monitor_record_version = self._record.updated_at
+                self._prepare_remote_job()
+            else:
+                prepare = getattr(self._job, "prepare_submission", None)
+                if prepare is not None:
+                    prepare()
+                    self._record = self.manager.transition(
+                        self._record,
+                        execution=self.execution,
+                        files=self.files if self.files is not None else _UNCHANGED,
+                    )
+                    self._monitor_record_version = self._record.updated_at
             self._job.submit()
             self._start_completion()
         except SubmissionNotStarted as exc:
+            if self._file_session is not None:
+                self._file_session.close()
             self._record = self.manager.complete(
                 self._record,
                 state=RunState.FAILED,
@@ -260,6 +325,8 @@ class Run:
             )
             raise
         except BaseException:
+            if self._file_session is not None:
+                self._file_session.close()
             if self.backend_id is not None:
                 self._record = self.manager.transition(
                     self._record,
@@ -298,6 +365,8 @@ class Run:
                 raise RuntimeError(
                     "Run has no persisted backend identity; recover the submission before attaching"
                 )
+        if self._file_session is not None:
+            self._job.configure_observation(**self._file_session.observation())
         start = getattr(self._job, "start", None)
         if start is not None:
             start()

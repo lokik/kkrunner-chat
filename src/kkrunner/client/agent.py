@@ -6,28 +6,23 @@ import glob
 import os
 import posixpath
 import warnings
-from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from uuid import uuid4
 
 from kkrunner.client.endpoint import endpoint_for_backend
-from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
-from kkrunner.files.versions import file_digest
+from kkrunner.files.manifest import FileMapping, FileSyncPolicy
 from kkrunner.remote.protocol import control_command, json_request
-from kkrunner.client.remote_run import RemoteRunSession, _run_sync
+from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.client.remote_job import RemoteJob
+from kkrunner.client.run_parts import RunParts
+from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.remote.stream import FramedRunningCommand
 from kkrunner.runs.base import (
-    ExecutionResources,
-    ExecutionSpec,
     FailurePhase,
     LaunchSpec,
     MpiNotFoundWarning,
     RunState,
     RunStatus,
-    SubmissionNotStarted,
-    materialize_output_streams,
-    start_monitor,
 )
 from kkrunner.runs.model import WorkingDirectory
 
@@ -73,187 +68,6 @@ def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
         message=facts.get("error"),
         failure_phase=facts.get("failure_phase"),
     )
-
-
-class _AgentRunSession(RemoteRunSession):
-    """One remote run whose persistent lifecycle is owned by the client."""
-
-    def __init__(self, *args, run_id=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._run_id = run_id
-        self._prepared = None
-        self._path_spec = None
-        self._output_resources = ExecutionResources()
-
-    async def _monitor(self):
-        result = await super()._monitor()
-        if self.state != RunState.FINISHED or self.files is None:
-            return result
-
-        # A broken follow connection can leave either channel incomplete even
-        # when the backend finished successfully. Verify both physical files.
-        checked = set()
-        for kind, entry in (("stdout", self.files.stdout), ("stderr", self.files.stderr)):
-            if entry is None or entry.local_path is None or entry.remote_path is None:
-                continue
-            local = entry.local_path
-            if local in checked:
-                continue  # Merged stdout/stderr is one physical file.
-            checked.add(local)
-            try:
-                signature = await self.executor.transport.file_signature(entry.remote_path)
-                if signature is None:
-                    raise FileNotFoundError(f"Remote {kind} output is missing: {entry.remote_path}")
-                stat = os.stat(local)
-                if stat.st_size != signature[0]:
-                    raise RuntimeError(
-                        f"Streamed local {kind} size does not match the authoritative remote output: {local}"
-                    )
-                remote_digest = await self.executor.transport.file_digest(entry.remote_path)
-                if remote_digest is None or file_digest(local) != remote_digest:
-                    raise RuntimeError(f"Streamed local {kind} contents differ from remote output: {local}")
-                if await self.executor.transport.file_signature(entry.remote_path) != signature:
-                    raise RuntimeError(f"Remote {kind} output changed during verification")
-
-                os.utime(local, ns=(stat.st_atime_ns, signature[1]))
-            except Exception as exc:
-                self._state = RunState.FAILED
-                self._failure_phase = FailurePhase.DOWNLOAD
-                self._failure_message = str(exc)
-                self._set_file_availability(local, "failed", str(exc))
-                raise
-        return result
-
-    async def _submitted_manifest(self, request, local):
-
-        async def mapped(entry):
-            return replace(entry, remote_path=await self.executor.map_path(entry.local_path))
-
-        inputs = tuple([await mapped(entry) for entry in local.inputs])
-        outputs = tuple([await mapped(entry) for entry in local.outputs])
-        caches = []
-        for cache in local.caches:
-            entry = await mapped(cache.file)
-            previous = self._cache_targets.get(entry.local_path)
-            caches.append(CacheEntry(entry, None if previous is None else previous[1]))
-        for remote, before in self._cache_before.items():
-            caches.append(CacheEntry(FileEntry(remote_path=remote), before))
-
-        sync = request.get("client_sync") or {}
-        mapping = FileMapping(
-            local_root=os.fspath(self.executor.local_root),
-            remote_root=await self.executor._resolved_remote_root(),
-            input_sync=self.executor.input_files.value,
-            output_sync=self.executor.output_files.value,
-        )
-        return replace(
-            local,
-            inputs=inputs,
-            outputs=outputs,
-            caches=tuple(caches),
-            stdin=None if local.stdin is None else await mapped(local.stdin),
-            stdout=None
-            if local.stdout is None
-            else replace(
-                local.stdout,
-                remote_path=sync.get("output_file"),
-            ),
-            stderr=None
-            if local.stderr is None
-            else replace(
-                local.stderr,
-                remote_path=sync.get("error_file"),
-            ),
-            mapping=mapping,
-        )
-
-    async def _prepare_async(self):
-        try:
-            # Reject invalid file declarations *before* creating target folders
-            # or uploading anything. The same validated manifest then owns
-            # staging requirements and the persisted submission snapshot.
-            local = FileManifest.from_spec(self.spec)
-            run_id = self._run_id or uuid4().hex
-            remote_directory = await self.executor.map_directory(self.spec.directory)
-            await self.executor.transport.run(("mkdir", "-p", "--", remote_directory))
-            request = await self._prepare_request(run_id, remote_directory, local)
-            if self._run_id is None:
-                request["id"] = None
-            manifest = await self._submitted_manifest(request, local)
-            return request, manifest
-        except Exception as exc:
-            # No calculation has been launched yet. Persisted preflight and
-            # direct submission must classify this known failure identically.
-            self._failure_phase = FailurePhase.SUBMISSION
-            self._failure_message = str(exc)
-            raise SubmissionNotStarted(str(exc)) from exc
-
-    def prepare_submission(self):
-        """Complete all staging before the client commits SUBMITTING metadata."""
-        with self._lock:
-            if self._state != RunState.NEW:
-                raise RuntimeError(f"Run is already {self._state.value}")
-            if self._prepared is not None:
-                return
-            request, manifest = _run_sync(self._prepare_async())
-            self._prepared = (request, manifest)
-            self._remote_directory = request["directory"]
-            self._files = manifest
-
-    async def _submit_async(self):
-        if self._path_spec is not None:
-            self.spec = self._path_spec
-        if self._prepared is None:
-            request, manifest = await self._prepare_async()
-        else:
-            request, manifest = self._prepared
-
-        self._path_spec = self._path_spec or self.spec
-        try:
-            # Both operations are local-only. No request can have reached the
-            # backend yet, so any ordinary setup exception is a proven
-            # non-submission, not an uncertain lost-reply situation.
-            self.spec = materialize_output_streams(self._path_spec)
-            self._output_resources = ExecutionResources(
-                *(
-                    getattr(self.spec, name)
-                    for name in ("output_file", "error_file")
-                    if isinstance(getattr(self._path_spec, name), (str, os.PathLike))
-                )
-            )
-        except Exception as exc:
-            self._failure_phase = FailurePhase.SUBMISSION
-            self._failure_message = str(exc)
-            raise SubmissionNotStarted(str(exc)) from exc
-        request["detached"] = self._run_id is not None
-        status = await self.executor._submit(request)
-        remote_id = status.get("remote_id")
-        if not remote_id:
-            raise RuntimeError("Remote submit returned no remote_id")
-        return remote_id, manifest, status, request
-
-    def submit(self):
-        with self._lock:
-            if self._state != RunState.NEW:
-                raise RuntimeError(f"Run is already {self._state.value}")
-            # Even a lost submit response must make a retry on this session
-            # impossible. Definitive preflight failures get FAILED below.
-            self._state = RunState.SUBMITTING
-            try:
-                remote_id, manifest, status, request = _run_sync(self._submit_async())
-            except SubmissionNotStarted:
-                self._state = RunState.FAILED
-                self._output_resources.close(suppress_errors=True)
-                raise
-            except BaseException:
-                self._output_resources.close(suppress_errors=True)
-                raise
-            self._state = RunState(status["state"])
-            self._apply_backend_facts(status)
-            self._backend_id = str(remote_id)
-            self._remote_directory = request["directory"]
-            self._files = manifest
-        start_monitor(self, missing_backend="Run has no backend reference")
 
 
 class _AgentRunContext:
@@ -322,97 +136,38 @@ class _AgentRunContext:
     async def _cancel(self, directory, backend_id, files=None):
         return await self.endpoint._cancel(directory, backend_id, files)
 
-    async def _follow(self, directory, backend_id, files=None, *, offsets=None):
+    async def _follow(
+        self, directory, backend_id, *, offsets=None,
+        stdout_path=None, stderr_path=None,
+    ):
         return await self.endpoint._follow(
-            directory,
-            backend_id,
-            files,
-            offsets=offsets,
+            directory, backend_id, offsets=offsets,
+            stdout_path=stdout_path, stderr_path=stderr_path,
         )
 
-    def create_job(self, spec, callback=None, *, run_id=None):
-        return _AgentRunSession(self, spec, callback=callback, run_id=run_id)
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        files = RemoteFileSession(self, spec, run_id=submission_key)
+        job = RemoteJob(self, spec, callback=callback)
+        return RunParts(job, files)
 
-    async def attach(self, run, callback=None, output_listener=None, start=True):
-        execution = run.execution
+    async def attach_run_parts(self, attachment, *, callback=None, output_listener=None):
+        execution = attachment.execution
         if execution.backend_id is None or execution.directory.remote is None:
-            raise ValueError("Remote run lacks backend ID or target directory")
-        status = await self._status(execution.directory.remote, execution.backend_id, run.files)
-        local_directory = Path(execution.directory.local)
-        local_directory.mkdir(parents=True, exist_ok=True)
-        input_local = run.files.input_file
-        output_local = run.files.output_file
-        error_local = None if run.files.stderr is None else run.files.stderr.local_path
-
-        # A persisted FileManifest already holds typed paths and baselines.
-        # Rebuild runner state directly, without a client_sync round-trip.
-        output_targets, output_patterns = {}, []
-        for entry in run.files.outputs:
-            remote = entry.remote_path
-            if not remote or entry.source_pattern is not None:
-                continue
-            if glob.has_magic(remote):
-                output_patterns.append(remote)
-            else:
-                local = await self.unmap_path(remote)
-                output_targets[os.fspath(local)] = remote
-
-        cache_targets, cache_patterns, cache_before = {}, [], {}
-        for cache in run.files.caches:
-            entry = cache.file
-            remote = entry.remote_path
-            before = tuple(cache.before) if isinstance(cache.before, list) else cache.before
-            if entry.local_path is None:
-                cache_before[remote] = before
-            elif entry.source_pattern is None and remote:
-                if glob.has_magic(remote):
-                    cache_patterns.append(remote)
-                else:
-                    local = await self.unmap_path(remote)
-                    cache_targets[os.fspath(local)] = (remote, before)
-
-        with ExitStack() as streams:
-            output_file = None if output_local is None else streams.enter_context(open(output_local, "ab"))
-            if error_local is None:
-                error_file = None
-            elif error_local == output_local:
-                error_file = output_file
-            else:
-                error_file = streams.enter_context(open(error_local, "ab"))
-            spec = ExecutionSpec(
-                argv=(),
-                input_file=None if input_local is None else os.fspath(input_local),
-                output_file=output_file,
-                error_file=error_file,
-                directory=os.fspath(local_directory),
-                launch=LaunchSpec(
-                    local_root=os.fspath(self.local_root),
-                    remote_root=self.remote_root,
-                    input_sync=self.input_files.value,
-                    output_sync=self.output_files.value,
-                ),
-            )
-            runner = _AgentRunSession(
-                self,
-                spec,
-                callback=callback,
+            raise ValueError("Remote run lacks backend identity or target directory")
+        status = await self._status(execution.directory.remote, execution.backend_id)
+        files = await RemoteFileSession.from_attachment(self, attachment)
+        try:
+            job = RemoteJob(
+                self, files.spec, callback=callback,
                 output_listener=output_listener,
-                start=False,
                 backend_id=execution.backend_id,
                 remote_directory=execution.directory.remote,
-                files=run.files,
-                state=_client_status_state(status),
-                output_targets=output_targets,
-                cache_targets=cache_targets,
-                output_patterns=tuple(output_patterns),
-                cache_patterns=tuple(cache_patterns),
-                cache_before=cache_before,
+                status=status,
             )
-            runner._apply_backend_facts(status)
-            if start:
-                runner.start()
-            streams.pop_all()  # Runner owns the streams after successful attach.
-            return runner
+            return RunParts(job, files)
+        except BaseException:
+            files.close()
+            raise
 
 
 class AgentBackendProxy:
@@ -568,13 +323,15 @@ class AgentBackendProxy:
     async def _cancel(self, directory, backend_id, files=None):
         return await self._json_request("cancel", backend_id)
 
-    async def _follow(self, directory, backend_id, files=None, *, offsets=None):
+    async def _follow(
+        self, directory, backend_id, *, offsets=None,
+        stdout_path=None, stderr_path=None,
+    ):
         options = []
-        if files is not None:
-            if files.stdout and files.stdout.remote_path:
-                options.extend(("--stdout-path", files.stdout.remote_path))
-            if files.stderr and files.stderr.remote_path:
-                options.extend(("--stderr-path", files.stderr.remote_path))
+        if stdout_path:
+            options.extend(("--stdout-path", stdout_path))
+        if stderr_path:
+            options.extend(("--stderr-path", stderr_path))
         for kind, option in (("out", "--stdout-offset"), ("err", "--stderr-offset")):
             offset = None if offsets is None else offsets.get(kind)
             if offset is not None:
@@ -644,9 +401,9 @@ class AgentBackendProxy:
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
-    def create_job(self, spec, *, submission_key=None, callback=None):
-        return self._context(self, spec.launch).create_job(
-            spec, callback=callback, run_id=submission_key,
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        return self._context(self, spec.launch).create_run_parts(
+            spec, submission_key=submission_key, callback=callback,
         )
 
     async def _snapshot_file(self, run, file, *, destination=None):
@@ -726,22 +483,16 @@ class AgentBackendProxy:
             )
         )
 
-    async def _attach(self, run, callback=None, output_listener=None, start=True):
-        self._validate_run(run)
-        launch = self._launch_from_manifest(run.files)
-        return await self._context(self, launch).attach(
-            run,
-            callback=callback,
-            output_listener=output_listener,
-            start=start,
+    async def _open_run_parts(self, attachment, *, callback=None, output_listener=None):
+        self._validate_run(attachment)
+        launch = self._launch_from_manifest(attachment.files)
+        return await self._context(self, launch).attach_run_parts(
+            attachment, callback=callback, output_listener=output_listener,
         )
 
-    def open_job(self, run, callback=None, output_listener=None, start=True):
+    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         return _run_sync(
-            self._attach(
-                run,
-                callback=callback,
-                output_listener=output_listener,
-                start=start,
+            self._open_run_parts(
+                attachment, callback=callback, output_listener=output_listener,
             )
         )
