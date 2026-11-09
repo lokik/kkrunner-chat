@@ -181,10 +181,15 @@ class _ImmediatelyFinishedJob:
 @pytest.mark.parametrize("operation", ["submit", "start"])
 def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, monkeypatch, operation):
     from kkrunner import Run
-    from kkrunner.backends import ProcessBackend
+
+    class Backend:
+        name = "instant"
+
+        def acknowledge(self, record):
+            pass
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = ProcessBackend()
+    backend = Backend()
     job = _ImmediatelyFinishedJob()
     if operation == "start":
         job.backend_id = "native-1"
