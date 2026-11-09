@@ -174,6 +174,9 @@ class Run:
                     if raw_state == RunState.FINISHED and self._job.output_error is not None:
                         raise self._job.output_error
                     self._file_session.synchronize(raw_state)
+                    # Flush and close the client-owned streams *before*
+                    # postprocessing can durably publish a finished Run.
+                    self._file_session.close()
                 except Exception as exc:
                     if raw_state == RunState.FINISHED:
                         self._file_session.mark_transfer_failed(str(exc))
@@ -248,7 +251,18 @@ class Run:
             self._failure_message = getattr(self._job, "failure_message", None) or str(exc)
         finally:
             if self._file_session is not None:
-                self._file_session.close()
+                try:
+                    self._file_session.close()
+                except BaseException as exc:
+                    # File cleanup must never prevent finish_monitor from
+                    # waking waiters. For a successful Job, an unflushed
+                    # output is a client transfer failure, not Job failure.
+                    if self._exception is None:
+                        self._exception = exc
+                    if self._state == RunState.FINISHED:
+                        self._state = RunState.FAILED
+                        self._failure_phase = FailurePhase.DOWNLOAD
+                        self._failure_message = str(exc)
             self._settled = True
             if self.manager is not None and self._record.state != RunState.NEW:
                 try:
