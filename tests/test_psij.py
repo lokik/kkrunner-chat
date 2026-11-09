@@ -662,18 +662,18 @@ def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):
     def scheduler_output(argv):
         calls.append(tuple(argv))
         if argv[0] == "squeue":
-            return f"123|${psij_backend._submission_marker('run-1')}|RUNNING|{tmp_path}\n"
+            return f"123|{psij_backend._submission_marker('run-1')}|RUNNING|{tmp_path}\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             return f"JobId=123 WorkDir={tmp_path} StdOut={tmp_path / 'run.out'} StdErr={tmp_path / 'run.err'}\n"
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
     status = executor.recover_submission("run-1", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files))
-    assert status.state == RunState.RUNNING
-    assert status.backend_id == "123"
-    assert status.execution.directory.local == str(tmp_path)
-    assert status.files.stdout.remote_path == str(tmp_path / "run.out")
-    assert status.files.stderr.remote_path == str(tmp_path / "run.err")
+    assert status.ref.backend == "psij"
+    assert status.ref.token == "123"
+    assert status.directory == str(tmp_path)
+    assert status.output_file == str(tmp_path / "run.out")
+    assert status.error_file == str(tmp_path / "run.err")
     assert calls[0][0] == "squeue"
 
 
@@ -697,16 +697,20 @@ def test_psij_recovers_completed_slurm_submission_from_accounting(
                 if use_workdir_paths
                 else ("/tmp", "out", "err")
             )
-            return f"456|${psij_backend._submission_marker('run-2')}|COMPLETED|{directory}|{stdout}|{stderr}|{exit_code}:0|\n"
+            return f"456|{psij_backend._submission_marker('run-2')}|COMPLETED|{directory}|{stdout}|{stderr}|{exit_code}:0|\n"
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
     status = executor.recover_submission("run-2", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), submitted_at="2026-10-13T08:00:00+02:00")
-    assert status.state == expected_state
-    assert status.return_code == exit_code
-    assert status.backend_id == "456"
+    assert status.ref.token == "456"
+    assert status.directory == directory
+    facts = executor.recover_native(
+        "run-2", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00",
+    )
+    assert facts["state"] == expected_state
+    assert facts["return_code"] == exit_code
     if use_workdir_paths:
-        assert status.files.stdout.remote_path == str(tmp_path / "run.out")
+        assert status.output_file == str(tmp_path / "run.out")
 
 
 @pytest.mark.parametrize(
@@ -745,13 +749,13 @@ def test_psij_recovery_handles_job_disappearing_between_queries(monkeypatch, tmp
 
     def scheduler_output(argv):
         if argv[0] == "squeue":
-            return f"123|${psij_backend._submission_marker('run-race')}|RUNNING|{tmp_path}\n"
+            return f"123|{psij_backend._submission_marker('run-race')}|RUNNING|{tmp_path}\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             raise subprocess.CalledProcessError(1, argv)
         if argv[:3] == ("scontrol", "show", "config"):
             return "AccountingStoreFlags = job_comment\n"
         if argv[0] == "sacct":
-            return f"123|${psij_backend._submission_marker('run-race')}|COMPLETED|{tmp_path}|{tmp_path / 'run.out'}|{tmp_path / 'run.err'}|0:0|\n"
+            return f"123|{psij_backend._submission_marker('run-race')}|COMPLETED|{tmp_path}|{tmp_path / 'run.out'}|{tmp_path / 'run.err'}|0:0|\n"
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
@@ -766,7 +770,10 @@ def test_psij_recovery_rejects_ambiguous_live_jobs(monkeypatch, tmp_path):
     monkeypatch.setattr(
         psij_backend,
         "_scheduler_output",
-        lambda argv: "123|kkrunner:duplicate|RUNNING|/one\n124|kkrunner:duplicate|PENDING|/two\n",
+        lambda argv: (
+            f"123|{psij_backend._submission_marker('duplicate')}|RUNNING|/one\\n"
+            f"124|{psij_backend._submission_marker('duplicate')}|PENDING|/two\\n"
+        ),
     )
     with pytest.raises(RuntimeError, match="Multiple live Slurm jobs"):
         executor.recover_submission("duplicate", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files))
