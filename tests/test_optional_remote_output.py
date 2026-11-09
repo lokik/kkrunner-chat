@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
-from kkrunner.remote.runner import RemoteRunner
+from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.remote.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec
 
@@ -19,7 +19,7 @@ def _runner(tmp_path):
     local = str(tmp_path / "local-optional.out")
     remote = str(tmp_path / "remote-optional.out")
     manifest = FileManifest(outputs=(FileEntry(local_path=local, remote_path=remote, availability_state="pending"),))
-    runner = RemoteRunner(
+    runner = RemoteFileSession(
         _Executor(),
         ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path)),
         files=manifest,
