@@ -211,3 +211,34 @@ def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, mon
     assert manager.store.get(run.id).state == RunState.RUNNING
     run._finish()
     assert manager.store.get(run.id).state == RunState.FINISHED
+
+
+def test_known_backend_identity_survives_failed_client_submission(tmp_path):
+    from kkrunner import Run
+
+    class Backend:
+        name = "interrupted"
+
+    class Job:
+        state = RunState.NEW
+        backend_id = None
+        exception = None
+        failure_phase = None
+        failure_message = None
+
+        def submit(self):
+            self.backend_id = "accepted-job"
+            self.state = RunState.FINISHED
+            raise ConnectionError("client could not start observer")
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    backend = Backend()
+    manager.register_backend(backend)
+    record = manager.new_record(directory=tmp_path)
+    run = Run(Job(), backend=backend, manager=manager, record=record)
+    with pytest.raises(ConnectionError, match="could not start observer"):
+        run.submit()
+    saved = manager.store.get(record.id)
+    assert saved.execution.backend_id == "accepted-job"
+    assert saved.state == RunState.UNKNOWN
+    assert not saved.state.is_terminal
