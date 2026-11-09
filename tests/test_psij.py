@@ -10,7 +10,7 @@ import pytest
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 from kkrunner.backends import ExecutorEndpoint
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.backends import psij as psij_backend
+import kkrunner.backends.scheduler.engine as psij_backend
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
 
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionSpec
-from kkrunner.backends import psij as psij_backend
+import kkrunner.backends.scheduler.engine as psij_backend
 
 
 class _JobSpec:

@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files import queries
-from kkrunner.remote.transport import LocalTransport
+from kkrunner.client.transport import LocalTransport
 
 from .test_transport import _LoopbackSshTransport
 
@@ -139,7 +139,7 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
 def test_remote_endpoint_reuses_configured_file_service_command():
     from kkrunner.backends.endpoint import create_executor_from_endpoint, endpoint_for_executor
     from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import SshTransport
+    from kkrunner.client.transport import SshTransport
 
     command = (sys.executable, "-m", "kkrunner")
     transport = SshTransport("host")
