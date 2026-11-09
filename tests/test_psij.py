@@ -703,7 +703,7 @@ def test_psij_recovers_completed_slurm_submission_from_accounting(
     monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
     status = executor.recover_submission("run-2", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), submitted_at="2026-10-13T08:00:00+02:00")
     assert status.ref.token == "456"
-    assert status.directory == directory
+    assert status.directory == (str(tmp_path) if use_workdir_paths else "/tmp")
     facts = executor.recover_native(
         "run-2", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00",
     )
