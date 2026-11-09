@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionOutcome, RunState, RunStore
-from kkrunner.runs import Executor, FailurePhase
+from kkrunner.runs import FailurePhase
+from kkrunner.client.run_parts import RunParts
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.processing import ProcessingPending
 
@@ -41,12 +42,13 @@ class _RawRunner:
         pass
 
 
-class _Executor(Executor):
+class _Executor:
     name = "test"
 
-    def create_managed_run(self, spec, *, run_id, callback=None):
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
         self.runner = _RawRunner()
-        return self.runner
+        self.runner.spec = spec
+        return RunParts(self.runner)
 
 
 def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
