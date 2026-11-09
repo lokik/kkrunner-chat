@@ -415,6 +415,18 @@ class PsijJob:
         native_id = getattr(self._job, "native_id", None)
         return None if native_id is None else str(native_id)
 
+    @property
+    def ref(self):
+        from kkrunner.backends.contracts import JobRef
+        return None if self.backend_id is None else JobRef("psij", self.backend_id)
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        return job_status_from_facts(
+            self.state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
+
     def add_output_listener(self, callback):
         self._output_observers.add(callback)
 
@@ -867,28 +879,14 @@ class PsijBackend:
             submitted_at=submitted_at,
         )
         if facts is None:
-            return None
-        execution = submission.execution.submitted(facts["native_id"])
-        directory = facts["directory"]
-        if directory != execution.directory.target:
-            from kkrunner.runs.model import WorkingDirectory
-
-            execution = replace(
-                execution,
-                directory=WorkingDirectory(execution.directory.local, directory),
-            )
-        files = submission.files.with_remote_stream_paths(
-            stdout=facts["stdout"],
-            stderr=facts["stderr"],
-        )
-        state = facts["state"]
-        return RunStatus(
-            state=state,
-            backend_id=facts["native_id"],
-            execution=execution,
-            files=files,
-            return_code=facts["return_code"],
-            failure_phase=FailurePhase.EXECUTION if state == RunState.FAILED else None,
+            from kkrunner.backends.contracts import RecoveryResult
+            return RecoveryResult.indeterminate("Scheduler cannot prove submission absence")
+        from kkrunner.backends.contracts import JobRef, RecoveryResult
+        return RecoveryResult.found(
+            JobRef("psij", facts["native_id"]),
+            directory=facts.get("directory"),
+            output_file=facts.get("stdout"),
+            error_file=facts.get("stderr"),
         )
 
     def open_job(self, run, callback=None, output_listener=None, start=True):

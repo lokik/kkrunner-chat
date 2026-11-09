@@ -61,6 +61,18 @@ class ProcessJob:
         return self._state
 
     @property
+    def ref(self):
+        # A raw local process has no durable supervisor/receipt identity.
+        return None
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        return job_status_from_facts(
+            self.state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
+
+    @property
     def exception(self):
         return self._exception
 
@@ -271,7 +283,6 @@ class ProcessBackend:
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
-        from kkrunner.backends.process.managed import _local_status_from_facts
         from kkrunner.backends.process.operations import recover_remote
 
         reply = recover_remote(
@@ -281,14 +292,14 @@ class ProcessBackend:
                 "directory": submission.execution.directory.local,
             },
         )
+        from kkrunner.backends.contracts import JobRef, RecoveryResult
         if reply is None:
-            # The absence of a ticket is not proof that submission never
-            # happened. Never authorize an automatic duplicate launch.
-            raise NotImplementedError("Submission identity is not recoverable")
-        return _local_status_from_facts(
-            reply["remote_id"],
-            reply,
-            submission.files,
+            return RecoveryResult.indeterminate("No submission receipt was found")
+        return RecoveryResult.found(
+            JobRef("process", reply["remote_id"]),
+            directory=reply.get("directory"),
+            output_file=reply.get("output_file"),
+            error_file=reply.get("error_file"),
         )
 
     def open_job(self, run, callback=None, output_listener=None, start=True):

@@ -333,16 +333,38 @@ class RunManager:
         if not self._is_stale_submitting(record):
             return record
         executor = self.backend_for(record)
+        from kkrunner.backends.contracts import RecoveryDisposition
+        from kkrunner.runs.model import WorkingDirectory
         try:
-            status = executor.recover_submission(
-                record.id,
-                record,
-                submitted_at=record.updated_at,
+            recovery = executor.recover_submission(
+                record.id, record, submitted_at=record.updated_at,
             )
         except NotImplementedError:
             return record
-        if status is not None:
-            return self.update(record, status)
+        if recovery.disposition is RecoveryDisposition.FOUND:
+            endpoint = record.execution.endpoint
+            expected_kind = (
+                "psij" if endpoint.executor == "psij" or (
+                    endpoint.executor == "ssh" and endpoint.psij_backend is not None
+                ) else "process" if endpoint.executor in ("local", "ssh") else None
+            )
+            if expected_kind is not None and recovery.ref.backend != expected_kind:
+                raise ValueError("Recovered job belongs to a different backend")
+            execution = record.execution.submitted(recovery.ref.token)
+            if recovery.directory is not None and recovery.directory != execution.directory.target:
+                execution = replace(
+                    execution,
+                    directory=WorkingDirectory(execution.directory.local, recovery.directory),
+                )
+            files = record.files.with_remote_stream_paths(
+                stdout=recovery.output_file, stderr=recovery.error_file,
+            )
+            # Persist identity and stream paths before asking the backend for
+            # status. A failed observation must not lose the recovered identity.
+            attached = self.transition(record, execution=execution, files=files)
+            return self.update(attached, executor.status(attached)[0])
+        if recovery.disposition is not RecoveryDisposition.ABSENT:
+            return record
 
         def mark_absent(latest):
             if latest.state != RunState.SUBMITTING or latest.execution.backend_id is not None:
@@ -817,6 +839,9 @@ class RunManager:
         current = {record.id: record for record in records}
         groups = {}
         for record in records:
+            if record.execution.backend_id is None and self._is_stale_submitting(record):
+                record = self.recover_submitting(record)
+                current[record.id] = record
             if record.execution.backend_id is None:
                 continue
             executor = self.backend_for(record)

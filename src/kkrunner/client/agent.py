@@ -611,32 +611,19 @@ class AgentBackendProxy:
                 "submitted_at": submitted_at,
             },
         )
+        from kkrunner.backends.contracts import JobRef, RecoveryResult
         if state is None:
-            return None
+            return RecoveryResult.indeterminate("Remote submission receipt was not found")
         if state.get("unsupported"):
-            raise NotImplementedError(state.get("error") or "Remote recovery unsupported")
+            return RecoveryResult.unsupported(state.get("error"))
         remote_id = state.get("remote_id")
         if not remote_id:
-            raise RuntimeError("Recovered remote submission has no remote_id")
-
-        execution = submission.execution.submitted(remote_id)
-        target_directory = state.get("directory") or directory
-        execution = replace(
-            execution,
-            directory=WorkingDirectory(
-                execution.directory.local,
-                target_directory,
-            ),
-        )
-        files = submission.files.with_remote_stream_paths(
-            stdout=state.get("output_file"),
-            stderr=state.get("error_file"),
-        )
-        return _remote_status_from_facts(
-            state,
-            str(remote_id),
-            execution=execution,
-            files=files,
+            raise RuntimeError("Recovered submission has no remote_id")
+        return RecoveryResult.found(
+            JobRef(self.backend, str(remote_id)),
+            directory=state.get("directory") or directory,
+            output_file=state.get("output_file"),
+            error_file=state.get("error_file"),
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):

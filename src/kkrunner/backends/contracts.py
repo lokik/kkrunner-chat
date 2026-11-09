@@ -12,7 +12,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from kkrunner.runs.base import ExecutionSpec
+    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
 
 
 class JobState(str, Enum):
@@ -86,16 +86,28 @@ class RecoveryResult:
     disposition: RecoveryDisposition
     ref: Optional[JobRef] = None
     message: Optional[str] = None
+    directory: Optional[str] = None
+    output_file: Optional[str] = None
+    error_file: Optional[str] = None
 
     def __post_init__(self):
         if not isinstance(self.disposition, RecoveryDisposition):
             object.__setattr__(self, "disposition", RecoveryDisposition(self.disposition))
         if (self.disposition == RecoveryDisposition.FOUND) != (self.ref is not None):
             raise ValueError("Exactly FOUND requires a JobRef")
+        if self.ref is not None and not isinstance(self.ref, JobRef):
+            raise TypeError("RecoveryResult.ref must be a JobRef")
+        if self.disposition is not RecoveryDisposition.FOUND and any(
+            path is not None for path in (self.directory, self.output_file, self.error_file)
+        ):
+            raise ValueError("Only FOUND may describe recovered execution paths")
 
     @classmethod
-    def found(cls, ref: JobRef) -> RecoveryResult:
-        return cls(RecoveryDisposition.FOUND, ref)
+    def found(cls, ref: JobRef, *, directory=None, output_file=None, error_file=None) -> RecoveryResult:
+        return cls(
+            RecoveryDisposition.FOUND, ref, directory=directory,
+            output_file=output_file, error_file=error_file,
+        )
 
     @classmethod
     def absent(cls) -> RecoveryResult:
@@ -108,6 +120,29 @@ class RecoveryResult:
     @classmethod
     def unsupported(cls, message: Optional[str] = None) -> RecoveryResult:
         return cls(RecoveryDisposition.UNSUPPORTED, message=message)
+
+
+def job_status_from_facts(state, *, return_code=None, failure_phase=None, message=None):
+    """Translate execution facts into the backend-only status vocabulary.
+
+    Staging and postprocessing are client concerns, not Job states. This
+    converter intentionally rejects those states instead of silently mapping
+    them to a completed backend execution.
+    """
+    value = state.value if hasattr(state, "value") else state
+    if value == "submitting":
+        value = "new"
+    phase = failure_phase.value if hasattr(failure_phase, "value") else failure_phase
+    if phase == "artifacts":
+        phase = "output"
+    if phase in ("download", "postprocessing"):
+        phase = None
+    return JobStatus(
+        state=JobState(value),
+        return_code=return_code,
+        failure_phase=phase,
+        message=message,
+    )
 
 
 class UnsupportedCapability(NotImplementedError):
@@ -125,34 +160,32 @@ class Job(Protocol):
     @property
     def ref(self) -> Optional[JobRef]: ...
 
-    async def status(self) -> JobStatus: ...
+    def status(self) -> JobStatus: ...
 
-    async def wait(self) -> JobStatus: ...
+    def submit(self) -> None: ...
 
-    async def cancel(self) -> None: ...
+    def wait(self) -> ExecutionOutcome: ...
+
+    def cancel(self) -> None: ...
 
 
 class Backend(Protocol):
     """Execution technology, independent of how the client reaches it."""
 
-    async def submit(
-        self,
-        spec: ExecutionSpec,
-        *,
-        submission_key: Optional[str] = None,
-    ) -> Job: ...
+    def create_job(self, spec: ExecutionSpec, *, submission_key: Optional[str] = None, callback=None) -> Job: ...
 
 
 class ReopenableBackend(Backend, Protocol):
-    async def open(self, ref: JobRef) -> Job: ...
+    def open_job(self, run, *, callback=None, output_listener=None, start=True) -> Job: ...
 
 
 class RecoverableBackend(ReopenableBackend, Protocol):
-    async def recover_submission(self, submission_key: str) -> RecoveryResult: ...
+    def recover_submission(self, submission_key: str, submission, *, submitted_at=None) -> RecoveryResult: ...
 
 
 __all__ = [
     "Backend", "Job", "JobFailurePhase", "JobRef", "JobState", "JobStatus",
     "ObservationUnavailable", "RecoverableBackend", "RecoveryDisposition",
     "RecoveryResult", "ReopenableBackend", "UnsupportedCapability",
+    "job_status_from_facts",
 ]

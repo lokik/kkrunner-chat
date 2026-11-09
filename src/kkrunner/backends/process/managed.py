@@ -164,6 +164,19 @@ class SupervisedProcessJob:
     def backend_id(self):
         return self._backend_id
 
+    @property
+    def ref(self):
+        from kkrunner.backends.contracts import JobRef
+        return None if self.backend_id is None else JobRef("process", self.backend_id)
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        state = self.state
+        return job_status_from_facts(
+            state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
+
     def _refresh(self):
         # A terminal result is immutable. After acknowledgment the receipt
         # may disappear while the supervisor process is still shutting down.

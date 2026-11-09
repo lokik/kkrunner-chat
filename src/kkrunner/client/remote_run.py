@@ -91,6 +91,26 @@ class RemoteRunSession:
         return self._backend_id
 
     @property
+    def ref(self):
+        from kkrunner.backends.contracts import JobRef
+        return None if self.backend_id is None else JobRef(self.executor.backend, self.backend_id)
+
+    def status(self):
+        """Query target execution, not client-side downloading/processing."""
+        from kkrunner.backends.contracts import job_status_from_facts
+        if self.backend_id is None:
+            return job_status_from_facts(RunState.NEW)
+        raw = _run_sync(self.executor._status(
+            self._remote_directory, self.backend_id, self._files,
+        ))
+        return job_status_from_facts(
+            raw.get("state", "unknown"),
+            return_code=raw.get("return_code"),
+            failure_phase=raw.get("failure_phase"),
+            message=raw.get("error"),
+        )
+
+    @property
     def files(self):
         return self._files
 
