@@ -7,7 +7,7 @@ when only the execution contracts are required.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.runs.base import BackendRunner, ExecutionOutcome, ExecutionSpec, Executor, FailurePhase, LaunchSpec, ManagedRunner, MpiNotFoundWarning, MpiSpec, Runner, RunState, RunStatus
+    from kkrunner.runs.base import BackendRunner, ExecutionOutcome, ExecutionSpec, FailurePhase, LaunchSpec, ManagedRunner, MpiNotFoundWarning, MpiSpec, Runner, RunState, RunStatus
     from kkrunner.runs.manager import DuplicateSubmissionError, HistoricalFileMismatchError, RunManager
     from kkrunner.runs.run import Run
     from kkrunner.runs.model import Execution, WorkingDirectory
@@ -21,7 +21,6 @@ __all__ = [
     "Execution",
     "ExecutionOutcome",
     "ExecutionSpec",
-    "Executor",
     "FailurePhase",
     "HistoricalFileMismatchError",
     "LaunchSpec",
@@ -45,7 +44,6 @@ def __getattr__(name):
         "BackendRunner",
         "ExecutionOutcome",
         "ExecutionSpec",
-        "Executor",
         "FailurePhase",
         "LaunchSpec",
         "ManagedRunner",

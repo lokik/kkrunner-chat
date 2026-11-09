@@ -15,7 +15,6 @@ from typing import Any, Optional, Protocol, Sequence, Tuple, TypeVar
 from kkrunner.files.manifest import FileManifest, FileSyncPolicy
 from kkrunner.files.paths import file_path
 from kkrunner.runs.model import Execution
-from kkrunner.support.decorators import class_property
 
 
 def materialize_output_streams(spec):
@@ -647,53 +646,3 @@ class ManagedRunner(Runner[ResultT], Protocol[ResultT]):
     def stop_observation(self) -> None: ...
 
 
-class Executor:
-    """Execution backend. It never knows application readers or result types."""
-
-    name = None
-
-    @class_property
-    def supports_result_file_retrieval(cls):
-        return cls.fetch_result_files is not Executor.fetch_result_files
-
-    def fetch_result_files(self, run, files, *, destinations=None):
-        """Retrieve *files*, optionally staging each canonical local path.
-
-        destinations maps requested local paths to alternate local targets;
-        the requested paths still select the remote sources. The caller owns
-        verification and publication of staged downloads.
-        """
-        raise NotImplementedError(f"{type(self).__name__} cannot retrieve persistent result files")
-
-    def snapshot_file(self, run, file, *, destination=None):
-        """Read a local file while running, without altering canonical results."""
-        if run.execution.directory.remote is not None:
-            raise NotImplementedError(f"{type(self).__name__} cannot snapshot remote files")
-        from kkrunner.files.snapshots import local_snapshot
-        return local_snapshot(file, destination=destination)
-
-    def submission_directory(self, spec: ExecutionSpec) -> str:
-        return os.path.abspath(os.fspath(spec.directory))
-
-    def resolve_mpi(self, mpi=None):
-        return LaunchSpec.from_mpi(mpi)
-
-    def status(self, *runs) -> Tuple[RunStatus, ...]:
-        if not runs:
-            return ()
-        raise NotImplementedError(f"{type(self).__name__} cannot query persistent run status")
-
-    def recover_submission(self, run_id, submission, *, submitted_at=None) -> Optional[RunStatus]:
-        raise NotImplementedError(f"{type(self).__name__} cannot recover an uncertain submission")
-
-    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None) -> Runner:
-        raise NotImplementedError
-
-    def open_job(
-        self,
-        run,
-        callback=None,
-        output_listener=None,
-        start=True,
-    ) -> Runner:
-        raise NotImplementedError(f"{type(self).__name__} cannot attach to an existing run")

@@ -134,11 +134,11 @@ class RemoteRunSession:
     def execution(self):
         if self._backend_id is None and self._remote_directory is None:
             return None
-        from kkrunner.backends.endpoint import endpoint_for_executor
+        from kkrunner.client.endpoint import endpoint_for_backend
         from kkrunner.runs.model import Execution, WorkingDirectory
 
         return Execution(
-            endpoint_for_executor(self.executor.endpoint),
+            endpoint_for_backend(self.executor.endpoint),
             WorkingDirectory(os.path.abspath(self.spec.directory), self._remote_directory),
             backend_id=self._backend_id,
         )

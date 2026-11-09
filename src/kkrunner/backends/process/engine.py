@@ -12,7 +12,6 @@ from kkrunner.files.paths import file_path
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionSpec,
-    Executor,
     FailurePhase,
     OutputObservers,
     RunState,
@@ -257,10 +256,11 @@ class ProcessJob:
         return await asyncio.to_thread(self.wait)
 
 
-class ProcessBackend(Executor):
+class ProcessBackend:
     """Create raw runners executed as local subprocesses."""
 
-    name = "local"
+    name = "process"
+    supports_result_file_retrieval = False
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         if submission_key is None:

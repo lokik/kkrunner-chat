@@ -10,12 +10,12 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
-from kkrunner.backends.endpoint import ExecutorEndpoint, endpoint_for_executor
-from kkrunner.backends.pool import default_executor_pool
+from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
+from kkrunner.client.pool import default_backend_pool
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileManifest
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import FileState, FileVersion, file_digest
-from kkrunner.runs.base import Executor, FailurePhase, RunState, RunStatus, SubmissionNotStarted
+from kkrunner.runs.base import FailurePhase, RunState, RunStatus, SubmissionNotStarted
 from kkrunner.runs.conflicts import submission_conflicts
 from kkrunner.runs.model import Execution, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
@@ -82,22 +82,22 @@ class DuplicateSubmissionError(RuntimeError):
 class RunManager:
     """Persist public run lifecycle without task-specific knowledge."""
 
-    def __init__(self, store=None, *, executor_pool=None, submitting_grace=60.0):
+    def __init__(self, store=None, *, backend_pool=None, submitting_grace=60.0):
         if submitting_grace < 0:
             raise ValueError("submitting_grace must be non-negative")
         self.store = store
-        self.executor_pool = executor_pool if executor_pool is not None else default_executor_pool()
+        self.backend_pool = backend_pool if backend_pool is not None else default_backend_pool()
         self._ack_lock = Lock()
         self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
 
-    def register_executor(self, executor: Executor, endpoint=None):
-        endpoint = endpoint or endpoint_for_executor(executor)
-        self.executor_pool.get(endpoint, lambda: executor)
+    def register_backend(self, backend, endpoint=None):
+        endpoint = endpoint or endpoint_for_backend(backend)
+        self.backend_pool.get(endpoint, lambda: backend)
         return endpoint
 
-    def executor_for(self, record):
-        return self.executor_pool.for_endpoint(record.execution.endpoint)
+    def backend_for(self, record):
+        return self.backend_pool.for_endpoint(record.execution.endpoint)
 
     @staticmethod
     def _concrete_result_files(manifests):
@@ -208,7 +208,7 @@ class RunManager:
             updated_at=now,
             metadata={} if metadata is None else metadata,
             processing_required=processing_required,
-            execution=Execution(endpoint or ExecutorEndpoint(), WorkingDirectory(local, remote_directory)),
+            execution=Execution(endpoint or ExecutionEndpoint(), WorkingDirectory(local, remote_directory)),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
         )
@@ -332,7 +332,7 @@ class RunManager:
         record = self.store.get(record.id)
         if not self._is_stale_submitting(record):
             return record
-        executor = self.executor_for(record)
+        executor = self.backend_for(record)
         try:
             status = executor.recover_submission(
                 record.id,
@@ -430,7 +430,7 @@ class RunManager:
                 message=status.message,
                 failure_phase=phase,
             )
-        self._acknowledge_submission(self.executor_for(updated), updated)
+        self._acknowledge_submission(self.backend_for(updated), updated)
         self._acknowledge_result(updated)
         return updated
 
@@ -673,7 +673,10 @@ class RunManager:
             raise ValueError(f"File is not a declared output or cache: {path}")
         if destination is not None:
             destination = check_destination(record.files, path, destination)
-        return self.executor_for(record).snapshot_file(record, path, destination=destination)
+        if record.execution.directory.remote is None:
+            from kkrunner.files.snapshots import local_snapshot
+            return local_snapshot(path, destination=destination)
+        return self.backend_for(record).snapshot_file(record, path, destination=destination)
 
     def retrieve_result_files(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
@@ -684,7 +687,7 @@ class RunManager:
         if not missing or record.execution.backend_id is None:
             return record
 
-        executor = self.executor_for(record)
+        executor = self.backend_for(record)
         if not executor.supports_result_file_retrieval:
             return record
 
@@ -754,7 +757,7 @@ class RunManager:
             if key in self._acknowledged_results:
                 return True
             try:
-                executor = self.executor_for(record)
+                executor = self.backend_for(record)
                 acknowledge = getattr(executor, "acknowledge", None)
                 if acknowledge is not None:
                     acknowledge(record)
@@ -788,7 +791,7 @@ class RunManager:
         from kkrunner.runs.run import Run
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
-        endpoint = endpoint_for_executor(backend)
+        endpoint = endpoint_for_backend(backend)
         record = self.new_record(
             metadata=metadata,
             processing_required=(process_result is not None if processing_required is None else processing_required),
@@ -798,7 +801,7 @@ class RunManager:
             files=FileManifest.from_spec(spec),
             run_id=run_id,
         )
-        self.register_executor(backend, endpoint)
+        self.register_backend(backend, endpoint)
         job = backend.create_job(spec, submission_key=record.id)
         set_manifest = getattr(job, "set_manifest", None)
         if set_manifest is not None:
@@ -816,7 +819,7 @@ class RunManager:
         for record in records:
             if record.execution.backend_id is None:
                 continue
-            executor = self.executor_for(record)
+            executor = self.backend_for(record)
             groups.setdefault(executor, []).append(record)
 
         for executor, group in groups.items():
@@ -828,7 +831,7 @@ class RunManager:
         return tuple(current[record.id] for record in records)
 
     def attach(
-        self, run, *, process_result=None, executor=None,
+        self, run, *, process_result=None, backend=None,
         callback=None, output_listener=None,
     ):
         """Open a tracked Run without resubmitting its backend job."""
@@ -840,9 +843,8 @@ class RunManager:
             raise ValueError("This Run did not request postprocessing")
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has no backend reference")
-        backend = self.executor_for(record) if executor is None else executor
-        if executor is not None:
-            self.register_executor(backend, record.execution.endpoint)
+        backend = self.backend_for(record) if backend is None else backend
+        self.register_backend(backend, record.execution.endpoint)
         job = backend.open_job(record, output_listener=output_listener, start=False)
         attached = Run(
             job, backend=backend, manager=self, record=record,

@@ -265,7 +265,7 @@ class Run:
 
         if self.backend_id is None:
             raise RuntimeError("Backend submit returned without a job identity")
-        self.manager.register_executor(self.backend, self._record.execution.endpoint)
+        self.manager.register_backend(self.backend, self._record.execution.endpoint)
         with self._completion_lock:
             if not self._completion_persisted:
                 self._record = self.manager.transition(

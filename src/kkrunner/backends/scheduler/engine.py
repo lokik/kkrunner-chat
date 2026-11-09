@@ -19,7 +19,6 @@ from kkrunner.files.paths import file_path
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionSpec,
-    Executor,
     FailurePhase,
     OutputObservers,
     RunState,
@@ -628,10 +627,11 @@ class PsijJob:
         return request_cancellation(self, self._job.cancel)
 
 
-class PsijBackend(Executor):
+class PsijBackend:
     """Execute calculations through a PSI/J backend such as Slurm or PBS."""
 
     name = "psij"
+    supports_result_file_retrieval = False
 
     def __init__(
         self,
@@ -662,9 +662,9 @@ class PsijBackend(Executor):
         return job
 
     def status(self, *runs):
-        from kkrunner.backends.endpoint import endpoint_for_executor
+        from kkrunner.client.endpoint import endpoint_for_backend
 
-        expected = endpoint_for_executor(self)
+        expected = endpoint_for_backend(self)
         statuses = []
         for run in runs:
             if run.execution.endpoint != expected:
@@ -892,9 +892,9 @@ class PsijBackend(Executor):
         )
 
     def open_job(self, run, callback=None, output_listener=None, start=True):
-        from kkrunner.backends.endpoint import endpoint_for_executor
+        from kkrunner.client.endpoint import endpoint_for_backend
 
-        if run.execution.endpoint != endpoint_for_executor(self):
+        if run.execution.endpoint != endpoint_for_backend(self):
             raise ValueError("Run does not belong to this PSI/J endpoint")
         backend_id = run.execution.backend_id
         if not backend_id:

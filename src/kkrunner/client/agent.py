@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from kkrunner.backends.endpoint import endpoint_for_executor
+from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
 from kkrunner.files.versions import file_digest
 from kkrunner.remote.protocol import control_command, json_request
@@ -20,7 +20,6 @@ from kkrunner.remote.stream import FramedRunningCommand
 from kkrunner.runs.base import (
     ExecutionResources,
     ExecutionSpec,
-    Executor,
     FailurePhase,
     LaunchSpec,
     MpiNotFoundWarning,
@@ -401,10 +400,11 @@ class _AgentRunContext:
             return runner
 
 
-class AgentBackendProxy(Executor):
+class AgentBackendProxy:
     """Reusable remote endpoint with client-owned lifecycle state."""
 
-    name = "remote"
+    name = "agent"
+    supports_result_file_retrieval = True
 
     def __init__(
         self,
@@ -449,7 +449,7 @@ class AgentBackendProxy(Executor):
         return _AgentRunContext(endpoint, launch)
 
     def _validate_run(self, run):
-        if run.execution.endpoint != endpoint_for_executor(self):
+        if run.execution.endpoint != endpoint_for_backend(self):
             raise ValueError("Run belongs to a different remote endpoint")
         if not run.execution.backend_id or not run.execution.directory.remote:
             raise ValueError("Remote run lacks backend identity or working directory")
