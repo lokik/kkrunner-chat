@@ -8,16 +8,14 @@ import pytest
 
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 from kkrunner import ExecutionSpec, RunState
-from kkrunner.backends import ExecutorEndpoint, LocalExecutor
+from kkrunner.backends import ProcessBackend
+from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
+from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.backends.local_managed import local_manifest
-from kkrunner.remote.service import (
-    _decode_handle,
-    _encode_handle,
-    _process_running,
-    _recover_submission,
-    acknowledge_submission,
-    status_remote,
+from kkrunner.backends.process.managed import local_manifest
+from kkrunner.backends.handles import _decode_handle, _encode_handle
+from kkrunner.backends.process.operations import (
+    _process_running, _recover_submission, acknowledge_submission, status_remote,
 )
 from kkrunner.runs.base import FailurePhase, RunStatus
 
@@ -48,7 +46,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutorEndpoint(), WorkingDirectory(str(tmp_path)), backend_id),
+        execution=Execution(ExecutionEndpoint(), WorkingDirectory(str(tmp_path)), backend_id),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "out.txt")) if stdout else None,
             stderr=FileEntry(local_path=str(tmp_path / "err.txt")) if stderr else None,
@@ -58,9 +56,13 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
     )
 
 
+def _attachment(record):
+    return JobAttachment(record.execution, record.files)
+
+
 def test_project_launch_reconnect_and_shared_ticket(tmp_path):
-    executor = LocalExecutor()
-    runner = executor.create_managed_run(_spec(tmp_path), run_id=RUN_ID)
+    executor = ProcessBackend()
+    runner = executor.create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     handle = runner.backend_id
     assert _decode_handle(handle)["kind"] == "process"
@@ -71,13 +73,16 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
         {**_decode_handle(handle), "identity": {"pid": 1, "start_time": 0, "time_basis": "epoch"}}
     )
     assert (tmp_path / "out.txt").read_text() == "output\n"
-    assert executor.status(_record(tmp_path, handle))[0].state == RunState.FINISHED
-    assert executor.recover_submission(RUN_ID, _record(tmp_path, None)).backend_id == handle
+    assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
+    assert executor.recover_submission(RUN_ID, _attachment(_record(tmp_path, None))).ref.token == handle
     executor.acknowledge_submission(_record(tmp_path, handle))
     assert _recover_submission(RUN_ID) is None
-    assert executor.status(_record(tmp_path, handle))[0].state == RunState.FINISHED
+    assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     seen = []
-    attached = executor.attach(_record(tmp_path, handle), output_listener=lambda text, kind: seen.append((text, kind)))
+    attached = executor.open_job(
+        _attachment(_record(tmp_path, handle)),
+        output_listener=lambda text, kind: seen.append((text, kind)),
+    )
     assert attached.wait().return_code == 0
     assert seen == [("output\n", "out")]
     executor.acknowledge(_record(tmp_path, handle))
@@ -89,14 +94,14 @@ def test_project_file_objects_are_not_serialized(tmp_path):
     spec = _spec(tmp_path)
     with (tmp_path / "extra.out").open("w+b") as extra, (tmp_path / "cache.pot").open("w+b") as cache:
         spec = replace(spec, output_files=(extra,), cache_files=(cache,))
-        runner = LocalExecutor().create_managed_run(spec, run_id=RUN_ID)
+        runner = ProcessBackend().create_job(spec, submission_key=RUN_ID)
         runner.submit()
         assert runner.wait().return_code == 0
 
 
 def test_process_failure_preserves_execution_phase(tmp_path):
-    runner = LocalExecutor().create_managed_run(
-        _spec(tmp_path, (sys.executable, "-c", "import sys; sys.exit(7)")), run_id=RUN_ID
+    runner = ProcessBackend().create_job(
+        _spec(tmp_path, (sys.executable, "-c", "import sys; sys.exit(7)")), submission_key=RUN_ID
     )
     runner.submit()
     assert runner.wait().return_code == 7
@@ -105,9 +110,9 @@ def test_process_failure_preserves_execution_phase(tmp_path):
 
 
 def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
-    runner = LocalExecutor().create_managed_run(
+    runner = ProcessBackend().create_job(
         _spec(tmp_path, (sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)")),
-        run_id=RUN_ID,
+        submission_key=RUN_ID,
     )
     runner.submit()
     started = time.monotonic()
@@ -119,8 +124,9 @@ def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
 
 
 def test_missing_ticket_keeps_submission_uncertain(tmp_path):
-    with pytest.raises(NotImplementedError, match="not recoverable"):
-        LocalExecutor().recover_submission(RUN_ID, _record(tmp_path, None))
+    assert ProcessBackend().recover_submission(
+        RUN_ID, _attachment(_record(tmp_path, None))
+    ).disposition is RecoveryDisposition.INDETERMINATE
 
 
 def test_missing_supervisor_outcome_is_unknown(tmp_path):
@@ -132,7 +138,7 @@ def test_missing_supervisor_outcome_is_unknown(tmp_path):
             "socket_path": "/missing/socket",
         }
     )
-    assert LocalExecutor().status(_record(tmp_path, handle))[0].state == RunState.UNKNOWN
+    assert ProcessBackend().status(_attachment(_record(tmp_path, handle)))[0].state == RunState.UNKNOWN
 
 
 def test_wildcards_track_concrete_file_availability(tmp_path):
@@ -149,7 +155,7 @@ def test_wildcards_track_concrete_file_availability(tmp_path):
 def test_failed_launch_clears_stale_stdout(tmp_path):
     out = tmp_path / "out.txt"
     out.write_bytes(b"previous")
-    runner = LocalExecutor().create_managed_run(_spec(tmp_path, (str(tmp_path / "missing-program"),)), run_id=RUN_ID)
+    runner = ProcessBackend().create_job(_spec(tmp_path, (str(tmp_path / "missing-program"),)), submission_key=RUN_ID)
     runner.submit()
     runner.wait()
     assert runner.state == RunState.FAILED
@@ -158,14 +164,16 @@ def test_failed_launch_clears_stale_stdout(tmp_path):
 
 
 def test_none_stream_paths_are_live_only(tmp_path):
-    runner = LocalExecutor().create_managed_run(_spec(tmp_path, out=None, err=None), run_id=RUN_ID)
+    runner = ProcessBackend().create_job(_spec(tmp_path, out=None, err=None), submission_key=RUN_ID)
     seen = []
     runner.add_output_listener(lambda text, kind: seen.append((text, kind)))
     runner.submit()
     assert runner.wait().return_code == 0
     assert not (tmp_path / "out.txt").exists()
     assert not (tmp_path / "err.txt").exists()
-    attached = LocalExecutor().attach(_record(tmp_path, runner.backend_id, stdout=False, stderr=False), start=False)
+    attached = ProcessBackend().open_job(
+        _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False,
+    )
     assert attached.backend_id == runner.backend_id
     assert attached.result.output_file is None
     assert attached.result.error_file is None
@@ -173,23 +181,25 @@ def test_none_stream_paths_are_live_only(tmp_path):
 
 
 def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
-    runner = LocalExecutor().create_managed_run(_spec(tmp_path), run_id=RUN_ID)
+    runner = ProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     runner.wait()
     assert acknowledge_submission(RUN_ID)["acknowledged"]
-    assert LocalExecutor().status(_record(tmp_path, runner.backend_id))[0].state == RunState.FINISHED
+    assert ProcessBackend().status(
+        _attachment(_record(tmp_path, runner.backend_id))
+    )[0].state == RunState.FINISHED
 
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.remote import service as remote_service
+    from kkrunner.backends.process import operations as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):
         raise OSError("cannot spawn supervisor")
 
-    monkeypatch.setattr(remote_service.subprocess, "Popen", failed_launch)
-    runner = LocalExecutor().create_managed_run(_spec(tmp_path), run_id=RUN_ID)
+    monkeypatch.setattr(process_operations.subprocess, "Popen", failed_launch)
+    runner = ProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     with pytest.raises(SubmissionNotStarted, match="cannot spawn supervisor"):
         runner.submit()
     assert runner.backend_id is None
@@ -208,9 +218,9 @@ def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
 
 
 def test_terminal_local_runner_never_regresses_to_running(tmp_path, monkeypatch):
-    from kkrunner.backends import local_managed as local_project
+    from kkrunner.backends.process import managed as local_project
 
-    runner = LocalExecutor().create_managed_run(_spec(tmp_path), run_id=RUN_ID)
+    runner = ProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner._backend_id = "opaque-handle"
     runner._state = RunState.FINISHED
     runner._return_code = 0
@@ -239,7 +249,7 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
         input_files=(None, inp, "b.inp", 1),
         cache_files=(None, cache, "restart.pot", object()),
     )
-    runner = LocalExecutor().create_managed_run(spec, run_id=RUN_ID)
+    runner = ProcessBackend().create_job(spec, submission_key=RUN_ID)
     request = runner._request()
     assert request["output_files"] == [output.name, str(tmp_path / "a.dat")]
     assert request["input_files"] == [inp.name, str(tmp_path / "b.inp")]
@@ -248,7 +258,8 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.remote.service import _clean_request_outputs, _request_spec
+    from kkrunner.backends.process.operations import _clean_request_outputs
+    from kkrunner.backends.specs import _request_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
         (tmp_path / name).write_text(name)
@@ -270,12 +281,12 @@ def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
 
 def test_local_project_request_uses_common_command_fields(tmp_path):
     from kkrunner.runs import LaunchSpec
-    from kkrunner.remote.service import _request_spec
+    from kkrunner.backends.specs import _request_spec
 
     spec = replace(
         _spec(tmp_path), mpi_argv=("mpi-program", "input.inp"), mpi_uses_stdin=False, launch=LaunchSpec.from_mpi(3)
     )
-    request = LocalExecutor().create_managed_run(spec, run_id=RUN_ID)._request()
+    request = ProcessBackend().create_job(spec, submission_key=RUN_ID)._request()
     for key, value in spec.command_request().items():
         assert request[key] == value
     reconstructed = _request_spec(request)
@@ -286,13 +297,13 @@ def test_local_project_request_uses_common_command_fields(tmp_path):
 def test_terminal_project_runner_does_not_query_backend(monkeypatch, tmp_path):
     import pytest
 
-    from kkrunner.backends.local_managed import ManagedLocalRunner
+    from kkrunner.backends.process.managed import SupervisedProcessJob
     from kkrunner.runs.base import RunState
 
     spec = _spec(tmp_path)
-    runner = ManagedLocalRunner(LocalExecutor(), spec, backend_id="old-supervisor", state=RunState.FINISHED)
+    runner = SupervisedProcessJob(ProcessBackend(), spec, backend_id="old-supervisor", state=RunState.FINISHED)
     monkeypatch.setattr(
-        "kkrunner.backends.local_managed.local_status",
+        "kkrunner.backends.process.managed.local_status",
         lambda *args: pytest.fail("Terminal runner must not query backend"),
     )
     assert runner.state is RunState.FINISHED
@@ -307,7 +318,7 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     existing.write_text("restart cache")
     extra.write_text("old output")
     spec = replace(_spec(tmp_path), cache_files=(str(existing),), output_files=(str(extra),))
-    runner = LocalExecutor().create_managed_run(spec, run_id=RUN_ID)
+    runner = ProcessBackend().create_job(spec, submission_key=RUN_ID)
     with pytest.raises(SubmissionNotStarted, match="overlaps protected"):
         runner.submit()
     assert runner.state is RunState.FAILED
@@ -325,7 +336,7 @@ def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(
 import os, sys
 from pathlib import Path
 from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.backends import LocalExecutor
+from kkrunner.backends import ProcessBackend
 root = Path(sys.argv[1])
 manager = RunManager(RunStore(root / 'runs'))
 command = '''
@@ -338,7 +349,7 @@ while not Path('resume').exists():
     time.sleep(0.01)
 print(42)
 '''
-run = manager.create_run(LocalExecutor(), ExecutionSpec(
+run = manager.create_run(ProcessBackend(), ExecutionSpec(
     [sys.executable, '-c', command], directory=root, output_file='run.out'))
 run.submit()
 print(run.id, flush=True)
@@ -372,9 +383,9 @@ assert (root / 'run.out').read_text() == '42\\n'
 
 def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatch):
     """A durable terminal state must not conceal an invalid wire greeting."""
-    from kkrunner.backends import local_managed
+    from kkrunner.backends.process import managed as local_managed
 
-    runner = LocalExecutor().create_managed_run(_spec(tmp_path), run_id=RUN_ID)
+    runner = ProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     monkeypatch.setattr(runner, "_refresh", lambda: RunState.FAILED)
 
     def malformed_follow(*args, **kwargs):
