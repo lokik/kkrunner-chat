@@ -6,7 +6,6 @@ Run owns the session and invokes it before and after a distinct RemoteJob.
 
 from __future__ import annotations
 
-import fcntl
 import glob
 import os
 from contextlib import ExitStack
@@ -23,6 +22,7 @@ from kkrunner.runs.base import (
     close_output_files, materialize_output_streams,
 )
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
+from kkrunner.support.file_locks import FileLock
 
 
 class RemoteFileSession:
@@ -92,34 +92,32 @@ class RemoteFileSession:
     def _write_output(self, data, kind):
         """Persist FOLLOW bytes at their logical offset, not blindly append.
 
-        Another client may attach to the same working directory while this
-        client is still following. Lock the destination inode while comparing
-        overlapping bytes and extending only the missing suffix.
+        Multiple clients may follow the same run into the same local stream.
+        Hold a cross-process lock while comparing overlapping bytes and
+        extending only the missing suffix. A sidecar avoids changing the
+        contents of the stream on platforms with byte-range file locks.
         """
         target = self.spec.error_file if kind == "err" else self.spec.output_file
         if target is None or not data:
             return
         offset = self._stream_positions[kind]
         target.flush()
-        path = self._local_path(target)
-        with open(path, "r+b", buffering=0) as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-            try:
-                stream.seek(0, os.SEEK_END)
-                size = stream.tell()
-                if size < offset:
-                    raise RuntimeError(f"FOLLOW stream was truncated: {path}")
-                overlap = min(size - offset, len(data))
-                if overlap:
-                    stream.seek(offset)
-                    if stream.read(overlap) != data[:overlap]:
-                        raise RuntimeError(f"Conflicting FOLLOW bytes at offset {offset}: {path}")
-                if overlap < len(data):
-                    stream.seek(offset + overlap)
-                    stream.write(data[overlap:])
-                    stream.flush()
-            finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        path = Path(self._local_path(target))
+        lock_path = path.with_name(f".{path.name}.follow.lock")
+        with FileLock(lock_path), path.open("r+b", buffering=0) as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            if size < offset:
+                raise RuntimeError(f"FOLLOW stream was truncated: {path}")
+            overlap = min(size - offset, len(data))
+            if overlap:
+                stream.seek(offset)
+                if stream.read(overlap) != data[:overlap]:
+                    raise RuntimeError(f"Conflicting FOLLOW bytes at offset {offset}: {path}")
+            if overlap < len(data):
+                stream.seek(offset + overlap)
+                stream.write(data[overlap:])
+                stream.flush()
         self._stream_positions[kind] = offset + len(data)
 
     def _local_path(self, value):
