@@ -299,7 +299,15 @@ class Job:
             stderr_task = asyncio.create_task(self._pump(self._follow_process.stderr, "err"))
             stream_error = None
             try:
-                await asyncio.gather(self._follow_process.wait(), stdout_task, stderr_task)
+                follow_result, _, _ = await asyncio.gather(
+                    self._follow_process.wait(), stdout_task, stderr_task,
+                )
+                # A plain operation has no framed terminal receipt; its
+                # nonzero exit is an observation failure, not a Job outcome.
+                if follow_result not in (None, 0):
+                    raise subprocess.CalledProcessError(
+                        follow_result, "backend follow operation",
+                    )
             except Exception as exc:
                 stream_error = exc
                 self._output_error = exc
@@ -311,7 +319,7 @@ class Job:
                 self._failure_phase = None
                 self._failure_message = "Observation detached"
                 return self.result
-            facts = self._follow_process.terminal
+            facts = getattr(self._follow_process, "terminal", None)
             if facts is None:
                 try:
                     facts = await self.context._status(self._remote_directory, self._backend_id)

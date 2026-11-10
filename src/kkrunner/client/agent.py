@@ -45,6 +45,11 @@ def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
 
 
 class _AgentRunContext(RemotePathContext):
+    @property
+    def backend(self):
+        """Execution backend identity is owned by the endpoint."""
+        return self.endpoint.backend
+
     async def _submit(self, request):
         return await self.endpoint._submit(request)
 
