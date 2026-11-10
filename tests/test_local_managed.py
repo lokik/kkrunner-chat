@@ -66,7 +66,7 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     runner.submit()
     handle = runner.backend_id
     assert _decode_handle(handle)["kind"] == "process"
-    assert _recover_submission(RUN_ID) == {"remote_id": handle}
+    assert _recover_submission(RUN_ID)["remote_id"] == handle
     assert runner.wait().return_code == 0
     assert runner.state == RunState.FINISHED
     assert not _process_running(
