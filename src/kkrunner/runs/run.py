@@ -365,6 +365,18 @@ class Run:
                     )
                     self._monitor_record_version = self._record.updated_at
             self._job.submit()
+            if self.backend_id is None:
+                # Do not start client completion without a recoverable job
+                # identity: an unacknowledged submit must stay SUBMITTING.
+                raise RuntimeError("Backend submit returned without a job identity")
+            # Persist accepted identity before creating the completion
+            # observer. A failed monitor start must remain reattachable.
+            self._record = self.manager.transition(
+                self._record,
+                execution=self.execution,
+                files=self.files if self.files is not None else _UNCHANGED,
+            )
+            self._monitor_record_version = self._record.updated_at
             self._start_completion()
         except SubmissionNotStarted as exc:
             self._close_files_after_failed_submission()
@@ -391,8 +403,6 @@ class Run:
             # Without a backend identity, SUBMITTING remains unresolved.
             raise
 
-        if self.backend_id is None:
-            raise RuntimeError("Backend submit returned without a job identity")
         self.manager.register_backend(self.backend, self._record.execution.endpoint)
         with self._completion_lock:
             if not self._completion_persisted:

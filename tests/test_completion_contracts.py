@@ -213,6 +213,65 @@ def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, mon
     assert manager.store.get(run.id).state == RunState.FINISHED
 
 
+def test_confirmed_identity_is_durable_before_client_monitor_starts(tmp_path, monkeypatch):
+    from kkrunner import Run
+
+    class Backend:
+        name = "instant"
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    backend = Backend()
+    job = _ImmediatelyFinishedJob()
+    record = manager.new_record(directory=tmp_path)
+    manager.register_backend(backend, record.execution.endpoint)
+    run = Run(job, backend=backend, manager=manager, record=record)
+    seen = []
+
+    def start_monitor():
+        seen.append(manager.store.get(run.id))
+        run._started = True
+
+    monkeypatch.setattr(run, "_start_completion", start_monitor)
+    run.submit()
+    assert len(seen) == 1
+    assert seen[0].state == RunState.SUBMITTING
+    assert seen[0].execution.backend_id == "native-1"
+    assert manager.store.get(run.id).state == RunState.RUNNING
+
+
+def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch):
+    from kkrunner import Run
+
+    class Backend:
+        name = "unconfirmed"
+
+    class Job:
+        state = RunState.NEW
+        backend_id = None
+        exception = None
+        failure_phase = None
+        failure_message = None
+
+        def submit(self):
+            self.state = RunState.UNKNOWN
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    backend = Backend()
+    record = manager.new_record(directory=tmp_path)
+    manager.register_backend(backend, record.execution.endpoint)
+    run = Run(Job(), backend=backend, manager=manager, record=record)
+    monkeypatch.setattr(
+        run, "_start_completion",
+        lambda: pytest.fail("Completion must not start without a job identity"),
+    )
+    with pytest.raises(RuntimeError, match="without a job identity"):
+        run.submit()
+    assert not run._started
+    saved = manager.store.get(run.id)
+    assert saved.state == RunState.SUBMITTING
+    assert saved.execution.backend_id is None
+
+
 def test_known_backend_identity_survives_failed_client_submission(tmp_path):
     from kkrunner import Run
 
