@@ -148,6 +148,11 @@ class FramedRunningCommand:
             if diagnostic:
                 message += f"; remote transport diagnostic: {diagnostic}"
             raise StreamProtocolError(message)
+        # A clean helper exit proves only that the transport command ended.
+        # Without its terminal frame the result stream may be truncated.
+        # The subsequent native status query cannot repair lost bytes.
+        if self.terminal is None:
+            raise StreamProtocolError("Remote stream ended without terminal frame")
         return self.returncode
 
     def terminate(self):
