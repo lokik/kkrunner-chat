@@ -247,7 +247,7 @@ def test_known_backend_identity_survives_failed_client_submission(tmp_path):
 def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persistence(tmp_path):
     from kkrunner import ExecutionSpec, Run
     from kkrunner.files import FileManifest
-    from kkrunner.runs.base import SubmissionNotStarted
+    from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
 
     original = SubmissionNotStarted("submission never reached backend")
 
