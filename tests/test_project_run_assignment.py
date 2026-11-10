@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.runs import Executor
+from kkrunner.client.run_parts import RunParts
 from kkrunner.projects import ProjectExecutionManager, ProjectRepository
 from kkrunner import RunState
 
@@ -40,16 +40,14 @@ class _Runner:
         pass
 
 
-class _Executor(Executor):
+class _Executor:
     name = "project-test"
 
-    def create_managed_run(self, spec, *, run_id, callback=None):
-        self.run_id = run_id
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        self.run_id = submission_key
         self.runner = _Runner()
-        return self.runner
-
-    def create_run(self, spec, callback=None):
-        raise AssertionError("managed run must use create_managed_run")
+        self.runner.spec = spec
+        return RunParts(self.runner)
 
 
 def _fixture(tmp_path):

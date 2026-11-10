@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files.versions import FileVersion, file_digest
-from kkrunner.remote.transport import LocalTransport, SshTransport
+from kkrunner.client.transport import LocalTransport, SshTransport
 
 
 def test_local_transport_run_start_and_files(tmp_path):
@@ -144,7 +144,7 @@ def test_strict_transfer_refuses_wildcard_symlink_outside_source_root(tmp_path):
     import pytest
 
     from kkrunner.files.paths import expand_local_candidates
-    from kkrunner.remote.transport import expand_local_files
+    from kkrunner.client.transport import expand_local_files
 
     root = tmp_path / "root"
     root.mkdir()
@@ -413,13 +413,13 @@ def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd)
 
 
 def test_ssh_endpoint_compression_roundtrips_from_transport():
-    from kkrunner.backends.endpoint import create_executor_from_endpoint, endpoint_for_executor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
+    from kkrunner.client.endpoint import create_backend_from_endpoint, endpoint_for_backend
+    from kkrunner.client.agent import AgentBackendProxy
 
     for compressed in (False, True):
-        endpoint = endpoint_for_executor(RemoteEndpointExecutor(SshTransport("cluster", zstd=compressed)))
+        endpoint = endpoint_for_backend(AgentBackendProxy(SshTransport("cluster", zstd=compressed)))
         assert endpoint.ssh_zstd is compressed
-        restored = create_executor_from_endpoint(endpoint)
+        restored = create_backend_from_endpoint(endpoint)
         assert restored.transport.zstd is compressed
 
 

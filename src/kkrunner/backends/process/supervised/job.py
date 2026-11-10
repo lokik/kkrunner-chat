@@ -1,96 +1,27 @@
-"""Reconnectable managed local runs use the same supervisor as SSH execution.
+"""Reconnectable supervisor-backed local Job, using shared agent operations.
 
-A RunRecord belongs to the client. The supervisor owns only process
-facts, a temporary submission ticket and a terminal outcome receipt.
+The supervisor owns the process; this Job owns only client-side observation.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import replace
 from threading import Event, Lock
 
-from kkrunner.files.availability import discover_local_files
 from kkrunner.files.paths import file_path
-from kkrunner.remote.service import _decode_handle, cancel_remote, follow_remote, status_remote, submit_remote
+from kkrunner.backends.process.supervised.operations import cancel_remote, follow_remote, submit_remote
 from kkrunner.runs.base import (
-    ExecutionOutcome,
-    ExecutionSpec,
-    FailurePhase,
-    OutputObservers,
-    RunState,
-    RunStatus,
-    close_output_files,
-    finish_monitor,
-    request_cancellation,
-    start_monitor,
+    ExecutionOutcome, ExecutionSpec, FailurePhase, OutputObservers, RunState,
+    close_output_files, finish_monitor, request_cancellation, start_monitor,
     wait_for_monitor,
 )
+from .local import local_status
 
 
 def _file_path(value, directory=None):
     # Local project submission flushes file objects before publishing paths.
     return file_path(value, directory, flush=True)
-
-
-def local_manifest(files, status):
-    """Resolve stream availability, including partial cancelled-run output.
-
-    The supervisor writes streams directly during execution. Cancellation and
-    execution failure do not retract already written bytes.
-    """
-    published = status.state in (RunState.FINISHED, RunState.CANCELLED) or (
-        status.state == RunState.FAILED and status.failure_phase == FailurePhase.EXECUTION
-    )
-    for entry in (files.stdout, files.stderr):
-        if entry is None or entry.local_path is None:
-            continue
-        if status.failure_phase == FailurePhase.ARTIFACTS:
-            state, message = "failed", status.message or "Output publication failed"
-        elif published:
-            exists = os.path.isfile(entry.local_path)
-            state, message = (
-                ("available", None)
-                if exists
-                else (
-                    "failed",
-                    "Published output file is missing",
-                )
-            )
-        else:
-            state, message = "skipped", None
-        files = files.with_file_availability(entry.local_path, state, message)
-
-    if status.failure_phase in (FailurePhase.LAUNCH, FailurePhase.SUBMISSION):
-        return files
-    return discover_local_files(files, include_streams=False, require_outputs=status.state == RunState.FINISHED)
-
-
-def _local_status_from_facts(backend_id, facts, files=None):
-    """Project local supervisor facts into a status without querying it again.
-
-    Recovery already has an authoritative reply; asking the supervisor for
-    status a second time risks replacing that snapshot with newer/unknown facts.
-    """
-    status = RunStatus(
-        state=RunState(facts["state"]),
-        backend_id=backend_id,
-        return_code=facts.get("return_code"),
-        message=facts.get("error"),
-        failure_phase=facts.get("failure_phase"),
-    )
-    if files is not None and status.state.is_terminal:
-        status = replace(status, files=local_manifest(files, status))
-    return status
-
-
-def local_status(backend_id, files=None):
-    return _local_status_from_facts(
-        backend_id,
-        status_remote(backend_id),
-        files,
-    )
 
 
 class _ObserverSink:
@@ -107,7 +38,7 @@ class _ObserverSink:
         pass
 
 
-class ManagedLocalRunner:
+class SupervisedProcessJob:
     """Managed local process with supervisor-based follow and reattach."""
 
     def __init__(
@@ -162,6 +93,19 @@ class ManagedLocalRunner:
     @property
     def backend_id(self):
         return self._backend_id
+
+    @property
+    def ref(self):
+        from kkrunner.backends.contracts import JobRef
+        return None if self.backend_id is None else JobRef("process", self.backend_id)
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        state = self.state
+        return job_status_from_facts(
+            state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
 
     def _refresh(self):
         # A terminal result is immutable. After acknowledgment the receipt
@@ -253,20 +197,31 @@ class ManagedLocalRunner:
         # Monitoring and both cleanups must be attempted independently; a
         # secondary cleanup error must not hide an earlier monitor failure.
         try:
-            for action in (
-                self._monitor,
-                self._output_observers.finish_bytes,
-                lambda: close_output_files(self.spec.output_file, self.spec.error_file),
+            for action, observation_only in (
+                (self._monitor, True),
+                (self._output_observers.finish_bytes, False),
+                (lambda: close_output_files(self.spec.output_file, self.spec.error_file), False),
             ):
                 try:
                     action()
                 except BaseException as exc:
                     if self._exception is None:
                         self._exception = exc
-            if self._exception is not None:
-                self._failure_message = str(self._exception)
-                self._failure_phase = self._failure_phase or FailurePhase.EXECUTION
-                self._state = RunState.FAILED
+                        self._failure_message = str(exc)
+                    if observation_only:
+                        # FOLLOW or status loss cannot prove a job failed.
+                        if self._state not in (RunState.FAILED, RunState.CANCELLED):
+                            self._state = RunState.UNKNOWN
+                            self._failure_phase = None
+                    else:
+                        # Failing to finalize local output is an output failure
+                        # only if execution was otherwise known to succeed.
+                        if self._state == RunState.FINISHED:
+                            self._state = RunState.FAILED
+                            self._failure_phase = FailurePhase.ARTIFACTS
+                        elif not self._state.is_terminal:
+                            self._state = RunState.UNKNOWN
+                            self._failure_phase = None
         finally:
             finish_monitor(self)
 
@@ -275,7 +230,7 @@ class ManagedLocalRunner:
             return [path for value in values if (path := _file_path(value, self.spec.directory)) is not None]
 
         return {
-            "executor": "local",
+            "executor": "process",
             "id": self._run_id,
             "detached": True,
             "directory": os.fspath(self.spec.directory),
@@ -296,8 +251,12 @@ class ManagedLocalRunner:
             raise RuntimeError("Managed run has no run id")
         from kkrunner.runs.base import SubmissionNotStarted
 
+        # Constructing the request is preflight. Once submit_remote begins,
+        # a thrown exception might mean an accepted but unacknowledged job.
+        request = self._request()
+        self._state = RunState.SUBMITTING
         try:
-            reply = submit_remote(self._request())
+            reply = submit_remote(request)
         except SubmissionNotStarted as exc:
             self._state = RunState.FAILED
             self._failure_phase = FailurePhase.SUBMISSION
@@ -328,36 +287,3 @@ class ManagedLocalRunner:
             raise RuntimeError("Run has not been submitted")
         return request_cancellation(self, lambda: cancel_remote(self._backend_id))
 
-
-def attach_local(executor, run, *, callback=None, output_listener=None, start=True):
-    if run.execution.endpoint.executor != "local":
-        raise ValueError("Run does not belong to the local backend")
-    backend_id = run.execution.backend_id
-    if _decode_handle(backend_id).get("kind") != "process":
-        raise ValueError("Local project does not have a supervisor handle")
-    files = run.files
-    spec = ExecutionSpec(
-        argv=(),
-        input_file=files.input_file,
-        output_file=files.output_file,
-        error_file=None if files.stderr is None else files.stderr.local_path,
-        directory=run.execution.directory.local,
-    )
-    status = local_status(backend_id, files)
-    runner = ManagedLocalRunner(
-        executor,
-        spec,
-        callback=callback,
-        output_listener=output_listener,
-        backend_id=backend_id,
-        run_id=run.id,
-        state=status.state,
-        failure_phase=status.failure_phase,
-        failure_message=status.message,
-    )
-    runner.set_manifest(status.files or files)
-    runner._return_code = status.return_code
-    runner.result.return_code = status.return_code
-    if start:
-        runner.start()
-    return runner

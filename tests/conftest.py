@@ -2,13 +2,13 @@
 
 import pytest
 
-from kkrunner.backends import pool
+from kkrunner.client import pool
 
 
 @pytest.fixture(autouse=True)
 def isolated_default_executor_pool():
     previous = pool._DEFAULT_EXECUTOR_POOL
-    pool._DEFAULT_EXECUTOR_POOL = pool.ExecutorPool()
+    pool._DEFAULT_EXECUTOR_POOL = pool.BackendPool()
     try:
         yield
     finally:

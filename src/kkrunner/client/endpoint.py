@@ -7,7 +7,7 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class ExecutorEndpoint:
+class ExecutionEndpoint:
     """Identity of a reusable execution backend.
 
     The endpoint contains only connection/backend properties. Launch and
@@ -43,12 +43,12 @@ class ExecutorEndpoint:
         for name in ("host", "psij_backend", "psij_url"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, str):
-                raise TypeError(f"ExecutorEndpoint.{name} must be a string or None")
+                raise TypeError(f"ExecutionEndpoint.{name} must be a string or None")
         for name in ("ssh_options", "remote_command"):
             if any(not isinstance(item, str) for item in getattr(self, name)):
-                raise TypeError(f"ExecutorEndpoint.{name} must contain strings")
+                raise TypeError(f"ExecutionEndpoint.{name} must contain strings")
         if type(self.ssh_zstd) is not bool:
-            raise TypeError("ExecutorEndpoint.ssh_zstd must be a bool")
+            raise TypeError("ExecutionEndpoint.ssh_zstd must be a bool")
 
         # Identity describes the backend actually constructed below. Irrelevant
         # profile fields must not split its pool key or collision namespace.
@@ -72,28 +72,28 @@ class ExecutorEndpoint:
                 object.__setattr__(self, "psij_backend", self.psij_backend or "slurm")
 
 
-def endpoint_for_executor(executor) -> ExecutorEndpoint:
+def endpoint_for_backend(executor) -> ExecutionEndpoint:
     """Describe a live executor without persisting launch/staging policy."""
-    from kkrunner.backends.local import LocalExecutor
-    from kkrunner.backends.psij import PsijExecutor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import SshTransport
+    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.psij.backend import PsijBackend
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.transport import SshTransport
 
-    if isinstance(executor, LocalExecutor):
-        return ExecutorEndpoint()
-    if isinstance(executor, PsijExecutor):
-        return ExecutorEndpoint(
+    if isinstance(executor, ProcessBackend):
+        return ExecutionEndpoint()
+    if isinstance(executor, PsijBackend):
+        return ExecutionEndpoint(
             executor="psij",
             psij_backend=executor.backend,
             psij_url=executor.url,
         )
-    if isinstance(executor, RemoteEndpointExecutor):
+    if isinstance(executor, AgentBackendProxy):
         transport = executor.transport
         psij_backend = None
         psij_url = None
         if executor.backend == "psij":
             options = executor.backend_options or {}
-            # ``RemoteEndpointExecutor(..., backend="psij")`` is a complete
+            # ``AgentBackendProxy(..., backend="psij")`` is a complete
             # public configuration even when no options are supplied: the
             # target-side PSI/J backend then defaults to Slurm. Persist that
             # default explicitly so restart reconstruction cannot silently
@@ -102,7 +102,7 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
             psij_url = options.get("url")
 
         if not isinstance(transport, SshTransport):
-            return ExecutorEndpoint(
+            return ExecutionEndpoint(
                 executor=(
                     "custom:{}.{}:{}".format(
                         type(executor).__module__,
@@ -116,7 +116,7 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
                 psij_backend=psij_backend,
                 psij_url=psij_url,
             )
-        return ExecutorEndpoint(
+        return ExecutionEndpoint(
             executor="ssh",
             host=transport.host,
             ssh_options=transport.options,
@@ -129,7 +129,7 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
 
     # Custom executors can participate in duplicate-submit protection in this
     # process. Reconstruction is intentionally limited to known endpoint types.
-    return ExecutorEndpoint(
+    return ExecutionEndpoint(
         executor="custom:{}.{}:{}".format(
             type(executor).__module__,
             type(executor).__qualname__,
@@ -138,20 +138,20 @@ def endpoint_for_executor(executor) -> ExecutorEndpoint:
     )
 
 
-def create_executor_from_endpoint(endpoint: ExecutorEndpoint):
+def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
     """Reconstruct a standard executor from persisted endpoint identity."""
-    from kkrunner.backends.local import LocalExecutor
-    from kkrunner.backends.psij import PsijExecutor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import SshTransport
+    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.psij.backend import PsijBackend
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.transport import SshTransport
 
     if isinstance(endpoint, dict):
-        endpoint = ExecutorEndpoint(**endpoint)
+        endpoint = ExecutionEndpoint(**endpoint)
 
     if endpoint.executor == "local":
-        return LocalExecutor()
+        return ProcessBackend()
     if endpoint.executor == "psij":
-        return PsijExecutor(
+        return PsijBackend(
             endpoint.psij_backend or "slurm",
             url=endpoint.psij_url,
         )
@@ -167,7 +167,7 @@ def create_executor_from_endpoint(endpoint: ExecutorEndpoint):
                 "backend": endpoint.psij_backend or "slurm",
                 "url": endpoint.psij_url,
             }
-        return RemoteEndpointExecutor(
+        return AgentBackendProxy(
             SshTransport(
                 endpoint.host,
                 options=endpoint.ssh_options,

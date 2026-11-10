@@ -6,14 +6,15 @@ from threading import Event, Thread
 
 import pytest
 
-from kkrunner.runs import CorruptRunRecord, Executor
+from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
 from kkrunner.runs.base import ExecutionResources, ResourceOwnedRunner
-from kkrunner.backends import ExecutorEndpoint
+from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.client.run_parts import RunParts
+from kkrunner.runs.run import Run
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs.conflicts import submission_conflicts
 from kkrunner.runs.manager import RunManager
-from kkrunner.runs.processing import PostprocessingRunner
 
 
 def manager_at(tmp_path):
@@ -69,22 +70,26 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         def wait(self):
             return self.result
 
-    class Backend(Executor):
-        def create_run(self, spec, callback=None):
-            return Raw()
+    class Backend:
+        name = "instant"
+
+        def create_run_parts(self, spec, *, submission_key=None, callback=None):
+            raw = Raw()
+            raw.spec = spec
+            return RunParts(raw)
 
     def process(outcome):
         entered.set()
         assert release.wait(3)
         return 42
 
-    original = PostprocessingRunner._start_completion
+    original = Run._start_completion
 
     def start_and_yield(self):
         original(self)
         assert entered.wait(3)
 
-    monkeypatch.setattr(PostprocessingRunner, "_start_completion", start_and_yield)
+    monkeypatch.setattr(Run, "_start_completion", start_and_yield)
     run = manager.create_run(Backend(), ExecutionSpec(["instant"], directory=tmp_path), process_result=process)
     try:
         run.submit()
@@ -134,8 +139,8 @@ def test_cancel_and_failed_submit_do_not_deadlock(tmp_path):
 @pytest.mark.parametrize(
     "other_endpoint",
     [
-        ExecutorEndpoint(executor="psij"),
-        ExecutorEndpoint(executor="ssh", host="other-host"),
+        ExecutionEndpoint(executor="psij"),
+        ExecutionEndpoint(executor="ssh", host="other-host"),
     ],
 )
 def test_local_publication_conflict_is_independent_of_backend(tmp_path, other_endpoint):
@@ -162,11 +167,12 @@ def test_stdin_is_part_of_read_manifest(tmp_path):
 
 
 def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch):
-    from kkrunner.remote import LocalTransport, RemoteEndpointExecutor
-    from kkrunner.remote.executor import _RemoteRun
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.remote_files import RemoteFileSession
+    from kkrunner.client.transport import LocalTransport
 
-    executor = RemoteEndpointExecutor(LocalTransport())
-    raw = executor.create_run(ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "stdout"))
+    executor = AgentBackendProxy(LocalTransport())
+    raw = Run.direct(executor, ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "stdout"))
 
     async def prepared(self):
         return {"directory": "/remote"}, FileManifest.from_spec(self.spec)
@@ -174,8 +180,8 @@ def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch)
     async def rejected(_request):
         raise RuntimeError("lost submit response")
 
-    monkeypatch.setattr(_RemoteRun, "_prepare_async", prepared)
-    monkeypatch.setattr(raw.executor, "_submit", rejected)
+    monkeypatch.setattr(RemoteFileSession, "_prepare_async", prepared)
+    monkeypatch.setattr(executor, "_submit", rejected)
     try:
         with pytest.raises(RuntimeError, match="lost submit response"):
             raw.submit()
@@ -205,11 +211,14 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
             self.state = RunState.FINISHED
             return self.result
 
-    class Backend(Executor):
+    class Backend:
+        name = "fake"
         submissions = 0
 
-        def create_run(self, spec, callback=None):
-            return Raw()
+        def create_run_parts(self, spec, *, submission_key=None, callback=None):
+            raw = Raw()
+            raw.spec = spec
+            return RunParts(raw)
 
     backend = Backend()
     spec = ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "same-output")

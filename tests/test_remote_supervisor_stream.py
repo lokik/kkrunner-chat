@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from kkrunner.remote.supervisor import _HIGH, SupervisorStreams, _Follower, follow_socket, frame
+from kkrunner.backends.process.supervised.streams import _HIGH, SupervisorStreams, _Follower, follow_socket, frame
 
 
 def test_supervisor_live_replay_and_terminal(tmp_path):

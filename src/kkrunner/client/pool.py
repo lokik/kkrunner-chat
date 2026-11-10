@@ -7,7 +7,7 @@ from threading import RLock
 from kkrunner.runs.base import _close_distinct
 
 
-class ExecutorPool:
+class BackendPool:
     """Process-local cache of reusable execution backends."""
 
     def __init__(self):
@@ -29,11 +29,11 @@ class ExecutorPool:
 
     def for_endpoint(self, endpoint):
         """Return the shared backend reconstructed from *endpoint*."""
-        from kkrunner.backends.endpoint import ExecutorEndpoint, create_executor_from_endpoint
+        from kkrunner.client.endpoint import ExecutionEndpoint, create_backend_from_endpoint
 
         if isinstance(endpoint, dict):
-            endpoint = ExecutorEndpoint(**endpoint)
-        return self.get(endpoint, lambda: create_executor_from_endpoint(endpoint))
+            endpoint = ExecutionEndpoint(**endpoint)
+        return self.get(endpoint, lambda: create_backend_from_endpoint(endpoint))
 
     def for_profile(self, profile):
         """Return the shared backend suitable for *profile*."""
@@ -60,9 +60,9 @@ class ExecutorPool:
         _close_distinct(executors)
 
 
-_DEFAULT_EXECUTOR_POOL = ExecutorPool()
+_DEFAULT_EXECUTOR_POOL = BackendPool()
 
 
-def default_executor_pool():
+def default_backend_pool():
     """Return the process-wide pool used by ordinary calculations."""
     return _DEFAULT_EXECUTOR_POOL

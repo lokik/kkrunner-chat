@@ -1,40 +1,41 @@
+"""Process backend status and recoverable submission identity."""
+
 from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
-from kkrunner.backends import ExecutorEndpoint, LocalExecutor
-from kkrunner.files import FileEntry, FileManifest
 from kkrunner import RunState
-from kkrunner.backends import local_managed as local_project
-from kkrunner.remote import service as remote_service
+from kkrunner.backends import ProcessBackend
+from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
+from kkrunner.backends.handles import _encode_handle
+from kkrunner.backends.process.supervised import local as local_project
+from kkrunner.backends.process.supervised import operations as process_operations
+from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.files import FileEntry, FileManifest
+from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
 
 def test_disappeared_local_process_is_unknown(monkeypatch):
-    from kkrunner.remote import service as remote_service
-
-    executor = LocalExecutor()
-    handle = remote_service._encode_handle(
-        {
-            "kind": "process",
-            "identity": {"pid": 12345, "start_time": 0, "time_basis": "linux-boot"},
-            "receipt_id": "a" * 32,
-            "socket_path": "/missing/socket",
-        }
-    )
-    run = RunRecord(
+    executor = ProcessBackend()
+    handle = _encode_handle({
+        "kind": "process",
+        "identity": {"pid": 12345, "start_time": 0, "time_basis": "linux-boot"},
+        "receipt_id": "a" * 32,
+        "socket_path": "/missing/socket",
+    })
+    record = RunRecord(
         id="run",
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutorEndpoint(), WorkingDirectory("/tmp"), handle),
+        execution=Execution(ExecutionEndpoint(), WorkingDirectory("/tmp"), handle),
         files=FileManifest(),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
     )
-    monkeypatch.setattr(remote_service, "_process_outcome", lambda receipt_id: None)
-    monkeypatch.setattr(remote_service.ProcessIdentity, "read", classmethod(lambda cls, pid: None))
-    (status,) = executor.status(run)
+    monkeypatch.setattr(process_operations, "_process_outcome", lambda receipt_id: None)
+    monkeypatch.setattr(process_operations.ProcessIdentity, "read", classmethod(lambda cls, pid: None))
+    (status,) = executor.status(JobAttachment(record.execution, record.files))
     assert status.state == RunState.UNKNOWN
 
 
@@ -55,8 +56,8 @@ def test_lost_is_not_a_run_state():
         (RunState.FAILED, FailurePhase.ARTIFACTS, "failed"),
     ],
 )
-def test_local_recovery_and_status_share_projection_without_extra_query(
-    monkeypatch, tmp_path, state, phase, stream_state
+def test_local_status_projection_and_identity_recovery_are_independent(
+    monkeypatch, tmp_path, state, phase, stream_state,
 ):
     output = tmp_path / "run.out"
     output.write_bytes(b"partial output")
@@ -67,37 +68,37 @@ def test_local_recovery_and_status_share_projection_without_extra_query(
         "error": "backend message",
         "failure_phase": None if phase is None else phase.value,
     }
-    remote_id = "opaque-backend-reference"
-    reply = {"remote_id": remote_id, **facts}
+    backend_id = "opaque-backend-reference"
     monkeypatch.setattr(
         local_project,
         "status_remote",
-        lambda backend_id: facts if backend_id == remote_id else pytest.fail("Unexpected backend identity"),
+        lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity"),
     )
-    queried = local_project.local_status(remote_id, files)
-
-    def no_second_status_query(_backend_id):
-        pytest.fail("Recovery must not query backend status again")
-
-    monkeypatch.setattr(local_project, "status_remote", no_second_status_query)
-
-    def recover(run_id, request):
-        assert run_id == "test-run"
-        assert request == {"executor": "local", "directory": str(tmp_path)}
-        return reply
-
-    monkeypatch.setattr(remote_service, "recover_remote", recover)
-    submission = SimpleNamespace(execution=SimpleNamespace(directory=SimpleNamespace(local=str(tmp_path))), files=files)
-    recovered = LocalExecutor().recover_submission("test-run", submission)
-    assert recovered == queried
-    assert recovered.backend_id == remote_id
-    assert recovered.message == "backend message"
-    assert recovered.failure_phase == phase
+    queried = local_project.local_status(backend_id, files)
+    monkeypatch.setattr(
+        process_operations, "recover_remote",
+        lambda run_id, request: (
+            {"remote_id": backend_id, "directory": str(tmp_path)}
+            if run_id == "test-run" and request == {"executor": "process", "directory": str(tmp_path)}
+            else pytest.fail("Unexpected recovery request")
+        ),
+    )
+    submission = JobAttachment(
+        Execution(ExecutionEndpoint(), WorkingDirectory(str(tmp_path))),
+        files,
+    )
+    recovered = ProcessBackend().recover_submission("test-run", submission)
+    assert recovered.disposition is RecoveryDisposition.FOUND
+    assert recovered.ref.backend == "process"
+    assert recovered.ref.token == backend_id
+    assert queried.backend_id == backend_id
+    assert queried.message == "backend message"
+    assert queried.failure_phase == phase
     if stream_state is None:
-        assert recovered.files is None
+        assert queried.files is None
         assert files.stdout.availability_state == "pending"
     else:
-        assert recovered.files.stdout.availability_state == stream_state
+        assert queried.files.stdout.availability_state == stream_state
         assert files.stdout.availability_state == "pending"
 
 

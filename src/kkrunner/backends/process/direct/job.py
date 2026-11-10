@@ -1,18 +1,17 @@
-"""Local subprocess execution backend."""
+"""Direct local subprocess Job without durable supervisor or reattach."""
 
 from __future__ import annotations
 
 import asyncio
 from threading import Event, Lock, Thread
 
-from kkrunner.backends.local_process import materialize_local_spec, pump_stream, start_local_process, stop_local_process
+from kkrunner.backends.process.primitives import pump_stream, start_local_process, stop_local_process
 from kkrunner.files.availability import clear_declared_outputs, discover_local_files, validate_output_collisions
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.paths import file_path
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionSpec,
-    Executor,
     FailurePhase,
     OutputObservers,
     RunState,
@@ -24,7 +23,7 @@ from kkrunner.runs.base import (
 )
 
 
-class LocalRunner:
+class ProcessJob:
     """One local subprocess execution.
 
     The runner owns only process lifecycle, output-file writing and raw output
@@ -60,6 +59,18 @@ class LocalRunner:
     @property
     def state(self):
         return self._state
+
+    @property
+    def ref(self):
+        # A raw local process has no durable supervisor/receipt identity.
+        return None
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        return job_status_from_facts(
+            self.state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
 
     @property
     def exception(self):
@@ -256,73 +267,3 @@ class LocalRunner:
             self.submit()
         return await asyncio.to_thread(self.wait)
 
-
-class LocalExecutor(Executor):
-    """Create raw runners executed as local subprocesses."""
-
-    name = "local"
-
-    def create_run(self, spec: ExecutionSpec, callback=None):
-        return LocalRunner(materialize_local_spec(spec), callback=callback)
-
-    def create_managed_run(self, spec: ExecutionSpec, *, run_id: str, callback=None):
-        from kkrunner.backends.local_managed import ManagedLocalRunner
-
-        return ManagedLocalRunner(
-            self,
-            spec,
-            run_id=run_id,
-            callback=callback,
-        )
-
-    def recover_submission(self, run_id, submission, *, submitted_at=None):
-        from kkrunner.backends.local_managed import _local_status_from_facts
-        from kkrunner.remote.service import recover_remote
-
-        reply = recover_remote(
-            run_id,
-            {
-                "executor": "local",
-                "directory": submission.execution.directory.local,
-            },
-        )
-        if reply is None:
-            # The absence of a ticket is not proof that submission never
-            # happened. Never authorize an automatic duplicate launch.
-            raise NotImplementedError("Submission identity is not recoverable")
-        return _local_status_from_facts(
-            reply["remote_id"],
-            reply,
-            submission.files,
-        )
-
-    def attach(self, run, callback=None, output_listener=None, start=True):
-        from kkrunner.backends.local_managed import attach_local
-
-        return attach_local(
-            self,
-            run,
-            callback=callback,
-            output_listener=output_listener,
-            start=start,
-        )
-
-    def acknowledge_submission(self, run):
-        from kkrunner.remote.service import acknowledge_submission
-
-        acknowledge_submission(run.id)
-
-    def acknowledge(self, run):
-        from kkrunner.remote.service import acknowledge_remote
-
-        acknowledge_remote(run.execution.backend_id)
-
-    def status(self, *runs):
-        from kkrunner.backends.local_managed import local_status
-
-        statuses = []
-        for run in runs:
-            if run.execution.endpoint.executor != "local":
-                raise ValueError("Run does not belong to the local backend")
-            statuses.append(local_status(run.execution.backend_id, run.files))
-        return tuple(statuses)

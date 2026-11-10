@@ -1,6 +1,6 @@
 import re
 
-from kkrunner.backends.psij import _slurm_time
+from kkrunner.backends.psij.slurm import _slurm_time
 
 
 def test_slurm_accounting_time_drops_timezone_offset():
