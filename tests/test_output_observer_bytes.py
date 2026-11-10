@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kkrunner.backends.process.engine import ProcessJob
+from kkrunner.backends.process.engine import DirectProcessJob
 from kkrunner.backends.process.supervised.job import _ObserverSink
 from kkrunner.backends.psij.job import PsijJob
-from kkrunner.client.remote_job import RemoteJob
+from kkrunner.client.agent_job import AgentJob
 from kkrunner.runs.base import OutputObservers
 
 
@@ -34,7 +34,7 @@ def test_emit_bytes_decodes_nonempty_chunks(data, expected):
 def test_local_forward_output_persists_and_observes_bytes(kind):
     received = []
     output = BytesIO()
-    runner = object.__new__(ProcessJob)
+    runner = object.__new__(DirectProcessJob)
     runner.spec = SimpleNamespace(output_file=output, error_file=None)
     runner._output_observers = OutputObservers(lambda text, stream: received.append((text, stream)))
     runner._forward_output(b"message:\xff", kind)
@@ -45,7 +45,7 @@ def test_local_forward_output_persists_and_observes_bytes(kind):
 
 def test_remote_pump_delivers_bytes_without_runner_decoder():
     received, written = ([], [])
-    runner = object.__new__(RemoteJob)
+    runner = object.__new__(AgentJob)
     runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
     runner._stream_writer = lambda data, kind: written.append((data, kind))
     source = SimpleNamespace(read=AsyncMock(side_effect=[b"remote:\xff", b""]))

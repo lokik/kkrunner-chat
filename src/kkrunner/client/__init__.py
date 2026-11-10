@@ -5,14 +5,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.contracts import JobAttachment, RunEndpoint, ReopenableRunEndpoint
-    from kkrunner.client.endpoint import ExecutionEndpoint
-    from kkrunner.client.pool import BackendPool, default_backend_pool
+    from kkrunner.client.endpoint import ExecutionEndpointConfig
+    from kkrunner.client.pool import ExecutorPool, default_executor_pool
     from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import LocalTransport, SshTransport, Transport
 
 __all__ = [
-    "AgentRunEndpoint", "BackendPool", "ExecutionEndpoint", "JobAttachment", "RunEndpoint", "ReopenableRunEndpoint", "LocalTransport",
-    "SshTransport", "SshDirectRunEndpoint", "SshDirectTransport", "Transport", "default_backend_pool",
+    "AgentRunEndpoint", "ExecutorPool", "ExecutionEndpointConfig", "JobAttachment", "RunEndpoint", "ReopenableRunEndpoint", "LocalTransport",
+    "SshTransport", "SshDirectRunEndpoint", "SshDirectTransport", "Transport", "default_executor_pool",
 ]
 
 
@@ -26,9 +26,9 @@ def __getattr__(name):
     elif name in ("JobAttachment", "RunEndpoint", "ReopenableRunEndpoint"):
         from . import contracts
         value = getattr(contracts, name)
-    elif name == "ExecutionEndpoint":
-        from .endpoint import ExecutionEndpoint as value
-    elif name in ("BackendPool", "default_backend_pool"):
+    elif name == "ExecutionEndpointConfig":
+        from .endpoint import ExecutionEndpointConfig as value
+    elif name in ("ExecutorPool", "default_executor_pool"):
         from . import pool
         value = getattr(pool, name)
     elif name in ("LocalTransport", "SshTransport", "Transport"):

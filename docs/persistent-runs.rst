@@ -22,7 +22,7 @@ After restarting the client, reopen the same store and call
 ``manager.attach(run_id)`` to continue a nonterminal run.
 
 Projects optionally group these runs by name and working directory.
-:class:`~kkrunner.projects.ProjectExecutionManager` adds project membership to the same
+:class:`~kkrunner.projects.ProjectRunManager` adds project membership to the same
 lifecycle; persistence does not require a project. See :doc:`projects`.
 
 Result processing
@@ -44,13 +44,13 @@ its missing result processor. The command is not submitted again:
    import tempfile
    from pathlib import Path
    from kkrunner import ExecutionSpec, ProcessingPending, RunManager, RunStore
-   from kkrunner.backends import ProcessBackend
+   from kkrunner.backends import DirectProcessBackend
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
    manager = RunManager(RunStore(directory / "runs"))
    run = manager.create_run(
-       ProcessBackend(),
+       DirectProcessBackend(),
        ExecutionSpec(
            [sys.executable, "-c", "print(43)"],
            directory=directory,

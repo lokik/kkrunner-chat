@@ -7,7 +7,7 @@ lives in this facade; Job remains the only owner of process state.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
-from kkrunner.client.contracts import RunEndpoint
+from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint
 
 if TYPE_CHECKING:
     from kkrunner.backends.contracts import Job
@@ -113,7 +113,7 @@ def status_attachment_for_backend(backend, attachment):
     return attachment
 
 
-class NativeRunEndpoint:
+class BackendRunEndpoint(RunEndpoint):
     """Compose a native Backend into the client-side Run protocol.
 
     The native backend never needs to import RunParts or know how the client
@@ -127,7 +127,7 @@ class NativeRunEndpoint:
         return RunParts(self.backend.create_job(spec, submission_key=submission_key, callback=callback))
 
 
-class NativeReopenableRunEndpoint(NativeRunEndpoint):
+class ReopenableBackendRunEndpoint(BackendRunEndpoint, ReopenableRunEndpoint):
     """Native backend with the explicit ability to reopen jobs."""
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
@@ -137,14 +137,14 @@ class NativeReopenableRunEndpoint(NativeRunEndpoint):
         ))
 
 
-def run_endpoint_for_backend(backend) -> RunEndpoint:
+def run_endpoint_for_executor(backend) -> RunEndpoint:
     """Native mechanisms require a client composition; remote proxies are endpoints."""
     from kkrunner.backends.contracts import Backend, ReopenableBackend
 
     if isinstance(backend, ReopenableBackend):
-        return NativeReopenableRunEndpoint(backend)
+        return ReopenableBackendRunEndpoint(backend)
     if isinstance(backend, Backend):
-        return NativeRunEndpoint(backend)
+        return BackendRunEndpoint(backend)
     if not isinstance(backend, RunEndpoint):
         raise TypeError("Expected a native Backend or a client RunEndpoint")
     return backend

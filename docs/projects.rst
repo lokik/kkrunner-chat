@@ -2,7 +2,7 @@ Group runs in projects
 ========================
 
 Projects are optional. :class:`~kkrunner.projects.ProjectRepository` stores project names,
-hierarchy and working directories. :class:`~kkrunner.projects.ProjectExecutionManager`
+hierarchy and working directories. :class:`~kkrunner.projects.ProjectRunManager`
 associates runs with a selected project and uses the same persistence and
 reservations as :class:`~kkrunner.RunManager`. Project definitions and run
 records have separate stores.
@@ -13,20 +13,20 @@ records have separate stores.
    import tempfile
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunStore
-   from kkrunner.backends import ProcessBackend
-   from kkrunner.projects import ProjectExecutionManager, ProjectRepository
+   from kkrunner.backends import DirectProcessBackend
+   from kkrunner.projects import ProjectRunManager, ProjectRepository
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
    projects = ProjectRepository(directory / "projects")
    project = projects.create("Example", directory=directory)
-   manager = ProjectExecutionManager(
+   manager = ProjectRunManager(
        store=RunStore(directory / "runs"),
        project_repository=projects,
        project=project,
    )
    run = manager.create_run(
-       ProcessBackend(),
+       DirectProcessBackend(),
        ExecutionSpec([sys.executable, "-c", "pass"], directory=directory),
    )
    print(run.run().return_code)

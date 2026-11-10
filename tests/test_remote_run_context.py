@@ -37,7 +37,7 @@ def test_different_run_staging_policies_share_one_endpoint(tmp_path):
 
 def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkeypatch):
     from kkrunner import RunState
-    from kkrunner.client.endpoint import endpoint_for_backend
+    from kkrunner.client.endpoint import endpoint_config_for_executor
     from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest
     from kkrunner.client.transport import LocalTransport
     from kkrunner.runs.model import Execution, WorkingDirectory
@@ -74,7 +74,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(endpoint_for_backend(endpoint), WorkingDirectory(str(local), str(remote)), "opaque-id"),
+        execution=Execution(endpoint_config_for_executor(endpoint), WorkingDirectory(str(local), str(remote)), "opaque-id"),
         files=files,
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -143,7 +143,7 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
     import builtins
 
     from kkrunner import RunState
-    from kkrunner.client.endpoint import endpoint_for_backend
+    from kkrunner.client.endpoint import endpoint_config_for_executor
     from kkrunner.files.manifest import FileEntry, FileManifest
     import kkrunner.client.remote_files as remote_files
     from kkrunner.client.transport import LocalTransport
@@ -162,7 +162,7 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(endpoint_for_backend(endpoint), WorkingDirectory(str(local), str(remote)), "remote-id"),
+        execution=Execution(endpoint_config_for_executor(endpoint), WorkingDirectory(str(local), str(remote)), "remote-id"),
         files=FileManifest(
             stdout=FileEntry(str(stdout), str(remote / "stdout.txt")),
             stderr=FileEntry(str(stderr), str(remote / "stderr.txt")),

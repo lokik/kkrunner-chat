@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionOutcome, ExecutionSpec, Run, RunState
-from kkrunner.client.remote_job import RemoteJob
+from kkrunner.client.agent_job import AgentJob
 from kkrunner.runs.base import FailurePhase
 
 
@@ -33,7 +33,7 @@ class _TransportContext:
 
 
 def _job(context, tmp_path):
-    return RemoteJob(context, ExecutionSpec(["true"], directory=tmp_path))
+    return AgentJob(context, ExecutionSpec(["true"], directory=tmp_path))
 
 
 def _configure(job, tmp_path):

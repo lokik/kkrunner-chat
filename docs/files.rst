@@ -75,7 +75,7 @@ until the managed run reaches a terminal state, including any transfers and
 required result processing. Detaching observation does not release it.
 
 Coordination applies to runs in the same ``RunStore``, even when different
-manager instances or projects use that store. ``ProjectExecutionManager`` uses
+manager instances or projects use that store. ``ProjectRunManager`` uses
 the same mechanism. Untracked ``Run.direct`` calls and separate stores do
 not coordinate these reservations.
 

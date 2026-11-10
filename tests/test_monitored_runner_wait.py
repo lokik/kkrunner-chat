@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
-from kkrunner.backends.process.direct.job import ProcessJob
-from kkrunner.client.remote_job import RemoteJob
+from kkrunner.backends.process.direct.job import DirectProcessJob
+from kkrunner.client.agent_job import AgentJob
 from kkrunner.runs.base import ExecutionSpec, RunState
 
 
-@pytest.mark.parametrize("job_class", (ProcessJob, RemoteJob))
+@pytest.mark.parametrize("job_class", (DirectProcessJob, AgentJob))
 @pytest.mark.parametrize(
     "state, message",
     (
@@ -21,16 +21,16 @@ from kkrunner.runs.base import ExecutionSpec, RunState
 )
 def test_wait_without_started_monitor_fails_immediately(tmp_path, job_class, state, message):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = job_class(spec) if job_class is ProcessJob else job_class(None, spec)
+    job = job_class(spec) if job_class is DirectProcessJob else job_class(None, spec)
     job._state = state
     with pytest.raises(RuntimeError, match=message):
         job.wait()
 
 
-@pytest.mark.parametrize("job_class", (ProcessJob, RemoteJob))
+@pytest.mark.parametrize("job_class", (DirectProcessJob, AgentJob))
 def test_wait_and_run_async_return_completed_monitor_result(tmp_path, job_class):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = job_class(spec) if job_class is ProcessJob else job_class(None, spec)
+    job = job_class(spec) if job_class is DirectProcessJob else job_class(None, spec)
     job._state = RunState.FINISHED
     job._thread = object()
     job._done.set()

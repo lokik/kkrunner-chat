@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -32,3 +33,17 @@ class ReopenableRunEndpoint(RunEndpoint, Protocol):
     """Optional ability to reattach client-side resources around an existing Job."""
 
     def open_run_parts(self, attachment: JobAttachment, *, callback=None, output_listener=None) -> RunParts: ...
+
+
+class RunningCommand(Protocol):
+    """A running command with independently readable output streams."""
+
+    stdout: asyncio.StreamReader
+    stderr: asyncio.StreamReader
+    returncode: int | None
+
+    async def wait(self) -> int: ...
+
+    def terminate(self) -> None: ...
+
+

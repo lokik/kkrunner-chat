@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from kkrunner.backends.process.direct.job import ProcessJob
+from kkrunner.backends.process.direct.job import DirectProcessJob
 from kkrunner.backends.process.supervised.job import SupervisedProcessJob
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.remote_job import RemoteJob
+from kkrunner.client.agent_job import AgentJob
 from kkrunner.runs.base import ExecutionSpec, RunState, close_output_files
 
 
@@ -37,7 +37,7 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
             raise RuntimeError("launch failed")
 
         monkeypatch.setattr("kkrunner.backends.process.direct.job.start_local_process", fail_to_launch)
-        runner = ProcessJob(spec)
+        runner = DirectProcessJob(spec)
         with pytest.raises(RuntimeError, match="launch failed"):
             asyncio.run(runner._execute())
         assert runner.state == RunState.FAILED
@@ -83,7 +83,7 @@ def test_remote_monitor_closes_merged_output_once_after_follow_failure(tmp_path)
         argv=("true",), directory=str(tmp_path), input_file=None, output_file=output, error_file=output
     )
     files = RemoteFileSession(object(), spec)
-    job = RemoteJob(UnreachableEndpoint(), spec, backend_id="job-1", remote_directory="/remote/case")
+    job = AgentJob(UnreachableEndpoint(), spec, backend_id="job-1", remote_directory="/remote/case")
     asyncio.run(job._monitor())
     assert job.state == RunState.UNKNOWN
     # The backend job never owns local output streams. Only the client file

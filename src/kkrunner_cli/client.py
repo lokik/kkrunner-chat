@@ -105,7 +105,7 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 
 def _persisted(args):
     from kkrunner.backends.contracts import JobAttachment
-    from kkrunner.client.endpoint import create_backend_from_endpoint
+    from kkrunner.client.endpoint import executor_from_endpoint
     from kkrunner.remote.service import cancel_remote, follow_remote
     record = _record(args)
     if args.host:
@@ -134,7 +134,7 @@ def _persisted(args):
             raise RuntimeError("Run has not been submitted")
         return {"state": record.state.value, "return_code": record.return_code,
                 "error": record.message}
-    backend = create_backend_from_endpoint(record.execution.endpoint)
+    backend = executor_from_endpoint(record.execution.endpoint)
     attachment = JobAttachment(record.execution, record.files)
     if args.action == "status":
         return _facts(backend.status(attachment)[0])

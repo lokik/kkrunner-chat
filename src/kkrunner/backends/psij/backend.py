@@ -8,6 +8,7 @@ from datetime import timedelta
 from threading import RLock
 
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
+from kkrunner.backends.contracts import RecoverableBackend
 
 from . import slurm
 from .job import PsijJob, psij_state
@@ -31,7 +32,7 @@ def _load_psij():
     return psij
 
 
-class PsijBackend:
+class PsijBackend(RecoverableBackend):
     """Execute calculations through a PSI/J backend such as Slurm or PBS."""
 
     name = "psij"
@@ -69,9 +70,9 @@ class PsijBackend:
         return PsijJob(self, spec, callback=callback, run_id=submission_key or uuid4().hex)
 
     def status(self, *runs):
-        from kkrunner.client.endpoint import endpoint_for_backend
+        from kkrunner.client.endpoint import endpoint_config_for_executor
 
-        expected = endpoint_for_backend(self)
+        expected = endpoint_config_for_executor(self)
         statuses = []
         for run in runs:
             if run.execution.endpoint != expected:
@@ -235,9 +236,9 @@ class PsijBackend:
         )
 
     def attach_job(self, context, *, callback=None, output_listener=None, start=False):
-        from kkrunner.client.endpoint import endpoint_for_backend
+        from kkrunner.client.endpoint import endpoint_config_for_executor
 
-        if context.endpoint != endpoint_for_backend(self):
+        if context.endpoint != endpoint_config_for_executor(self):
             raise ValueError("Run does not belong to this PSI/J endpoint")
         if context.ref.backend != "psij":
             raise ValueError("Job belongs to a different backend")

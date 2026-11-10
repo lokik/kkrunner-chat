@@ -243,10 +243,10 @@ def test_wildcard_output_collisions_follow_pattern_overlap(
 
 
 def test_remote_conflicts_use_declared_target_paths_before_staging(tmp_path):
-    from kkrunner.client.endpoint import ExecutionEndpoint
+    from kkrunner.client.endpoint import ExecutionEndpointConfig
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    endpoint = ExecutionEndpoint(executor="ssh", host="cluster")
+    endpoint = ExecutionEndpointConfig(executor="ssh", host="cluster")
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/jobs/shared",

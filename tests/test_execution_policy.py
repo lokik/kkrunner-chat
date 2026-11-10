@@ -3,9 +3,9 @@ import sys
 
 import pytest
 
-from kkrunner.client.endpoint import endpoint_for_backend
-from kkrunner.backends.process.backend import ProcessBackend
-from kkrunner.backends.process.direct.job import ProcessJob
+from kkrunner.client.endpoint import endpoint_config_for_executor
+from kkrunner.backends.process.backend import DirectProcessBackend
+from kkrunner.backends.process.direct.job import DirectProcessJob
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
 from kkrunner.client.transport import LocalTransport
@@ -26,7 +26,7 @@ def _local_spec(tmp_path, code="print('ok')"):
 
 
 def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path):
-    runner = ProcessJob(_local_spec(tmp_path))
+    runner = DirectProcessJob(_local_spec(tmp_path))
     observer_errors = []
 
     def broken_observer(*_):
@@ -43,7 +43,7 @@ def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path)
 
 
 def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
-    raw = ProcessJob(_local_spec(tmp_path))
+    raw = DirectProcessJob(_local_spec(tmp_path))
 
     def fail(_outcome):
         raise ValueError("parser failed")
@@ -58,7 +58,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
-    runner = ProcessJob(
+    runner = DirectProcessJob(
         _local_spec(tmp_path), callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed"))
     )
     runner.submit()
@@ -125,8 +125,8 @@ class _UncertainRunner(_NotStartedRunner):
 
 def _project_wrapper(tmp_path, runner):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    executor = ProcessBackend()
-    endpoint = endpoint_for_backend(executor)
+    executor = DirectProcessBackend()
+    endpoint = endpoint_config_for_executor(executor)
     record = manager.new_record(
         directory=tmp_path, endpoint=endpoint, metadata={"test": {"task": "SCF"}}, processing_required=True
     )
@@ -287,10 +287,10 @@ def test_partial_spec_distinguishes_unknown_from_empty_argv(tmp_path):
 
 def test_partial_spec_cannot_be_submitted_to_public_backend_apis(tmp_path):
     from kkrunner import ExecutionSpec, Run, RunManager, RunStore
-    from kkrunner.backends import ProcessBackend
+    from kkrunner.backends import DirectProcessBackend
 
     spec = ExecutionSpec(argv=None, directory=str(tmp_path))
-    backend = ProcessBackend()
+    backend = DirectProcessBackend()
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
         Run.direct(backend, spec)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):

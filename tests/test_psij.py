@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
-from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.backends.contracts import SubmissionContext
 from kkrunner.client.run_parts import backend_job_context
@@ -167,7 +167,7 @@ def _psij_run(directory, backend_id=None):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpoint(executor="psij", psij_backend="slurm"), WorkingDirectory(str(directory)), backend_id
+            ExecutionEndpointConfig(executor="psij", psij_backend="slurm"), WorkingDirectory(str(directory)), backend_id
         ),
         files=FileManifest(
             inputs=(FileEntry(local_path=str(directory / "run.inp")),),
@@ -528,7 +528,7 @@ def test_psij_status_and_attach_check_complete_endpoint(monkeypatch, tmp_path):
     foreign = replace(
         run,
         execution=replace(
-            run.execution, endpoint=ExecutionEndpoint(executor="psij", psij_backend="slurm", psij_url="ssh://cluster-b")
+            run.execution, endpoint=ExecutionEndpointConfig(executor="psij", psij_backend="slurm", psij_url="ssh://cluster-b")
         ),
     )
     with pytest.raises(ValueError, match="PSI/J endpoint"):
@@ -538,7 +538,7 @@ def test_psij_status_and_attach_check_complete_endpoint(monkeypatch, tmp_path):
     matching = replace(
         run,
         execution=replace(
-            run.execution, endpoint=ExecutionEndpoint(executor="psij", psij_backend="slurm", psij_url=executor.url)
+            run.execution, endpoint=ExecutionEndpointConfig(executor="psij", psij_backend="slurm", psij_url=executor.url)
         ),
     )
     seen = []

@@ -71,7 +71,7 @@ Backends and their execution contracts
 .. autosummary::
    :toctree: _generated
 
-   ProcessBackend
+   DirectProcessBackend
    PsijBackend
    Job
    JobRef
@@ -104,9 +104,9 @@ Client endpoints, transport and pooling
    RunEndpoint
    ReopenableRunEndpoint
    JobAttachment
-   ExecutionEndpoint
-   BackendPool
-   default_backend_pool
+   ExecutionEndpointConfig
+   ExecutorPool
+   default_executor_pool
    Transport
    LocalTransport
    SshTransport
@@ -124,7 +124,7 @@ Projects
    ProjectRepositoryError
    ProjectConflictError
    ProjectDeleteError
-   ProjectExecutionManager
+   ProjectRunManager
    default_projects_directory
 
 Implementation interfaces
@@ -138,10 +138,10 @@ helpers. They are not re-exported by the public facades.
 .. autosummary::
    :toctree: _generated
 
-   backends.process.direct.job.ProcessJob
+   backends.process.direct.job.DirectProcessJob
    backends.process.supervised.job.SupervisedProcessJob
    backends.psij.job.PsijJob
-   client.remote_job.RemoteJob
+   client.remote_job.AgentJob
    client.remote_files.RemoteFileSession
    runs.base.ExecutionResources
    runs.base.ResourceOwnedRunner

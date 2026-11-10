@@ -6,7 +6,7 @@ from kkrunner import RunState
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.agent import AgentRunEndpoint
-from kkrunner.client.endpoint import endpoint_for_backend
+from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files import FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
@@ -16,7 +16,7 @@ class _Transport:
 
 
 def _run(native_id, *, backend="psij"):
-    endpoint = endpoint_for_backend(AgentRunEndpoint(_Transport(), backend=backend))
+    endpoint = endpoint_config_for_executor(AgentRunEndpoint(_Transport(), backend=backend))
     return RunRecord(
         id=native_id or "unconfirmed",
         state=RunState.RUNNING,

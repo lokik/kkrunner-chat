@@ -1,7 +1,7 @@
 """Client-side staging, stream persistence and result-file synchronization.
 
 This session never submits, observes, waits for, or cancels a backend job. A
-Run owns the session and invokes it before and after a distinct RemoteJob.
+Run owns the session and invokes it before and after a distinct AgentJob.
 """
 
 from __future__ import annotations
@@ -600,10 +600,10 @@ class RemoteFileSession:
     def execution(self, backend_id):
         if backend_id is None and self._remote_directory is None:
             return None
-        from kkrunner.client.endpoint import endpoint_for_backend
+        from kkrunner.client.endpoint import endpoint_config_for_executor
         from kkrunner.runs.model import Execution, WorkingDirectory
         return Execution(
-            endpoint_for_backend(self.context.endpoint),
+            endpoint_config_for_executor(self.context.endpoint),
             WorkingDirectory(os.path.abspath(self.spec.directory), self._remote_directory),
             backend_id=backend_id,
         )

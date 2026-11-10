@@ -66,17 +66,17 @@ def test_backend_and_client_contracts_have_distinct_owners():
     from kkrunner.backends.contracts import Backend, BackendJobContext, SubmissionContext
     from kkrunner.client.contracts import JobAttachment, RunEndpoint, ReopenableRunEndpoint
     from kkrunner.client import AgentRunEndpoint, SshDirectRunEndpoint, LocalTransport
-    from kkrunner.backends import ProcessBackend, SupervisedProcessBackend, PsijBackend
-    from kkrunner.client.run_parts import run_endpoint_for_backend
+    from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend, PsijBackend
+    from kkrunner.client.run_parts import run_endpoint_for_executor
 
-    assert isinstance(ProcessBackend(), Backend)
+    assert isinstance(DirectProcessBackend(), Backend)
     assert isinstance(SupervisedProcessBackend(), Backend)
     assert not isinstance(AgentRunEndpoint(LocalTransport()), Backend)
     assert not isinstance(SshDirectRunEndpoint(LocalTransport()), Backend)
     assert not isinstance(SshDirectRunEndpoint(LocalTransport()), ReopenableRunEndpoint)
     assert not hasattr(AgentRunEndpoint, "create_job")
     assert not hasattr(SshDirectRunEndpoint, "create_job")
-    assert run_endpoint_for_backend(ProcessBackend()).backend.__class__ is ProcessBackend
+    assert run_endpoint_for_executor(DirectProcessBackend()).backend.__class__ is DirectProcessBackend
     assert JobAttachment.__module__ == "kkrunner.client.contracts"
     assert Backend.__module__ == "kkrunner.backends.contracts"
     assert BackendJobContext.__module__ == "kkrunner.backends.contracts"
@@ -88,11 +88,11 @@ def test_native_backend_attach_receives_only_job_context(tmp_path):
     from kkrunner.backends.contracts import BackendJobContext, JobRef, SubmissionContext
     from kkrunner.client.contracts import JobAttachment
     from kkrunner.client.run_parts import backend_job_context
-    from kkrunner.client.endpoint import ExecutionEndpoint
+    from kkrunner.client.endpoint import ExecutionEndpointConfig
     from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.files.manifest import FileManifest, FileEntry
 
-    execution = Execution(ExecutionEndpoint(executor="psij"), WorkingDirectory(str(tmp_path)), "native-1")
+    execution = Execution(ExecutionEndpointConfig(executor="psij"), WorkingDirectory(str(tmp_path)), "native-1")
     files = FileManifest(stdout=FileEntry(local_path=str(tmp_path / "output")))
     client = JobAttachment(execution, files)
     backend = backend_job_context(client, "psij")
@@ -104,19 +104,70 @@ def test_native_backend_attach_receives_only_job_context(tmp_path):
 
 
 def test_raw_ssh_and_local_share_native_job_factory(monkeypatch, tmp_path):
-    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.backend import DirectProcessBackend
     from kkrunner.client import SshDirectRunEndpoint, LocalTransport
     from kkrunner.runs.base import ExecutionSpec
 
     calls = []
-    original = ProcessBackend.create_job
+    original = DirectProcessBackend.create_job
 
     def observed(self, spec, *, submission_key=None, callback=None):
         calls.append((self._adapter_factory is not None, submission_key))
         return original(self, spec, submission_key=submission_key, callback=callback)
 
-    monkeypatch.setattr(ProcessBackend, "create_job", observed)
+    monkeypatch.setattr(DirectProcessBackend, "create_job", observed)
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    ProcessBackend().create_job(spec)
+    DirectProcessBackend().create_job(spec)
     SshDirectRunEndpoint(LocalTransport()).create_run_parts(spec, submission_key="token")
     assert calls == [(False, None), (True, "token")]
+
+
+def test_every_native_backend_has_explicit_nominal_contract():
+    from kkrunner.backends.contracts import Backend, ReopenableBackend, RecoverableBackend
+    from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend, PsijBackend
+    from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint
+    from kkrunner.client import AgentRunEndpoint, SshDirectRunEndpoint
+    from kkrunner.client.run_parts import BackendRunEndpoint, ReopenableBackendRunEndpoint
+
+    assert Backend in DirectProcessBackend.__mro__
+    assert RecoverableBackend in SupervisedProcessBackend.__mro__
+    assert RecoverableBackend in PsijBackend.__mro__
+    assert not issubclass(SupervisedProcessBackend, DirectProcessBackend)
+    assert not issubclass(DirectProcessBackend, ReopenableBackend)
+    assert DirectProcessBackend.name != SupervisedProcessBackend.name
+    assert issubclass(BackendRunEndpoint, RunEndpoint)
+    assert issubclass(ReopenableBackendRunEndpoint, ReopenableRunEndpoint)
+    assert issubclass(AgentRunEndpoint, ReopenableRunEndpoint)
+    assert issubclass(SshDirectRunEndpoint, RunEndpoint)
+    assert not issubclass(SshDirectRunEndpoint, ReopenableRunEndpoint)
+
+
+def test_job_is_a_structural_contract_not_an_inherited_abstract_property(tmp_path):
+    from kkrunner.backends.contracts import Job
+    from kkrunner.backends import DirectProcessBackend
+    from kkrunner.runs.base import ExecutionSpec
+
+    spec = ExecutionSpec(("true",), directory=str(tmp_path))
+    job = DirectProcessBackend().create_job(spec)
+    assert isinstance(job, Job)
+    assert job.spec is spec
+
+
+def test_protocol_definitions_are_independent_of_implementations():
+    import kkrunner.backends as backends
+    import kkrunner.client as client
+    from kkrunner.backends.contracts import Backend, Job, RecoverableBackend
+    from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint, RunningCommand
+    from kkrunner.backends.process.direct.contracts import DirectProcessAdapter
+
+    assert Backend.__module__ == "kkrunner.backends.contracts"
+    assert RecoverableBackend.__module__ == "kkrunner.backends.contracts"
+    assert Job.__module__ == "kkrunner.backends.contracts"
+    assert RunEndpoint.__module__ == "kkrunner.client.contracts"
+    assert ReopenableRunEndpoint.__module__ == "kkrunner.client.contracts"
+    assert RunningCommand.__module__ == "kkrunner.client.contracts"
+    assert DirectProcessAdapter.__module__ == "kkrunner.backends.process.direct.contracts"
+    assert not hasattr(backends, "ProcessBackend")
+    assert not hasattr(backends, "ProtocolBackend")
+    assert not hasattr(client, "BackendPool")
+    assert not hasattr(client, "ExecutionEndpoint")

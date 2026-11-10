@@ -62,8 +62,8 @@ def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
     backend = SshDirectRunEndpoint(LocalTransport())
     parts = backend.create_run_parts(spec, submission_key="client-submission-key")
-    from kkrunner.backends.process.direct.job import ProcessJob
-    assert isinstance(parts.job, ProcessJob)
+    from kkrunner.backends.process.direct.job import DirectProcessJob
+    assert isinstance(parts.job, DirectProcessJob)
     from kkrunner.client.contracts import ReopenableRunEndpoint
     assert not isinstance(backend, ReopenableRunEndpoint)
     assert not hasattr(backend, "recover_submission")
@@ -102,14 +102,14 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
 
 
 def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
-    from kkrunner.backends.process.backend import ProcessBackend
-    from kkrunner.backends.process.direct.job import ProcessJob
-    local = ProcessBackend().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
+    from kkrunner.backends.process.backend import DirectProcessBackend
+    from kkrunner.backends.process.direct.job import DirectProcessJob
+    local = DirectProcessBackend().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
     remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(
         ExecutionSpec(argv=("true",), directory=str(tmp_path))
     ).job
-    assert type(local) is ProcessJob
-    assert type(remote) is ProcessJob
+    assert type(local) is DirectProcessJob
+    assert type(remote) is DirectProcessJob
     assert local.adapter.expose_pid is True
     assert remote.adapter.expose_pid is False
 
@@ -130,29 +130,29 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
 
 
 def test_direct_endpoint_round_trip_and_normalized_identity():
-    from kkrunner.client.endpoint import ExecutionEndpoint, create_backend_from_endpoint, endpoint_for_backend
+    from kkrunner.client.endpoint import ExecutionEndpointConfig, executor_from_endpoint, endpoint_config_for_executor
     from kkrunner.client.ssh_direct import SshDirectTransport
 
-    endpoint = endpoint_for_backend(
+    endpoint = endpoint_config_for_executor(
         SshDirectRunEndpoint(SshDirectTransport("user@example.net", options=("-p", "2200")))
     )
     assert endpoint.executor == "ssh-direct"
-    restored = create_backend_from_endpoint(endpoint)
+    restored = executor_from_endpoint(endpoint)
     assert isinstance(restored, SshDirectRunEndpoint)
-    assert endpoint_for_backend(restored) == endpoint
+    assert endpoint_config_for_executor(restored) == endpoint
     configured = SshDirectRunEndpoint(
         SshDirectTransport("user@example.net", python_command=("python3.12",))
     )
-    normalized_python = endpoint_for_backend(configured)
+    normalized_python = endpoint_config_for_executor(configured)
     assert normalized_python.python_command == ("python3.12",)
-    assert endpoint_for_backend(create_backend_from_endpoint(normalized_python)) == normalized_python
-    normalized = ExecutionEndpoint(
+    assert endpoint_config_for_executor(executor_from_endpoint(normalized_python)) == normalized_python
+    normalized = ExecutionEndpointConfig(
         executor="ssh-direct", host="user@example.net",
         remote_command=("unrelated-agent",), psij_backend="slurm",
     )
     assert normalized.remote_command == ()
     assert normalized.psij_backend is None
-    assert normalized == ExecutionEndpoint(executor="ssh-direct", host="user@example.net")
+    assert normalized == ExecutionEndpointConfig(executor="ssh-direct", host="user@example.net")
 
 
 def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
@@ -196,8 +196,8 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
 
 
 def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path):
-    from kkrunner.backends.process.backend import ProcessBackend
-    job = ProcessBackend().create_job(
+    from kkrunner.backends.process.backend import DirectProcessBackend
+    job = DirectProcessBackend().create_job(
         ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path))
     )
     assert job.run().return_code == 0

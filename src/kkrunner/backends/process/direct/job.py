@@ -1,4 +1,4 @@
-"""Transport-neutral direct ProcessJob: a single execution lifecycle.
+"""Transport-neutral direct DirectProcessJob: a single execution lifecycle.
 
 The adapter implements process creation, target-specific output persistence,
 termination and final file validation. Local and SSH direct share the same
@@ -21,7 +21,7 @@ from kkrunner.runs.base import (
 
 
 
-class ProcessJob:
+class DirectProcessJob:
     """A client-owned, non-reconnectable direct process on any transport."""
 
     def __init__(self, spec: ExecutionSpec, callback=None, *, adapter: DirectProcessAdapter | None = None):

@@ -101,8 +101,8 @@ class Run:
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
-        from kkrunner.client.run_parts import run_endpoint_for_backend
-        parts = run_endpoint_for_backend(backend).create_run_parts(spec)
+        from kkrunner.client.run_parts import run_endpoint_for_executor
+        parts = run_endpoint_for_executor(backend).create_run_parts(spec)
         parts.configure_detached(
             getattr(backend, "default_detached", False) if detached is None else detached,
             default=getattr(backend, "default_detached", False),
@@ -466,7 +466,7 @@ class Run:
             raise
 
         if manager is not None:
-            manager.register_backend(self.backend, self._record.execution.endpoint)
+            manager.register_executor(self.backend, self._record.execution.endpoint)
             with self._completion_lock:
                 if not self._completion_persisted:
                     from kkrunner.runs.manager import _UNCHANGED

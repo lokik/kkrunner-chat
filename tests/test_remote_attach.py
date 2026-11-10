@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.client.endpoint import endpoint_for_backend
+from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files.manifest import FileManifest
 from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.transport import LocalTransport
@@ -161,7 +161,7 @@ def test_remote_executor_attach_rejects_reference_for_other_backend(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_for_backend(_executor(backend="psij")),
+            endpoint_config_for_executor(_executor(backend="psij")),
             WorkingDirectory(str(tmp_path), "/remote/calculation"),
             "job",
         ),
@@ -192,7 +192,7 @@ def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_for_backend(endpoint), WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle"
+            endpoint_config_for_executor(endpoint), WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle"
         ),
         files=FileManifest(stdout=FileEntry(local_path=str(local_output), remote_path=str(remote_root / "run.out"))),
         metadata={"example": {"task": "SCF"}},

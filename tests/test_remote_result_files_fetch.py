@@ -1,7 +1,7 @@
 import pytest
 
 from kkrunner import RunState
-from kkrunner.client.endpoint import endpoint_for_backend
+from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 from kkrunner.files.manifest import FileMapping
 from kkrunner.client.agent import AgentRunEndpoint
@@ -37,7 +37,7 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_for_backend(executor),
+            endpoint_config_for_executor(executor),
             WorkingDirectory(str(local_directory), str(remote_directory)),
             "opaque-historical-handle",
         ),
@@ -97,7 +97,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_for_backend(executor),
+            endpoint_config_for_executor(executor),
             WorkingDirectory(str(local_root / "calc"), str(remote_dir)),
             "opaque-handle",
         ),
@@ -133,7 +133,7 @@ def test_remote_staged_result_keeps_canonical_file_absent(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_for_backend(executor), WorkingDirectory(str(local_dir), str(remote_dir)), "backend-id"
+            endpoint_config_for_executor(executor), WorkingDirectory(str(local_dir), str(remote_dir)), "backend-id"
         ),
         files=FileManifest(
             mapping=FileMapping(str(local_root), str(remote_root)),
@@ -174,7 +174,7 @@ def test_fetch_rejects_local_symlink_escape(tmp_path, wildcard):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_for_backend(executor), WorkingDirectory(str(local_root), str(remote_root)), "backend-id"
+            endpoint_config_for_executor(executor), WorkingDirectory(str(local_root), str(remote_root)), "backend-id"
         ),
         files=FileManifest(
             outputs=(FileEntry(str(local_path), str(remote_path)),),
@@ -208,7 +208,7 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(endpoint_for_backend(executor), WorkingDirectory(str(local), str(remote)), "backend-id"),
+        execution=Execution(endpoint_config_for_executor(executor), WorkingDirectory(str(local), str(remote)), "backend-id"),
         files=FileManifest(
             outputs=(FileEntry(str(canonical), str(remote / "bad" / "output.dat")),),
             mapping=FileMapping(str(local), str(remote)),

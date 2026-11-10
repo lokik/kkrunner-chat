@@ -47,7 +47,7 @@ def _run(tmp_path, *, manager=None, backend=None, record=None, job=None, callbac
             record, state=RunState.RUNNING,
             execution=record.execution.submitted("backend-job"),
         )
-    manager.register_backend(backend, record.execution.endpoint)
+    manager.register_executor(backend, record.execution.endpoint)
     job = job or _Job()
     return Run(job, manager=manager, backend=backend, record=record, callback=callback), job, manager, backend
 

@@ -14,8 +14,8 @@ from uuid import uuid4
 
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
-from kkrunner.client.pool import default_backend_pool
+from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_config_for_executor
+from kkrunner.client.pool import default_executor_pool
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus, SubmissionNotStarted
@@ -103,22 +103,22 @@ class RunManager(RunFileHistory):
         finally:
             RunManager._default_override.reset(token)
 
-    def __init__(self, store=None, *, backend_pool=None, submitting_grace=60.0):
+    def __init__(self, store=None, *, executor_pool=None, submitting_grace=60.0):
         if submitting_grace < 0:
             raise ValueError("submitting_grace must be non-negative")
         self.store = store
-        self.backend_pool = backend_pool if backend_pool is not None else default_backend_pool()
+        self.executor_pool = executor_pool if executor_pool is not None else default_executor_pool()
         self._ack_lock = Lock()
         self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
 
-    def register_backend(self, backend, endpoint=None):
-        endpoint = endpoint or endpoint_for_backend(backend)
-        self.backend_pool.get(endpoint, lambda: backend)
+    def register_executor(self, backend, endpoint=None):
+        endpoint = endpoint or endpoint_config_for_executor(backend)
+        self.executor_pool.get(endpoint, lambda: backend)
         return endpoint
 
-    def backend_for(self, record):
-        return self.backend_pool.for_endpoint(record.execution.endpoint)
+    def executor_for(self, record):
+        return self.executor_pool.for_endpoint(record.execution.endpoint)
 
     def new_record(
         self,
@@ -142,7 +142,7 @@ class RunManager(RunFileHistory):
             updated_at=now,
             metadata={} if metadata is None else metadata,
             processing_required=processing_required,
-            execution=Execution(endpoint or ExecutionEndpoint(), WorkingDirectory(local, remote_directory),
+            execution=Execution(endpoint or ExecutionEndpointConfig(), WorkingDirectory(local, remote_directory),
                                  submission_key=submission_key),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
@@ -262,7 +262,7 @@ class RunManager(RunFileHistory):
         record = self.store.get(record.id)
         if not self._is_stale_submitting(record):
             return record
-        executor = self.backend_for(record)
+        executor = self.executor_for(record)
         if not hasattr(executor, "recover_submission"):
             # A tracked direct process has no durable backend identity. Keep
             # uncertainty rather than claiming that no process was launched.
@@ -450,7 +450,7 @@ class RunManager(RunFileHistory):
                 message=status.message,
                 failure_phase=phase,
             )
-        self._acknowledge_submission(self.backend_for(updated), updated)
+        self._acknowledge_submission(self.executor_for(updated), updated)
         self._acknowledge_result(updated)
         return updated
 
@@ -684,7 +684,7 @@ class RunManager(RunFileHistory):
             if key in self._acknowledged_results:
                 return True
             try:
-                executor = self.backend_for(record)
+                executor = self.executor_for(record)
                 acknowledge = getattr(executor, "acknowledge", None)
                 if acknowledge is not None:
                     acknowledge(record)
@@ -720,7 +720,7 @@ class RunManager(RunFileHistory):
             spec.require_complete()
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
-        endpoint = endpoint_for_backend(backend)
+        endpoint = endpoint_config_for_executor(backend)
         record = self.new_record(
             metadata=metadata,
             processing_required=(process_result is not None if processing_required is None else processing_required),
@@ -731,9 +731,9 @@ class RunManager(RunFileHistory):
             run_id=run_id,
             submission_key=uuid4().hex,
         )
-        self.register_backend(backend, endpoint)
-        from kkrunner.client.run_parts import run_endpoint_for_backend
-        parts = run_endpoint_for_backend(backend).create_run_parts(
+        self.register_executor(backend, endpoint)
+        from kkrunner.client.run_parts import run_endpoint_for_executor
+        parts = run_endpoint_for_executor(backend).create_run_parts(
             spec, submission_key=record.execution.submission_key,
         )
         parts.configure_detached(
@@ -763,7 +763,7 @@ class RunManager(RunFileHistory):
                 # processing attempt. Re-querying backend status could
                 # overwrite local processing state with a stale failure.
                 continue
-            executor = self.backend_for(record)
+            executor = self.executor_for(record)
             groups.setdefault(executor, []).append(record)
 
         for executor, group in groups.items():
@@ -802,10 +802,10 @@ class RunManager(RunFileHistory):
             raise ValueError("This Run did not request postprocessing")
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has no backend reference")
-        backend = self.backend_for(record) if backend is None else backend
-        self.register_backend(backend, record.execution.endpoint)
-        from kkrunner.client.run_parts import run_endpoint_for_backend
-        parts = run_endpoint_for_backend(backend).open_run_parts(
+        backend = self.executor_for(record) if backend is None else backend
+        self.register_executor(backend, record.execution.endpoint)
+        from kkrunner.client.run_parts import run_endpoint_for_executor
+        parts = run_endpoint_for_executor(backend).open_run_parts(
             JobAttachment(record.execution, record.files),
             output_listener=output_listener,
         )

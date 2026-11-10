@@ -3,12 +3,12 @@
 import pytest
 
 from kkrunner import RunStore
-from kkrunner.projects import ProjectExecutionManager, ProjectRepository
+from kkrunner.projects import ProjectRunManager, ProjectRepository
 from kkrunner.projects.resolution import resolve_project_manager
 
 
 def _manager(tmp_path):
-    return ProjectExecutionManager(
+    return ProjectRunManager(
         RunStore(tmp_path / "runs"), project_repository=ProjectRepository(tmp_path / "projects")
     )
 

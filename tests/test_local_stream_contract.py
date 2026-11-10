@@ -6,7 +6,7 @@ import pytest
 
 import kkrunner.backends.process.direct.job as direct_job
 import kkrunner.backends.process.direct.local as local
-from kkrunner.backends.process.backend import ProcessBackend
+from kkrunner.backends.process.backend import DirectProcessBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
 
@@ -16,7 +16,7 @@ def test_local_stream_targets_are_independent(tmp_path, store_stdout, store_stde
     stderr_path = tmp_path / "stderr.txt"
     stdout = stdout_path.open("wb") if store_stdout else None
     stderr = stderr_path.open("wb") if store_stderr else None
-    runner = ProcessBackend().create_job(
+    runner = DirectProcessBackend().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import sys; print('from stdout'); print('from stderr', file=sys.stderr)"),
             input_file=None,
@@ -50,7 +50,7 @@ def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
         await stop(process)
 
     monkeypatch.setattr(local, "stop_local_process", record_stop)
-    runner = ProcessBackend().create_job(
+    runner = DirectProcessBackend().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import time; time.sleep(30)"),
             directory=str(tmp_path),
@@ -80,7 +80,7 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
 
     monkeypatch.setattr(local, "stop_local_process", record_stop)
     monkeypatch.setattr(direct_job, "pump_stream", failing_pump)
-    runner = ProcessBackend().create_job(
+    runner = DirectProcessBackend().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import time; time.sleep(30)"),
             directory=str(tmp_path),
@@ -102,11 +102,11 @@ def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
         directory=str(tmp_path),
         output_files=("missing.output",),
     )
-    native = ProcessBackend().create_job(spec)
+    native = DirectProcessBackend().create_job(spec)
     native.run()
     assert native.state == RunState.FINISHED
 
-    run = Run.direct(ProcessBackend(), spec)
+    run = Run.direct(DirectProcessBackend(), spec)
     run.run()
     assert run.state == RunState.FAILED
     assert run.files.failed_artifacts
@@ -121,7 +121,7 @@ def test_local_direct_spec_retains_declared_paths_during_execution(tmp_path):
         output_file=str(tmp_path / "stdout.txt"),
         error_file=str(tmp_path / "stderr.txt"),
     )
-    run = Run.direct(ProcessBackend(), spec)
+    run = Run.direct(DirectProcessBackend(), spec)
     assert run.spec is spec
     run.submit()
     assert run.spec is spec
@@ -147,7 +147,7 @@ def test_local_direct_mpi_resolution_does_not_replace_declaration(tmp_path, monk
         directory=str(tmp_path),
         output_file=str(tmp_path / "output.txt"),
     )
-    run = Run.direct(ProcessBackend(), spec)
+    run = Run.direct(DirectProcessBackend(), spec)
     assert run.spec is spec
     assert run.run().return_code == 0
     assert run.spec is spec
