@@ -17,10 +17,10 @@ Use `python -m pip install --editable .` instead when editing the source.
 
 ```python
 import sys
-from kkrunner import ExecutionSpec
-from kkrunner.backends import LocalExecutor
+from kkrunner import ExecutionSpec, Run
+from kkrunner.backends import ProcessBackend
 
-run = LocalExecutor().create_run(ExecutionSpec([sys.executable, '-c', 'print(42)']))
+run = Run.direct(ProcessBackend(), ExecutionSpec([sys.executable, '-c', 'print(42)']))
 outcome = run.run()
 assert outcome.return_code == 0
 ```
@@ -34,13 +34,13 @@ Projects are optional; see the [project guide](docs/projects.rst) for grouping.
 import sys
 from pathlib import Path
 from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.backends import LocalExecutor
+from kkrunner.backends import ProcessBackend
 
 root = Path('example').absolute()
 root.mkdir(exist_ok=True)
 manager = RunManager(RunStore(root / 'runs'))
 run = manager.create_run(
-    LocalExecutor(),
+    ProcessBackend(),
     ExecutionSpec([sys.executable, '-c', 'print(42)'],
                   directory=root, output_file='stdout.txt'),
     metadata={'example': {'label': 'answer'}},
@@ -111,7 +111,7 @@ not private, and an upload to PyPI is public even for a development version.
 ## Documentation
 
 Documentation is published at <https://ase2sprkkr.github.io/kkrunner/> after
-successful runtime and documentation checks on `master`.
+successful release-tag documentation checks.
 
 The user guide and API reference use Sphinx with the Read the Docs theme.
 Install the documentation extra and build the HTML and examples:
