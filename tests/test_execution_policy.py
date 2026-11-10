@@ -7,7 +7,7 @@ from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.backends.process.engine import ProcessBackend, ProcessJob
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
-from kkrunner.remote.transport import LocalTransport
+from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.run import Run
