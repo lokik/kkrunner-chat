@@ -40,7 +40,7 @@ For a nonstandard installation, pass an explicit protocol command:
 
    executor = AgentBackendProxy(
        SshTransport("user@cluster"),
-       command=("/opt/kkrunner/bin/kkrunner"),
+       command=("/opt/kkrunner/bin/kkrunner-agent"),
        filesystem_id="cluster-home",
    )
 
@@ -71,7 +71,7 @@ It is useful for development and does not require a second machine:
    local.mkdir()
    remote.mkdir()
    executor = AgentBackendProxy(
-       LocalTransport(), command=(sys.executable, "-m", "kkrunner"),
+       LocalTransport(), command=(sys.executable, "-m", "kkrunner_cli"),
    )
    outcome = Run.direct(executor, ExecutionSpec(
        [sys.executable, "-c", "print(44)"],

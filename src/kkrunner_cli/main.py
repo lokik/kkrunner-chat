@@ -1,4 +1,4 @@
-"""Lightweight CLI: route direct control actions without loading KKRunner on --help."""
+"""One-shot target-side control agent; no user-facing run selection."""
 
 import json
 import sys
@@ -7,63 +7,39 @@ help = "Control KKRunner execution on this machine."
 description = "Submit, inspect, follow and cancel remote execution handles."
 
 
-def parser(parser, *, user=False):
-    if user:
-        parser.set_defaults(protocol_version=None)
-    else:
-        parser.add_argument(
-            "--protocol-version", type=int, help="control protocol version supplied by an execution client"
-        )
-    actions = parser.add_subparsers(dest="remote_action", required=True)
-
-    if not user:
-        submit = actions.add_parser("submit")
-        submit.add_argument("directory")
-
+def parser(argument_parser):
+    argument_parser.add_argument("--protocol-version", type=int, required=True,
+                                help="control protocol version supplied by an execution client")
+    actions = argument_parser.add_subparsers(dest="remote_action", required=True)
+    submit = actions.add_parser("submit")
+    submit.add_argument("directory")
     status = actions.add_parser("status")
     status.add_argument("remote_id")
-
     cancel = actions.add_parser("cancel")
     cancel.add_argument("remote_id")
-
     follow = actions.add_parser("follow")
     follow.add_argument("remote_id")
     follow.add_argument("--stdout-path")
     follow.add_argument("--stderr-path")
-    follow.add_argument("--live", action="store_true", help="observe new output only, without replay")
+    follow.add_argument("--live", action="store_true")
     follow.add_argument("--stdout-offset", type=int, default=0)
     follow.add_argument("--stderr-offset", type=int, default=0)
     follow.add_argument("--live-stdout", action="store_true")
     follow.add_argument("--live-stderr", action="store_true")
-    follow.add_argument(
-        "--framed",
-        action="store_true",
-        help="multiplex calculation stdout/stderr over stdout using the binary protocol",
-    )
-
-    if not user:
-        recover = actions.add_parser("recover")
-        recover.add_argument("directory")
-        recover.add_argument("run_id")
-
-        ack_submit = actions.add_parser("ack-submit")
-        ack_submit.add_argument("backend")
-        ack_submit.add_argument("run_id")
-
-        ack = actions.add_parser("ack")
-        ack.add_argument("remote_id")
-
-        actions.add_parser("resolve-mpi")
-        actions.add_parser("query-files")
-        actions.add_parser("finalize-upload")
-
-    if user:
-        return {"status": status, "follow": follow, "cancel": cancel}
+    follow.add_argument("--framed", action="store_true")
+    recover = actions.add_parser("recover")
+    recover.add_argument("directory")
+    recover.add_argument("run_id")
+    ack_submit = actions.add_parser("ack-submit")
+    ack_submit.add_argument("backend")
+    ack_submit.add_argument("run_id")
+    ack = actions.add_parser("ack")
+    ack.add_argument("remote_id")
+    actions.add_parser("resolve-mpi")
+    actions.add_parser("query-files")
+    actions.add_parser("finalize-upload")
 
 
-def user_parser(argument_parser):
-    """Add only interactive status, follow and cancel actions to another CLI."""
-    parser(argument_parser, user=True)
 
 def _print_json(value):
     print(json.dumps(value), flush=True)
@@ -86,12 +62,7 @@ class _FramedSink:
 def run(args, global_args=None):
     from kkrunner.remote.protocol import CONTROL_PROTOCOL_VERSION, check_control_protocol
 
-    version = args.protocol_version
-    if version is None:
-        if args.remote_action not in ("status", "follow", "cancel"):
-            raise ValueError("An explicit --protocol-version is required for internal control actions")
-        version = CONTROL_PROTOCOL_VERSION
-    check_control_protocol(version)
+    check_control_protocol(args.protocol_version)
     if args.remote_action == "query-files":
         from kkrunner.files.queries import query_files
 
@@ -179,15 +150,10 @@ def run(args, global_args=None):
 def main(argv=None):
     import argparse
 
-    root = argparse.ArgumentParser(prog="kkrunner", description=description)
+    root = argparse.ArgumentParser(prog="kkrunner-agent", description=description)
     parser(root)
     args = root.parse_args(argv)
     run(args)
-
-
-def user_parser(argument_parser):
-    """Human-facing status/follow/cancel subset of the same remote service."""
-    return parser(argument_parser, user=True)
 
 
 if __name__ == "__main__":
