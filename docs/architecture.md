@@ -240,3 +240,33 @@ and malformed protocol data still raise errors. Managed local observation also
 preserves protocol validation errors after terminal completion; a receipt does
 not make malformed wire data valid. Declared stdout/stderr files are truncated
 before launch, so a failed launch cannot expose output from a previous run.
+
+## Independent persistence, detachment and recovery
+
+`Run.create(backend, spec, persistent=None, detached=None)` selects client-side
+record storage and process lifetime independently. `persistent=True` uses
+`RunManager.get_default()`, while an explicit manager (including a project
+manager) controls where the record is stored. `RunManager.as_default(manager)`
+selects a scoped default without changing other contexts.
+
+Direct local and direct SSH default to memory-only, attached execution.
+Supervised local, agent-backed SSH and PSI/J default to a persisted RunRecord
+and backend-independent execution. An explicit false persistence policy does
+not disable supervisors, scheduler submission or their backend identities.
+
+A detached direct process outlives the client's connection, but it need not
+have a durable backend identity. The target never silently creates stdout or
+stderr files; declared file paths receive output directly and undeclared
+streams may be discarded. A detached SSH direct submission acknowledges
+launch only: its exit code and subsequent client-side synchronization are not
+guaranteed. The client must remain connected or use a recoverable backend
+to complete client-side transfer, validation and postprocessing. Detached
+execution does not provide a second Run lifecycle.
+
+Submission identity belongs to the backend, not the client RunRecord ID.
+Recoverable backends retain a submission receipt until the client durably
+acknowledges it. Direct backends cannot prove the result of an uncertain
+submission after the connection is lost: they preserve UNKNOWN rather than
+claiming success or automatically launching again. Cross-process exclusive
+postprocessing requires the RunStore coordination available to persisted runs;
+a memory-only Run has no cross-client processing lease.

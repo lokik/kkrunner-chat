@@ -16,6 +16,10 @@ class LocalProcessAdapter:
 
     def __init__(self):
         self._streams = None
+        self._detached = False
+
+    def configure_detached(self, detached):
+        self._detached = detached
 
     def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
         raise RuntimeError("Local direct execution has no remote staging request")
@@ -40,10 +44,26 @@ class LocalProcessAdapter:
 
     async def launch(self, spec):
         # Resolve MPI on the execution host, not while constructing the Job.
-        return await start_local_process(materialize_local_spec(spec))
+        prepared = materialize_local_spec(spec)
+        if self._detached:
+            import asyncio
+            import os
+            # No child descriptor may rely on a client pipe. Named streams
+            # write directly into files; absent streams go to DEVNULL.
+            for value in (spec.output_file, spec.error_file):
+                if value is not None and not isinstance(value, (str, os.PathLike)):
+                    raise ValueError("Detached direct output requires a named file or None")
+            return await start_local_process(
+                prepared,
+                stdin=asyncio.subprocess.DEVNULL if prepared.stdin is None else prepared.stdin,
+                stdout=self._streams.output_file or asyncio.subprocess.DEVNULL,
+                stderr=self._streams.error_file or asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        return await start_local_process(prepared)
 
     async def stop(self, process):
-        await stop_local_process(process)
+        await stop_local_process(process, process_group=self._detached)
         return True
 
     def output(self, data, kind):

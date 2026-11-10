@@ -59,11 +59,12 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
     assert {kind for kind, _ in observed} == {"out", "err"}
 
 
-def test_direct_ssh_rejects_persistent_submission(tmp_path):
+def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
     backend = SshDirectBackend(LocalTransport())
-    with pytest.raises(UnsupportedCapability):
-        backend.create_run_parts(spec, submission_key="persistent-id")
+    parts = backend.create_run_parts(spec, submission_key="client-submission-key")
+    from kkrunner.backends.process.direct.job import ProcessJob
+    assert isinstance(parts.job, ProcessJob)
     with pytest.raises(UnsupportedCapability):
         backend.open_run_parts(object())
     assert backend.recover_submission("key", object()).disposition.value == "unsupported"

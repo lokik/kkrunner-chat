@@ -22,6 +22,10 @@ class SshProcessAdapter:
         self._request = None
         self._stream_writer = None
         self._cancel_unconfirmed = False
+        self._detached = False
+
+    def configure_detached(self, detached):
+        self._detached = detached
 
     def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
         if self._request is not None:
@@ -37,6 +41,7 @@ class SshProcessAdapter:
 
     async def launch(self, spec):
         request, self._request = self._request, None
+        request["detached"] = self._detached
         python_command = getattr(self.context.transport, "python_command", ("python3",))
         return await self.context.transport.start(
             (*python_command, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
@@ -82,6 +87,11 @@ class SshProcessAdapter:
         return None
 
     def exit_status(self, code):
+        if self._detached and code == 0:
+            return (
+                RunState.UNKNOWN, None,
+                "Detached SSH process was launched; no durable exit status is available",
+            )
         if code == 255:
             return (RunState.UNKNOWN, None, "SSH disconnected or remote command returned status 255")
         if self._cancel_unconfirmed:

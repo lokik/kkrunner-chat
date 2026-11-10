@@ -93,6 +93,9 @@ class _AgentRunContext(RemotePathContext):
 
 
 class AgentBackendProxy:
+    default_persistent = True
+    default_detached = True
+
     """Reusable remote endpoint with client-owned lifecycle state."""
 
     name = "agent"
@@ -131,7 +134,7 @@ class AgentBackendProxy:
             "id": submission_key,
             "executor": self.backend,
             "executor_options": dict(self.backend_options),
-            "detached": submission_key is not None,
+            "detached": True,
         }
 
     async def _json_request(self, action, *args, payload=None):
@@ -271,7 +274,8 @@ class AgentBackendProxy:
 
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
-        return _run_sync(self._json_request("ack-submit", self.backend, run.id))
+        key = run.execution.submission_key or run.id
+        return _run_sync(self._json_request("ack-submit", self.backend, key))
 
     def acknowledge(self, run):
         """Release a delivered receipt only after durable RunRecord completion."""
@@ -330,9 +334,10 @@ class AgentBackendProxy:
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        from uuid import uuid4
         spec.require_complete()
         return self._context(self, spec.launch).create_run_parts(
-            spec, submission_key=submission_key, callback=callback,
+            spec, submission_key=submission_key or uuid4().hex, callback=callback,
         )
 
     async def _snapshot_file(self, run, file, *, destination=None):

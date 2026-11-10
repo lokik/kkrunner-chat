@@ -103,6 +103,12 @@ class ProcessJob:
         """Client stream delivery errors, independent of backend execution."""
         return self._output_error
 
+    def configure_detached(self, detached):
+        """Set process lifetime before submission, independently of RunRecord."""
+        if self._state != RunState.NEW:
+            raise RuntimeError("Cannot change detached policy after submission")
+        self.adapter.configure_detached(detached)
+
     def status(self):
         from kkrunner.backends.contracts import job_status_from_facts
         return job_status_from_facts(
@@ -175,17 +181,25 @@ class ProcessJob:
             # Start draining both streams before a stop() operation can wait
             # for the child. Otherwise full pipes can deadlock cancellation.
             wait_task = asyncio.create_task(self._process.wait())
-            stdout_task = asyncio.create_task(
-                pump_stream(self._process.stdout, lambda data: self._forward_output(data, "out"))
+            stdout_task = (
+                asyncio.create_task(pump_stream(
+                    self._process.stdout, lambda data: self._forward_output(data, "out"),
+                ))
+                if self._process.stdout is not None else None
             )
-            stderr_task = asyncio.create_task(
-                pump_stream(self._process.stderr, lambda data: self._forward_output(data, "err"))
+            stderr_task = (
+                asyncio.create_task(pump_stream(
+                    self._process.stderr, lambda data: self._forward_output(data, "err"),
+                ))
+                if self._process.stderr is not None else None
             )
-            tasks = (wait_task, stdout_task, stderr_task)
+            tasks = (wait_task,) + tuple(
+                task for task in (stdout_task, stderr_task) if task is not None
+            )
             if self._cancel_requested.is_set():
                 self._ensure_stop_task()
             try:
-                return_code, _, _ = await asyncio.gather(*tasks)
+                return_code = (await asyncio.gather(*tasks))[0]
             finally:
                 for task in tasks:
                     if not task.done():

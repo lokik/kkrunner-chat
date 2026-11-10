@@ -210,6 +210,8 @@ class RunStore:
                 or updated.project_id != latest.project_id
             ):
                 raise ValueError("Run update cannot change persistent identity or metadata")
+            if updated.execution.submission_key != latest.execution.submission_key:
+                raise ValueError("Submission key cannot change")
             if latest.execution.backend_id is not None and updated.execution.backend_id != latest.execution.backend_id:
                 raise ValueError("Backend identity cannot change")
             return self._write_unlocked(updated)

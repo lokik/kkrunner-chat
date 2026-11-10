@@ -6,7 +6,6 @@ presence of a client persistence/submission identifier.
 
 from __future__ import annotations
 
-from kkrunner.backends.contracts import UnsupportedCapability
 from kkrunner.runs.base import ExecutionSpec
 
 
@@ -15,13 +14,11 @@ class ProcessBackend:
 
     name = "process"
     supports_result_file_retrieval = False
-    supports_tracked_runs = False
+    supports_tracked_runs = True
+    default_persistent = False
+    default_detached = False
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
-        if submission_key is not None:
-            raise UnsupportedCapability(
-                "Direct local jobs cannot be tracked; use SupervisedProcessBackend"
-            )
         spec.require_complete()
         from kkrunner.backends.process.direct.job import ProcessJob
         return ProcessJob(spec, callback=callback)
@@ -31,13 +28,16 @@ class SupervisedProcessBackend(ProcessBackend):
     """Reconnectable local execution using the durable process supervisor."""
 
     supports_tracked_runs = True
+    default_persistent = True
+    default_detached = True
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
-        if not submission_key:
-            raise ValueError("Supervised execution requires a submission key")
+        from uuid import uuid4
         from kkrunner.backends.process.supervised.job import SupervisedProcessJob
-        return SupervisedProcessJob(self, spec, run_id=submission_key, callback=callback)
+        return SupervisedProcessJob(
+            self, spec, run_id=submission_key or uuid4().hex, callback=callback,
+        )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         from kkrunner.backends.process.supervised.operations import recover_remote
@@ -63,7 +63,7 @@ class SupervisedProcessBackend(ProcessBackend):
 
     def acknowledge_submission(self, run):
         from kkrunner.backends.process.supervised.operations import acknowledge_submission
-        acknowledge_submission(run.id)
+        acknowledge_submission(run.execution.submission_key or run.id)
 
     def acknowledge(self, run):
         from kkrunner.backends.process.supervised.operations import acknowledge_remote

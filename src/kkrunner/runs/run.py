@@ -63,12 +63,50 @@ class Run:
         self._monitor_record_version = None if record is None else record.updated_at
 
     @classmethod
-    def direct(cls, backend, spec, *, process_result=None, callback=None):
+    def create(
+        cls, backend, spec, *, persistent=None, detached=None,
+        process_result=None, callback=None, **record_options,
+    ):
+        """Create one Run; persistence never selects its execution mechanism."""
+        from kkrunner.runs.manager import RunManager
+
+        if persistent is None:
+            persistent = getattr(backend, "default_persistent", False)
+        if isinstance(persistent, RunManager):
+            manager = persistent
+        elif persistent is True:
+            manager = RunManager.get_default()
+        elif persistent is False:
+            manager = None
+        else:
+            raise TypeError("persistent must be None, bool, or a RunManager")
+
+        if detached is None:
+            detached = getattr(backend, "default_detached", False)
+        if type(detached) is not bool:
+            raise TypeError("detached must be None or bool")
+
+        if manager is not None:
+            return manager.create_run(
+                backend, spec, process_result=process_result,
+                callback=callback, detached=detached, **record_options,
+            )
+        if record_options:
+            raise ValueError("Record metadata requires a persistent RunManager")
+        return cls.direct(backend, spec, process_result=process_result,
+                          callback=callback, detached=detached)
+
+    @classmethod
+    def direct(cls, backend, spec, *, process_result=None, callback=None, detached=None):
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
         from kkrunner.client.run_parts import run_endpoint_for_backend
         parts = run_endpoint_for_backend(backend).create_run_parts(spec)
+        parts.configure_detached(
+            getattr(backend, "default_detached", False) if detached is None else detached,
+            default=getattr(backend, "default_detached", False),
+        )
         from kkrunner.files.manifest import FileManifest
         local_files = None if parts.files is not None or not isinstance(spec, ExecutionSpec) else FileManifest.from_spec(spec)
         return cls(parts.job, backend=backend, parts=parts, local_files=local_files,
@@ -93,12 +131,18 @@ class Run:
     @property
     def execution(self):
         if self._file_session is not None:
-            return self._file_session.execution(self.backend_id)
+            proposed = self._file_session.execution(self.backend_id)
+            if proposed is None or self._record is None:
+                return proposed
+            from dataclasses import replace
+            return replace(proposed, submission_key=self._record.execution.submission_key)
         proposed = getattr(self._job, "execution", None)
         if proposed is not None:
             return proposed
-        if self._record is None or self.backend_id is None:
+        if self._record is None:
             return None
+        if self.backend_id is None:
+            return self._record.execution
         return self._record.execution.submitted(self.backend_id)
 
     @property
@@ -390,9 +434,9 @@ class Run:
                     )
                     self._monitor_record_version = self._record.updated_at
             self._job.submit()
-            if self.backend_id is None:
-                # Do not start client completion without a recoverable job
-                # identity: an unacknowledged submit must stay SUBMITTING.
+            if self.backend_id is None and getattr(self.backend, "default_persistent", False):
+                # A recoverable backend must return its identity. An ordinary
+                # direct process may instead have only a live Job handle.
                 raise RuntimeError("Backend submit returned without a job identity")
             # Persist accepted identity before creating the completion
             # observer. A failed monitor start must remain reattachable.
@@ -450,9 +494,8 @@ class Run:
             if self._record.state.is_terminal:
                 raise RuntimeError("A completed Run cannot be started again")
             if self._record.execution.backend_id is None:
-                # After an uncertain submit, calling start()/run() must never
-                # fall back to Job.start() -> Job.submit() and launch a second
-                # calculation. Recover or resolve the durable identity first.
+                # Only recoverable records may be restarted through attach.
+                # A direct Job without an ID is observable only by its owner.
                 raise RuntimeError(
                     "Run has no persisted backend identity; recover the submission before attaching"
                 )

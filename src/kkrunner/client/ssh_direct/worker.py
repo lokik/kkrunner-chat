@@ -52,11 +52,24 @@ def execute(request):
                 os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
                 if target not in stream_files:
                     stream_files[target] = resources.enter_context(open(target, "wb", buffering=0))
+        detached = bool(request.get("detached", False))
         child = subprocess.Popen(
             argv, cwd=request["directory"], stdin=stdin,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=(
+                stream_files.get(request.get("output_file"), subprocess.DEVNULL)
+                if detached else subprocess.PIPE
+            ),
+            stderr=(
+                stream_files.get(request.get("error_file"), subprocess.DEVNULL)
+                if detached else subprocess.PIPE
+            ),
             start_new_session=True,
         )
+        if detached:
+            # This worker is not a supervisor. The child has independent
+            # standard streams and process session; it cannot report an exit
+            # code after SSH disconnects.
+            return 0
         stopping = threading.Event()
         def stop():
             if stopping.is_set():
