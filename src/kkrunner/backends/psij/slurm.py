@@ -66,13 +66,13 @@ def _slurm_details(native_id):
     return fields
 
 
-def _submission_marker(run_id):
+def submission_marker(run_id):
     """Short, scheduler-safe lookup marker for an arbitrary valid Run ID."""
     return "kkrunner:" + hashlib.blake2s(run_id.encode("utf8"), digest_size=16).hexdigest()
 
 
 def _slurm_current_matches(run_id):
-    marker = _submission_marker(run_id)
+    marker = submission_marker(run_id)
     output = _scheduler_output(("squeue", "--noheader", "--me", "--format=%i|%k|%T|%Z"))
     matches = []
     for line in output.splitlines():
@@ -103,7 +103,7 @@ def _slurm_time(value):
 
 
 def _slurm_accounting_matches(run_id, submitted_at):
-    marker = _submission_marker(run_id)
+    marker = submission_marker(run_id)
     output = _scheduler_output(
         (
             "sacct",
@@ -134,7 +134,7 @@ def _slurm_accounting_matches(run_id, submitted_at):
     return tuple(matches)
 
 
-def _slurm_status_native(native_id):
+def status_native(native_id):
     """Read scheduler facts for a local Slurm job without initializing PSI/J."""
     native_id = str(native_id)
     # A PSI/J attach initially reports NEW; short-lived remote commands
@@ -184,3 +184,55 @@ def _slurm_status_native(native_id):
         return_code=return_code,
         failure_phase=FailurePhase.EXECUTION if state == RunState.FAILED else None,
     )
+
+
+def recover_native(run_id, directory, *, submitted_at=None):
+    """Recover an uncertain local Slurm submission from scheduler facts."""
+    matches = _slurm_current_matches(run_id)
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple live Slurm jobs carry KKRunner run id {run_id!r}")
+    if matches:
+        native_id, state, workdir = matches[0]
+        try:
+            details = _slurm_details(native_id)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            # The job may have finished between squeue and scontrol.
+            # Recover its terminal facts from accounting instead.
+            details = None
+        if details:
+            return {
+                "native_id": str(native_id),
+                "state": _slurm_state(state),
+                "directory": details.get("WorkDir") or workdir or directory,
+                "stdout": details.get("StdOut"),
+                "stderr": details.get("StdErr"),
+                "return_code": None,
+            }
+
+    if submitted_at is None or not _slurm_accounting_stores_comments():
+        raise NotImplementedError(
+            "Slurm cannot safely determine whether this submission already "
+            "finished because job comments are unavailable in accounting"
+        )
+    accounting = _slurm_accounting_matches(run_id, submitted_at)
+    if len(accounting) > 1:
+        raise RuntimeError(f"Multiple Slurm accounting records carry KKRunner run id {run_id!r}")
+    if not accounting:
+        # An empty sacct result is not authoritative negative evidence:
+        # Slurm accounting can lag behind the scheduler. Do not release
+        # the client's SUBMITTING reservation and risk a duplicate job.
+        raise NotImplementedError(
+            "Slurm has no matching job in squeue or accounting yet; submission acceptance is still uncertain"
+        )
+    native_id, state, workdir, stdout, stderr, return_code = accounting[0]
+    recovered_state = _slurm_state(state)
+    if recovered_state == RunState.FINISHED and return_code not in (None, 0):
+        recovered_state = RunState.FAILED
+    return {
+        "native_id": str(native_id),
+        "state": recovered_state,
+        "directory": workdir or directory,
+        "stdout": stdout,
+        "stderr": stderr,
+        "return_code": return_code,
+    }

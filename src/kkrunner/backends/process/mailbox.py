@@ -1,5 +1,6 @@
-"""Durable mailbox for terminal remote-process outcomes, not RunRecord state."""
+"""Durable mailbox for temporary submission tickets and terminal outcomes."""
 
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,45 @@ def _path(receipt_id):
     if not isinstance(receipt_id, str) or not _RECEIPT.fullmatch(receipt_id):
         raise ValueError("Invalid remote receipt ID")
     return _state_root() / "remote-outcomes" / (receipt_id + ".json")
+
+
+def _submission_ticket(run_id):
+    """A stable, filename-safe ticket for any valid client Run identity.
+
+    RunRecord permits more than UUID-hex IDs. Hashing the whole identity keeps
+    the receipt namespace independent of path separators and user-facing IDs.
+    """
+    if (
+        not isinstance(run_id, str) or not run_id or run_id in (".", "..")
+        or any(char in run_id for char in ("/", "\\", "\x00"))
+    ):
+        raise ValueError("Invalid persistent run id")
+    name = hashlib.sha256(run_id.encode("utf8")).hexdigest()
+    return _state_root() / "remote-submissions" / (name + ".json")
+
+
+def publish_submission(run_id, reply):
+    """Temporary identity handoff, never a target-side run lifecycle record."""
+    path = _submission_ticket(run_id)
+    durable_mkdir(path.parent, parents=True, exist_ok=True, mode=0o700)
+    durable_write_json(path, reply, mode=0o600)
+
+
+def recover_submission(run_id):
+    try:
+        return json.loads(_submission_ticket(run_id).read_text())
+    except FileNotFoundError:
+        return None
+
+
+def acknowledge_submission(run_id):
+    path = _submission_ticket(run_id)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    fsync_directory(path.parent)
+    return True
 
 
 def publish_outcome(receipt_id, state, return_code, failure_phase=None, *, error=None):

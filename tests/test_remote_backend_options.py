@@ -84,7 +84,7 @@ def test_nonproject_remote_request_does_not_publish_project_identity(tmp_path):
 
 
 def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
-    from kkrunner.backends.specs import _request_spec
+    from kkrunner.remote.messages import request_to_spec
 
     root = tmp_path / "local"
     directory = root / "work"
@@ -108,6 +108,6 @@ def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
     request = asyncio.run(files._prepare_request("test-run", str(remote_dir), FileManifest.from_spec(spec)))
     assert "output_files" not in request
     assert "cache_files" not in request
-    restored = _request_spec(request)
+    restored = request_to_spec(request)
     assert str(remote_dir / "plot-*.dat") in restored.output_files
     assert str(remote_dir / "restart.dat") in restored.cache_files
