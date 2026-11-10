@@ -72,9 +72,6 @@ def _absolute(directory, value):
         path = Path(directory) / path
     return os.fspath(path)
 
-def _process_running(handle):
-    return ProcessIdentity.from_dict(handle["identity"]).is_running()
-
 def _clean_request_outputs(spec, directory, output_path=None, error_path=None):
     """Clear prior outputs while protecting inputs and caches in the parsed spec."""
     declared = tuple(
@@ -244,7 +241,7 @@ def status_remote(remote_id):
     if outcome is not None:
         state, return_code, failure_phase, error = outcome
     else:
-        state = RunState.RUNNING if _process_running(handle) else RunState.UNKNOWN
+        state = RunState.RUNNING if ProcessIdentity.from_dict(handle["identity"]).is_running() else RunState.UNKNOWN
         return_code = None
         failure_phase = None
         error = None

@@ -116,9 +116,6 @@ class PsijJob:
         if start:
             self.start()
 
-    def _mpi_launcher(self):
-        return "srun" if self.executor.backend.lower() == "slurm" else "mpirun"
-
     def _job_command(self):
         launch = self.spec.launch
         if not launch or self.spec.mpi_argv is None:
@@ -129,7 +126,8 @@ class PsijJob:
         resources = None
         if mpi.process_count is not None:
             resources = self._psij.ResourceSpecV1(process_count=mpi.process_count)
-        return tuple(self.spec.mpi_argv), resources, self._mpi_launcher()
+        launcher = "srun" if self.executor.backend.lower() == "slurm" else "mpirun"
+        return tuple(self.spec.mpi_argv), resources, launcher
 
     def _project_metadata(self):
         if self._run_id is None:
