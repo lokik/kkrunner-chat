@@ -10,7 +10,7 @@ import os
 from threading import Event, Lock
 
 from kkrunner.files.paths import file_path
-from kkrunner.backends.process.supervised.operations import cancel_remote, follow_remote, submit_remote
+from kkrunner.backends.process.supervised.functions import cancel as cancel_remote, follow as follow_remote, submit as submit_remote
 from kkrunner.runs.base import (
     ExecutionOutcome, ExecutionSpec, FailurePhase, OutputObservers, RunState,
     close_output_files, finish_monitor, request_cancellation, start_monitor,

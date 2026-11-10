@@ -10,8 +10,8 @@ from __future__ import annotations
 from types import MappingProxyType
 
 _INSTALLED_BACKENDS = MappingProxyType({
-    "process": "kkrunner.backends.process.supervised.operations",
-    "psij": "kkrunner.backends.psij.agent",
+    "process": "kkrunner.backends.process.supervised.functions",
+    "psij": "kkrunner.backends.psij.functions",
 })
 
 

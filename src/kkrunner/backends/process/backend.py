@@ -51,7 +51,7 @@ class SupervisedProcessBackend(RecoverableBackend):
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
-        from kkrunner.backends.process.supervised.operations import recover_remote
+        from kkrunner.backends.process.supervised.functions import recover as recover_remote
         reply = recover_remote(
             run_id,
             {"executor": "process", "directory": submission.execution.directory.local},
@@ -73,11 +73,11 @@ class SupervisedProcessBackend(RecoverableBackend):
         )
 
     def acknowledge_submission(self, run):
-        from kkrunner.backends.process.supervised.operations import acknowledge_submission
+        from kkrunner.backends.process.supervised.functions import acknowledge_submission
         acknowledge_submission(run.execution.submission_key or run.id)
 
     def acknowledge(self, run):
-        from kkrunner.backends.process.supervised.operations import acknowledge_remote
+        from kkrunner.backends.process.supervised.functions import acknowledge as acknowledge_remote
         acknowledge_remote(run.execution.backend_id)
 
     def status(self, *runs):

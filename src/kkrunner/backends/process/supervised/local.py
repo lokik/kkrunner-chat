@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from kkrunner.remote.handles import decode_handle
 from kkrunner.runs.base import ExecutionSpec, RunState, RunStatus
-from .operations import status_remote
+from .functions import status as status_remote
 
 
 def _local_status_from_facts(backend_id, facts):

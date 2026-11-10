@@ -12,9 +12,9 @@ def test_installed_backend_names_and_remote_service_share_one_registry():
     for name in installed_backend_names():
         module = operation_module(name)
         assert _backend_for_kind(name).__name__ == module
-        reference = BackendOperation.installed(*operation_ref(name, "status_remote"))
+        reference = BackendOperation.installed(*operation_ref(name, "status"))
         assert reference.module == module
-        assert reference.function == "status_remote"
+        assert reference.function == "status"
 
 
 def test_registry_rejects_unregistered_backend_or_invalid_operation():
