@@ -16,7 +16,7 @@ def test_result_snapshot_sync_failure_is_artifact_failure(tmp_path, monkeypatch)
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
     )
-    record = manager.transition(record, state=RunState.POSTPROCESSING)
+    record = manager.transition(record, state=RunState.RUNNING)
 
     def fail_sync(_path):
         raise OSError("cannot synchronize result snapshot")
