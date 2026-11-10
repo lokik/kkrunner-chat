@@ -651,6 +651,8 @@ def test_psij_attach_without_recorded_streams(monkeypatch, tmp_path):
     run = _psij_run(tmp_path, "456")
     run = replace(run, files=replace(run.files, stdout=None, stderr=None))
     attached = executor.open_job(JobAttachment(run.execution, run.files), start=False)
+    assert attached.spec.is_partial
+    assert attached.spec.argv is None
     assert attached.spec.output_file is None
     assert attached.spec.error_file is None
     assert attached.files == run.files

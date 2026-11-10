@@ -9,6 +9,7 @@ import warnings
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
+from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
 from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files.manifest import FileMapping, FileSyncPolicy
 from kkrunner.remote.protocol import control_command, json_request
@@ -29,38 +30,10 @@ from kkrunner.runs.model import WorkingDirectory
 _REMOTE_BACKENDS = {"process", "psij"}
 
 
-def _relative_local_path(path, local_root):
-    """Resolve a local path and enforce the run's mapped root boundary."""
-    path = Path(path).expanduser().resolve()
-    root = Path(local_root).expanduser().resolve()
-    try:
-        return path.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(
-            f"Local path {path} is outside mapped root {root}; specify local_root/remote_root explicitly"
-        ) from exc
-
-
-def _client_status_state(state):
-    """Translate target backend facts to the remote executor's client lifecycle."""
-    backend_state = RunState(state.get("state", "unknown"))
-    raw_phase = state.get("failure_phase")
-    phase = None if raw_phase is None else FailurePhase(raw_phase)
-
-    if backend_state == RunState.FINISHED:
-        return RunState.DOWNLOADING
-    if backend_state == RunState.FAILED and phase not in (
-        FailurePhase.SUBMISSION,
-        FailurePhase.LAUNCH,
-    ):
-        return RunState.DOWNLOADING
-    return backend_state
-
-
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     """Interpret one backend reply without issuing another remote request."""
     return RunStatus(
-        _client_status_state(facts),
+        RunState(facts.get("state", "unknown")),
         backend_id=backend_id,
         execution=execution,
         files=files,
@@ -70,63 +43,7 @@ def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     )
 
 
-class _AgentRunContext:
-    """Per-run filesystem and synchronization policy."""
-
-    def __init__(self, endpoint, launch):
-        self.endpoint = endpoint
-        self.transport = endpoint.transport
-        self.backend = endpoint.backend
-        self.backend_options = endpoint.backend_options
-        self.command = endpoint.command
-        self.computer = endpoint.computer
-        self.local_root = Path(launch.local_root or Path.home()).expanduser().resolve()
-        self.remote_root = None if launch.remote_root is None else os.fspath(launch.remote_root)
-        self.input_files = FileSyncPolicy(launch.input_sync)
-        self.output_files = FileSyncPolicy(launch.output_sync)
-
-    async def _remote_home(self):
-        return await self.endpoint._remote_home()
-
-    async def _resolved_remote_root(self):
-        root = self.remote_root
-        if root is not None and posixpath.isabs(root):
-            return posixpath.normpath(root)
-        home = await self._remote_home()
-        if root is None or root == "~":
-            return home
-        if root.startswith("~/"):
-            return posixpath.join(home, root[2:])
-        return posixpath.join(home, root)
-
-    async def map_path(self, path):
-        relative = _relative_local_path(path, self.local_root)
-        remote_root = await self._resolved_remote_root()
-        if not relative.parts:
-            return remote_root
-        return posixpath.join(remote_root, *relative.parts)
-
-    async def unmap_path(self, path):
-        remote_root = await self._resolved_remote_root()
-        path = posixpath.normpath(os.fspath(path))
-        if not posixpath.isabs(path):
-            raise ValueError(f"Remote path must be absolute: {path}")
-        try:
-            common = posixpath.commonpath((remote_root, path))
-        except ValueError as exc:
-            raise ValueError(f"Remote path {path} is outside mapped root {remote_root}") from exc
-        if common != remote_root:
-            raise ValueError(f"Remote path {path} is outside mapped root {remote_root}")
-        relative = posixpath.relpath(path, remote_root)
-        if relative == ".":
-            return self.local_root
-        local = self.local_root.joinpath(*PurePosixPath(relative).parts)
-        _relative_local_path(local, self.local_root)
-        return local
-
-    async def map_directory(self, directory):
-        return await self.map_path(directory)
-
+class _AgentRunContext(RemotePathContext):
     async def _submit(self, request):
         return await self.endpoint._submit(request)
 
@@ -199,11 +116,7 @@ class AgentBackendProxy:
 
     async def _remote_home(self):
         if self._remote_home_cache is None:
-            result = await self.transport.run(("sh", "-c", 'printf "%s" "$HOME"'))
-            home = result.stdout.decode("utf8").strip()
-            if not home:
-                raise RuntimeError("Could not determine remote home directory")
-            self._remote_home_cache = posixpath.normpath(home)
+            self._remote_home_cache = await query_remote_home(self.transport)
         return self._remote_home_cache
 
     async def _json_request(self, action, *args, payload=None):
@@ -402,6 +315,7 @@ class AgentBackendProxy:
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        spec.require_complete()
         return self._context(self, spec.launch).create_run_parts(
             spec, submission_key=submission_key, callback=callback,
         )

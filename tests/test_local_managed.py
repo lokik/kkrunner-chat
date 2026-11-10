@@ -84,6 +84,8 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
         _attachment(_record(tmp_path, handle)),
         output_listener=lambda text, kind: seen.append((text, kind)),
     )
+    assert attached.spec.is_partial
+    assert attached.spec.argv is None
     assert attached.wait().return_code == 0
     assert seen == [("output\n", "out")]
     executor.acknowledge(_record(tmp_path, handle))

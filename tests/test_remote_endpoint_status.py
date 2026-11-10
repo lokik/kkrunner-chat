@@ -67,7 +67,7 @@ def test_remote_terminal_status_does_not_claim_client_completion():
 
     executor._json_request = request
     (status,) = executor.status(_attachment(_run("opaque-process", backend="process")))
-    assert status.state == RunState.DOWNLOADING
+    assert status.state == RunState.FINISHED
     assert calls == [("status", ("opaque-process",), None)]
 
 
@@ -130,15 +130,15 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     "facts, expected_state",
     [
         ({"state": "running"}, RunState.RUNNING),
-        ({"state": "finished", "return_code": 0}, RunState.DOWNLOADING),
-        ({"state": "failed", "return_code": 7, "failure_phase": "execution"}, RunState.DOWNLOADING),
+        ({"state": "finished", "return_code": 0}, RunState.FINISHED),
+        ({"state": "failed", "return_code": 7, "failure_phase": "execution"}, RunState.FAILED),
         ({"state": "failed", "failure_phase": "launch"}, RunState.FAILED),
         ({"state": "failed", "failure_phase": "submission"}, RunState.FAILED),
         ({"state": "cancelled", "return_code": 130}, RunState.CANCELLED),
         ({"state": "unknown"}, RunState.UNKNOWN),
     ],
 )
-def test_status_reports_client_transfer_boundary(facts, expected_state):
+def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
     executor = AgentBackendProxy(_Transport(), backend="process")
 
     async def request(action, *args, payload=None):

@@ -204,6 +204,9 @@ def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
 
     monkeypatch.setattr(context, "_status", status)
     parts = asyncio.run(context.attach_run_parts(JobAttachment(run.execution, run.files)))
-    assert parts.files.spec.output_file.tell() == len(b"partial")
+    assert parts.files.spec.is_partial
+    assert parts.files.spec.argv is None
+    assert parts.files.spec.output_file == str(local_output)
+    assert parts.files._streams.output_file.tell() == len(b"partial")
     parts.files.close()
     assert local_output.read_bytes() == b"partial"

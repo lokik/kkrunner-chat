@@ -1,8 +1,8 @@
 """Local ProcessBackend facade over direct and supervised process Jobs.
 
-The two execution mechanisms share low-level process primitives but not
-lifecycle state. This facade is an endpoint adapter; a future SSH direct
-adapter can supply Job/RunParts independently of this local selection.
+The direct ProcessJob is transport-neutral: direct local and direct SSH
+share its lifecycle, with distinct launch/output adapters. Managed process
+jobs use a separate durable supervisor and reconnectable lifecycle.
 """
 
 from __future__ import annotations
@@ -33,10 +33,10 @@ class ProcessBackend:
         ))
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        spec.require_complete()
         if submission_key is None:
             from kkrunner.backends.process.direct.job import ProcessJob
-            from kkrunner.backends.process.primitives import materialize_local_spec
-            return ProcessJob(materialize_local_spec(spec), callback=callback)
+            return ProcessJob(spec, callback=callback)
         from kkrunner.backends.process.supervised.job import SupervisedProcessJob
         return SupervisedProcessJob(
             self, spec, run_id=submission_key, callback=callback,

@@ -72,6 +72,7 @@ class PsijBackend:
         ))
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        spec.require_complete()
         job = PsijJob(self, spec, callback=callback, run_id=submission_key)
         job.set_manifest(FileManifest.from_spec(spec))
         return job
@@ -252,7 +253,7 @@ class PsijBackend:
             raise ValueError("PSI/J run lacks backend ID")
         job = self.attach_native_job(backend_id)
         spec = ExecutionSpec(
-            argv=(),
+            argv=None,
             input_file=run.files.input_file,
             output_file=run.files.output_file,
             error_file=None if run.files.stderr is None else run.files.stderr.local_path,

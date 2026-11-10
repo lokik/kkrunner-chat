@@ -4,7 +4,8 @@ import sys
 
 import pytest
 
-import kkrunner.backends.process.direct.job as local
+import kkrunner.backends.process.direct.job as direct_job
+import kkrunner.backends.process.direct.local as local
 from kkrunner.backends.process.backend import ProcessBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
@@ -78,7 +79,7 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
         raise RuntimeError("output pump failed")
 
     monkeypatch.setattr(local, "stop_local_process", record_stop)
-    monkeypatch.setattr(local, "pump_stream", failing_pump)
+    monkeypatch.setattr(direct_job, "pump_stream", failing_pump)
     runner = ProcessBackend().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import time; time.sleep(30)"),
@@ -93,3 +94,58 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
         runner.wait()
     assert runner.state == RunState.FAILED
     assert stopped == [pid]
+
+def test_direct_adapter_returns_verification_without_mutating_job(tmp_path):
+    import sys
+    from kkrunner.backends.process.direct.local import LocalProcessAdapter
+    adapter = LocalProcessAdapter()
+    spec = ExecutionSpec(
+        argv=(sys.executable, "-c", "print('ok')"),
+        directory=str(tmp_path),
+        output_files=("missing.output",),
+    )
+    manifest = adapter.verify(spec)
+    assert manifest.failed_artifacts
+    assert manifest.availability_message
+
+def test_local_direct_spec_retains_declared_paths_during_execution(tmp_path):
+    from kkrunner import Run, ExecutionSpec
+
+    spec = ExecutionSpec(
+        argv=(sys.executable, "-c", "print('ready', flush=True)"),
+        directory=str(tmp_path),
+        output_file=str(tmp_path / "stdout.txt"),
+        error_file=str(tmp_path / "stderr.txt"),
+    )
+    run = Run.direct(ProcessBackend(), spec)
+    assert run.spec is spec
+    run.submit()
+    assert run.spec is spec
+    assert run.wait().return_code == 0
+    assert run.spec is spec
+    assert run.spec.output_file == str(tmp_path / "stdout.txt")
+    assert run.spec.error_file == str(tmp_path / "stderr.txt")
+    assert (tmp_path / "stdout.txt").read_text() == "ready\n"
+
+
+def test_local_direct_mpi_resolution_does_not_replace_declaration(tmp_path, monkeypatch):
+    from kkrunner import Run, ExecutionSpec
+    from kkrunner.runs import LaunchSpec
+
+    monkeypatch.setattr(
+        "kkrunner.backends.process.primitives.resolve_mpi_command",
+        lambda mpi: (sys.executable, "-c"),
+    )
+    spec = ExecutionSpec(
+        argv=("unused-serial",),
+        mpi_argv=("print('from MPI')",),
+        launch=LaunchSpec.from_mpi(True),
+        directory=str(tmp_path),
+        output_file=str(tmp_path / "output.txt"),
+    )
+    run = Run.direct(ProcessBackend(), spec)
+    assert run.spec is spec
+    assert run.run().return_code == 0
+    assert run.spec is spec
+    assert run.spec.argv == ("unused-serial",)
+    assert (tmp_path / "output.txt").read_text() == "from MPI\n"
