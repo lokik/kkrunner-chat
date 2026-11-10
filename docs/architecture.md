@@ -177,6 +177,12 @@ endpoint metadata, so loading implementations while initializing that package
 would reverse the dependency and create an import cycle. The root import does
 not load local/PSI/J implementations, projects or the remote client/service.
 The supervised process worker lives in `kkrunner.backends.process.worker`.
+Within the PSI/J backend, `backends.psij.job` owns a live job's submission
+and observation, `backends.psij.backend` owns the reusable executor,
+native job cache and callback subscriptions, and `backends.psij.slurm`
+contains Slurm-native status/accounting queries without loading PSI/J.
+Target-side control dispatch for PSI/J lives in `backends.psij.agent`;
+it does not own a client `RunRecord` or file synchronization.
 
 `files` and `support` do not import the run lifecycle, projects, backends or
 remote service. File reservations use generic local path expansion without
