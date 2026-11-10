@@ -242,3 +242,66 @@ def test_known_backend_identity_survives_failed_client_submission(tmp_path):
     assert saved.execution.backend_id == "accepted-job"
     assert saved.state == RunState.UNKNOWN
     assert not saved.state.is_terminal
+
+
+def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persistence(tmp_path):
+    from kkrunner import ExecutionSpec, Run
+    from kkrunner.files import FileManifest
+    from kkrunner.runs.base import SubmissionNotStarted
+
+    original = SubmissionNotStarted("submission never reached backend")
+
+    class Backend:
+        name = "preflight"
+
+    class Job:
+        state = RunState.NEW
+        backend_id = None
+        failure_phase = None
+        failure_message = None
+        exception = None
+
+        def configure_submission(self, request, **observation):
+            pass
+
+        def submit(self):
+            raise original
+
+    class Files:
+        def __init__(self):
+            self.spec = ExecutionSpec(("unused",), directory=tmp_path)
+            self.files = FileManifest()
+            self.close_calls = 0
+
+        def prepare_submission(self):
+            pass
+
+        def execution(self, backend_id):
+            return None
+
+        def prepare_job(self):
+            return {"directory": str(tmp_path)}
+
+        def observation(self):
+            return {"stream_offsets": {}, "stream_writer": None, "stream_paths": (None, None)}
+
+        def close(self):
+            self.close_calls += 1
+            raise OSError("cleanup also failed")
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    backend = Backend()
+    manager.register_backend(backend)
+    record = manager.new_record(directory=tmp_path)
+    files = Files()
+    run = Run(Job(), backend=backend, manager=manager, record=record, file_session=files)
+
+    with pytest.warns(RuntimeWarning, match="cleanup also failed"):
+        with pytest.raises(SubmissionNotStarted) as caught:
+            run.submit()
+    assert caught.value is original
+    assert files.close_calls == 1
+    saved = manager.store.get(run.id)
+    assert saved.state == RunState.FAILED
+    assert saved.failure_phase == FailurePhase.SUBMISSION
+    assert "submission never reached backend" in saved.message
