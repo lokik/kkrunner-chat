@@ -37,6 +37,7 @@ class BackendOperation:
 
     @classmethod
     def installed(cls, module: str, function: str):
+        """Call the named operation by importing it on the target interpreter."""
         return cls(module=module, function=function)
 
     @classmethod

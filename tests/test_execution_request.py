@@ -50,3 +50,12 @@ def test_partial_spec_cannot_submit(tmp_path):
     spec = ExecutionSpec(None, directory=str(tmp_path))
     with pytest.raises(ValueError, match="partial"):
         execution_request(spec)
+
+
+def test_remote_directory_requires_explicit_mapping(tmp_path):
+    spec = ExecutionSpec(("true",), directory=str(tmp_path), output_file="stdout.log")
+    with pytest.raises(ValueError, match="mapping"):
+        execution_request(spec, directory="/remote/job")
+    # A remote command without file declarations needs no file mapping.
+    plain = ExecutionSpec(("true",), directory=str(tmp_path))
+    assert execution_request(plain, directory="/remote/job")["directory"] == "/remote/job"

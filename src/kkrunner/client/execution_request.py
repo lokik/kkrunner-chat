@@ -39,10 +39,17 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
     target_dir = os.fspath(spec.directory if directory is None else directory)
     if not target_dir:
         raise ValueError("Execution directory must not be empty")
+    if map_path is None and directory is not None and target_dir != spec.directory:
+        declared = (
+            spec.input_file, spec.stdin, spec.output_file, spec.error_file,
+            *spec.input_files, *spec.output_files, *spec.cache_files,
+        )
+        if any(value is not None for value in declared):
+            raise ValueError("A target path mapping is required for remote file declarations")
     def path(value):
         return _named_path(value, spec.directory, map_path)
     def paths(values):
-        return [path(value) for value in values]
+        return [path(value) for value in values if value is not None]
 
     request = {
         **spec.command_request(),

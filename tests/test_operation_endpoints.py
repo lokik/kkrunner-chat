@@ -70,3 +70,17 @@ def test_reject_nonportable_operation_before_submission():
         BackendOperation.standalone(nested)
     with pytest.raises(ValueError):
         BackendOperation.installed("bad-module!", "run")
+
+
+@pytest.mark.parametrize("endpoint_type", [LocalTransport, LoopbackSshTransport])
+def test_installed_backend_operation_receives_only_explicit_json_arguments(endpoint_type):
+    endpoint = endpoint_type()
+    async def verify():
+        operation = BackendOperation.installed("kkrunner.backends.mpi", "resolve_mpi_options")
+        # Explicit launcher avoids dependence on target environment/MPI.
+        result = await endpoint.call(
+            operation,
+            {"required": True, "launcher": ["mpiexec", "--bind"], "process_count": 2},
+        )
+        assert list(result) == ["mpiexec", "--bind", "-np", "2"]
+    asyncio.run(verify())
