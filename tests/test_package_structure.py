@@ -43,8 +43,10 @@ def test_run_and_job_ownership_boundaries_are_explicit():
     from kkrunner.client.run_parts import NativeRunEndpoint, run_endpoint_for_backend
     for backend in (ProcessBackend, SupervisedProcessBackend, PsijBackend):
         assert callable(backend.create_job)
-        assert isinstance(run_endpoint_for_backend(backend()), NativeRunEndpoint)
         assert not hasattr(backend, "create_managed_run")
+    assert isinstance(run_endpoint_for_backend(ProcessBackend()), NativeRunEndpoint)
+    assert not hasattr(run_endpoint_for_backend(ProcessBackend()), "open_run_parts")
+    assert callable(run_endpoint_for_backend(SupervisedProcessBackend()).open_run_parts)
     assert callable(AgentBackendProxy.create_run_parts)
     assert callable(AgentBackendProxy.open_run_parts)
     assert {"job", "files"} <= set(RunParts.__dataclass_fields__)

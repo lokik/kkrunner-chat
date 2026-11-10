@@ -95,6 +95,9 @@ class NativeRunEndpoint:
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         return RunParts(self.backend.create_job(spec, submission_key=submission_key, callback=callback))
 
+class NativeReopenableRunEndpoint(NativeRunEndpoint):
+    """Native backend with the explicit ability to reopen jobs."""
+
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         return RunParts(self.backend.open_job(
             attachment, callback=callback, output_listener=output_listener, start=False,
@@ -103,8 +106,10 @@ class NativeRunEndpoint:
 
 def run_endpoint_for_backend(backend) -> RunEndpoint:
     """Native mechanisms require a client composition; remote proxies are endpoints."""
-    from kkrunner.backends.contracts import Backend
+    from kkrunner.backends.contracts import Backend, ReopenableBackend
 
+    if isinstance(backend, ReopenableBackend):
+        return NativeReopenableRunEndpoint(backend)
     if isinstance(backend, Backend):
         return NativeRunEndpoint(backend)
     if not isinstance(backend, RunEndpoint):
