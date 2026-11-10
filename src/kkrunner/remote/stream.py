@@ -162,3 +162,6 @@ class FramedRunningCommand:
 
     def terminate(self):
         return self._process.terminate()
+
+    def kill(self):
+        return self._process.kill()

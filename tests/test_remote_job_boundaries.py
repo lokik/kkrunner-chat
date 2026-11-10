@@ -263,3 +263,57 @@ def test_incomplete_local_follow_marks_only_declared_streams_failed(tmp_path):
     assert run.files.stderr.availability_state == "failed"
     assert run.files.stdout.availability_message == "FOLLOW stream truncated"
     assert run.files.outputs[0].availability_state == "pending"
+
+
+def test_managed_follow_writer_failure_terminates_and_reaps_helper(tmp_path):
+    import asyncio
+
+    class Follow:
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(b"data")
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.terminated = False
+            self.reaped = False
+            self.exited = asyncio.Event()
+            self.terminal = None
+
+        def terminate(self):
+            self.terminated = True
+            self.exited.set()
+
+        def kill(self):
+            self.exited.set()
+
+        async def wait(self):
+            await self.exited.wait()
+            self.reaped = True
+            return -15
+
+    class Context:
+        backend = "process"
+        def __init__(self):
+            self.follow = None
+        async def _follow(self, *args, **kwargs):
+            self.follow = Follow()
+            return self.follow
+        async def _status(self, *args, **kwargs):
+            return {"state": "finished", "return_code": 0}
+
+    context = Context()
+    job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)),
+              backend_id="opaque", remote_directory=str(tmp_path),
+              status={"state": "running"})
+    def fail_writer(data, kind):
+        raise OSError("output cannot be written")
+    job.configure_observation(
+        stream_offsets={"out": 0, "err": 0},
+        stream_writer=fail_writer, stream_paths=(None, None),
+    )
+    asyncio.run(job._monitor())
+    assert context.follow.terminated
+    assert context.follow.reaped
+    assert job.state is RunState.FINISHED
+    assert isinstance(job.output_error, OSError)

@@ -276,7 +276,7 @@ class Job:
 
     async def _monitor(self):
         self._loop = asyncio.get_running_loop()
-        stdout_task = stderr_task = None
+        stdout_task = stderr_task = wait_task = None
         try:
             if self._observation_stopped.is_set():
                 self._state = RunState.UNKNOWN
@@ -298,9 +298,10 @@ class Job:
             stdout_task = asyncio.create_task(self._pump(self._follow_process.stdout, "out"))
             stderr_task = asyncio.create_task(self._pump(self._follow_process.stderr, "err"))
             stream_error = None
+            wait_task = asyncio.create_task(self._follow_process.wait())
             try:
                 follow_result, _, _ = await asyncio.gather(
-                    self._follow_process.wait(), stdout_task, stderr_task,
+                    wait_task, stdout_task, stderr_task,
                 )
                 # A plain operation has no framed terminal receipt; its
                 # nonzero exit is an observation failure, not a Job outcome.
@@ -314,6 +315,19 @@ class Job:
                 # A failed local writer must not leave a FOLLOW subprocess
                 # alive while the client queries the authoritative job state.
                 self._terminate_follow()
+                # gather() does not cancel other tasks when a stream writer
+                # fails. Reap the helper before querying backend status, while
+                # its stdout/stderr readers are still available for draining.
+                try:
+                    await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+                except asyncio.TimeoutError:
+                    self._follow_process.kill()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+                    except (asyncio.TimeoutError, Exception):
+                        pass  # Preserve the primary stream-delivery error.
+                except Exception:
+                    pass  # A failed wait() is already the recorded error.
             if self._observation_stopped.is_set():
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
@@ -352,6 +366,23 @@ class Job:
             tasks = tuple(task for task in (stdout_task, stderr_task) if task is not None)
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            # A wait task may still be outstanding after a broken or
+            # unresponsive helper; do not leave an asyncio Task unobserved.
+            if wait_task is not None and not wait_task.done():
+                self._terminate_follow()
+                try:
+                    await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+                except asyncio.TimeoutError:
+                    self._follow_process.kill()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                except Exception:
+                    pass
+                if not wait_task.done():
+                    wait_task.cancel()
+                    await asyncio.gather(wait_task, return_exceptions=True)
             self._loop = None
 
     def _terminate_follow(self):
