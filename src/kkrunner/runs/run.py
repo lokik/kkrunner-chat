@@ -307,19 +307,33 @@ class Run:
             )
 
     def submit(self):
-        if self._started:
+        if self._started or self._settled:
             raise RuntimeError("Run already submitted")
         if self.manager is None:
-            if self._file_session is not None:
-                try:
+            try:
+                if self._file_session is not None:
                     self._prepare_remote_job()
-                    self._job.submit()
-                except BaseException:
-                    self._close_files_after_failed_submission()
-                    raise
-            else:
                 self._job.submit()
-            self._start_completion()
+                self._start_completion()
+            except SubmissionNotStarted as exc:
+                # Preparation is provably before the backend submit boundary.
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.SUBMISSION
+                self._failure_message = str(exc)
+                self._exception = exc
+                self._settled = True
+                self._close_files_after_failed_submission()
+                raise
+            except BaseException as exc:
+                # Once submit is attempted, a missing acknowledgement cannot
+                # justify launching the calculation a second time.
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
+                self._failure_message = str(exc)
+                self._exception = exc
+                self._settled = True
+                self._close_files_after_failed_submission()
+                raise
             return
 
         if self._record.state != RunState.NEW:
