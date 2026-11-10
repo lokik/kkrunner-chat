@@ -383,7 +383,7 @@ class Job:
                 pass
             try:
                 await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-            except (asyncio.TimeoutError, Exception):
+            except Exception:
                 pass
         except Exception:
             pass
