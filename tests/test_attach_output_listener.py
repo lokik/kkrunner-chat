@@ -8,7 +8,7 @@ from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.client.run_parts import RunParts, backend_job_context
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
 from kkrunner.client.agent import _AgentRunContext
-from kkrunner.client.agent_job import AgentJob
+from kkrunner.client.job import Job
 from kkrunner.runs.base import LaunchSpec, RunState
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.model import Execution, WorkingDirectory
@@ -115,7 +115,7 @@ def test_remote_attach_installs_listener_before_monitor(monkeypatch, tmp_path):
             self.callback(self.result)
         self._done.set()
 
-    monkeypatch.setattr(AgentJob, "_thread_main", immediate_monitor)
+    monkeypatch.setattr(Job, "_thread_main", immediate_monitor)
     context, run = _remote_context(tmp_path)
     import asyncio
 
@@ -138,7 +138,7 @@ def test_remote_attach_can_defer_monitor_start(monkeypatch, tmp_path):
         self._output_observers.emit_bytes(b"remote replay\n", "out")
         self._done.set()
 
-    monkeypatch.setattr(AgentJob, "_thread_main", immediate_monitor)
+    monkeypatch.setattr(Job, "_thread_main", immediate_monitor)
     context, run = _remote_context(tmp_path)
     import asyncio
 

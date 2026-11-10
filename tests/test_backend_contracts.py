@@ -171,3 +171,17 @@ def test_protocol_definitions_are_independent_of_implementations():
     assert not hasattr(backends, "ProtocolBackend")
     assert not hasattr(client, "BackendPool")
     assert not hasattr(client, "ExecutionEndpoint")
+
+
+def test_supervised_and_agent_use_one_client_job_class(tmp_path):
+    from kkrunner.backends import SupervisedProcessBackend
+    from kkrunner.client.job import Job
+    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.transport import LocalTransport
+    from kkrunner.runs.base import ExecutionSpec
+
+    spec = ExecutionSpec(("true",), directory=str(tmp_path))
+    local = SupervisedProcessBackend().create_job(spec)
+    remote = AgentRunEndpoint(LocalTransport(), backend="process").create_run_parts(spec).job
+    assert type(local) is Job
+    assert type(remote) is Job

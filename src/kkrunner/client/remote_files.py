@@ -1,7 +1,7 @@
 """Client-side staging, stream persistence and result-file synchronization.
 
 This session never submits, observes, waits for, or cancels a backend job. A
-Run owns the session and invokes it before and after a distinct AgentJob.
+Run owns the session and invokes it before and after a distinct Job.
 """
 
 from __future__ import annotations

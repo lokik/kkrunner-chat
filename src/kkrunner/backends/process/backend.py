@@ -45,9 +45,10 @@ class SupervisedProcessBackend(RecoverableBackend):
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
         from uuid import uuid4
-        from kkrunner.backends.process.supervised.job import SupervisedProcessJob
-        return SupervisedProcessJob(
-            self, spec, run_id=submission_key or uuid4().hex, callback=callback,
+        from kkrunner.client.local_managed import local_managed_job
+        return local_managed_job(
+            spec, backend="process", submission_key=submission_key or uuid4().hex,
+            callback=callback,
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):

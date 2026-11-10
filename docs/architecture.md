@@ -61,7 +61,7 @@ A backend `Job` owns only execution submission, observation and cancellation.
 `JobAttachment` supplies the execution context needed for reattachment
 without exposing a durable record to a backend. An untracked or managed
 client `Run` owns execution completion, transfers and optional result processing.
-An SSH `AgentJob` owns FOLLOW observation, while its separate
+An SSH `Job` owns FOLLOW observation, while its separate
 `RemoteFileSession` owns staging, output persistence, synchronization and
 verification. An endpoint creates these parts through `RunParts`; only
 `RunManager` mutates persistent records. A terminal backend fact must never
@@ -319,7 +319,7 @@ structural protocol rather than advertised as methods that always fail.
 | Role | Protocol / type | Implementations |
 | --- | --- | --- |
 | Native execution | `Backend`, `ReopenableBackend`, `RecoverableBackend` | `DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend` |
-| Per-client execution handle | `Job` (structural protocol) | `DirectProcessJob`, `SupervisedProcessJob`, `PsijJob`, `AgentJob` |
+| Per-client execution handle | `Job` (structural protocol) | `DirectProcessJob`, `Job`, `PsijJob`, `Job` |
 | Client session assembly | `RunEndpoint`, `ReopenableRunEndpoint` | `BackendRunEndpoint`, `ReopenableBackendRunEndpoint`, `AgentRunEndpoint`, `SshDirectRunEndpoint` |
 | Internal process mechanics | `DirectProcessAdapter` | `LocalProcessAdapter`, `SshProcessAdapter` |
 | Command and file transport | `Transport`, `RunningCommand` | `LocalTransport`, `SshTransport`, `SshDirectTransport` |

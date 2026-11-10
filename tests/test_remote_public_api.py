@@ -1,15 +1,15 @@
-"""The remote client facade and backend Job have distinct public roles."""
+"""Remote and local managed execution share the same client Job."""
 
 from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.agent_job import AgentJob
+from kkrunner.client.job import Job
 from kkrunner.remote import __all__ as agent_exports
 
 
 def test_remote_execution_is_a_client_endpoint_not_an_agent_facade():
     assert AgentRunEndpoint.__module__ == "kkrunner.client.agent"
-    assert AgentJob.__module__ == "kkrunner.client.agent_job"
+    assert Job.__module__ == "kkrunner.client.job"
     assert RemoteFileSession.__module__ == "kkrunner.client.remote_files"
     assert agent_exports == []
-    assert not hasattr(AgentJob, "synchronize")
-    assert not hasattr(AgentJob, "_sync_output_files")
+    assert not hasattr(Job, "synchronize")
+    assert not hasattr(Job, "_sync_output_files")

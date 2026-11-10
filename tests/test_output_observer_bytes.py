@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kkrunner.backends.process.engine import DirectProcessJob
-from kkrunner.backends.process.supervised.job import _ObserverSink
 from kkrunner.backends.psij.job import PsijJob
-from kkrunner.client.agent_job import AgentJob
+from kkrunner.client.job import Job
 from kkrunner.runs.base import OutputObservers
 
 
@@ -45,7 +44,7 @@ def test_local_forward_output_persists_and_observes_bytes(kind):
 
 def test_remote_pump_delivers_bytes_without_runner_decoder():
     received, written = ([], [])
-    runner = object.__new__(AgentJob)
+    runner = object.__new__(Job)
     runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
     runner._stream_writer = lambda data, kind: written.append((data, kind))
     source = SimpleNamespace(read=AsyncMock(side_effect=[b"remote:\xff", b""]))
@@ -85,12 +84,13 @@ def test_psij_monitor_forwards_follow_bytes(monkeypatch):
     assert received == [("výstup", "out"), ("warning:�", "err")]
 
 
-def test_local_project_sink_uses_shared_bytes_policy():
+def test_shared_job_decodes_bytes_when_no_client_file_sink():
     received = []
-    sink = _ObserverSink(OutputObservers(lambda text, kind: received.append((text, kind))), "out")
-    sink.write("výstup".encode("utf8"))
-    sink.write(b"")
-    sink.flush()
+    runner = object.__new__(Job)
+    runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
+    runner._stream_writer = None
+    source = SimpleNamespace(read=AsyncMock(side_effect=["výstup".encode("utf8"), b""]))
+    asyncio.run(runner._pump(source, "out"))
     assert received == [("výstup", "out")]
 
 

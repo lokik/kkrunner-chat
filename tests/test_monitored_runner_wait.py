@@ -5,11 +5,11 @@ import asyncio
 import pytest
 
 from kkrunner.backends.process.direct.job import DirectProcessJob
-from kkrunner.client.agent_job import AgentJob
+from kkrunner.client.job import Job
 from kkrunner.runs.base import ExecutionSpec, RunState
 
 
-@pytest.mark.parametrize("job_class", (DirectProcessJob, AgentJob))
+@pytest.mark.parametrize("job_class", (DirectProcessJob, Job))
 @pytest.mark.parametrize(
     "state, message",
     (
@@ -27,7 +27,7 @@ def test_wait_without_started_monitor_fails_immediately(tmp_path, job_class, sta
         job.wait()
 
 
-@pytest.mark.parametrize("job_class", (DirectProcessJob, AgentJob))
+@pytest.mark.parametrize("job_class", (DirectProcessJob, Job))
 def test_wait_and_run_async_return_completed_monitor_result(tmp_path, job_class):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
     job = job_class(spec) if job_class is DirectProcessJob else job_class(None, spec)

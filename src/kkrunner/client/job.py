@@ -1,7 +1,9 @@
-"""Remote backend job: submission, observation and cancellation only.
+"""Client Job lifecycle for independently executable managed operations.
 
-Local streams, file mappings, staging and downloads belong to RemoteFileSession
-and are orchestrated by Run. No filesystem transfer lifecycle is stored here.
+The Job owns client-side submission state, observation, cancellation and
+listeners, but never owns the backend process or client file synchronization.
+Its controller provides context-independent target operations through the
+selected Endpoint. It works identically with local or remote controllers.
 """
 
 from __future__ import annotations
@@ -17,13 +19,13 @@ from kkrunner.runs.base import (
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
-class AgentJob:
-    """One execution on a remote process or scheduler backend."""
+class Job:
+    """One client handle for a managed backend execution."""
 
     def __init__(
         self, context, spec, *, callback=None,
         backend_id=None, remote_directory=None, status=None,
-        output_listener=None,
+        output_listener=None, request_factory=None, completion_cleanup=None,
     ):
         self.context = context
         self.spec = spec
@@ -44,12 +46,19 @@ class AgentJob:
         self._follow_process = None
         self._loop = None
         self._request = None
+        self._request_factory = request_factory
+        self._completion_cleanup = completion_cleanup
         self._stream_offsets = None
         self._stream_paths = (None, None)
         self._stream_writer = None
         self._output_observers = OutputObservers(output_listener)
         self._output_error = None
-        self.result = ExecutionOutcome()
+        from kkrunner.files.paths import file_path
+        self.result = ExecutionOutcome(
+            input_file=file_path(spec.input_file, spec.directory),
+            output_file=file_path(spec.output_file, spec.directory),
+            error_file=file_path(spec.error_file, spec.directory),
+        )
         if status is not None:
             self._apply_backend_facts(status)
 
@@ -142,16 +151,49 @@ class AgentJob:
         self._stream_writer = stream_writer
         self._stream_paths = stream_paths
 
+    def prepare_submission(self):
+        """Construct the target request before crossing the submission boundary."""
+        if self._request is not None:
+            return
+        if self._request_factory is None:
+            return  # Remote FileSession supplies a staged request later.
+        request = self._request_factory()
+        from kkrunner.files.paths import file_path
+        output = file_path(self.spec.output_file, self.spec.directory)
+        error = file_path(self.spec.error_file, self.spec.directory)
+        self.configure_submission(
+            request,
+            stream_offsets={"out": 0, "err": 0},
+            stream_writer=None,
+            stream_paths=(output, error),
+        )
+
     def submit(self):
+        from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
+        try:
+            self.prepare_submission()
+        except SubmissionNotStarted:
+            raise
+        except Exception as exc:
+            self._state = RunState.FAILED
+            self._failure_phase = FailurePhase.SUBMISSION
+            self._failure_message = str(exc)
+            raise SubmissionNotStarted(str(exc)) from exc
         with self._lock:
             if self._state != RunState.NEW or self._request is None:
-                raise RuntimeError("Remote job is not prepared for submission")
+                raise RuntimeError("Job is not prepared for submission")
             request = self._request
             self._request = None
             self._state = RunState.SUBMITTING
             self._remote_directory = request["directory"]
             try:
                 facts = _run_sync(self.context._submit(request))
+            except SubmissionNotStarted as exc:
+                # The target proves that no calculation was accepted.
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.SUBMISSION
+                self._failure_message = str(exc)
+                raise
             except BaseException:
                 # An accepted submission may have lost its reply.
                 self._state = RunState.UNKNOWN
@@ -261,21 +303,38 @@ class AgentJob:
                 pass
 
     def _thread_main(self):
+        """Finalize observation, decoder and local handles independently."""
         try:
             asyncio.run(self._monitor())
         except BaseException as exc:
-            self._exception = exc
+            if self._exception is None:
+                self._exception = exc
+                self._failure_message = self._failure_message or str(exc)
+            if not self._state.is_terminal:
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
         finally:
-            try:
-                self._output_observers.finish_bytes()
-            except BaseException as exc:
-                if self._output_error is None:
-                    self._output_error = exc
-            finally:
-                finish_monitor(self)
+            for cleanup in (self._output_observers.finish_bytes, self._completion_cleanup):
+                if cleanup is None:
+                    continue
+                try:
+                    cleanup()
+                except BaseException as exc:
+                    if self._exception is None:
+                        self._exception = exc
+                        self._failure_message = str(exc)
+                    if self._output_error is None:
+                        self._output_error = exc
+                    if self._state == RunState.FINISHED:
+                        self._state = RunState.FAILED
+                        self._failure_phase = FailurePhase.ARTIFACTS
+                    elif not self._state.is_terminal:
+                        self._state = RunState.UNKNOWN
+                        self._failure_phase = None
+            finish_monitor(self)
 
     def start(self):
-        return start_monitor(self, missing_backend="Remote Job has no backend identity")
+        return start_monitor(self, missing_backend="Job has no backend identity")
 
     def wait(self):
         return wait_for_monitor(self)
