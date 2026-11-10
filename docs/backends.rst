@@ -8,28 +8,28 @@ Choose an execution backend
    * - Backend
      - Use
      - Requirements and limits
-   * - ``LocalExecutor``
+   * - ``ProcessBackend``
      - A command on the client machine
      - Raw subprocesses have no reconnect guarantee; managed runs require POSIX process groups and Unix sockets.
-   * - ``PsijExecutor``
+   * - ``PsijBackend``
      - A scheduler visible from the client
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
-   * - ``RemoteEndpointExecutor``
+   * - ``AgentBackendProxy``
      - Direct execution or a scheduler on an SSH target
      - KKRunner on the target, SSH access and explicit workspace mapping.
 
 Local and scheduler execution
 -------------------------------
 
-Use ``LocalExecutor().create_run(spec)`` for a raw command, or pass the executor
+Use ``Run.direct(ProcessBackend(), spec)`` for an untracked run, or pass the backend
 to ``RunManager.create_run`` for durable supervision. The same manager interface
 accepts a scheduler executor:
 
 .. code-block:: python
 
-   from kkrunner.backends import PsijExecutor
+   from kkrunner.backends import PsijBackend
 
-   executor = PsijExecutor(backend="slurm")
+   executor = PsijBackend(backend="slurm")
    # manager and spec are created as in the persistent-run example.
    run = manager.create_run(executor, spec)
    run.submit()
@@ -41,8 +41,8 @@ a run: downloads and application processing may continue after that job exits.
 Endpoint identity and reuse
 -----------------------------
 
-:class:`~kkrunner.backends.ExecutorEndpoint` contains backend and connection identity.
-It is serializable and hashable; :class:`~kkrunner.backends.ExecutorPool` reuses instances
+:class:`~kkrunner.client.ExecutionEndpoint` contains backend and connection identity.
+It is serializable and hashable; :class:`~kkrunner.client.BackendPool` reuses instances
 for identical endpoints and can reconstruct them after restart. Per-run launch
 policy belongs in ``LaunchSpec`` and must not split the executor's identity.
 Close explicitly owned pools when their application scope ends.
@@ -105,7 +105,7 @@ MPI
 
    from kkrunner.runs import LaunchSpec, MpiSpec
 
-   launch = LaunchSpec(mpi=MpiSpec(required=True, process_count=4))
+   launch = LaunchSpec.from_mpi(4)
 
 The launcher is resolved on the execution host. Explicit required MPI cannot
 fall back to serial execution. Autodetection may allow serial fallback and emit
