@@ -28,7 +28,7 @@ from kkrunner.runs.base import (
 )
 from kkrunner.runs.model import WorkingDirectory
 
-_REMOTE_BACKENDS = {"process", "psij"}
+from kkrunner.backends.registry import installed_backend_names
 
 
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
@@ -111,7 +111,7 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         command=None,
         filesystem_id=None,
     ):
-        if backend not in _REMOTE_BACKENDS:
+        if backend not in installed_backend_names():
             raise ValueError(f"Unsupported remote executor: {backend!r}")
         self.transport = transport
         self.filesystem_id = filesystem_id
