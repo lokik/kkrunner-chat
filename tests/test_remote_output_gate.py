@@ -170,3 +170,30 @@ def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
     assert run.state == RunState.UNKNOWN
     assert run.failure_phase is None
     assert output.closed
+
+
+def test_unframed_backend_follow_failure_does_not_disguise_client_failure(tmp_path):
+    """A failed local stream command can coexist with confirmed native success."""
+    import subprocess
+
+    class BrokenFollow(_Follow):
+        async def wait(self):
+            return 17
+
+    context = _Context(RunState.FINISHED)
+    async def follow(*args, **kwargs):
+        return BrokenFollow(b"partial output")
+
+    context._follow = follow
+    spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
+    job = Job(context, spec, backend_id="opaque-handle", remote_directory=str(tmp_path),
+              status={"state": "running"})
+    run = Run(job)
+    run.start()
+    outcome = run.wait()
+    assert outcome.return_code == 0
+    assert job.state is RunState.FINISHED
+    assert job.failure_phase is None
+    assert isinstance(job.output_error, subprocess.CalledProcessError)
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.ARTIFACTS
