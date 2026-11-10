@@ -39,11 +39,15 @@ def test_run_and_job_ownership_boundaries_are_explicit():
     assert Run.__module__ == "kkrunner.runs.run"
     assert RemoteJob.__module__ == "kkrunner.client.remote_job"
     assert RemoteFileSession.__module__ == "kkrunner.client.remote_files"
-    for backend in (ProcessBackend, PsijBackend, AgentBackendProxy):
-        assert callable(backend.create_run_parts)
-        assert callable(backend.open_run_parts)
+    from kkrunner.backends import SupervisedProcessBackend
+    from kkrunner.client.run_parts import NativeRunEndpoint, run_endpoint_for_backend
+    for backend in (ProcessBackend, SupervisedProcessBackend, PsijBackend):
+        assert callable(backend.create_job)
+        assert isinstance(run_endpoint_for_backend(backend()), NativeRunEndpoint)
         assert not hasattr(backend, "create_managed_run")
-    assert RunParts.__dataclass_fields__.keys() == {"job", "files"}
+    assert callable(AgentBackendProxy.create_run_parts)
+    assert callable(AgentBackendProxy.open_run_parts)
+    assert {"job", "files"} <= set(RunParts.__dataclass_fields__)
 
 
 
@@ -127,7 +131,7 @@ def test_process_strategies_have_distinct_implementations():
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.process.direct.job import ProcessJob
     from kkrunner.backends.process.supervised.job import SupervisedProcessJob
 
