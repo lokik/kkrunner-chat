@@ -80,31 +80,13 @@ def test_incompatible_protocol_rejected_before_request_is_read(monkeypatch, acti
         remote_command.run(args, None)
 
 
-def test_direct_parser_accepts_user_commands_without_protocol_version():
+def test_agent_requires_protocol_version():
     parser = argparse.ArgumentParser()
     remote_command.parser(parser)
-    parsed = parser.parse_args(["status", "opaque"])
-    assert parsed.protocol_version is None
-    assert parsed.remote_action == "status"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["status", "opaque"])
     parsed = parser.parse_args(["--protocol-version", str(CONTROL_PROTOCOL_VERSION), "status", "opaque"])
     assert parsed.protocol_version == CONTROL_PROTOCOL_VERSION
-
-
-def test_internal_actions_require_explicit_protocol_version(monkeypatch):
-    monkeypatch.setattr(remote_command.sys, "stdin", io.StringIO("not JSON"))
-    with pytest.raises(ValueError, match="explicit --protocol-version"):
-        remote_command.run(SimpleNamespace(remote_action="submit", protocol_version=None))
-
-
-def test_user_status_infers_local_protocol_version(monkeypatch):
-    calls = []
-    monkeypatch.setattr(remote_service, "status_remote",
-                        lambda remote_id: calls.append(remote_id) or {"state": "running"})
-    output = []
-    monkeypatch.setattr(remote_command, "_print_json", output.append)
-    remote_command.run(remote_args(remote_action="status", remote_id="opaque", protocol_version=None))
-    assert calls == ["opaque"]
-    assert output == [{"state": "running"}]
 
 
 def test_help_does_not_import_kkrunner():
@@ -125,17 +107,15 @@ assert not any(name == "kkrunner" or name.startswith("kkrunner.") for name in sy
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
 
 
-def test_user_parser_is_a_lightweight_subset():
+def test_agent_exposes_only_protocol_actions():
     parser = argparse.ArgumentParser()
-    remote_command.user_parser(parser)
-    for action in ("status", "cancel", "follow"):
-        parsed = parser.parse_args([action, "opaque"])
-        assert parsed.protocol_version is None
-        assert parsed.remote_action == action
-    assert parser.parse_args(["follow", "opaque", "--live"]).live is True
-    for action in ("submit", "recover", "ack", "ack-submit", "query-files", "finalize-upload", "resolve-mpi"):
-        with pytest.raises(SystemExit):
-            parser.parse_args([action])
+    remote_command.parser(parser)
+    parsed = parser.parse_args(["--protocol-version", "1", "follow", "opaque", "--live"])
+    assert parsed.live is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--protocol-version", "1", "unknown"])
+    assert not hasattr(remote_command, "user_parser")
+
 
 
 def test_file_query_cli_does_not_import_remote_execution():
@@ -155,3 +135,56 @@ assert "kkrunner.runs.manager" not in sys.modules
 """
     proc = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
     assert json.loads(proc.stdout) == []
+
+def test_client_parser_uses_persisted_run_id_or_explicit_handle():
+    from kkrunner_cli.client import parser
+    root = argparse.ArgumentParser()
+    parser(root)
+    parsed = root.parse_args(["--store", "/tmp/runs", "status", "run-abc"])
+    assert parsed.run_id == "run-abc"
+    assert parsed.remote_id is None
+    parsed = root.parse_args(["--host", "cluster", "follow", "--remote-id", "opaque", "--from-start"])
+    assert parsed.remote_id == "opaque"
+    assert parsed.from_start
+    with pytest.raises(SystemExit):
+        root.parse_args(["status", "run-abc", "--remote-id", "opaque"])
+
+
+def test_client_status_from_persisted_record(monkeypatch, capsys):
+    from kkrunner_cli import client
+    from kkrunner.runs.base import RunState
+    record = SimpleNamespace(id="run-abc", state=RunState.FINISHED,
+                             return_code=0, message=None)
+    monkeypatch.setattr(client, "_record", lambda args: record)
+    client.main(["--store", "/runs", "status", "run-abc"])
+    assert json.loads(capsys.readouterr().out) == {
+        "state": "finished", "return_code": 0, "error": None,
+    }
+
+
+def test_client_direct_handle_is_not_a_run_id(monkeypatch, capsys):
+    from kkrunner_cli import client
+    monkeypatch.setattr(client, "_direct", lambda args, *, action: {
+        "state": "running", "action": action, "id": args.remote_id,
+    })
+    client.main(["status", "--remote-id", "opaque"])
+    assert json.loads(capsys.readouterr().out) == {
+        "state": "running", "action": "status", "id": "opaque",
+    }
+
+
+def test_client_help_is_lightweight():
+    import subprocess
+    import sys
+    code = """
+import sys
+from kkrunner_cli.client import main
+try:
+    main(["--help"])
+except SystemExit as exc:
+    assert exc.code == 0
+else:
+    raise AssertionError("help should exit")
+assert not any(name == "kkrunner" or name.startswith("kkrunner.") for name in sys.modules)
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
