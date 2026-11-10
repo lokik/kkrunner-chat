@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 
 from kkrunner.runs.base import (
     ExecutionOutcome, FailurePhase, OutputObservers, RunState,
@@ -28,14 +28,9 @@ class Job:
         output_listener=None, request_factory=None, completion_cleanup=None, adapter=None,
     ):
         self.context = context
-        self.adapter = adapter
-        self._direct = adapter is not None
-        self._detached = False
-        self._cancel_requested = Event()
+        from kkrunner.client.direct_session import DirectSession
+        self._direct_session = None if adapter is None else DirectSession(adapter)
         self._started = Event()
-        self._process = None
-        self._pid = None
-        self._stop_task = None
         self.spec = spec
         self.callback = callback
         self._backend_id = backend_id
@@ -79,9 +74,19 @@ class Job:
         return cls(None, spec, callback=callback, adapter=adapter)
 
     @property
+    def _direct(self):
+        return self._direct_session is not None
+
+    @property
+    def adapter(self):
+        """Direct adapter for mechanism-specific introspection, not Job state."""
+        return None if self._direct_session is None else self._direct_session.adapter
+
+    @property
     def backend_id(self):
         if self._direct:
-            return str(self._pid) if self._pid is not None and self.adapter.expose_pid else None
+            session = self._direct_session
+            return str(session.pid) if session.pid is not None and session.adapter.expose_pid else None
         return self._backend_id
 
     @property
@@ -167,26 +172,58 @@ class Job:
             raise RuntimeError("Detached policy is fixed by the managed backend")
         if self._state != RunState.NEW:
             raise RuntimeError("Cannot change detached policy after submission")
-        self.adapter.configure_detached(detached)
-        self._detached = detached
+        self._direct_session.configure_detached(detached)
 
     def _forward_output(self, data, kind):
-        from kkrunner.client.direct_operation import forward_output
-        return forward_output(self, data, kind)
+        if self._output_error is None:
+            self._output_error = self._direct_session.output(data, kind)
+        if not self._observation_stopped.is_set():
+            self._output_observers.emit_bytes(data, kind)
 
-    def _ensure_stop_task(self):
-        from kkrunner.client.direct_operation import ensure_stop_task
-        return ensure_stop_task(self)
+    def _emit_detached_output(self, kind, data):
+        if not self._observation_stopped.is_set():
+            self._output_observers.emit_bytes(data, kind)
+
+    def _direct_started(self, pid):
+        self._state = RunState.RUNNING
+        self._started.set()
 
     async def _execute(self):
-        from kkrunner.client.direct_operation import execute
-        return await execute(self)
+        """Apply native direct execution facts to the single Job state."""
+        session = self._direct_session
+        try:
+            outcome = await session.execute(
+                self.spec, on_started=self._direct_started,
+                on_output=self._forward_output,
+                on_detached_output=self._emit_detached_output,
+                on_finish=self._output_observers.finish_bytes,
+            )
+            self.result.return_code = outcome.return_code
+            self._state = outcome.state
+            self._failure_phase = outcome.failure_phase
+            self._failure_message = outcome.message
+            self._started.set()
+            return self.result
+        except BaseException:
+            self._started.set()
+            if self._state not in (RunState.CANCELLED, RunState.FAILED):
+                if session.pid is not None and (
+                    session.adapter.uncertain_after_launch or session.detached
+                ):
+                    self._state = RunState.UNKNOWN
+                    self._failure_phase = None
+                else:
+                    self._state = RunState.FAILED
+                    self._failure_phase = (
+                        FailurePhase.EXECUTION if session.pid is not None else FailurePhase.LAUNCH
+                    )
+            raise
 
     def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
         if self._direct:
             if self._state != RunState.NEW:
                 raise RuntimeError("Cannot configure a submitted direct job")
-            return self.adapter.configure_submission(
+            return self._direct_session.configure_submission(
                 request, stream_offsets=stream_offsets,
                 stream_writer=stream_writer, stream_paths=stream_paths,
             )
@@ -225,10 +262,23 @@ class Job:
         )
 
     def submit(self):
+        from kkrunner.runs.base import SubmissionNotStarted
         if self._direct:
-            from kkrunner.client.direct_operation import submit
-            return submit(self)
-        from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
+            with self._lock:
+                if self._state == RunState.CANCELLED and self._thread is None:
+                    raise RuntimeError("Run was cancelled before submission")
+                if self._state != RunState.NEW:
+                    raise RuntimeError(f"Run is already {self._state.value}")
+                self._state = RunState.SUBMITTING
+                self._thread = Thread(target=self._thread_main, daemon=True)
+                self._thread.start()
+            self._started.wait()
+            if self._direct_session.pid is None and self._state == RunState.FAILED:
+                self._done.wait()
+                error = self._exception or RuntimeError(self._failure_message or "Launch failed")
+                raise SubmissionNotStarted(str(error)) from self._exception
+            return
+
         try:
             self.prepare_submission()
         except SubmissionNotStarted:
@@ -410,8 +460,15 @@ class Job:
     def _thread_main(self):
         """Finalize observation, decoder and local handles independently."""
         if self._direct:
-            from kkrunner.client.direct_operation import thread_main
-            return thread_main(self)
+            try:
+                asyncio.run(self._execute())
+            except BaseException as exc:
+                self._exception = exc
+                if self._failure_message is None:
+                    self._failure_message = str(exc)
+            finally:
+                finish_monitor(self)
+            return
         try:
             asyncio.run(self._monitor())
         except BaseException as exc:
@@ -471,8 +528,11 @@ class Job:
 
     def cancel(self):
         if self._direct:
-            from kkrunner.client.direct_operation import cancel
-            return cancel(self)
+            if not self._state.is_terminal:
+                self._direct_session.request_cancel()
+                if self._state == RunState.NEW:
+                    self._state = RunState.CANCELLED
+            return
         if self._backend_id is None:
             raise RuntimeError("Job has no confirmed backend identity")
         return request_cancellation(
