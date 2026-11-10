@@ -198,3 +198,45 @@ def test_run_parts_own_file_cleanup_before_and_after_handoff(tmp_path):
     assert events == []
     parts.close()
     assert events == ["close"]
+
+
+
+@pytest.mark.parametrize(
+    "backend_state, expected_state, expected_phase",
+    [
+        (RunState.FINISHED, RunState.FAILED, FailurePhase.ARTIFACTS),
+        (RunState.FAILED, RunState.FAILED, FailurePhase.EXECUTION),
+        (RunState.CANCELLED, RunState.CANCELLED, None),
+    ],
+)
+def test_local_run_keeps_backend_outcome_but_accounts_for_observation_failure(
+    backend_state, expected_state, expected_phase,
+):
+    """A lost FOLLOW cannot produce a successful client Run or falsify Job facts."""
+    observed = []
+    job = _FinishedJob(observed)
+    job.state = backend_state
+    job.failure_phase = FailurePhase.EXECUTION if backend_state is RunState.FAILED else None
+    delivery_error = OSError("local FOLLOW stream interrupted")
+    job.output_error = delivery_error
+    run = Run(job)
+    run._finish()
+    assert job.state is backend_state
+    assert run.state is expected_state
+    assert run.failure_phase is expected_phase
+    if backend_state is RunState.FINISHED:
+        assert run.exception is delivery_error
+        assert run.failure_message == str(delivery_error)
+        assert run.result.return_code == 0
+
+
+def test_untracked_run_does_not_postprocess_after_failed_local_follow():
+    observed = []
+    job = _FinishedJob(observed)
+    job.state = RunState.FINISHED
+    job.output_error = RuntimeError("FOLLOW decoder failed")
+    run = Run(job, process_result=lambda outcome: observed.append("processed"))
+    run._finish()
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.ARTIFACTS
+    assert observed == []

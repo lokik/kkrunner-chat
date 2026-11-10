@@ -399,10 +399,10 @@ class Job:
                         self._failure_message = str(exc)
                     if self._output_error is None:
                         self._output_error = exc
-                    if self._state == RunState.FINISHED:
-                        self._state = RunState.FAILED
-                        self._failure_phase = FailurePhase.ARTIFACTS
-                    elif not self._state.is_terminal:
+                    # Closing client-side output handles is not a backend
+                    # execution failure. Keep terminal backend facts intact;
+                    # Run owns the final delivery/artifact decision.
+                    if not self._state.is_terminal:
                         self._state = RunState.UNKNOWN
                         self._failure_phase = None
             finish_monitor(self)
