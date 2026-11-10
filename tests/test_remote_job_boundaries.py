@@ -165,3 +165,36 @@ def test_download_failure_does_not_change_successful_job_state(tmp_path):
     assert run.failure_phase == FailurePhase.DOWNLOAD
     assert "mark-failed" in events
     assert events[-1] == "close"
+
+def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
+    from kkrunner.runs.base import SubmissionNotStarted
+
+    events = []
+    files = _Files(tmp_path, events)
+    def fail_preparation():
+        raise ValueError("invalid mapped files")
+    files.prepare_job = fail_preparation
+    job = _FinishedJob(events)
+    run = Run(job, file_session=files)
+    with pytest.raises(SubmissionNotStarted, match="invalid mapped files"):
+        run.submit()
+    assert run.state == RunState.FAILED
+    assert "submit" not in events
+    assert events == ["close"]
+
+
+def test_run_parts_own_file_cleanup_before_and_after_handoff(tmp_path):
+    from kkrunner.client.run_parts import RunParts
+
+    events = []
+    files = _Files(tmp_path, events)
+    parts = RunParts(_FinishedJob(events), files)
+    parts.abort()
+    assert events == ["close"]
+    events.clear()
+    parts = RunParts(_FinishedJob(events), files)
+    parts.claim()
+    parts.abort()
+    assert events == []
+    parts.close()
+    assert events == ["close"]

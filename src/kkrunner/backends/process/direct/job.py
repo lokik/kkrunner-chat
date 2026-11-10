@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from threading import Event, Lock, Thread
+from typing import Protocol
 
 from kkrunner.backends.process.primitives import pump_stream
 from kkrunner.files.paths import file_path
@@ -18,10 +19,30 @@ from kkrunner.runs.base import (
 )
 
 
+class DirectProcessAdapter(Protocol):
+    """Process mechanism, not a second Job lifecycle or state owner."""
+
+    expose_pid: bool
+    uncertain_after_launch: bool
+
+    def prepare(self, spec: ExecutionSpec) -> None: ...
+
+    async def launch(self, spec: ExecutionSpec): ...
+
+    async def stop(self, process) -> bool: ...
+
+    def output(self, data: bytes, kind: str): ...
+
+    def exit_status(self, code: int): ...
+
+    def verify(self, spec: ExecutionSpec): ...  # FileManifest or None
+
+    def close(self, process) -> None: ...
+
 class ProcessJob:
     """A client-owned, non-reconnectable direct process on any transport."""
 
-    def __init__(self, spec: ExecutionSpec, callback=None, *, adapter=None):
+    def __init__(self, spec: ExecutionSpec, callback=None, *, adapter: DirectProcessAdapter | None = None):
         if adapter is None:
             from .local import LocalProcessAdapter
             adapter = LocalProcessAdapter()
@@ -101,20 +122,22 @@ class ProcessJob:
         """Used only by staged direct transports; never an agent submit."""
         if self._state != RunState.NEW:
             raise RuntimeError("Cannot configure a submitted direct job")
-        self.adapter.configure_submission(
-            request, stream_offsets=stream_offsets,
-            stream_writer=stream_writer, stream_paths=stream_paths,
-        )
+        configure = getattr(self.adapter, "configure_submission", None)
+        if configure is None:
+            raise RuntimeError("Direct adapter does not support staged submissions")
+        configure(request, stream_offsets=stream_offsets,
+                  stream_writer=stream_writer, stream_paths=stream_paths)
 
     def _forward_output(self, data, kind):
-        self.adapter.output(self, data, kind)
+        if self._output_error is None:
+            self._output_error = self.adapter.output(data, kind)
         self._output_observers.emit_bytes(data, kind)
 
     def _ensure_stop_task(self):
         if self._process is None or self._process.returncode is not None:
             return None
-        if self._stop_task is None or self._stop_task.done():
-            self._stop_task = asyncio.create_task(self.adapter.stop(self, self._process))
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self.adapter.stop(self._process))
         return self._stop_task
 
     def cancel(self):
@@ -139,8 +162,8 @@ class ProcessJob:
             return self.result
         try:
             try:
-                self.adapter.prepare(self)
-                self._process = await self.adapter.launch(self)
+                self.adapter.prepare(self.spec)
+                self._process = await self.adapter.launch(self.spec)
             except BaseException as exc:
                 self._failure_phase = FailurePhase.LAUNCH
                 self._failure_message = str(exc)
@@ -151,11 +174,8 @@ class ProcessJob:
             self._state = RunState.RUNNING
             self._started.set()
 
-            if self._cancel_requested.is_set():
-                # Do not await termination before consuming stdout/stderr:
-                # a full pipe could otherwise deadlock a terminating child.
-                self._ensure_stop_task()
-
+            # Start draining both streams before a stop() operation can wait
+            # for the child. Otherwise full pipes can deadlock cancellation.
             wait_task = asyncio.create_task(self._process.wait())
             stdout_task = asyncio.create_task(
                 pump_stream(self._process.stdout, lambda data: self._forward_output(data, "out"))
@@ -164,6 +184,8 @@ class ProcessJob:
                 pump_stream(self._process.stderr, lambda data: self._forward_output(data, "err"))
             )
             tasks = (wait_task, stdout_task, stderr_task)
+            if self._cancel_requested.is_set():
+                self._ensure_stop_task()
             try:
                 return_code, _, _ = await asyncio.gather(*tasks)
             finally:
@@ -174,7 +196,7 @@ class ProcessJob:
 
             # Backend-specific statuses (e.g. SSH transport disconnection)
             # must be considered before declaring target execution success.
-            override = self.adapter.exit_status(self, return_code)
+            override = self.adapter.exit_status(return_code)
             if override is not None:
                 self._state, self._failure_phase, self._failure_message = override
             else:
@@ -201,7 +223,11 @@ class ProcessJob:
                     self._failure_phase = FailurePhase.EXECUTION
                     self._failure_message = f"Process exited with status {return_code}"
             if self._state == RunState.FINISHED:
-                self.adapter.verify(self)
+                verified = self.adapter.verify(self.spec)
+                if verified is not None and verified.failed_artifacts:
+                    self._state = RunState.FAILED
+                    self._failure_phase = FailurePhase.ARTIFACTS
+                    self._failure_message = verified.availability_message
             return self.result
         except BaseException:
             self._started.set()
@@ -215,13 +241,13 @@ class ProcessJob:
                         FailurePhase.EXECUTION if self._pid is not None else FailurePhase.LAUNCH
                     )
             if self._process is not None and self._process.returncode is None:
-                await self.adapter.stop(self, self._process)
+                await self.adapter.stop(self._process)
             raise
         finally:
             if self._stop_task is not None:
                 await asyncio.gather(self._stop_task, return_exceptions=True)
             self._output_observers.finish_bytes()
-            self.adapter.close(self)
+            self.adapter.close(self._process)
             self._process = None
             self._loop = None
 

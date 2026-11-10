@@ -152,3 +152,38 @@ The launcher is resolved on the execution host. Explicit required MPI cannot
 fall back to serial execution. Autodetection may allow serial fallback and emit
 :class:`~kkrunner.runs.MpiNotFoundWarning`; select that policy deliberately. KKRunner
 does not supply MPI libraries or repair a binary's runtime linkage.
+
+Architecture boundary
+---------------------
+
+Execution endpoints create a RunParts session containing one raw Job
+and, when necessary, a file session. The latter prepares and synchronizes
+files, and the former owns process/scheduler execution. The Run owns
+client-side completion, and the RunManager persists its result.
+
+Backend status queries report backend facts only. A remote backend reporting
+finished does not itself imply the client Run is complete: RunManager
+maps it to downloading until the Run synchronizes output and finishes
+optional postprocessing.
+
+Direct local and direct SSH processes share the same ProcessJob lifecycle.
+Their adapters receive command specifications and processes and return
+verification/transport observations, rather than mutating the Job's internal
+state. RunParts owns the transfer-resource handoff to the Run completion
+observer, including failed attachment cleanup.
+
+Runtime ownership and immutable declarations
+-------------------------------------------
+
+The public ``Run.spec`` is the original execution declaration, not a scratch
+space for active file streams or transport resources. For direct processes the
+``Job`` retains the original specification and the adapter acquires runtime
+output streams and resolves MPI immediately before launching the process.
+For remote runs, ``RemoteFileSession`` owns client-side stream handles and
+transfer offsets, without replacing the immutable specification.
+
+Live backend identifiers and process/connection handles belong to the
+``Job`` (and its adapter) whether or not a ``RunManager`` persists them.
+A persistent ``RunRecord`` stores only the identity needed to reconnect
+supported jobs. Attached specifications can be partial (``argv=None``) and
+describe known file paths, never newly opened runtime stream objects.

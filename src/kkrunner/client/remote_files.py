@@ -16,11 +16,9 @@ from uuid import uuid4
 from kkrunner.client.transport import expand_local_files
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
 from kkrunner.files.paths import file_path, has_file_magic
+from kkrunner.files.streams import OutputStreams, open_output_streams
 from kkrunner.files.versions import file_digest
-from kkrunner.runs.base import (
-    ExecutionOutcome, ExecutionResources, RunState, SubmissionNotStarted,
-    close_output_files, materialize_output_streams,
-)
+from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.support.file_locks import FileLock
 
@@ -39,8 +37,7 @@ class RemoteFileSession:
         self._files = files
         self._remote_directory = remote_directory
         self._prepared = None
-        self._path_spec = None
-        self._output_resources = ExecutionResources()
+        self._streams = None
         self._output_targets = dict(output_targets or {})
         self._cache_targets = dict(cache_targets or {})
         self._output_patterns = tuple(output_patterns or ())
@@ -97,7 +94,10 @@ class RemoteFileSession:
         extending only the missing suffix. A sidecar avoids changing the
         contents of the stream on platforms with byte-range file locks.
         """
-        target = self.spec.error_file if kind == "err" else self.spec.output_file
+        streams = self._streams
+        target = (
+            streams.error_file if kind == "err" else streams.output_file
+        ) if streams is not None else None
         if target is None or not data:
             return
         offset = self._stream_positions[kind]
@@ -514,6 +514,14 @@ class RemoteFileSession:
             # or uploading anything. The same validated manifest then owns
             # staging requirements and the persisted submission snapshot.
             local = FileManifest.from_spec(self.spec)
+            if (
+                local.stdout is not None and local.stderr is not None
+                and local.stdout.local_path == local.stderr.local_path
+            ):
+                # The remote FOLLOW protocol carries two independent byte
+                # offsets. They cannot reproduce the order of two writers
+                # sharing one physical stream file without a merged protocol.
+                raise ValueError("Remote stdout and stderr must have distinct output files")
             run_id = self._run_id or uuid4().hex
             remote_directory = await self.context.map_directory(self.spec.directory)
             await self.context.transport.run(("mkdir", "-p", "--", remote_directory))
@@ -569,10 +577,10 @@ class RemoteFileSession:
             )
             from kkrunner.runs.base import ExecutionSpec, LaunchSpec
             spec = ExecutionSpec(
-                argv=(),
+                argv=None,
                 input_file=files.input_file,
-                output_file=output,
-                error_file=error,
+                output_file=output_local,
+                error_file=error_local,
                 directory=os.fspath(directory),
                 launch=LaunchSpec(
                     local_root=os.fspath(context.local_root),
@@ -588,9 +596,7 @@ class RemoteFileSession:
                 cache_targets=cache_targets, cache_patterns=cache_patterns,
                 cache_before=cache_before,
             )
-            session._output_resources = ExecutionResources(
-                *(item for item in (output, error) if item is not None)
-            )
+            session._streams = OutputStreams(output, error)
             streams.pop_all()  # Explicitly transfer stream ownership.
             return session
 
@@ -617,17 +623,9 @@ class RemoteFileSession:
         """Open locally owned output streams and return a backend request."""
         self.prepare_submission()
         request, _ = self._prepared
-        if self._path_spec is None:
-            self._path_spec = self.spec
+        if self._streams is None:
             try:
-                self.spec = materialize_output_streams(self._path_spec)
-                self._output_resources = ExecutionResources(
-                    *(
-                        getattr(self.spec, name)
-                        for name in ("output_file", "error_file")
-                        if isinstance(getattr(self._path_spec, name), (str, os.PathLike))
-                    )
-                )
+                self._streams = open_output_streams(self.spec)
             except Exception as exc:
                 raise SubmissionNotStarted(str(exc)) from exc
         request["detached"] = self._run_id is not None
@@ -652,10 +650,14 @@ class RemoteFileSession:
 
     def _observation_offsets(self):
         offsets = {}
-        for kind, target in (("out", self.spec.output_file), ("err", self.spec.error_file)):
+        streams = self._streams
+        for kind, target in (
+            ("out", None if streams is None else streams.output_file),
+            ("err", None if streams is None else streams.error_file),
+        ):
             if target is None:
                 offsets[kind] = None
-            elif kind == "err" and target is self.spec.output_file:
+            elif kind == "err" and target is streams.output_file:
                 offsets[kind] = offsets["out"]
             else:
                 target.flush()
@@ -718,14 +720,14 @@ class RemoteFileSession:
         _run_sync(self._synchronize(state))
 
     def close(self):
-        """Flush and close both streams even when supplied by the caller.
-
-        RemoteFileSession owns streaming output until Run completion; after
-        detaching or a failed preparation the original stream handles must
-        not survive. The previous combined remote runner closed these handles
-        in its monitor's finally clause.
-        """
-        try:
-            close_output_files(self.spec.output_file, self.spec.error_file)
-        finally:
-            self._output_resources.close(suppress_errors=True)
+        """Release runtime streams; leave ExecutionSpec unchanged."""
+        streams, self._streams = self._streams, None
+        if streams is not None:
+            streams.close()
+        else:
+            # A supplied file object belongs to this session even if staging
+            # failed before the runtime stream acquisition.
+            OutputStreams(
+                self.spec.output_file if hasattr(self.spec.output_file, "close") else None,
+                self.spec.error_file if hasattr(self.spec.error_file, "close") else None,
+            ).close()

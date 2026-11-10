@@ -30,26 +30,10 @@ from kkrunner.runs.model import WorkingDirectory
 _REMOTE_BACKENDS = {"process", "psij"}
 
 
-def _client_status_state(state):
-    """Translate target backend facts to the remote executor's client lifecycle."""
-    backend_state = RunState(state.get("state", "unknown"))
-    raw_phase = state.get("failure_phase")
-    phase = None if raw_phase is None else FailurePhase(raw_phase)
-
-    if backend_state == RunState.FINISHED:
-        return RunState.DOWNLOADING
-    if backend_state == RunState.FAILED and phase not in (
-        FailurePhase.SUBMISSION,
-        FailurePhase.LAUNCH,
-    ):
-        return RunState.DOWNLOADING
-    return backend_state
-
-
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     """Interpret one backend reply without issuing another remote request."""
     return RunStatus(
-        _client_status_state(facts),
+        RunState(facts.get("state", "unknown")),
         backend_id=backend_id,
         execution=execution,
         files=files,
@@ -331,6 +315,7 @@ class AgentBackendProxy:
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        spec.require_complete()
         return self._context(self, spec.launch).create_run_parts(
             spec, submission_key=submission_key, callback=callback,
         )

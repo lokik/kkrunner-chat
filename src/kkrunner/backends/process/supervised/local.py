@@ -83,7 +83,7 @@ def attach_local(executor, run, *, callback=None, output_listener=None, start=Tr
         raise ValueError("Local project does not have a supervisor handle")
     files = run.files
     spec = ExecutionSpec(
-        argv=(),
+        argv=None,
         input_file=files.input_file,
         output_file=files.output_file,
         error_file=None if files.stderr is None else files.stderr.local_path,
@@ -96,7 +96,6 @@ def attach_local(executor, run, *, callback=None, output_listener=None, start=Tr
         callback=callback,
         output_listener=output_listener,
         backend_id=backend_id,
-        run_id=run.id,
         state=status.state,
         failure_phase=status.failure_phase,
         failure_message=status.message,

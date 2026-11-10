@@ -144,3 +144,38 @@ def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable():
         assert runner.failure_message == "original execution failure"
     finally:
         assert runner._done.wait(2), "completion worker must not escape exception handling"
+
+def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
+    from kkrunner.runs.model import WorkingDirectory, Execution
+    from dataclasses import replace
+
+    executor = _Executor(RunState.FINISHED)
+    manager, record = _record(tmp_path, executor)
+    record = manager.transition(
+        record,
+        execution=Execution(
+            record.execution.endpoint, WorkingDirectory(str(tmp_path), "/remote/job"),
+            record.execution.backend_id,
+        ),
+    )
+    (refreshed,) = manager.refresh((record,))
+    assert refreshed.state == RunState.DOWNLOADING
+    assert refreshed.return_code == 0
+    assert refreshed in manager.store.runs(active=True)
+
+
+def test_backend_failure_on_remote_job_still_preserves_transfer_stage(tmp_path):
+    from kkrunner.runs.model import WorkingDirectory, Execution
+
+    executor = _Executor(RunState.FAILED)
+    manager, record = _record(tmp_path, executor)
+    record = manager.transition(
+        record,
+        execution=Execution(
+            record.execution.endpoint, WorkingDirectory(str(tmp_path), "/remote/job"),
+            record.execution.backend_id,
+        ),
+    )
+    (refreshed,) = manager.refresh((record,))
+    assert refreshed.state == RunState.DOWNLOADING
+    assert refreshed in manager.store.runs(active=True)

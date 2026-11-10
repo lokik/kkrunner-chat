@@ -32,6 +32,7 @@ class SshDirectBackend:
         return self._remote_home_cache
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        spec.require_complete()
         if submission_key is not None:
             raise UnsupportedCapability(
                 "SSH direct jobs cannot be persisted or recovered; use an agent-backed SSH endpoint"

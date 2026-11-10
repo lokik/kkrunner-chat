@@ -33,10 +33,10 @@ class ProcessBackend:
         ))
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        spec.require_complete()
         if submission_key is None:
             from kkrunner.backends.process.direct.job import ProcessJob
-            from kkrunner.backends.process.primitives import materialize_local_spec
-            return ProcessJob(materialize_local_spec(spec), callback=callback)
+            return ProcessJob(spec, callback=callback)
         from kkrunner.backends.process.supervised.job import SupervisedProcessJob
         return SupervisedProcessJob(
             self, spec, run_id=submission_key, callback=callback,
