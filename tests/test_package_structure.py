@@ -127,6 +127,19 @@ assert 'kkrunner.backends.psij.job' not in sys.modules
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
 
+def test_psij_agent_import_does_not_load_executor_implementation():
+    # Agent command definitions should load without constructing or importing
+    # the reusable PSI/J executor; it is only needed on actual submission.
+    code = """
+import sys
+from kkrunner.backends.psij import agent
+assert callable(agent.follow_remote)
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'psij' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
 def test_facade_exports_resolve_without_optional_scheduler_dependency():
     for package in (kkrunner.runs, kkrunner.files, kkrunner.backends, kkrunner.projects, kkrunner.remote):
         for name in package.__all__:

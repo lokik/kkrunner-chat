@@ -111,7 +111,7 @@ def recover_remote(run_id, request, *, submitted_at=None):
 
 async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval):
     """Follow scheduler-owned files while PSI/J waits for terminal completion."""
-    from kkrunner.backends.psij.backend import _psij_state
+    from kkrunner.backends.psij.job import _psij_state
 
     handle = _decode_handle(remote_id)
     executor = _psij_executor(handle)
