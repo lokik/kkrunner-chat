@@ -375,12 +375,13 @@ def test_psij_project_manifest_marks_concrete_and_wildcard_files(monkeypatch, tm
         ),
         submission_key="manifest",
     )
-    runner.set_manifest(files)
     runner.submit()
     runner.wait()
-    assert runner.files.stdout.availability_state == "available"
-    assert runner.files.outputs[0].availability_state == "available"
-    matches = [entry for entry in runner.files.outputs if entry.source_pattern is not None]
+    from kkrunner.files.availability import discover_local_files
+    discovered = discover_local_files(files)
+    assert discovered.stdout.availability_state == "available"
+    assert discovered.outputs[0].availability_state == "available"
+    matches = [entry for entry in discovered.outputs if entry.source_pattern is not None]
     assert len(matches) == 1
     assert matches[0].availability_state == "available"
 
@@ -393,10 +394,10 @@ def test_psij_missing_optional_output_is_skipped(monkeypatch, tmp_path):
     runner = executor.create_job(
         ExecutionSpec(argv=("program",), input_file=None, directory=str(tmp_path), output_file=None), submission_key="optional"
     )
-    runner.set_manifest(files)
     runner.submit()
     runner.wait()
-    assert runner.files.outputs[0].availability_state == "skipped"
+    from kkrunner.files.availability import discover_local_files
+    assert discover_local_files(files).outputs[0].availability_state == "skipped"
 
 
 @pytest.mark.parametrize("mpi, process_count", [(16, 16), ("auto", None)])
@@ -651,9 +652,13 @@ def test_psij_attach_without_recorded_streams(monkeypatch, tmp_path):
     run = _psij_run(tmp_path, "456")
     run = replace(run, files=replace(run.files, stdout=None, stderr=None))
     attached = executor.open_job(JobAttachment(run.execution, run.files), start=False)
+    assert attached.spec.is_partial
+    assert attached.spec.argv is None
     assert attached.spec.output_file is None
     assert attached.spec.error_file is None
-    assert attached.files == run.files
+    # File declarations belong to the client Run, not to the native Job.
+    assert not hasattr(attached, "files")
+    assert run.files is not None
 
 
 def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):

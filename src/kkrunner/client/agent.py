@@ -30,26 +30,10 @@ from kkrunner.runs.model import WorkingDirectory
 _REMOTE_BACKENDS = {"process", "psij"}
 
 
-def _client_status_state(state):
-    """Translate target backend facts to the remote executor's client lifecycle."""
-    backend_state = RunState(state.get("state", "unknown"))
-    raw_phase = state.get("failure_phase")
-    phase = None if raw_phase is None else FailurePhase(raw_phase)
-
-    if backend_state == RunState.FINISHED:
-        return RunState.DOWNLOADING
-    if backend_state == RunState.FAILED and phase not in (
-        FailurePhase.SUBMISSION,
-        FailurePhase.LAUNCH,
-    ):
-        return RunState.DOWNLOADING
-    return backend_state
-
-
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     """Interpret one backend reply without issuing another remote request."""
     return RunStatus(
-        _client_status_state(facts),
+        RunState(facts.get("state", "unknown")),
         backend_id=backend_id,
         execution=execution,
         files=files,
@@ -79,9 +63,14 @@ class _AgentRunContext(RemotePathContext):
         )
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
-        files = RemoteFileSession(self, spec, run_id=submission_key)
+        files = RemoteFileSession(self, spec)
         job = RemoteJob(self, spec, callback=callback)
-        return RunParts(job, files)
+        return RunParts(
+            job, files,
+            submission_builder=lambda prepared: self.endpoint.submission_request(
+                prepared, submission_key=submission_key,
+            ),
+        )
 
     async def attach_run_parts(self, attachment, *, callback=None, output_listener=None):
         execution = attachment.execution
@@ -134,6 +123,16 @@ class AgentBackendProxy:
         if self._remote_home_cache is None:
             self._remote_home_cache = await query_remote_home(self.transport)
         return self._remote_home_cache
+
+    def submission_request(self, prepared_files, *, submission_key=None):
+        """Only the execution endpoint chooses backend protocol and durability."""
+        return {
+            **prepared_files,
+            "id": submission_key,
+            "executor": self.backend,
+            "executor_options": dict(self.backend_options),
+            "detached": submission_key is not None,
+        }
 
     async def _json_request(self, action, *args, payload=None):
         return await json_request(self.transport, self.command, action, *args, payload=payload)
@@ -331,6 +330,7 @@ class AgentBackendProxy:
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        spec.require_complete()
         return self._context(self, spec.launch).create_run_parts(
             spec, submission_key=submission_key, callback=callback,
         )

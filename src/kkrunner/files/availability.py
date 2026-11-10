@@ -11,6 +11,65 @@ import os
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 
 
+def prepare_target_outputs(request):
+    """Protect target inputs and caches, then clear stale declared outputs.
+
+    Standalone target-side operation with the same rules for direct-local and
+    direct-SSH execution. No kkrunner imports or external helper functions.
+    """
+    import glob
+    import os
+
+    sync = request.get("client_sync") or {}
+    streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
+    protected_declarations = [
+        *request.get("input_files", ()),
+        request.get("stdin"),
+        request.get("input_file"),
+        *(item["path"] for item in sync.get("cache_files", ())),
+        *sync.get("cache_patterns", ()),
+        *(item["path"] for item in sync.get("cache_before", ())),
+    ]
+    protected = set()
+    protected_inodes = set()
+    for declaration in protected_declarations:
+        if declaration is None:
+            continue
+        matches = glob.glob(declaration, recursive=True) if glob.has_magic(declaration) else [declaration]
+        for candidate in matches:
+            protected.add(os.path.realpath(candidate))
+            if os.path.exists(candidate):
+                info = os.stat(candidate)
+                protected_inodes.add((info.st_dev, info.st_ino))
+
+    def is_protected(path):
+        if os.path.realpath(path) in protected:
+            return True
+        if os.path.exists(path):
+            info = os.stat(path)
+            return (info.st_dev, info.st_ino) in protected_inodes
+        return False
+
+    patterns = [*sync.get("output_files", ()), *sync.get("output_patterns", ())]
+    for path in streams:
+        if is_protected(path):
+            raise ValueError("Output stream conflicts with input/cache: " + path)
+    for declaration in dict.fromkeys(patterns):
+        wildcard = glob.has_magic(declaration)
+        matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]
+        for path in matches:
+            if path in streams:
+                continue
+            if is_protected(path):
+                if wildcard:
+                    continue
+                raise ValueError("Explicit output conflicts with input/cache: " + path)
+            if os.path.islink(path) or os.path.isfile(path):
+                os.unlink(path)
+            elif os.path.exists(path) and not wildcard:
+                raise IsADirectoryError(path)
+
+
 def discover_local_files(files, *, include_streams=True, require_outputs=True):
     """Resolve pending local declarations and retain individual wildcard matches."""
     declarations = []

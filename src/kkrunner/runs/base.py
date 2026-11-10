@@ -17,54 +17,7 @@ from kkrunner.files.paths import file_path
 from kkrunner.runs.model import Execution
 
 
-def materialize_output_streams(spec):
-    """Open path-valued output streams at submission, preserving supplied handles."""
-    from contextlib import ExitStack
-    from pathlib import Path
-
-    with ExitStack() as acquired:
-        opened = {}
-        changes = {}
-        for name in ("output_file", "error_file"):
-            value = getattr(spec, name)
-            if isinstance(value, (str, os.PathLike)):
-                path = file_path(value, spec.directory)
-                if path not in opened:
-                    Path(path).parent.mkdir(parents=True, exist_ok=True)
-                    opened[path] = acquired.enter_context(open(path, "wb"))
-                changes[name] = opened[path]
-        result = replace(spec, **changes) if changes else spec
-        acquired.pop_all()  # The runner owns these handles from here on.
-        return result
-
-
-def _close_distinct(resources, *, suppress_errors=False):
-    """Close each distinct resource once; keep closing after an error."""
-    seen = set()
-    first_error = None
-    for resource in resources:
-        if resource is None or id(resource) in seen:
-            continue
-        seen.add(id(resource))
-        close = getattr(resource, "close", None)
-        if close is None or getattr(resource, "closed", False):
-            continue
-        try:
-            close()
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
-    if first_error is not None and not suppress_errors:
-        raise first_error
-
-
-def close_output_files(*files):
-    """Close distinct output handles, including merged stdout/stderr.
-
-    Paths and absent streams need no closing. An error must not leave another
-    open output handle behind; propagate the first error after cleanup.
-    """
-    _close_distinct(files)
+from kkrunner.files.streams import _close_distinct, close_output_files
 
 
 def dispatch_cancellation(action):
@@ -239,6 +192,7 @@ class FailurePhase(str, Enum):
     LAUNCH = "launch"
     EXECUTION = "execution"
     ARTIFACTS = "artifacts"
+    OUTPUT = "output"
     DOWNLOAD = "download"
     POSTPROCESSING = "postprocessing"
 
@@ -551,9 +505,14 @@ class ExecutionSpec:
     ``input_file`` identifies the main input for tracking and transfer;
     ``stdin`` selects the file connected to the process's standard input.
     Declaring an input file does not add its name to ``argv`` or redirect stdin.
+
+    ``argv=None`` means the original command is unknown, as on reattachment.
+    This is a partial, observation-only specification, not a new launch request.
+    ``argv=()`` remains a known empty command. Other reconstructed fields can
+    also be incomplete; they describe only facts available to the observer.
     """
 
-    argv: Sequence[str]
+    argv: Optional[Sequence[str]]
     input_file: Any = None
     output_file: Any = None
     directory: str = "."
@@ -578,7 +537,8 @@ class ExecutionSpec:
                 name,
                 tuple(_pathlike(value) for value in getattr(self, name)),
             )
-        object.__setattr__(self, "argv", tuple(os.fspath(value) for value in self.argv))
+        if self.argv is not None:
+            object.__setattr__(self, "argv", tuple(os.fspath(value) for value in self.argv))
         if self.mpi_argv is not None:
             object.__setattr__(
                 self,
@@ -586,12 +546,24 @@ class ExecutionSpec:
                 tuple(os.fspath(value) for value in self.mpi_argv),
             )
 
+    @property
+    def is_partial(self) -> bool:
+        """Whether the original command is unknown (usually after reattachment)."""
+        return self.argv is None
+
+    def require_complete(self):
+        """Reject an observation-only specification as a new submission."""
+        if self.is_partial:
+            raise ValueError("Cannot submit a partial ExecutionSpec: original argv is unknown")
+        return self
+
     def command_request(self, transform=list):
         """Serialize common command and launch fields for execution services.
 
         The caller supplies the mapping for command arguments; for remote runs
         this resolves already-staged local file names to target paths.
         """
+        self.require_complete()
         return {
             "argv": transform(self.argv),
             "mpi_argv": None if self.mpi_argv is None else transform(self.mpi_argv),

@@ -10,7 +10,7 @@ import asyncio
 from threading import Event, Lock, Thread
 
 from kkrunner.runs.base import (
-    FailurePhase, RunState, SubmissionNotStarted, finish_monitor, wait_for_monitor,
+    ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted, finish_monitor, wait_for_monitor,
 )
 from kkrunner.runs.processing import ProcessingPending
 
@@ -25,14 +25,21 @@ class Run:
 
     def __init__(
         self, job, *, backend=None, manager=None, record=None,
-        process_result=None, callback=None, file_session=None,
+        process_result=None, callback=None, file_session=None, parts=None,
+        local_files=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
         if record is not None and process_result is not None and not record.processing_required:
             raise ValueError("Result processing was not declared in RunRecord")
-        self._job = job
-        self._file_session = file_session
+        from kkrunner.client.run_parts import RunParts
+        self._parts = parts if parts is not None else RunParts(job, file_session)
+        self._job = self._parts.job
+        self._file_session = self._parts.files
+        self._local_files = (
+            None if self._file_session is not None else
+            record.files if record is not None else local_files
+        )
         self.backend = backend
         self.manager = manager
         self._record = record
@@ -58,8 +65,13 @@ class Run:
     @classmethod
     def direct(cls, backend, spec, *, process_result=None, callback=None):
         """Create one untracked Run with the same client lifecycle."""
-        parts = backend.create_run_parts(spec)
-        return cls(parts.job, backend=backend, file_session=parts.files,
+        if isinstance(spec, ExecutionSpec):
+            spec.require_complete()
+        from kkrunner.client.run_parts import run_endpoint_for_backend
+        parts = run_endpoint_for_backend(backend).create_run_parts(spec)
+        from kkrunner.files.manifest import FileManifest
+        local_files = None if parts.files is not None or not isinstance(spec, ExecutionSpec) else FileManifest.from_spec(spec)
+        return cls(parts.job, backend=backend, parts=parts, local_files=local_files,
                    process_result=process_result, callback=callback)
 
     @property
@@ -93,7 +105,7 @@ class Run:
     def files(self):
         if self._file_session is not None:
             return self._file_session.files
-        return getattr(self._job, "files", None)
+        return self._local_files
 
     @property
     def exception(self):
@@ -147,17 +159,6 @@ class Run:
             raise RuntimeError("Snapshot of an untracked Run requires a workspace")
         return self.manager.snapshot_file(self.id, file, destination=destination)
 
-    def _prepare_remote_job(self):
-        """Wire local streams to the job before crossing the submit boundary."""
-        try:
-            request = self._file_session.prepare_job()
-            self._job.configure_submission(request, **self._file_session.observation())
-        except SubmissionNotStarted:
-            raise
-        except Exception as exc:
-            # No remote submit has been attempted by this method.
-            raise SubmissionNotStarted(str(exc)) from exc
-
     def _finish(self):
         try:
             outcome = self._job.wait()
@@ -176,7 +177,7 @@ class Run:
                     self._file_session.synchronize(raw_state)
                     # Flush and close the client-owned streams *before*
                     # postprocessing can durably publish a finished Run.
-                    self._file_session.close()
+                    self._parts.close()
                 except Exception as exc:
                     if raw_state == RunState.FINISHED:
                         self._file_session.mark_transfer_failed(str(exc))
@@ -204,6 +205,24 @@ class Run:
                 return
             if raw_state != RunState.FINISHED:
                 raise RuntimeError(f"Backend observer completed in unexpected state {raw_state.value}")
+
+            # A Job finishes once its process ends. The client then verifies
+            # application artifacts, after native output streams were closed.
+            if self._local_files is not None:
+                from kkrunner.files.availability import discover_local_files
+                try:
+                    self._local_files = discover_local_files(self._local_files)
+                except OSError as exc:
+                    self._exception = exc
+                    self._state = RunState.FAILED
+                    self._failure_phase = FailurePhase.ARTIFACTS
+                    self._failure_message = str(exc)
+                    return
+                if self._local_files.failed_artifacts:
+                    self._state = RunState.FAILED
+                    self._failure_phase = FailurePhase.ARTIFACTS
+                    self._failure_message = self._local_files.availability_message
+                    return
 
             self._processing = True
             try:
@@ -252,7 +271,7 @@ class Run:
         finally:
             if self._file_session is not None:
                 try:
-                    self._file_session.close()
+                    self._parts.close()
                 except BaseException as exc:
                     # File cleanup must never prevent finish_monitor from
                     # waking waiters. For a successful Job, an unflushed
@@ -281,6 +300,7 @@ class Run:
         self._thread = Thread(target=self._finish, daemon=True)
         try:
             self._thread.start()
+            self._parts.claim()
         except BaseException:
             # A monitor that never started cannot own completion or cleanup.
             # The caller retains the accepted backend identity for recovery.
@@ -306,7 +326,7 @@ class Run:
         if self._file_session is None:
             return
         try:
-            self._file_session.close()
+            self._parts.close()
         except BaseException as cleanup_error:
             import logging
             logging.getLogger(__name__).warning(
@@ -319,7 +339,7 @@ class Run:
         if self.manager is None:
             try:
                 if self._file_session is not None:
-                    self._prepare_remote_job()
+                    self._parts.prepare_job()
                 self._job.submit()
                 self._start_completion()
             except SubmissionNotStarted as exc:
@@ -353,18 +373,16 @@ class Run:
         self._monitor_record_version = self._record.updated_at
         try:
             if self._file_session is not None:
-                self._file_session.prepare_submission()
+                self._parts.prepare_submission()
                 self._record = self.manager.transition(
                     self._record,
                     execution=self.execution,
                     files=self.files if self.files is not None else _UNCHANGED,
                 )
                 self._monitor_record_version = self._record.updated_at
-                self._prepare_remote_job()
+                self._parts.prepare_job()
             else:
-                prepare = getattr(self._job, "prepare_submission", None)
-                if prepare is not None:
-                    prepare()
+                if self._parts.prepare_submission():
                     self._record = self.manager.transition(
                         self._record,
                         execution=self.execution,
@@ -438,13 +456,14 @@ class Run:
                 raise RuntimeError(
                     "Run has no persisted backend identity; recover the submission before attaching"
                 )
-        if self._file_session is not None:
-            self._job.configure_observation(**self._file_session.observation())
+        self._parts.configure_observation()
         start = getattr(self._job, "start", None)
         if start is not None:
             start()
         elif self._job.state == RunState.NEW:
             self._job.submit()
+        # Completion claims the file session only after its observer started.
+        # A failed monitor start must leave abort() able to close the streams.
         self._start_completion()
         if self.manager is None:
             return

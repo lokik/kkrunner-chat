@@ -266,3 +266,35 @@ def test_common_command_request_preserves_mpi_and_launch_contract(tmp_path):
     assert transformed["launch"] == request["launch"]
     assert transformed["mpi_uses_stdin"] is False
     assert spec.argv == ("serial", "input.inp")
+
+def test_partial_spec_distinguishes_unknown_from_empty_argv(tmp_path):
+    from dataclasses import replace
+    from kkrunner import ExecutionSpec
+
+    empty = ExecutionSpec(argv=(), directory=str(tmp_path))
+    partial = replace(empty, argv=None)
+    assert empty.argv == ()
+    assert not empty.is_partial
+    assert partial.argv is None
+    assert partial.is_partial
+    assert partial.directory == empty.directory
+    with pytest.raises(ValueError, match="partial ExecutionSpec"):
+        partial.command_request()
+    with pytest.raises(ValueError, match="partial ExecutionSpec"):
+        partial.require_complete()
+    assert empty.command_request()["argv"] == []
+
+
+def test_partial_spec_cannot_be_submitted_to_public_backend_apis(tmp_path):
+    from kkrunner import ExecutionSpec, Run, RunManager, RunStore
+    from kkrunner.backends import ProcessBackend
+
+    spec = ExecutionSpec(argv=None, directory=str(tmp_path))
+    backend = ProcessBackend()
+    with pytest.raises(ValueError, match="partial ExecutionSpec"):
+        Run.direct(backend, spec)
+    with pytest.raises(ValueError, match="partial ExecutionSpec"):
+        backend.create_job(spec)
+    manager = RunManager(RunStore(tmp_path / "store"))
+    with pytest.raises(ValueError, match="partial ExecutionSpec"):
+        manager.create_run(backend, spec)

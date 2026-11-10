@@ -41,12 +41,16 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
         launch=LaunchSpec(local_root=str(local), remote_root=str(remote)),
     )
     run = Run.direct(SshDirectBackend(LocalTransport()), spec)
+    assert run.spec is spec
     observed = []
     run.add_output_listener(lambda data, kind: observed.append((kind, data)))
     outcome = run.run()
     assert outcome.return_code == 0
     assert run.state == RunState.FINISHED
     assert run.backend_id is None
+    assert run.spec is spec
+    assert run.spec.output_file == str(directory / "stdout.txt")
+    assert run.spec.error_file == str(directory / "stderr.txt")
     assert (directory / "stdout.txt").read_text() == "hello\n"
     assert (directory / "stderr.txt").read_text() == "error\n"
     assert (directory / "answer.dat").read_text() == "42"
@@ -109,6 +113,20 @@ def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
     assert local.adapter.expose_pid is True
     assert remote.adapter.expose_pid is False
 
+def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
+    root = tmp_path / "local"
+    root.mkdir()
+    spec = ExecutionSpec(
+        argv=(sys.executable, "-c", "print('never launched')"),
+        directory=root,
+        output_file=str(root / "combined.log"),
+        error_file=str(root / "combined.log"),
+        launch=LaunchSpec(local_root=str(root), remote_root=str(tmp_path / "remote")),
+    )
+    run = Run.direct(SshDirectBackend(LocalTransport()), spec)
+    with pytest.raises(Exception, match="distinct output files"):
+        run.submit()
+    assert not (root / "combined.log").exists()
 
 
 def test_direct_endpoint_round_trip_and_normalized_identity():
@@ -122,6 +140,12 @@ def test_direct_endpoint_round_trip_and_normalized_identity():
     restored = create_backend_from_endpoint(endpoint)
     assert isinstance(restored, SshDirectBackend)
     assert endpoint_for_backend(restored) == endpoint
+    configured = SshDirectBackend(
+        SshDirectTransport("user@example.net", python_command=("python3.12",))
+    )
+    normalized_python = endpoint_for_backend(configured)
+    assert normalized_python.python_command == ("python3.12",)
+    assert endpoint_for_backend(create_backend_from_endpoint(normalized_python)) == normalized_python
     normalized = ExecutionEndpoint(
         executor="ssh-direct", host="user@example.net",
         remote_command=("unrelated-agent",), psij_backend="slurm",
@@ -179,3 +203,21 @@ def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path
     assert job.run().return_code == 0
     job.cancel()
     assert job.state == RunState.FINISHED
+
+def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
+    """Direct adapters return the command specification, never mutate Job state."""
+    from kkrunner.client.ssh_direct.runtime import SshProcessAdapter
+    from kkrunner.client.remote_paths import RemotePathContext
+
+    spec = ExecutionSpec(argv=("true",), directory=tmp_path)
+    backend = SshDirectBackend(LocalTransport())
+    adapter = SshProcessAdapter(RemotePathContext(backend, spec.launch))
+    with pytest.raises(ValueError, match="staged request"):
+        adapter.prepare(spec)
+    adapter.configure_submission(
+        {"directory": str(tmp_path)},
+        stream_offsets={"out": None, "err": None},
+        stream_writer=lambda data, kind: None,
+        stream_paths=(None, None),
+    )
+    assert adapter.prepare(spec) is None

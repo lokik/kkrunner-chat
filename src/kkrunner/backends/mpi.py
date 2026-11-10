@@ -1,63 +1,60 @@
-"""Host-specific MPI launcher materialization."""
+"""Host-local MPI resolution, also runnable on targets without kkrunner."""
 
 from __future__ import annotations
 
+# Expose host modules for local diagnostics; the portable resolver imports
+# them inside its own function to remain independent when transported.
 import os
 import shutil
-from typing import Optional, Tuple
 
 from kkrunner.runs.base import MpiSpec
 
-_MPI_LAUNCHERS = ("mpirun", "mpirun.opmpirun", "mpirun.mpich", "mpiexec")
 
+def resolve_mpi_options(options):
+    """Resolve JSON-compatible MPI intent on the host performing the execution.
 
-def find_default_mpi_launcher() -> Optional[Tuple[str, ...]]:
-    """Return the preferred MPI launcher available on the current host.
-
-    ``srun`` is preferred inside a SLURM allocation. Outside SLURM, launchers
-    are considered in the same order as the legacy configuration-layer probe.
-    Host detection is intentionally performed at execution time rather than
-    cached in user configuration state.
+    Standalone stdlib-only function: transported verbatim by SSH-direct.
     """
-    if os.environ.get("SLURM_NODELIST") and shutil.which("srun"):
-        return ("srun",)
-    for launcher in _MPI_LAUNCHERS:
-        if shutil.which(launcher):
-            return (launcher,)
-    return None
+    import os
+    import shutil
+
+    if not (options.get("required") or options.get("autodetect") or options.get("launcher")):
+        return None
+    launcher = tuple(options.get("launcher") or ())
+    if not launcher:
+        if options.get("autodetect") and not options.get("required"):
+            affinity = getattr(os, "sched_getaffinity", None)
+            if affinity is not None and len(affinity(0)) == 1:
+                return None
+        if os.environ.get("SLURM_NODELIST") and shutil.which("srun"):
+            launcher = ("srun",)
+        else:
+            for candidate in ("mpirun", "mpirun.opmpirun", "mpirun.mpich", "mpiexec"):
+                if shutil.which(candidate):
+                    launcher = (candidate,)
+                    break
+        if not launcher:
+            return None
+
+    process_count = options.get("process_count")
+    if process_count is not None:
+        count_option = "-n" if os.path.basename(os.fspath(launcher[0])) == "srun" else "-np"
+        launcher = (*launcher, count_option, str(process_count))
+    return tuple(launcher)
 
 
-def _single_cpu_available() -> bool:
-    affinity = getattr(os, "sched_getaffinity", None)
-    return affinity is not None and len(affinity(0)) == 1
+def find_default_mpi_launcher():
+    """Expose the shared target resolution for host-local diagnostics."""
+    return resolve_mpi_options({"required": True, "autodetect": True})
 
 
-def _with_process_count(launcher: Tuple[str, ...], process_count: Optional[int]) -> Tuple[str, ...]:
-    if process_count is None:
-        return launcher
-    executable = os.path.basename(os.fspath(launcher[0]))
-    count_option = "-n" if executable == "srun" else "-np"
-    return (*launcher, count_option, str(process_count))
-
-
-def resolve_mpi_command(spec: MpiSpec) -> Optional[Tuple[str, ...]]:
-    """Materialize normalized MPI intent for the current execution host.
-
-    The returned tuple is the complete MPI launcher prefix, including a
-    launcher-specific process-count option when requested. This function does
-    not read user configuration and does not decide warning/error policy.
-    """
+def resolve_mpi_command(spec: MpiSpec):
+    """Adapt the validated native MpiSpec to the portable target resolver."""
     if not isinstance(spec, MpiSpec):
         raise TypeError("resolve_mpi_command() requires an MpiSpec")
-    if not spec.requested:
-        return None
-
-    launcher = spec.launcher
-    if not launcher:
-        if spec.allows_serial_fallback and _single_cpu_available():
-            return None
-        launcher = find_default_mpi_launcher()
-        if launcher is None:
-            return None
-
-    return _with_process_count(launcher, spec.process_count)
+    return resolve_mpi_options({
+        "required": spec.required,
+        "autodetect": spec.autodetect,
+        "launcher": spec.launcher,
+        "process_count": spec.process_count,
+    })

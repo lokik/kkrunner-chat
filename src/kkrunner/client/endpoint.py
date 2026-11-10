@@ -21,6 +21,7 @@ class ExecutionEndpoint:
     host: Any = None
     ssh_options: Any = ()
     remote_command: Any = ()
+    python_command: Any = ("python3",)
     psij_backend: Any = None
     psij_url: Any = None
     ssh_zstd: bool = False
@@ -30,7 +31,7 @@ class ExecutionEndpoint:
         object.__setattr__(self, "executor", str(self.executor or "local"))
         if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
             raise TypeError("filesystem_id must be a nonempty string or None")
-        for name in ("ssh_options", "remote_command"):
+        for name in ("ssh_options", "remote_command", "python_command"):
             value = getattr(self, name)
             if value is None:
                 value = ()
@@ -44,11 +45,13 @@ class ExecutionEndpoint:
             value = getattr(self, name)
             if value is not None and not isinstance(value, str):
                 raise TypeError(f"ExecutionEndpoint.{name} must be a string or None")
-        for name in ("ssh_options", "remote_command"):
+        for name in ("ssh_options", "remote_command", "python_command"):
             if any(not isinstance(item, str) for item in getattr(self, name)):
                 raise TypeError(f"ExecutionEndpoint.{name} must contain strings")
         if type(self.ssh_zstd) is not bool:
             raise TypeError("ExecutionEndpoint.ssh_zstd must be a bool")
+        if not self.python_command:
+            raise ValueError("ExecutionEndpoint.python_command must not be empty")
 
         # Identity describes the backend actually constructed below. Irrelevant
         # profile fields must not split its pool key or collision namespace.
@@ -57,6 +60,7 @@ class ExecutionEndpoint:
                 ("host", None),
                 ("ssh_options", ()),
                 ("remote_command", ()),
+                ("python_command", ("python3",)),
                 ("ssh_zstd", False),
             ):
                 object.__setattr__(self, name, value)
@@ -72,6 +76,7 @@ class ExecutionEndpoint:
             object.__setattr__(self, "psij_backend", None)
             object.__setattr__(self, "psij_url", None)
         elif self.executor == "ssh":
+            object.__setattr__(self, "python_command", ("python3",))
             if not self.remote_command:
                 object.__setattr__(self, "remote_command", ("kkrunner",))
             if self.psij_backend is not None or self.psij_url is not None:
@@ -103,6 +108,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
         return ExecutionEndpoint(
             executor="ssh-direct", host=transport.host, ssh_options=transport.options,
             ssh_zstd=transport.zstd, filesystem_id=executor.filesystem_id,
+            python_command=transport.python_command,
         )
     if isinstance(executor, AgentBackendProxy):
         transport = executor.transport
@@ -177,7 +183,10 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
         if not endpoint.host:
             raise ValueError("SSH direct execution endpoint requires 'host'")
         return SshDirectBackend(
-            SshDirectTransport(endpoint.host, options=endpoint.ssh_options, zstd=endpoint.ssh_zstd),
+            SshDirectTransport(
+                endpoint.host, options=endpoint.ssh_options, zstd=endpoint.ssh_zstd,
+                python_command=endpoint.python_command,
+            ),
             filesystem_id=endpoint.filesystem_id,
         )
     if endpoint.executor == "ssh":

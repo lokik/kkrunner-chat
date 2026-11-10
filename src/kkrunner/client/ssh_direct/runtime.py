@@ -31,18 +31,19 @@ class SshProcessAdapter:
         self._request = request
         self._stream_writer = stream_writer
 
-    def prepare(self, job):
+    def prepare(self, spec):
         if self._request is None:
             raise ValueError("SSH direct job is missing its staged request")
 
-    async def launch(self, job):
+    async def launch(self, spec):
         request, self._request = self._request, None
+        python_command = getattr(self.context.transport, "python_command", ("python3",))
         return await self.context.transport.start(
-            ("python3", "-u", "-c", WORKER_SOURCE, json.dumps(request)),
+            (*python_command, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
             stdin=asyncio.subprocess.PIPE,
         )
 
-    async def stop(self, job, process):
+    async def stop(self, process):
         # Ask the target worker to signal its entire process group. A blind
         # local SSH kill is not sufficient proof that the target was stopped.
         if process.returncode is not None:
@@ -70,26 +71,23 @@ class SshProcessAdapter:
                 await process.wait()
         return False
 
-    def output(self, job, data, kind):
-        if self._stream_writer is not None and job._output_error is None:
-            try:
-                self._stream_writer(data, kind)
-            except Exception as exc:
-                # Local file write failure is independent of remote execution.
-                job._output_error = exc
+    def output(self, data, kind):
+        if self._stream_writer is None:
+            return
+        try:
+            self._stream_writer(data, kind)
+        except Exception as exc:
+            # A file delivery problem is not a remote Job outcome.
+            return exc
+        return None
 
-    def exit_status(self, job, code):
+    def exit_status(self, code):
         if code == 255:
             return (RunState.UNKNOWN, None, "SSH disconnected or remote command returned status 255")
         if self._cancel_unconfirmed:
             return (RunState.UNKNOWN, None, "Unable to confirm target cancellation over SSH")
         return None
 
-    def verify(self, job):
-        # RemoteFileSession synchronizes declared files after a terminal Job.
-        pass
-
-    def close(self, job):
-        process = job._process
+    def close(self, process):
         if process is not None and process.stdin is not None and not process.stdin.is_closing():
             process.stdin.close()

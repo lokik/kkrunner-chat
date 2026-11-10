@@ -6,7 +6,15 @@ isolated makes it possible to replace this strategy without touching the
 supervised process backend.
 """
 
-WORKER_SOURCE = r'''
+from inspect import getsource
+
+from kkrunner.backends.mpi import resolve_mpi_options
+from kkrunner.files.availability import prepare_target_outputs
+
+# One implementation of each target rule; the remaining worker code owns only
+# SSH-direct child process streams and cancellation.
+WORKER_SOURCE = (
+    getsource(resolve_mpi_options) + "\n" + getsource(prepare_target_outputs) + "\n" + r'''
 import glob
 import json
 import os
@@ -23,77 +31,16 @@ def choose_command(request):
     mpi = (request.get("launch") or {}).get("mpi") or {}
     if not parallel or not (mpi.get("required") or mpi.get("autodetect") or mpi.get("launcher")):
         return serial, request.get("stdin")
-    launcher = mpi.get("launcher") or []
-    if not launcher:
-        if os.environ.get("SLURM_NODELIST") and shutil.which("srun"):
-            launcher = ["srun"]
-        else:
-            for candidate in ("mpirun", "mpirun.opmpirun", "mpirun.mpich", "mpiexec"):
-                if shutil.which(candidate):
-                    launcher = [candidate]
-                    break
+    launcher = resolve_mpi_options(mpi)
     if not launcher:
         if mpi.get("required"):
             raise FileNotFoundError("Required remote MPI launcher is missing")
         return serial, request.get("stdin")
-    launcher = list(launcher)
-    if mpi.get("process_count") is not None:
-        flag = "-n" if os.path.basename(launcher[0]) == "srun" else "-np"
-        launcher.extend((flag, str(mpi["process_count"])))
-    return launcher + parallel, (request.get("stdin") if request.get("mpi_uses_stdin", True) else None)
-
-def clean_outputs(request):
-    """Apply the same exact-output vs wildcard protection as local execution.
-
-    Protected cache/input patterns must be expanded on the execution host;
-    the client cannot safely guess which target files already exist.
-    """
-    sync = request.get("client_sync") or {}
-    streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
-    protected_declarations = [
-        *request.get("input_files", ()),
-        request.get("stdin"),
-        request.get("input_file"),
-        *(item["path"] for item in sync.get("cache_files", ())),
-        *sync.get("cache_patterns", ()),
-        *(item["path"] for item in sync.get("cache_before", ())),
-    ]
-    protected = set()
-    for declaration in protected_declarations:
-        if declaration is None:
-            continue
-        matches = (glob.glob(declaration, recursive=True) if glob.has_magic(declaration)
-                   else [declaration])
-        for candidate in matches:
-            protected.add(os.path.realpath(candidate))
-
-    def is_protected(path):
-        return os.path.realpath(path) in protected
-
-    patterns = [*sync.get("output_files", ()), *sync.get("output_patterns", ())]
-    for path in streams:
-        if is_protected(path):
-            raise ValueError("Output stream conflicts with input/cache: " + path)
-    for declaration in dict.fromkeys(patterns):
-        wildcard = glob.has_magic(declaration)
-        matches = (glob.glob(declaration, recursive=True) if wildcard else [declaration])
-        for path in matches:
-            if path in streams:
-                continue
-            if is_protected(path):
-                if wildcard:
-                    continue  # Preserve caches/inputs matched by broad output patterns.
-                raise ValueError("Explicit output conflicts with input/cache: " + path)
-            if os.path.islink(path) or os.path.isfile(path):
-                os.unlink(path)
-            elif os.path.exists(path):
-                if wildcard:
-                    continue  # Match local cleanup: only delete regular files.
-                raise IsADirectoryError(path)
+    return list(launcher) + parallel, (request.get("stdin") if request.get("mpi_uses_stdin", True) else None)
 
 def execute(request):
     os.chdir(request["directory"])
-    clean_outputs(request)
+    prepare_target_outputs(request)
     argv, stdin_path = choose_command(request)
     with ExitStack() as resources:
         stdin = (resources.enter_context(open(stdin_path, "rb"))
@@ -174,3 +121,4 @@ except Exception as error:
     sys.stderr.write("SSH direct worker: " + str(error) + "\n")
     sys.exit(127)
 '''
+)

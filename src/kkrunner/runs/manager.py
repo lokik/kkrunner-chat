@@ -16,7 +16,7 @@ from kkrunner.client.pool import default_backend_pool
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileManifest
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import FileState, FileVersion, file_digest
-from kkrunner.runs.base import FailurePhase, RunState, RunStatus, SubmissionNotStarted
+from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus, SubmissionNotStarted
 from kkrunner.runs.conflicts import submission_conflicts
 from kkrunner.runs.model import Execution, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
@@ -43,6 +43,7 @@ _UNCHANGED = object()
 _NO_ARTIFACTS_FAILURES = {
     FailurePhase.SUBMISSION,
     FailurePhase.LAUNCH,
+    FailurePhase.OUTPUT,
     FailurePhase.ARTIFACTS,
     FailurePhase.DOWNLOAD,
 }
@@ -432,6 +433,26 @@ class RunManager:
             if not progressed:
                 raise DuplicateSubmissionError(record, conflicts)
 
+    @staticmethod
+    def _observed_run_state(record, status):
+        """Interpret backend facts in the client lifecycle, never in a transport.
+
+        A remote Job can finish while the Run is still downloading files.
+        A locally completed Job can likewise need postprocessing. Refresh only
+        records that outstanding work; the live Run owns completing the work.
+        """
+        state = RunState(status.state)
+        phase = _failure_phase(status.failure_phase)
+        if record.execution.directory.remote is not None:
+            if state == RunState.FINISHED or (
+                state == RunState.FAILED
+                and phase not in (FailurePhase.SUBMISSION, FailurePhase.LAUNCH)
+            ):
+                return RunState.DOWNLOADING
+        if state == RunState.FINISHED and record.processing_required:
+            return RunState.POSTPROCESSING
+        return state
+
     def update(self, record, status: RunStatus):
         # Backend refresh is observational. It cannot retract local processing
         # or a terminal result, including when a scheduler returns stale data.
@@ -441,20 +462,20 @@ class RunManager:
         record = latest
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
-        state = (
-            (RunState.POSTPROCESSING if record.processing_required else RunState.FINISHED)
-            if status.state == RunState.FINISHED
-            else status.state
-        )
+        state = self._observed_run_state(record, status)
         execution = status.execution
         if execution is None and status.backend_id is not None:
             execution = record.execution.submitted(status.backend_id)
-        if status.state == RunState.FINISHED:
+        if state in (RunState.FINISHED, RunState.POSTPROCESSING):
+            result_files = status.files if status.files is not None else record.files
+            if record.execution.directory.remote is None and result_files is not None:
+                from kkrunner.files.availability import discover_local_files
+                result_files = discover_local_files(result_files)
             updated = self.complete(
                 record,
                 state=state,
                 execution=execution,
-                files=status.files if status.files is not None else record.files,
+                files=result_files,
                 return_code=return_code,
                 message=status.message,
                 failure_phase=phase,
@@ -829,6 +850,8 @@ class RunManager:
     ):
         """Create one tracked Run; backend owns raw execution only."""
         from kkrunner.runs.run import Run
+        if isinstance(spec, ExecutionSpec):
+            spec.require_complete()
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
         endpoint = endpoint_for_backend(backend)
@@ -842,14 +865,11 @@ class RunManager:
             run_id=run_id,
         )
         self.register_backend(backend, endpoint)
-        parts = backend.create_run_parts(spec, submission_key=record.id)
-        if parts.files is None:
-            set_manifest = getattr(parts.job, "set_manifest", None)
-            if set_manifest is not None:
-                set_manifest(record.files)
+        from kkrunner.client.run_parts import run_endpoint_for_backend
+        parts = run_endpoint_for_backend(backend).create_run_parts(spec, submission_key=record.id)
         return Run(
             parts.job, backend=backend, manager=self, record=record,
-            process_result=process_result, callback=callback, file_session=parts.files,
+            process_result=process_result, callback=callback, parts=parts,
         )
 
     def refresh(self, records=None):
@@ -898,24 +918,22 @@ class RunManager:
             raise RuntimeError(f"Run {record.id} has no backend reference")
         backend = self.backend_for(record) if backend is None else backend
         self.register_backend(backend, record.execution.endpoint)
-        parts = backend.open_run_parts(
+        from kkrunner.client.run_parts import run_endpoint_for_backend
+        parts = run_endpoint_for_backend(backend).open_run_parts(
             JobAttachment(record.execution, record.files),
             output_listener=output_listener,
         )
         try:
             attached = Run(
                 parts.job, backend=backend, manager=self, record=record,
-                process_result=process_result, callback=callback, file_session=parts.files,
+                process_result=process_result, callback=callback, parts=parts,
             )
             attached.start()
         except BaseException:
             # Opening an attachment transfers stream ownership to Run only
             # once its observer has started. Do not leak file descriptors when
             # constructing or starting the attached observer fails.
-            if parts.files is not None and not parts.job.observing:
-                # A running monitor still needs these streams; its Run
-                # completion owns the eventual close.
-                parts.files.close()
+            parts.abort()
             raise
         return attached
 
