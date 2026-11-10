@@ -409,6 +409,8 @@ class Run:
     def start(self):
         if self._started:
             return
+        if self._settled:
+            raise RuntimeError("A failed or uncertain Run cannot be restarted")
         if self._record is not None:
             if self._record.state.is_terminal:
                 raise RuntimeError("A completed Run cannot be started again")

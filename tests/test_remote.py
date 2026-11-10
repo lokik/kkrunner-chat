@@ -503,6 +503,8 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
     assert runner.state == RunState.FAILED
     with pytest.raises(RuntimeError, match="already submitted"):
         runner.submit()
+    with pytest.raises(RuntimeError, match="cannot be restarted"):
+        runner.start()
 
 
 @pytest.mark.parametrize("preflight", (False, True))
@@ -533,3 +535,5 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
     assert "backend submission uncertain" in runner.failure_message
     with pytest.raises(RuntimeError, match="already submitted"):
         runner.submit()
+    with pytest.raises(RuntimeError, match="cannot be restarted"):
+        runner.start()
