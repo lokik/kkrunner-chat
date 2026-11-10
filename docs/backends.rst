@@ -14,9 +14,47 @@ Choose an execution backend
    * - ``PsijBackend``
      - A scheduler visible from the client
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
+   * - ``SshDirectBackend``
+     - A one-shot command on an SSH host, without a target KKRunner installation
+     - SSH and Python 3 on the target; no durable handle or reconnect. Uses the
+       same mapped input/output file lifecycle as an agent run.
    * - ``AgentBackendProxy``
      - Direct execution or a scheduler on an SSH target
      - KKRunner on the target, SSH access and explicit workspace mapping.
+
+Direct SSH execution
+--------------------
+
+``SshDirectBackend`` creates an untracked, connection-owned ``ProcessJob``. No
+``kkrunner-agent`` or supervisor runs on the target; a minimal one-shot
+Python worker provides separate live stdout/stderr, cancellation and target-side
+file writing. File staging and synchronization still use ``RemoteFileSession``.
+Both directions of transfer use SSH and Python stdlib metadata queries. The
+same ``ProcessJob`` handles direct local and direct SSH process lifecycles;
+only the launch/stop/output adapter differs.
+
+.. code-block:: python
+
+   from kkrunner import Run, ExecutionSpec
+   from kkrunner.client import SshDirectBackend, SshDirectTransport
+   from kkrunner.runs import LaunchSpec
+
+   backend = SshDirectBackend(SshDirectTransport("alice@cluster.example"))
+   spec = ExecutionSpec(
+       argv=("python3", "-c", "print('hello', flush=True)"),
+       directory="/home/alice/work/job",
+       output_file="/home/alice/work/job/output.txt",
+       launch=LaunchSpec(
+           local_root="/home/alice/work",
+           remote_root="/scratch/alice/runs",
+       ),
+   )
+   result = Run.direct(backend, spec).run()
+
+Use ``AgentBackendProxy`` and a ``RunManager`` for persistent SSH
+runs. A direct SSH Job has no durable ID and must not be attached, retried after
+an uncertain connection loss, or stored as a managed run. An SSH failure (exit
+255) is reported as UNKNOWN, not proof that the target computation failed.
 
 Local and scheduler execution
 -------------------------------
@@ -76,7 +114,10 @@ record without that ID, even though the backend accepted the command.
    * - Other PSI/J backends, or a PSI/J executor with a URL
      - Uses the selected PSI/J backend's attach/status capabilities.
      - Backend discovery is not implemented.
-   * - SSH direct or SSH scheduler execution
+   * - SSH direct (without agent)
+     - Unsupported.
+     - Unsupported.
+   * - SSH via agent: process or scheduler execution
      - Supported through the target service and its backend.
      - Uses a retained target receipt first. Without one, only the target's
        local Slurm recovery is implemented, with the same accounting limits.

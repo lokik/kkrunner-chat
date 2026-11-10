@@ -453,8 +453,8 @@ class RemoteFileSession:
 
         return {
             "id": run_id,
-            "executor": self.context.backend,
-            "executor_options": self.context.backend_options,
+            "executor": self.context.endpoint.backend,
+            "executor_options": self.context.endpoint.backend_options,
             "directory": remote_directory,
             **self.spec.command_request(lambda args: self._remote_argv(args, staged)),
             "input_file": input_target,

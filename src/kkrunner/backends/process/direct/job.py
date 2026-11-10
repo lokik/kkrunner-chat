@@ -1,36 +1,31 @@
-"""Direct local subprocess Job without durable supervisor or reattach."""
+"""Transport-neutral direct ProcessJob: a single execution lifecycle.
+
+The adapter implements process creation, target-specific output persistence,
+termination and final file validation. Local and SSH direct share the same
+state transitions, callback, streaming, waiting and cancellation semantics.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from threading import Event, Lock, Thread
 
-from kkrunner.backends.process.primitives import pump_stream, start_local_process, stop_local_process
-from kkrunner.files.availability import clear_declared_outputs, discover_local_files, validate_output_collisions
-from kkrunner.files.manifest import FileManifest
+from kkrunner.backends.process.primitives import pump_stream
 from kkrunner.files.paths import file_path
 from kkrunner.runs.base import (
-    ExecutionOutcome,
-    ExecutionSpec,
-    FailurePhase,
-    OutputObservers,
-    RunState,
-    SubmissionNotStarted,
-    close_output_files,
-    finish_monitor,
-    materialize_output_streams,
-    wait_for_monitor,
+    ExecutionOutcome, ExecutionSpec, FailurePhase, OutputObservers, RunState,
+    SubmissionNotStarted, finish_monitor, wait_for_monitor,
 )
 
 
 class ProcessJob:
-    """One local subprocess execution.
+    """A client-owned, non-reconnectable direct process on any transport."""
 
-    The runner owns only process lifecycle, output-file writing and raw output
-    observation. It deliberately performs no task-specific parsing.
-    """
-
-    def __init__(self, spec: ExecutionSpec, callback=None):
+    def __init__(self, spec: ExecutionSpec, callback=None, *, adapter=None):
+        if adapter is None:
+            from .local import LocalProcessAdapter
+            adapter = LocalProcessAdapter()
+        self.adapter = adapter
         self.spec = spec
         self.callback = callback
         self.result = ExecutionOutcome(
@@ -38,14 +33,12 @@ class ProcessJob:
             input_file=file_path(spec.input_file, spec.directory),
             error_file=file_path(spec.error_file, spec.directory),
         )
-
         self._state = RunState.NEW
         self._output_observers = OutputObservers()
         self._lock = Lock()
         self._cancel_requested = Event()
         self._started = Event()
         self._done = Event()
-
         self._thread = None
         self._loop = None
         self._process = None
@@ -55,6 +48,7 @@ class ProcessJob:
         self._callback_exception = None
         self._failure_phase = None
         self._failure_message = None
+        self._output_error = None
 
     @property
     def state(self):
@@ -62,23 +56,16 @@ class ProcessJob:
 
     @property
     def ref(self):
-        # A raw local process has no durable supervisor/receipt identity.
+        # Direct execution does not provide a durable backend identity.
         return None
 
-    def status(self):
-        from kkrunner.backends.contracts import job_status_from_facts
-        return job_status_from_facts(
-            self.state, return_code=self.return_code,
-            failure_phase=self.failure_phase, message=self.failure_message,
-        )
+    @property
+    def backend_id(self):
+        return str(self._pid) if self._pid is not None and self.adapter.expose_pid else None
 
     @property
     def exception(self):
         return self._exception
-
-    @property
-    def backend_id(self):
-        return None if self._pid is None else str(self._pid)
 
     @property
     def failure_phase(self):
@@ -92,32 +79,47 @@ class ProcessJob:
     def return_code(self):
         return self.result.return_code
 
+    @property
+    def output_error(self):
+        """Client stream delivery errors, independent of backend execution."""
+        return self._output_error
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        return job_status_from_facts(
+            self.state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
+
     def add_output_listener(self, callback):
         self._output_observers.add(callback)
 
     def add_output_error_listener(self, callback):
         self._output_observers.add_error_listener(callback)
 
-    def _output_target(self, kind):
-        # A missing stderr target means live observation only, not an
-        # implicit merge into the saved stdout artifact.
-        return self.spec.error_file if kind == "err" else self.spec.output_file
+    def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
+        """Used only by staged direct transports; never an agent submit."""
+        if self._state != RunState.NEW:
+            raise RuntimeError("Cannot configure a submitted direct job")
+        self.adapter.configure_submission(
+            request, stream_offsets=stream_offsets,
+            stream_writer=stream_writer, stream_paths=stream_paths,
+        )
 
     def _forward_output(self, data, kind):
-        target = self._output_target(kind)
-        if target is not None:
-            target.write(data)
-            target.flush()
+        self.adapter.output(self, data, kind)
         self._output_observers.emit_bytes(data, kind)
 
     def _ensure_stop_task(self):
         if self._process is None or self._process.returncode is not None:
             return None
         if self._stop_task is None or self._stop_task.done():
-            self._stop_task = asyncio.create_task(stop_local_process(self._process))
+            self._stop_task = asyncio.create_task(self.adapter.stop(self, self._process))
         return self._stop_task
 
     def cancel(self):
+        if self._state.is_terminal:
+            return
         self._cancel_requested.set()
         loop = self._loop
         if loop is None:
@@ -135,26 +137,10 @@ class ProcessJob:
             self._state = RunState.CANCELLED
             self._started.set()
             return self.result
-
         try:
-            protected = [
-                file_path(value, self.spec.directory)
-                for value in (self.spec.input_file, self.spec.stdin, *self.spec.input_files, *self.spec.cache_files)
-            ]
-            # Preserve already-open stdout/stderr handles: an unlink would
-            # disconnect their inode from the named destination.
-            outputs = [file_path(value, self.spec.directory) for value in self.spec.output_files]
-            validate_output_collisions(
-                (*outputs, self.result.output_file, self.result.error_file),
-                protected=protected,
-            )
-            self.spec = materialize_output_streams(self.spec)
-            clear_declared_outputs(
-                outputs,
-                protected=(*protected, self.result.output_file, self.result.error_file),
-            )
             try:
-                self._process = await start_local_process(self.spec)
+                self.adapter.prepare(self)
+                self._process = await self.adapter.launch(self)
             except BaseException as exc:
                 self._failure_phase = FailurePhase.LAUNCH
                 self._failure_message = str(exc)
@@ -166,22 +152,16 @@ class ProcessJob:
             self._started.set()
 
             if self._cancel_requested.is_set():
-                stop_task = self._ensure_stop_task()
-                if stop_task is not None:
-                    await stop_task
+                # Do not await termination before consuming stdout/stderr:
+                # a full pipe could otherwise deadlock a terminating child.
+                self._ensure_stop_task()
 
             wait_task = asyncio.create_task(self._process.wait())
             stdout_task = asyncio.create_task(
-                pump_stream(
-                    self._process.stdout,
-                    lambda data: self._forward_output(data, "out"),
-                )
+                pump_stream(self._process.stdout, lambda data: self._forward_output(data, "out"))
             )
             stderr_task = asyncio.create_task(
-                pump_stream(
-                    self._process.stderr,
-                    lambda data: self._forward_output(data, "err"),
-                )
+                pump_stream(self._process.stderr, lambda data: self._forward_output(data, "err"))
             )
             tasks = (wait_task, stdout_task, stderr_task)
             try:
@@ -192,35 +172,56 @@ class ProcessJob:
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-            self.result.return_code = return_code
-            if self._cancel_requested.is_set():
-                self._state = RunState.CANCELLED
-            elif return_code == 0:
-                self._state = RunState.FINISHED
+            # Backend-specific statuses (e.g. SSH transport disconnection)
+            # must be considered before declaring target execution success.
+            override = self.adapter.exit_status(self, return_code)
+            if override is not None:
+                self._state, self._failure_phase, self._failure_message = override
             else:
-                self._state = RunState.FAILED
-                self._failure_phase = FailurePhase.EXECUTION
-                self._failure_message = f"Process exited with status {return_code}"
-            if self._state == RunState.FINISHED:
-                files = discover_local_files(FileManifest.from_spec(self.spec))
-                if files.failed_artifacts:
+                self.result.return_code = return_code
+                if self._cancel_requested.is_set() and self._stop_task is not None:
+                    # Cancellation is confirmed only when the adapter can
+                    # establish that the process exited through its channel.
+                    confirmed = True
+                    if self._stop_task is not None:
+                        try:
+                            confirmed = await self._stop_task
+                        except Exception as exc:
+                            confirmed = False
+                            self._failure_message = str(exc)
+                    if not confirmed:
+                        self._state = RunState.UNKNOWN
+                        self._failure_message = self._failure_message or "Unable to confirm direct process cancellation"
+                    else:
+                        self._state = RunState.CANCELLED
+                elif return_code == 0:
+                    self._state = RunState.FINISHED
+                else:
                     self._state = RunState.FAILED
-                    self._failure_phase = FailurePhase.ARTIFACTS
-                    self._failure_message = files.availability_message
+                    self._failure_phase = FailurePhase.EXECUTION
+                    self._failure_message = f"Process exited with status {return_code}"
+            if self._state == RunState.FINISHED:
+                self.adapter.verify(self)
             return self.result
         except BaseException:
             self._started.set()
             if self._state not in (RunState.CANCELLED, RunState.FAILED):
-                self._state = RunState.FAILED
-                self._failure_phase = FailurePhase.EXECUTION
+                if self._pid is not None and self.adapter.uncertain_after_launch:
+                    self._state = RunState.UNKNOWN
+                    self._failure_phase = None
+                else:
+                    self._state = RunState.FAILED
+                    self._failure_phase = (
+                        FailurePhase.EXECUTION if self._pid is not None else FailurePhase.LAUNCH
+                    )
             if self._process is not None and self._process.returncode is None:
-                await stop_local_process(self._process)
+                await self.adapter.stop(self, self._process)
             raise
         finally:
             if self._stop_task is not None:
                 await asyncio.gather(self._stop_task, return_exceptions=True)
             self._output_observers.finish_bytes()
-            close_output_files(self.spec.output_file, self.spec.error_file)
+            self.adapter.close(self)
             self._process = None
             self._loop = None
 
@@ -243,7 +244,6 @@ class ProcessJob:
             self._state = RunState.SUBMITTING
             self._thread = Thread(target=self._thread_main, daemon=True)
             self._thread.start()
-
         self._started.wait()
         if self._pid is None and self._state == RunState.FAILED:
             self._done.wait()
@@ -266,4 +266,3 @@ class ProcessJob:
         if self._state == RunState.NEW:
             self.submit()
         return await asyncio.to_thread(self.wait)
-

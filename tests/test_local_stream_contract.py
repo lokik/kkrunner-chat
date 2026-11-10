@@ -4,7 +4,8 @@ import sys
 
 import pytest
 
-import kkrunner.backends.process.direct.job as local
+import kkrunner.backends.process.direct.job as direct_job
+import kkrunner.backends.process.direct.local as local
 from kkrunner.backends.process.backend import ProcessBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
@@ -78,7 +79,7 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
         raise RuntimeError("output pump failed")
 
     monkeypatch.setattr(local, "stop_local_process", record_stop)
-    monkeypatch.setattr(local, "pump_stream", failing_pump)
+    monkeypatch.setattr(direct_job, "pump_stream", failing_pump)
     runner = ProcessBackend().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import time; time.sleep(30)"),

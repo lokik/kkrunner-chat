@@ -1,8 +1,8 @@
 """Local ProcessBackend facade over direct and supervised process Jobs.
 
-The two execution mechanisms share low-level process primitives but not
-lifecycle state. This facade is an endpoint adapter; a future SSH direct
-adapter can supply Job/RunParts independently of this local selection.
+The direct ProcessJob is transport-neutral: direct local and direct SSH
+share its lifecycle, with distinct launch/output adapters. Managed process
+jobs use a separate durable supervisor and reconnectable lifecycle.
 """
 
 from __future__ import annotations

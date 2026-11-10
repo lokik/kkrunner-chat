@@ -65,6 +65,12 @@ class ExecutionEndpoint:
             object.__setattr__(self, "psij_url", None)
         elif self.executor == "psij":
             object.__setattr__(self, "psij_backend", self.psij_backend or "slurm")
+        elif self.executor == "ssh-direct":
+            # Agent commands and scheduler settings are not part of a direct
+            # SSH endpoint's identity or pool key.
+            object.__setattr__(self, "remote_command", ())
+            object.__setattr__(self, "psij_backend", None)
+            object.__setattr__(self, "psij_url", None)
         elif self.executor == "ssh":
             if not self.remote_command:
                 object.__setattr__(self, "remote_command", ("kkrunner",))
@@ -77,6 +83,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
     from kkrunner.backends.process.backend import ProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
     from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.ssh_direct import SshDirectBackend, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
     if isinstance(executor, ProcessBackend):
@@ -86,6 +93,16 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
             executor="psij",
             psij_backend=executor.backend,
             psij_url=executor.url,
+        )
+    if isinstance(executor, SshDirectBackend):
+        transport = executor.transport
+        if not isinstance(transport, SshDirectTransport):
+            return ExecutionEndpoint(executor="custom:{}.{}".format(
+                type(executor).__module__, type(executor).__qualname__,
+            ))
+        return ExecutionEndpoint(
+            executor="ssh-direct", host=transport.host, ssh_options=transport.options,
+            ssh_zstd=transport.zstd, filesystem_id=executor.filesystem_id,
         )
     if isinstance(executor, AgentBackendProxy):
         transport = executor.transport
@@ -143,6 +160,7 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
     from kkrunner.backends.process.backend import ProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
     from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.ssh_direct import SshDirectBackend, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
     if isinstance(endpoint, dict):
@@ -154,6 +172,13 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
         return PsijBackend(
             endpoint.psij_backend or "slurm",
             url=endpoint.psij_url,
+        )
+    if endpoint.executor == "ssh-direct":
+        if not endpoint.host:
+            raise ValueError("SSH direct execution endpoint requires 'host'")
+        return SshDirectBackend(
+            SshDirectTransport(endpoint.host, options=endpoint.ssh_options, zstd=endpoint.ssh_zstd),
+            filesystem_id=endpoint.filesystem_id,
         )
     if endpoint.executor == "ssh":
         if not endpoint.host:

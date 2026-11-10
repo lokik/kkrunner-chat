@@ -264,16 +264,7 @@ class SshTransport(Transport):
                 await _completed_process(process, command)
             if local_file_signature(source) != signature:
                 raise RuntimeError(f"Local file changed while uploading: {source}")
-            await json_request(
-                self,
-                self.command,
-                "finalize-upload",
-                payload={
-                    "temporary": temporary,
-                    "destination": destination,
-                    "mtime_ns": signature[1],
-                },
-            )
+            await self._finalize_upload(temporary, destination, signature[1])
         except BaseException:
             # Remote cleanup is best-effort and must not mask the upload error.
             try:
@@ -281,6 +272,12 @@ class SshTransport(Transport):
             except Exception:
                 pass
             raise
+
+    async def _finalize_upload(self, temporary, destination, mtime_ns):
+        await json_request(
+            self, self.command, "finalize-upload",
+            payload={"temporary": temporary, "destination": destination, "mtime_ns": mtime_ns},
+        )
 
     async def get_file(self, source, destination):
         source = os.fspath(source)
