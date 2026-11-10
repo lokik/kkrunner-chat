@@ -4,7 +4,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
-from kkrunner.backends.process.direct.job import DirectProcessJob
+from kkrunner.client.job import Job
 from kkrunner.client.job import Job
 from kkrunner.client.endpoint import ExecutionEndpointConfig, executor_from_endpoint, endpoint_config_for_executor
 
@@ -12,8 +12,8 @@ from kkrunner.client.endpoint import ExecutionEndpointConfig, executor_from_endp
 def test_direct_mode_never_switches_implicitly(tmp_path):
     backend = DirectProcessBackend()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
-    assert isinstance(backend.create_job(spec), DirectProcessJob)
-    assert isinstance(backend.create_job(spec, submission_key="run-id"), DirectProcessJob)
+    assert isinstance(backend.create_job(spec), Job)
+    assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
     manager = RunManager(RunStore(tmp_path / "runs"))
     assert manager.create_run(backend, spec).record is not None
 

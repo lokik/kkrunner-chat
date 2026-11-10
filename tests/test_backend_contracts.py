@@ -143,26 +143,26 @@ def test_every_native_backend_has_explicit_nominal_contract():
 
 
 def test_job_is_a_structural_contract_not_an_inherited_abstract_property(tmp_path):
-    from kkrunner.backends.contracts import Job
+    from kkrunner.backends.contracts import JobProtocol
     from kkrunner.backends import DirectProcessBackend
     from kkrunner.runs.base import ExecutionSpec
 
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
     job = DirectProcessBackend().create_job(spec)
-    assert isinstance(job, Job)
+    assert isinstance(job, JobProtocol)
     assert job.spec is spec
 
 
 def test_protocol_definitions_are_independent_of_implementations():
     import kkrunner.backends as backends
     import kkrunner.client as client
-    from kkrunner.backends.contracts import Backend, Job, RecoverableBackend
+    from kkrunner.backends.contracts import Backend, JobProtocol, RecoverableBackend
     from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint, RunningCommand
     from kkrunner.backends.process.direct.contracts import DirectProcessAdapter
 
     assert Backend.__module__ == "kkrunner.backends.contracts"
     assert RecoverableBackend.__module__ == "kkrunner.backends.contracts"
-    assert Job.__module__ == "kkrunner.backends.contracts"
+    assert JobProtocol.__module__ == "kkrunner.backends.contracts"
     assert RunEndpoint.__module__ == "kkrunner.client.contracts"
     assert ReopenableRunEndpoint.__module__ == "kkrunner.client.contracts"
     assert RunningCommand.__module__ == "kkrunner.client.contracts"
@@ -185,3 +185,23 @@ def test_supervised_and_agent_use_one_client_job_class(tmp_path):
     remote = AgentRunEndpoint(LocalTransport(), backend="process").create_run_parts(spec).job
     assert type(local) is Job
     assert type(remote) is Job
+
+
+def test_managed_job_does_not_expose_direct_detached_configuration(tmp_path):
+    from kkrunner.client.job import Job
+    from kkrunner.client.run_parts import RunParts
+    from kkrunner.runs.base import ExecutionSpec
+
+    class Context:
+        backend = "process"
+
+    managed = Job(Context(), ExecutionSpec(("true",), directory=str(tmp_path)))
+    parts = RunParts(managed)
+    parts.configure_detached(True, default=True)
+    assert managed._detached is False
+    try:
+        parts.configure_detached(False, default=True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Managed backend detached policy was incorrectly configurable")

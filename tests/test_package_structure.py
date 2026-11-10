@@ -123,24 +123,24 @@ assert 'kkrunner.backends.psij.backend' not in sys.modules
 
 def test_process_strategies_have_distinct_implementations():
     from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
-    from kkrunner.backends.process.direct.job import DirectProcessJob
+    from kkrunner.client.job import Job
     from kkrunner.client.job import Job
     assert DirectProcessBackend.__module__ == "kkrunner.backends.process.backend"
     assert SupervisedProcessBackend.__module__ == "kkrunner.backends.process.backend"
-    assert DirectProcessJob.__module__ == "kkrunner.backends.process.direct.job"
+    assert Job.__module__ == "kkrunner.client.job"
     assert Job.__module__ == "kkrunner.client.job"
 
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
     from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
-    from kkrunner.backends.process.direct.job import DirectProcessJob
+    from kkrunner.client.job import Job
     from kkrunner.client.job import Job
 
     backend = DirectProcessBackend()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
-    assert isinstance(backend.create_job(spec), DirectProcessJob)
-    assert isinstance(backend.create_job(spec, submission_key="run-1"), DirectProcessJob)
+    assert isinstance(backend.create_job(spec), Job)
+    assert isinstance(backend.create_job(spec, submission_key="run-1"), Job)
     assert isinstance(SupervisedProcessBackend().create_job(spec, submission_key="run-1"), Job)
 
 
@@ -156,7 +156,7 @@ def test_remote_process_service_reuses_supervised_backend_operations():
 def test_direct_process_import_does_not_load_supervisor():
     code = """
 import sys
-from kkrunner.backends.process.direct.job import DirectProcessJob
+from kkrunner.client.job import Job
 assert 'kkrunner.backends.process.supervised.operations' not in sys.modules
 assert 'kkrunner.backends.process.supervised.worker' not in sys.modules
 """

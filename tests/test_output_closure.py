@@ -4,11 +4,9 @@ import asyncio
 
 import pytest
 
-from kkrunner.backends.process.direct.job import DirectProcessJob
 from kkrunner.client.job import Job
 from kkrunner.client.local_managed import local_managed_job
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.job import Job
 from kkrunner.runs.base import ExecutionSpec, RunState, close_output_files
 
 
@@ -37,14 +35,16 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
         async def fail_to_launch(_spec):
             raise RuntimeError("launch failed")
 
-        monkeypatch.setattr("kkrunner.backends.process.direct.job.start_local_process", fail_to_launch)
-        runner = DirectProcessJob(spec)
+        monkeypatch.setattr("kkrunner.backends.process.direct.local.start_local_process", fail_to_launch)
+        runner = Job.direct(spec)
         with pytest.raises(RuntimeError, match="launch failed"):
             asyncio.run(runner._execute())
         assert runner.state == RunState.FAILED
     else:
         runner = local_managed_job(spec)
-        monkeypatch.setattr(runner, "_monitor", lambda: None)
+        async def no_observation():
+            return runner.result
+        monkeypatch.setattr(runner, "_monitor", no_observation)
         runner._thread_main()
         assert runner._done.is_set()
         assert runner.exception is None
@@ -129,7 +129,7 @@ def test_local_project_cleanup_attempts_all_stages(tmp_path, monkeypatch, monito
         callback=lambda result: callbacks.append(result),
     )
 
-    def monitor():
+    async def monitor():
         calls.append("monitor")
         if monitor_fails:
             raise errors[0]

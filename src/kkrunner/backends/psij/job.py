@@ -383,7 +383,8 @@ class PsijJob:
             return start_monitor(self)
         return self.submit()
 
-    def submit(self):
+    def submit_native(self):
+        """Commit one scheduler submission without starting client observation."""
         with self._submit_lock:
             if self._attached:
                 raise RuntimeError("Cannot submit an attached PSI/J job")
@@ -401,7 +402,10 @@ class PsijJob:
             self._submission_attempted = True
             self.executor._job_executor.submit(self._job)
             self.executor._cache_submitted_job(self._job)
-            start_monitor(self)
+
+    def submit(self):
+        self.submit_native()
+        start_monitor(self)
 
     def wait(self):
         if self._thread is None:

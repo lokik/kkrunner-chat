@@ -1,4 +1,4 @@
-"""SSH-specific process mechanics for the shared direct DirectProcessJob.
+"""SSH-specific process mechanics for the shared direct Job.
 
 No Job lifecycle is implemented here. The target's one-shot Python worker
 runs without installing kkrunner and writes stream files at the target.

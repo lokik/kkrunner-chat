@@ -293,7 +293,7 @@ The client `AgentRunEndpoint` and `SshDirectRunEndpoint` assemble `RunParts`
 and implement transport-specific staging. They are not native `Backend`
 implementations. There are no parallel `*Backend` aliases for these endpoint
 classes.
-`DirectProcessAdapter` remains an internal mechanism of `DirectProcessJob`, not
+`DirectProcessAdapter` remains an internal mechanism of `Job`, not
 a universal layer across PSI/J and supervised execution.
 
 **Contract placement.** The only public `Backend` protocol lives in
@@ -319,7 +319,7 @@ structural protocol rather than advertised as methods that always fail.
 | Role | Protocol / type | Implementations |
 | --- | --- | --- |
 | Native execution | `Backend`, `ReopenableBackend`, `RecoverableBackend` | `DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend` |
-| Per-client execution handle | `Job` (structural protocol) | `DirectProcessJob`, `Job`, `PsijJob`, `Job` |
+| Per-client execution handle | `Job` (structural protocol) | `Job`, `Job`, `PsijJob` (internal), `Job` |
 | Client session assembly | `RunEndpoint`, `ReopenableRunEndpoint` | `BackendRunEndpoint`, `ReopenableBackendRunEndpoint`, `AgentRunEndpoint`, `SshDirectRunEndpoint` |
 | Internal process mechanics | `DirectProcessAdapter` | `LocalProcessAdapter`, `SshProcessAdapter` |
 | Command and file transport | `Transport`, `RunningCommand` | `LocalTransport`, `SshTransport`, `SshDirectTransport` |
@@ -336,3 +336,23 @@ There is one canonical public name per class, with no `ProcessBackend`,
 The `RunningCommand` protocol lives alongside the client-side contracts,
 not in `transport.py` next to one of its implementations. The transport base
 class remains a shared implementation class, not a second `Backend` protocol.
+
+
+## One client Job across execution modes
+
+`kkrunner.client.job.Job` is the single client-side lifecycle class.
+Managed (supervisor and PSI/J) executions use context-independent operations
+(`submit/status/cancel/follow/recover`) available as importable functions.
+Local managed and agent SSH use the same `Job` and differ only in how the
+endpoint invokes those operations. Direct local and raw SSH use the same
+`Job` in session mode, with process/SSH control mechanics implemented by
+private `client.direct_operation` functions and transport-specific adapters.
+There is no agent-specific, supervised-specific or direct-specific client
+Job class. PSI/J's native backend helper still manages PSI/J library objects
+internally, not as the public client Job.
+
+A clean direct process session exit is authoritative for direct execution;
+a broken channel is not. Managed FOLLOW can lose its connection without
+determining target execution outcome, which is checked separately by
+`status(JobRef)`. This uses the existing managed FOLLOW protocol and
+does not introduce a new framing requirement for direct SSH.

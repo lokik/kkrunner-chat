@@ -21,15 +21,15 @@ class DirectProcessBackend(Backend):
     default_detached = False
 
     def __init__(self, *, adapter_factory=None):
-        # The adapter is a private implementation detail of DirectProcessJob.
+        # The adapter is a private implementation detail of the direct Job session.
         # Local and raw SSH direct both go through this backend factory.
         self._adapter_factory = adapter_factory
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
-        from kkrunner.backends.process.direct.job import DirectProcessJob
+        from kkrunner.client.job import Job
         adapter = self._adapter_factory() if self._adapter_factory is not None else None
-        return DirectProcessJob(spec, callback=callback, adapter=adapter)
+        return Job.direct(spec, callback=callback, adapter=adapter)
 
 
 class SupervisedProcessBackend(RecoverableBackend):

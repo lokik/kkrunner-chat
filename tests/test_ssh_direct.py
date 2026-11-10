@@ -62,8 +62,8 @@ def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
     backend = SshDirectRunEndpoint(LocalTransport())
     parts = backend.create_run_parts(spec, submission_key="client-submission-key")
-    from kkrunner.backends.process.direct.job import DirectProcessJob
-    assert isinstance(parts.job, DirectProcessJob)
+    from kkrunner.client.job import Job
+    assert type(parts.job) is Job
     from kkrunner.client.contracts import ReopenableRunEndpoint
     assert not isinstance(backend, ReopenableRunEndpoint)
     assert not hasattr(backend, "recover_submission")
@@ -103,13 +103,13 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
 
 def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
     from kkrunner.backends.process.backend import DirectProcessBackend
-    from kkrunner.backends.process.direct.job import DirectProcessJob
+    from kkrunner.client.job import Job
     local = DirectProcessBackend().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
     remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(
         ExecutionSpec(argv=("true",), directory=str(tmp_path))
     ).job
-    assert type(local) is DirectProcessJob
-    assert type(remote) is DirectProcessJob
+    assert type(local) is Job
+    assert type(remote) is Job
     assert local.adapter.expose_pid is True
     assert remote.adapter.expose_pid is False
 

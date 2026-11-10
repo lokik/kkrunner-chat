@@ -197,7 +197,7 @@ def test_psij_runner_submits_and_streams_output(monkeypatch, tmp_path):
         stdin=input_file,
         error_file=str(tmp_path / "run.err"),
     )
-    runner = executor.create_job(spec)
+    runner = executor.create_native_job(spec)
     seen = []
     runner.add_output_listener(lambda text, kind: seen.append((kind, text)))
     runner.submit()
@@ -225,7 +225,7 @@ def test_psij_without_output_files_does_not_create_any(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, backend)
     spec = ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None, error_file=None)
     seen = []
-    runner = executor.create_job(spec)
+    runner = executor.create_native_job(spec)
     runner.add_output_listener(lambda text, kind: seen.append((kind, text)))
     runner.submit()
     result = runner.wait()
@@ -241,7 +241,7 @@ def test_psij_without_output_files_does_not_create_any(monkeypatch, tmp_path):
 def test_psij_stderr_only_does_not_create_stdout(monkeypatch, tmp_path):
     backend = _Backend()
     executor = _executor(monkeypatch, backend)
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",),
             directory=str(tmp_path),
@@ -266,7 +266,7 @@ def test_psij_merged_output_is_followed_once(monkeypatch, tmp_path):
     backend = _Backend()
     executor = _executor(monkeypatch, backend)
     output = str(tmp_path / "merged.out")
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=output, error_file=output
         )
@@ -301,7 +301,7 @@ def test_native_psij_state_normalization(native_name, return_code, attached, exp
 
 def test_psij_runner_prefers_observed_return_code_over_cached_job_status(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("COMPLETED", 0)
@@ -333,7 +333,7 @@ def test_psij_non_slurm_status_uses_shared_normalization(monkeypatch):
 def test_psij_nonzero_completed_job_is_failed(monkeypatch, tmp_path):
     backend = _Backend()
     executor = _executor(monkeypatch, backend)
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         )
@@ -355,7 +355,7 @@ def test_psij_slurm_nonzero_accounted_job_is_failed(monkeypatch):
 def test_psij_observation_accepts_non_utf8_output(monkeypatch, tmp_path):
     backend = _Backend()
     executor = _executor(monkeypatch, backend)
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), input_file=None, directory=str(tmp_path), output_file=str(tmp_path / "run.out")
         )
@@ -375,7 +375,7 @@ def test_psij_project_manifest_marks_concrete_and_wildcard_files(monkeypatch, tm
         stdout=FileEntry(local_path=str(tmp_path / "run.out"), availability_state="pending"),
         outputs=(FileEntry(local_path=str(tmp_path / "data-*.bin"), availability_state="pending"),),
     )
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), input_file=None, directory=str(tmp_path), output_file=str(tmp_path / "run.out")
         ),
@@ -397,7 +397,7 @@ def test_psij_missing_optional_output_is_skipped(monkeypatch, tmp_path):
     files = FileManifest(
         outputs=(FileEntry(local_path=str(tmp_path / "optional.dat"), optional=True, availability_state="pending"),)
     )
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), input_file=None, directory=str(tmp_path), output_file=None), submission_key="optional"
     )
     runner.submit()
@@ -420,7 +420,7 @@ def test_psij_mpi_job_uses_mpi_executable_and_requested_resources(monkeypatch, t
             directory=str(tmp_path),
             stdin=input_file,
         )
-        runner = executor.create_job(spec)
+        runner = executor.create_native_job(spec)
         job_spec = runner._job.spec
         assert job_spec.executable == "programMPI"
         assert job_spec.arguments == [str(input_path)]
@@ -552,10 +552,10 @@ def test_psij_status_and_attach_check_complete_endpoint(monkeypatch, tmp_path):
     assert executor.status(_native_attachment(matching.execution, matching.files)) == (state,)
     attached = executor.attach_job(_native_attachment(matching.execution, matching.files), start=False)
     assert attached.backend_id == "456"
-    assert seen == ["456"]
+    assert seen == ["456", "456"]
     state = psij_backend.RunStatus(RunState.FINISHED, backend_id="456", return_code=0)
     assert executor.status(_native_attachment(matching.execution, matching.files)) == (state,)
-    assert seen == ["456", "456"]
+    assert seen == ["456", "456", "456"]
 
 
 def test_psij_uncertain_submit_without_native_id_stays_recoverable(monkeypatch, tmp_path):
@@ -566,7 +566,7 @@ def test_psij_uncertain_submit_without_native_id_stays_recoverable(monkeypatch, 
             raise OSError("scheduler reply lost")
 
     executor = _executor(monkeypatch, FailingBackend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         ),
@@ -583,7 +583,7 @@ def test_psij_preparation_failure_is_definitively_not_submitted(monkeypatch, tmp
     from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
 
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         ),
@@ -631,7 +631,7 @@ def test_psij_executor_attaches_to_native_job(monkeypatch, tmp_path):
     output.write_bytes(b"old output\n")
     error.write_bytes(b"")
     run = _psij_run(tmp_path, "456")
-    runner = executor.attach_job(_native_attachment(run.execution, run.files))
+    runner = executor.attach_native_observer(_native_attachment(run.execution, run.files))
     runner.wait()
     assert backend.attached == "456"
     assert runner.backend_id == "456"
@@ -646,7 +646,7 @@ def test_psij_attach_to_stderr_only(monkeypatch, tmp_path):
     run = _psij_run(tmp_path, "456")
     run = replace(run, files=replace(run.files, stdout=None))
     (tmp_path / "run.err").write_bytes(b"existing error\n")
-    runner = executor.attach_job(_native_attachment(run.execution, run.files))
+    runner = executor.attach_native_observer(_native_attachment(run.execution, run.files))
     assert runner.wait().output_file is None
     assert runner.result.error_file == str(tmp_path / "run.err")
 
@@ -657,7 +657,7 @@ def test_psij_attach_without_recorded_streams(monkeypatch, tmp_path):
 
     run = _psij_run(tmp_path, "456")
     run = replace(run, files=replace(run.files, stdout=None, stderr=None))
-    attached = executor.attach_job(_native_attachment(run.execution, run.files), start=False)
+    attached = executor.attach_native_observer(_native_attachment(run.execution, run.files), start=False)
     assert attached.spec.is_partial
     assert attached.spec.argv is None
     assert attached.spec.output_file is None
@@ -815,7 +815,7 @@ def test_psij_submit_is_serialized_across_threads(monkeypatch, tmp_path):
     spec = ExecutionSpec(
         argv=("program",), input_file=input_file, output_file=output_file, directory=str(tmp_path), stdin=input_file
     )
-    runner = executor.create_job(spec)
+    runner = executor.create_native_job(spec)
     errors = []
 
     def submit():
@@ -854,7 +854,7 @@ def test_psij_mpi_respects_explicit_stdin_policy(monkeypatch, tmp_path):
         stdin=str(tmp_path / "stdin.dat"),
         mpi_uses_stdin=False,
     )
-    runner = executor.create_job(spec)
+    runner = executor.create_native_job(spec)
     assert runner._job.spec.stdin_path is None
     assert replace(spec, mpi_uses_stdin=True).mpi_uses_stdin
 
@@ -879,7 +879,7 @@ def test_psij_preparation_closes_each_output_handle_once(monkeypatch, tmp_path, 
     executor = _executor(monkeypatch, _Backend())
     output = NamedOutput(tmp_path / "run.out")
     error = output if merged else NamedOutput(tmp_path / "run.err")
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=output, error_file=error)
     )
     runner._prepare_io()
@@ -894,7 +894,7 @@ def test_psij_preparation_closes_each_output_handle_once(monkeypatch, tmp_path, 
 
 def test_psij_active_job_stays_active_without_blocking_wait(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("ACTIVE")
@@ -907,7 +907,7 @@ def test_psij_active_job_stays_active_without_blocking_wait(monkeypatch, tmp_pat
 )
 def test_psij_wait_terminal_status_overrides_stale_job_status(monkeypatch, tmp_path, native_state, exit_code, expected):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("ACTIVE")
@@ -952,7 +952,7 @@ def test_psij_output_permission_error_is_unknown_not_execution_failure(monkeypat
     from kkrunner.support.growing_file_tail import GrowingFileTail
 
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         )
@@ -972,7 +972,7 @@ def test_psij_output_permission_error_is_unknown_not_execution_failure(monkeypat
 @pytest.mark.parametrize("native_state", ["COMPLETED", "FAILED", "CANCELED"])
 def test_psij_does_not_invent_missing_exit_code(monkeypatch, tmp_path, native_state):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status(native_state)
@@ -987,7 +987,7 @@ def test_psij_does_not_invent_missing_exit_code(monkeypatch, tmp_path, native_st
 
 def test_psij_terminal_wait_without_exit_does_not_use_stale_status(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("FAILED", 7)
@@ -1019,7 +1019,7 @@ def test_psij_confirmed_completion_is_not_undone_by_unknown_refresh(monkeypatch,
 
 def test_psij_callback_finishes_monitor_and_unsubscribes(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("ACTIVE")
@@ -1068,8 +1068,8 @@ def test_psij_simultaneous_attaches_share_callback_and_finish(monkeypatch, tmp_p
     (tmp_path / "run.out").write_text("result")
     (tmp_path / "run.err").write_text("")
     run = _psij_run(tmp_path, "shared")
-    first = executor.attach_job(_native_attachment(run.execution, run.files), start=False)
-    second = executor.attach_job(_native_attachment(run.execution, run.files), start=False)
+    first = executor.attach_native_observer(_native_attachment(run.execution, run.files), start=False)
+    second = executor.attach_native_observer(_native_attachment(run.execution, run.files), start=False)
     assert first._job is second._job is job
     assert len(executor._jobs) == 1
 
@@ -1089,7 +1089,7 @@ def test_psij_simultaneous_attaches_share_callback_and_finish(monkeypatch, tmp_p
 
 def test_psij_monitor_cancel_detaches_without_cancelling_job(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("ACTIVE")
@@ -1109,7 +1109,7 @@ def test_psij_monitor_cancel_detaches_without_cancelling_job(monkeypatch, tmp_pa
 
 def test_psij_stop_observation_ends_monitor_without_cancel(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("ACTIVE")
@@ -1153,6 +1153,9 @@ def test_project_observer_detaches_without_stopping_other_attached_client(monkey
     (tmp_path / "run.out").write_text("result")
     (tmp_path / "run.err").write_text("")
     store.save(record)
+    # Keep this test focused on native PSI/J callback fan-out while the
+    # production client now uses context-independent shared Job observation.
+    monkeypatch.setattr(executor, "attach_job", executor.attach_native_observer)
     subscribed = threading.Event()
     num_subscribers = 0
     subscriptions_lock = threading.Lock()
@@ -1267,7 +1270,7 @@ def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypa
     for path in (input_file, cache_file, output_file, error_file, extra_output):
         path.write_bytes(b"previous contents")
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_job(
+    runner = executor.create_native_job(
         ExecutionSpec(
             argv=("program",),
             directory=str(tmp_path),
@@ -1284,3 +1287,36 @@ def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypa
     assert output_file.read_bytes() == b""
     assert error_file.read_bytes() == b""
     assert not extra_output.exists()
+
+
+def test_remote_psij_submit_does_not_start_client_monitor(monkeypatch, tmp_path):
+    from kkrunner.backends.psij import agent
+
+    calls = []
+    class FakeRunner:
+        backend_id = "123"
+        state = RunState.RUNNING
+        result = SimpleNamespace(output_file="out", error_file="err")
+        return_code = None
+        failure_phase = None
+
+        def submit_native(self):
+            calls.append("submit-native")
+
+        def submit(self):
+            raise AssertionError("The target must not create a client monitor")
+
+    class FakeExecutor:
+        backend = "slurm"
+        url = None
+        def create_native_job(self, spec, *, submission_key=None):
+            return FakeRunner()
+
+    monkeypatch.setattr(agent, "_psij_executor", lambda opts: FakeExecutor())
+    request = {
+        "argv": ["true"], "directory": str(tmp_path), "executor": "psij",
+        "executor_options": {"backend": "slurm"}, "id": "test",
+    }
+    result = agent.submit_remote(request)
+    assert calls == ["submit-native"]
+    assert result["state"] == "running"

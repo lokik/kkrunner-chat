@@ -29,14 +29,35 @@ class LocalManagedContext:
     def operation(self, name):
         return BackendOperation.installed(*operation_ref(self.backend, name))
 
+    def _wire_ref(self, identity):
+        """PSI/J exposes its native scheduler ID to local clients.
+
+        The installed operation functions use the opaque encoded handle.
+        Reconstruct it from explicit backend options on each invocation.
+        """
+        if self.backend != "psij":
+            return identity
+        from kkrunner.remote.handles import encode_handle
+        return encode_handle({
+            "kind": "psij",
+            "backend": self.options.get("backend") or "slurm",
+            "url": self.options.get("url"),
+            "native_id": str(identity),
+        })
+
     async def _submit(self, request):
-        return await self.transport.call(self.operation("submit"), request)
+        reply = await self.transport.call(self.operation("submit"), request)
+        if self.backend == "psij" and reply.get("remote_id"):
+            from kkrunner.remote.handles import decode_handle
+            handle = decode_handle(reply["remote_id"])
+            return dict(reply, remote_id=str(handle["native_id"]))
+        return reply
 
     async def _status(self, directory, backend_id, files=None):
-        return await self.transport.call(self.operation("status"), backend_id)
+        return await self.transport.call(self.operation("status"), self._wire_ref(backend_id))
 
     async def _cancel(self, directory, backend_id, files=None):
-        return await self.transport.call(self.operation("cancel"), backend_id)
+        return await self.transport.call(self.operation("cancel"), self._wire_ref(backend_id))
 
     async def _follow(self, directory, backend_id, *, offsets=None,
                       stdout_path=None, stderr_path=None):
@@ -54,7 +75,7 @@ class LocalManagedContext:
         command = (
             sys.executable, "-m", "kkrunner_cli",
             "--protocol-version", str(CONTROL_PROTOCOL_VERSION),
-            "follow", str(backend_id), *options, "--framed",
+            "follow", str(self._wire_ref(backend_id)), *options, "--framed",
         )
         return FramedRunningCommand(await self.transport.start(command))
 
