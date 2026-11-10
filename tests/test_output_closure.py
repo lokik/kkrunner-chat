@@ -204,7 +204,7 @@ def test_confirmed_job_output_cleanup_error_is_reported_by_run(tmp_path, monkeyp
     run = Run(job)
     # Exercise the normal asynchronous completion path without submitting a
     # real target calculation, which the test does not need.
-    job.start = lambda: None
+    job._backend_id = "confirmed-native-job"
     run.start()
     result = run.wait()
     assert result.return_code == 0
