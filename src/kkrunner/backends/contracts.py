@@ -11,24 +11,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
+from kkrunner.runs.states import RunState
+
 if TYPE_CHECKING:
     from kkrunner.files.manifest import FileManifest
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.runs.model import Execution
-
-
-class JobState(str, Enum):
-    NEW = "new"
-    QUEUED = "queued"
-    RUNNING = "running"
-    FINISHED = "finished"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    UNKNOWN = "unknown"
-
-    @property
-    def is_terminal(self) -> bool:
-        return self in (self.FINISHED, self.FAILED, self.CANCELLED)
 
 
 class JobFailurePhase(str, Enum):
@@ -69,14 +57,16 @@ class JobAttachment:
 class JobStatus:
     """Execution facts only: no download, postprocessing or observation state."""
 
-    state: JobState
+    state: RunState
     return_code: Optional[int] = None
     failure_phase: Optional[JobFailurePhase] = None
     message: Optional[str] = None
 
     def __post_init__(self):
-        if not isinstance(self.state, JobState):
-            object.__setattr__(self, "state", JobState(self.state))
+        state = RunState(self.state)
+        if state in (RunState.SUBMITTING, RunState.DOWNLOADING, RunState.POSTPROCESSING):
+            raise ValueError(f"{state.value} is a client lifecycle phase, not a JobStatus")
+        object.__setattr__(self, "state", state)
         if self.failure_phase is not None and not isinstance(self.failure_phase, JobFailurePhase):
             object.__setattr__(self, "failure_phase", JobFailurePhase(self.failure_phase))
         if self.return_code is not None and type(self.return_code) is not int:
@@ -155,7 +145,7 @@ def job_status_from_facts(state, *, return_code=None, failure_phase=None, messag
     if phase in ("download", "postprocessing"):
         phase = None
     return JobStatus(
-        state=JobState(value),
+        state=RunState(value),
         return_code=return_code,
         failure_phase=phase,
         message=message,
@@ -231,7 +221,7 @@ class RecoverableBackend(ReopenableBackend, Protocol):
 
 
 __all__ = [
-    "Backend", "Job", "JobAttachment", "JobFailurePhase", "JobRef", "JobState", "JobStatus",
+    "Backend", "Job", "JobAttachment", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoverableBackend", "RecoveryDisposition",
     "RecoveryResult", "ReopenableBackend", "UnsupportedCapability",
     "job_status_from_facts",

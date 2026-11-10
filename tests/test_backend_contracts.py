@@ -4,24 +4,27 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from kkrunner.runs.states import RunState
+
 from kkrunner.backends.contracts import (
     JobFailurePhase,
     JobRef,
-    JobState,
     JobStatus,
     RecoveryDisposition,
     RecoveryResult,
 )
 
 
-@pytest.mark.parametrize("state", list(JobState))
-def test_only_real_terminal_job_states_are_terminal(state):
-    assert state.is_terminal == (state in {JobState.FINISHED, JobState.FAILED, JobState.CANCELLED})
+@pytest.mark.parametrize("state", list(RunState))
+def test_only_real_terminal_states_are_terminal(state):
+    assert state.is_terminal == (state in {RunState.FINISHED, RunState.FAILED, RunState.CANCELLED})
 
 
-def test_client_specific_phases_are_not_job_states():
-    assert "downloading" not in JobState._value2member_map_
-    assert "postprocessing" not in JobState._value2member_map_
+@pytest.mark.parametrize("state", (RunState.SUBMITTING, RunState.DOWNLOADING, RunState.POSTPROCESSING))
+def test_client_phases_are_not_backend_statuses(state):
+    with pytest.raises(ValueError, match="client lifecycle phase"):
+        JobStatus(state)
+
 
 
 def test_job_ref_contains_backend_scoped_identity():
@@ -51,9 +54,9 @@ def test_recovery_result_requires_job_identity_only_if_found():
 
 def test_status_validates_execution_facts_without_client_phases():
     status = JobStatus("failed", return_code=7, failure_phase="execution", message="exit 7")
-    assert status.state is JobState.FAILED
+    assert status.state is RunState.FAILED
     assert status.failure_phase is JobFailurePhase.EXECUTION
     with pytest.raises(ValueError):
         JobStatus("downloading")
     with pytest.raises(TypeError):
-        JobStatus(JobState.FINISHED, return_code=True)
+        JobStatus(RunState.FINISHED, return_code=True)

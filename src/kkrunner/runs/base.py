@@ -15,6 +15,7 @@ from typing import Any, Optional, Sequence, Tuple
 from kkrunner.files.manifest import FileManifest, FileSyncPolicy
 from kkrunner.files.paths import file_path
 from kkrunner.runs.model import Execution
+from kkrunner.runs.states import RunState
 
 
 from kkrunner.files.streams import _close_distinct, close_output_files
@@ -163,26 +164,6 @@ class OutputObservers:
                             OutputObserverWarning,
                             stacklevel=4,
                         )
-
-
-class RunState(str, Enum):
-    """Single authoritative lifecycle state of one calculation run."""
-
-    NEW = "new"
-    SUBMITTING = "submitting"
-    QUEUED = "queued"
-    RUNNING = "running"
-    DOWNLOADING = "downloading"
-    POSTPROCESSING = "postprocessing"
-    FINISHED = "finished"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    UNKNOWN = "unknown"
-
-    @property
-    def is_terminal(self):
-        """Whether this run is finished, failed or cancelled (not UNKNOWN)."""
-        return self in (RunState.FINISHED, RunState.FAILED, RunState.CANCELLED)
 
 
 class FailurePhase(str, Enum):
