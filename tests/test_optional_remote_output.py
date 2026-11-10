@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.remote.transport import LocalTransport
+from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec
 
 
