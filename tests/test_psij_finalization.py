@@ -2,17 +2,18 @@ from threading import Event
 from types import SimpleNamespace
 
 from kkrunner import RunState
-from kkrunner.backends.psij import PsijRunner
+from kkrunner.backends.psij.job import PsijJob
 from kkrunner.runs.base import OutputObservers
 
 
-def test_psij_finalization_failure_overrides_completed_backend():
-    runner = object.__new__(PsijRunner)
+def test_psij_observer_failure_is_uncertain_not_a_proven_backend_failure():
+    runner = object.__new__(PsijJob)
     runner._job = SimpleNamespace(status=SimpleNamespace(state=SimpleNamespace(name="COMPLETED")))
     runner._exception = None
     runner._failure_phase = None
     runner._failure_message = None
     runner._return_code = None
+    runner._observed_state = None
     runner._output_observers = OutputObservers()
     runner._done = Event()
     runner.callback = None
@@ -24,5 +25,6 @@ def test_psij_finalization_failure_overrides_completed_backend():
     runner._monitor = fail
     runner._thread_main()
     assert isinstance(runner._exception, ValueError)
-    assert runner.state == RunState.FAILED
-    assert runner.failure_phase.value == "execution"
+    assert runner.state == RunState.UNKNOWN
+    assert runner.failure_phase is None
+    assert runner.failure_message == "result parsing failed"

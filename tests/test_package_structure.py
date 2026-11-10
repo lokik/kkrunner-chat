@@ -17,28 +17,34 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectExecutionManager.__module__ == "kkrunner.projects.manager"
-    assert kkrunner.remote.RemoteEndpointExecutor.__module__ == "kkrunner.remote.executor"
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.runs.run import Run
+
+    assert AgentBackendProxy.__module__ == "kkrunner.client.agent"
+    assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
     assert not hasattr(importlib.import_module("kkrunner.runs.manager"), "ExecutionManager")
     assert not hasattr(importlib.import_module("kkrunner.projects.manager"), "ExecutionManager")
 
 
-def test_persistent_runner_names_do_not_imply_project_membership():
-    from kkrunner.backends.local_managed import ManagedLocalRunner
+def test_run_and_job_ownership_boundaries_are_explicit():
+    from kkrunner.backends import ProcessBackend, PsijBackend
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.remote_files import RemoteFileSession
+    from kkrunner.client.remote_job import RemoteJob
+    from kkrunner.client.run_parts import RunParts
+    from kkrunner.runs.run import Run
 
-    assert kkrunner.runs.PersistentRunner.__module__ == "kkrunner.runs.manager"
-    assert ManagedLocalRunner.__module__ == "kkrunner.backends.local_managed"
-    assert not hasattr(kkrunner, "ProjectRunner")
-    assert not hasattr(importlib.import_module("kkrunner.runs.manager"), "ProjectRunner")
-    assert not hasattr(importlib.import_module("kkrunner.backends.local_managed"), "LocalProjectRunner")
-    for executor in (
-        kkrunner.backends.LocalExecutor,
-        kkrunner.backends.PsijExecutor,
-        kkrunner.remote.RemoteEndpointExecutor,
-    ):
-        assert callable(executor.create_managed_run)
-        assert not hasattr(executor, "create_project_run")
+    assert Run.__module__ == "kkrunner.runs.run"
+    assert RemoteJob.__module__ == "kkrunner.client.remote_job"
+    assert RemoteFileSession.__module__ == "kkrunner.client.remote_files"
+    for backend in (ProcessBackend, PsijBackend, AgentBackendProxy):
+        assert callable(backend.create_run_parts)
+        assert callable(backend.open_run_parts)
+        assert not hasattr(backend, "create_managed_run")
+    assert RunParts.__dataclass_fields__.keys() == {"job", "files"}
+
 
 
 def test_all_runtime_modules_import_without_optional_scheduler_dependency():
@@ -72,6 +78,7 @@ def test_root_has_only_backend_independent_entry_points():
         "RunState",
         "TaskFile",
         "ProcessingPending",
+        "Run",
     }
     for name in (
         "LocalExecutor",
@@ -92,16 +99,43 @@ import sys
 from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore
 from kkrunner import backends
-assert 'LocalExecutor' in dir(backends)
+assert 'ProcessBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.local', 'kkrunner.backends.psij', 'kkrunner.remote',
-    'kkrunner.projects', 'psij', 'psutil',
+    'kkrunner.backends.process.engine',
+    'kkrunner.backends.psij.backend',
+    'kkrunner.client.agent', 'kkrunner.projects', 'psij',
 ))
-from kkrunner.backends import LocalExecutor
-from kkrunner.backends.local import LocalExecutor as implementation
-assert LocalExecutor is implementation
-assert backends.LocalExecutor is LocalExecutor
-assert 'kkrunner.backends.psij' not in sys.modules
+from kkrunner.backends import ProcessBackend
+from kkrunner.backends.process.engine import ProcessBackend as implementation
+assert ProcessBackend is implementation
+assert backends.ProcessBackend is ProcessBackend
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
+
+def test_slurm_native_module_does_not_load_psij_executor():
+    code = """
+import sys
+from kkrunner.backends.psij import slurm
+assert callable(slurm._slurm_status_native)
+assert 'psij' not in sys.modules
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'kkrunner.backends.psij.job' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
+def test_psij_agent_import_does_not_load_executor_implementation():
+    # Agent command definitions should load without constructing or importing
+    # the reusable PSI/J executor; it is only needed on actual submission.
+    code = """
+import sys
+from kkrunner.backends.psij import agent
+assert callable(agent.follow_remote)
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'psij' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 

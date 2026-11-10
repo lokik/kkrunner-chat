@@ -1,12 +1,13 @@
-"""Output handle lifecycle shared by local, persistent and remote runners."""
+"""Output handle lifecycle across process jobs and remote client file sessions."""
 
 import asyncio
 
 import pytest
 
-from kkrunner.backends.local import LocalRunner
-from kkrunner.backends.local_managed import ManagedLocalRunner
-from kkrunner.remote.runner import RemoteRunner
+from kkrunner.backends.process.engine import ProcessJob
+from kkrunner.backends.process.managed import SupervisedProcessJob
+from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import ExecutionSpec, RunState, close_output_files
 
 
@@ -35,13 +36,13 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
         async def fail_to_launch(_spec):
             raise RuntimeError("launch failed")
 
-        monkeypatch.setattr("kkrunner.backends.local.start_local_process", fail_to_launch)
-        runner = LocalRunner(spec)
+        monkeypatch.setattr("kkrunner.backends.process.engine.start_local_process", fail_to_launch)
+        runner = ProcessJob(spec)
         with pytest.raises(RuntimeError, match="launch failed"):
             asyncio.run(runner._execute())
         assert runner.state == RunState.FAILED
     else:
-        runner = ManagedLocalRunner(None, spec)
+        runner = SupervisedProcessJob(None, spec)
         monkeypatch.setattr(runner, "_monitor", lambda: None)
         runner._thread_main()
         assert runner._done.is_set()
@@ -74,20 +75,21 @@ def test_remote_monitor_closes_merged_output_once_after_follow_failure(tmp_path)
     output = _TrackedOutput(str(output_path))
 
     class UnreachableEndpoint:
-        async def _status(self, directory, backend_id, files):
-            assert backend_id == "job-1"
-            return {"state": "unknown"}
-
-        async def _follow(self, directory, backend_id, files, *, offsets):
+        async def _follow(self, directory, backend_id, *, offsets=None, stdout_path=None, stderr_path=None):
             assert backend_id == "job-1"
             raise ConnectionError("remote follow interrupted")
 
     spec = ExecutionSpec(
         argv=("true",), directory=str(tmp_path), input_file=None, output_file=output, error_file=output
     )
-    runner = RemoteRunner(UnreachableEndpoint(), spec, backend_id="job-1", remote_directory="/remote/case")
-    asyncio.run(runner._monitor())
-    assert runner.state == RunState.UNKNOWN
+    files = RemoteFileSession(object(), spec)
+    job = RemoteJob(UnreachableEndpoint(), spec, backend_id="job-1", remote_directory="/remote/case")
+    asyncio.run(job._monitor())
+    assert job.state == RunState.UNKNOWN
+    # The backend job never owns local output streams. Only the client file
+    # session closes them, and a shared stdout/stderr handle is closed once.
+    assert output.close_calls == 0
+    files.close()
     assert output.close_calls == 1
 
 
@@ -121,7 +123,7 @@ def test_local_project_cleanup_attempts_all_stages(tmp_path, monkeypatch, monito
             if close_fails:
                 raise errors[2]
 
-    runner = ManagedLocalRunner(
+    runner = SupervisedProcessJob(
         None,
         ExecutionSpec(argv=("true",), input_file=None, directory=str(tmp_path), output_file=Output()),
         callback=lambda result: callbacks.append(result),
@@ -144,7 +146,7 @@ def test_local_project_cleanup_attempts_all_stages(tmp_path, monkeypatch, monito
     expected = next((error for failed, error in zip((monitor_fails, finish_fails, close_fails), errors) if failed))
     assert runner.exception is expected
     assert runner.failure_message == str(expected)
-    assert runner.failure_phase is FailurePhase.EXECUTION
-    assert runner.state is RunState.FAILED
+    assert runner.failure_phase is None
+    assert runner.state is RunState.UNKNOWN
     assert runner._done.is_set()
     assert callbacks == [runner.result]

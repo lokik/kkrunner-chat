@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.runs import DuplicateSubmissionError, Executor
+from kkrunner.runs import DuplicateSubmissionError
+from kkrunner.client.run_parts import RunParts
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
@@ -45,16 +46,17 @@ class _Runner:
             self.callback(self.result)
 
 
-class _Executor(Executor):
+class _Executor:
     name = "test"
 
     def __init__(self):
         self.runners = []
 
-    def create_run(self, spec, callback=None):
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
         runner = _Runner(callback)
+        runner.spec = spec
         self.runners.append(runner)
-        return runner
+        return RunParts(runner)
 
 
 def _run(manager, executor, directory, *, task="DOS", dataset="case"):
@@ -241,10 +243,10 @@ def test_wildcard_output_collisions_follow_pattern_overlap(
 
 
 def test_remote_conflicts_use_declared_target_paths_before_staging(tmp_path):
-    from kkrunner.backends import ExecutorEndpoint
+    from kkrunner.client.endpoint import ExecutionEndpoint
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    endpoint = ExecutorEndpoint(executor="ssh", host="cluster")
+    endpoint = ExecutionEndpoint(executor="ssh", host="cluster")
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/jobs/shared",

@@ -13,7 +13,8 @@ from threading import Event, Lock
 
 from kkrunner.files.availability import discover_local_files
 from kkrunner.files.paths import file_path
-from kkrunner.remote.service import _decode_handle, cancel_remote, follow_remote, status_remote, submit_remote
+from kkrunner.backends.handles import _decode_handle
+from kkrunner.backends.process.operations import cancel_remote, follow_remote, status_remote, submit_remote
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionSpec,
@@ -107,7 +108,7 @@ class _ObserverSink:
         pass
 
 
-class ManagedLocalRunner:
+class SupervisedProcessJob:
     """Managed local process with supervisor-based follow and reattach."""
 
     def __init__(
@@ -162,6 +163,19 @@ class ManagedLocalRunner:
     @property
     def backend_id(self):
         return self._backend_id
+
+    @property
+    def ref(self):
+        from kkrunner.backends.contracts import JobRef
+        return None if self.backend_id is None else JobRef("process", self.backend_id)
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        state = self.state
+        return job_status_from_facts(
+            state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
 
     def _refresh(self):
         # A terminal result is immutable. After acknowledgment the receipt
@@ -253,20 +267,31 @@ class ManagedLocalRunner:
         # Monitoring and both cleanups must be attempted independently; a
         # secondary cleanup error must not hide an earlier monitor failure.
         try:
-            for action in (
-                self._monitor,
-                self._output_observers.finish_bytes,
-                lambda: close_output_files(self.spec.output_file, self.spec.error_file),
+            for action, observation_only in (
+                (self._monitor, True),
+                (self._output_observers.finish_bytes, False),
+                (lambda: close_output_files(self.spec.output_file, self.spec.error_file), False),
             ):
                 try:
                     action()
                 except BaseException as exc:
                     if self._exception is None:
                         self._exception = exc
-            if self._exception is not None:
-                self._failure_message = str(self._exception)
-                self._failure_phase = self._failure_phase or FailurePhase.EXECUTION
-                self._state = RunState.FAILED
+                        self._failure_message = str(exc)
+                    if observation_only:
+                        # FOLLOW or status loss cannot prove a job failed.
+                        if self._state not in (RunState.FAILED, RunState.CANCELLED):
+                            self._state = RunState.UNKNOWN
+                            self._failure_phase = None
+                    else:
+                        # Failing to finalize local output is an output failure
+                        # only if execution was otherwise known to succeed.
+                        if self._state == RunState.FINISHED:
+                            self._state = RunState.FAILED
+                            self._failure_phase = FailurePhase.ARTIFACTS
+                        elif not self._state.is_terminal:
+                            self._state = RunState.UNKNOWN
+                            self._failure_phase = None
         finally:
             finish_monitor(self)
 
@@ -275,7 +300,7 @@ class ManagedLocalRunner:
             return [path for value in values if (path := _file_path(value, self.spec.directory)) is not None]
 
         return {
-            "executor": "local",
+            "executor": "process",
             "id": self._run_id,
             "detached": True,
             "directory": os.fspath(self.spec.directory),
@@ -296,8 +321,12 @@ class ManagedLocalRunner:
             raise RuntimeError("Managed run has no run id")
         from kkrunner.runs.base import SubmissionNotStarted
 
+        # Constructing the request is preflight. Once submit_remote begins,
+        # a thrown exception might mean an accepted but unacknowledged job.
+        request = self._request()
+        self._state = RunState.SUBMITTING
         try:
-            reply = submit_remote(self._request())
+            reply = submit_remote(request)
         except SubmissionNotStarted as exc:
             self._state = RunState.FAILED
             self._failure_phase = FailurePhase.SUBMISSION
@@ -344,7 +373,7 @@ def attach_local(executor, run, *, callback=None, output_listener=None, start=Tr
         directory=run.execution.directory.local,
     )
     status = local_status(backend_id, files)
-    runner = ManagedLocalRunner(
+    runner = SupervisedProcessJob(
         executor,
         spec,
         callback=callback,

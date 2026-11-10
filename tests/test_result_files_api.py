@@ -1,31 +1,18 @@
-"""Public terminology and capabilities for persistent result files."""
+"""Public result-file terminology and explicit endpoint capabilities."""
 
-from kkrunner.runs import Executor
+from kkrunner.backends import ProcessBackend, PsijBackend
+from kkrunner.client.agent import AgentBackendProxy
 from kkrunner.files import FileManifest, FileState
 
 
 def test_result_file_names_use_canonical_public_api():
-    record = FileManifest()
-    assert record.state is FileState.CURRENT
+    manifest = FileManifest()
+    assert manifest.state is FileState.CURRENT
     assert FileState.CURRENT.value == "current"
     assert FileState.OVERWRITTEN.value == "overwritten"
 
 
-def test_result_file_retrieval_capability_is_inferred_from_override():
-
-    class PlainExecutor(Executor):
-        pass
-
-    class RetrievingExecutor(Executor):
-        def fetch_result_files(self, run, files):
-            pass
-
-    class DerivedRetrievingExecutor(RetrievingExecutor):
-        pass
-
-    assert PlainExecutor.supports_result_file_retrieval is False
-    assert PlainExecutor().supports_result_file_retrieval is False
-    assert RetrievingExecutor.supports_result_file_retrieval is True
-    assert RetrievingExecutor().supports_result_file_retrieval is True
-    assert DerivedRetrievingExecutor.supports_result_file_retrieval is True
-    assert DerivedRetrievingExecutor().supports_result_file_retrieval is True
+def test_result_file_retrieval_is_an_explicit_endpoint_capability():
+    assert ProcessBackend.supports_result_file_retrieval is False
+    assert PsijBackend.supports_result_file_retrieval is False
+    assert AgentBackendProxy.supports_result_file_retrieval is True
