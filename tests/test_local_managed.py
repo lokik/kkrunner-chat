@@ -13,9 +13,10 @@ from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.backends.process.managed import local_manifest
+from kkrunner.backends.process.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.backends.process.operations import (
-    _process_running, _recover_submission, acknowledge_submission, status_remote,
+    _process_running, acknowledge_submission, status_remote,
 )
 from kkrunner.runs.base import FailurePhase, RunStatus
 
@@ -66,7 +67,7 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     runner.submit()
     handle = runner.backend_id
     assert decode_handle(handle)["kind"] == "process"
-    assert _recover_submission(RUN_ID)["remote_id"] == handle
+    assert recover_submission(RUN_ID)["remote_id"] == handle
     assert runner.wait().return_code == 0
     assert runner.state == RunState.FINISHED
     assert not _process_running(
@@ -76,7 +77,7 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     assert executor.recover_submission(RUN_ID, _attachment(_record(tmp_path, None))).ref.token == handle
     executor.acknowledge_submission(_record(tmp_path, handle))
-    assert _recover_submission(RUN_ID) is None
+    assert recover_submission(RUN_ID) is None
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     seen = []
     attached = executor.open_job(
@@ -205,7 +206,7 @@ def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch
     assert runner.backend_id is None
     assert runner.state == RunState.FAILED
     assert runner.failure_phase == FailurePhase.SUBMISSION
-    assert not _recover_submission(RUN_ID)
+    assert not recover_submission(RUN_ID)
 
 
 def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
@@ -326,7 +327,7 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     assert runner.backend_id is None
     assert existing.read_text() == "restart cache"
     assert extra.read_text() == "old output"
-    assert _recover_submission(RUN_ID) is None
+    assert recover_submission(RUN_ID) is None
 
 
 def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(tmp_path):

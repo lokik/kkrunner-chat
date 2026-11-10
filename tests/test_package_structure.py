@@ -119,7 +119,7 @@ def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
 from kkrunner.backends.psij import slurm
-assert callable(slurm._slurm_status_native)
+assert callable(slurm.status_native)
 assert 'psij' not in sys.modules
 assert 'kkrunner.backends.psij.backend' not in sys.modules
 assert 'kkrunner.backends.psij.job' not in sys.modules

@@ -4,6 +4,7 @@ import os
 
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec
 
+
 def request_to_spec(request):
     mpi_argv = request.get("mpi_argv")
     sync = request.get("client_sync") or {}

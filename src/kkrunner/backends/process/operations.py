@@ -7,7 +7,6 @@ execution calls these operations directly; the remote agent only dispatches.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import shutil
@@ -21,47 +20,15 @@ from uuid import uuid4
 
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.remote.messages import request_to_spec, status_reply
-from kkrunner.backends.process.mailbox import _state_root, acknowledge_outcome, read_outcome
+from kkrunner.backends.process import mailbox
 from kkrunner.backends.process.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.files.availability import clear_declared_outputs, validate_output_collisions
 from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
-from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync_directory
 from kkrunner.support.process_identity import ProcessIdentity
 
-def _submission_ticket(run_id):
-    """A stable, filename-safe ticket for any valid client Run identity.
-
-    RunRecord permits more than UUID-hex IDs. Hashing the whole identity keeps
-    the receipt namespace independent of path separators and user-facing IDs.
-    """
-    if (
-        not isinstance(run_id, str) or not run_id or run_id in (".", "..")
-        or any(char in run_id for char in ("/", "\\", "\x00"))
-    ):
-        raise ValueError("Invalid persistent run id")
-    name = hashlib.sha256(run_id.encode("utf8")).hexdigest()
-    return _state_root() / "remote-submissions" / (name + ".json")
-
-def _publish_submission(run_id, reply):
-    """Temporary identity handoff, never a target-side run lifecycle record."""
-    path = _submission_ticket(run_id)
-    durable_mkdir(path.parent, parents=True, exist_ok=True, mode=0o700)
-    durable_write_json(path, reply, mode=0o600)
-
-def _recover_submission(run_id):
-    try:
-        return json.loads(_submission_ticket(run_id).read_text())
-    except FileNotFoundError:
-        return None
-
 def acknowledge_submission(run_id):
-    path = _submission_ticket(run_id)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return {"acknowledged": False}
-    fsync_directory(path.parent)
-    return {"acknowledged": True}
+    return {"acknowledged": mailbox.acknowledge_submission(run_id)}
+
 
 def _absolute(directory, value):
     if value is None:
@@ -172,7 +139,7 @@ def _local_submit(request):
         # Durable identity precedes releasing the supervisor. Until this
         # receipt is safely stored, the child cannot launch a calculation.
         if request.get("detached"):
-            _publish_submission(run_id, {
+            mailbox.publish_submission(run_id, {
                 "remote_id": remote_id,
                 "directory": os.fspath(directory),
                 "output_file": output_path,
@@ -215,7 +182,7 @@ def _local_submit(request):
     return reply
 
 def _process_outcome(receipt_id):
-    data = read_outcome(receipt_id)
+    data = mailbox.read_outcome(receipt_id)
     if data is None:
         return None
     try:
@@ -271,11 +238,11 @@ def acknowledge_remote(remote_id):
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
-    return {"acknowledged": acknowledge_outcome(handle["receipt_id"])}
+    return {"acknowledged": mailbox.acknowledge_outcome(handle["receipt_id"])}
 
 
 def recover_remote(run_id, request, *, submitted_at=None):
-    reply = _recover_submission(run_id)
+    reply = mailbox.recover_submission(run_id)
     if reply is None:
         return None
     return dict(reply, directory=request["directory"], **status_remote(reply["remote_id"]))

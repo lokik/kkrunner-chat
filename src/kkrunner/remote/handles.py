@@ -8,11 +8,14 @@ import base64
 import binascii
 import json
 import re
+
 from kkrunner.support.process_identity import ProcessIdentity
+
 
 def encode_handle(data):
     payload = json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
 
 def decode_handle(value):
     if not isinstance(value, str):

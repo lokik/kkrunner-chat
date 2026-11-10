@@ -1,8 +1,8 @@
 """Stateless agent adapter: transport protocol to backend operations.
 
 All execution, status, cancellation, recovery, follow and acknowledgements
-are delegated to the registry below.  No backend branching lives
-in this module.
+are delegated through the registry below. Backend-specific execution logic
+remains in the respective backend modules.
 """
 
 from importlib import import_module

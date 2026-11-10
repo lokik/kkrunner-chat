@@ -68,7 +68,7 @@ def test_remote_status_wire_reply_is_shared_between_process_and_psij(
     monkeypatch.setattr(process_operations, "_process_outcome", lambda receipt_id: (state, return_code, phase, error))
     monkeypatch.setattr(
         psij_slurm,
-        "_slurm_status_native",
+        "status_native",
         lambda native_id: RunStatus(
             state, backend_id=native_id, return_code=return_code, failure_phase=phase, message=error
         ),
@@ -346,7 +346,7 @@ def test_uncertain_submit_uses_only_temporary_identity_ticket(tmp_path, monkeypa
         }
     )
     reply = {"remote_id": handle, "directory": str(tmp_path), "state": "running"}
-    process_operations._publish_submission(run_id, reply)
+    remote_mailbox.publish_submission(run_id, reply)
     recovered = remote_service.recover_remote(run_id, {"executor": "process", "directory": str(tmp_path)})
     assert recovered["remote_id"] == handle
     assert remote_service.acknowledge_submission("process", run_id) == {"acknowledged": True}
@@ -541,7 +541,7 @@ def test_failed_submission_ticket_cannot_leave_calculation_running(tmp_path, mon
     def reject(_run_id, _reply):
         raise OSError("ticket store unavailable")
 
-    monkeypatch.setattr(process_operations, "_publish_submission", reject)
+    monkeypatch.setattr(remote_mailbox, "publish_submission", reject)
     with pytest.raises(SubmissionNotStarted, match="ticket store unavailable"):
         remote_service.submit_remote(request)
     assert not marker.exists()
