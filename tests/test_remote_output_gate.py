@@ -8,6 +8,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client.remote_job import RemoteJob
 from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.support.file_locks import FileLock
 from kkrunner.client.transport import LocalTransport
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.runs.base import FailurePhase
@@ -147,6 +148,10 @@ def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
         with pytest.raises(RuntimeError, match="Conflicting FOLLOW bytes"):
             b._write_output(b"wrong", "out")
         assert destination.read_bytes() == b"abcdef"
+        # A failed overlap must release the same portable lock used by FOLLOW.
+        lock_path = destination.with_name(f".{destination.name}.follow.lock")
+        with FileLock(lock_path) as lock:
+            assert lock.acquired
     finally:
         a_stream.close()
         b_stream.close()

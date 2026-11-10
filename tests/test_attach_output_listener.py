@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from kkrunner.backends import ProcessBackend, PsijBackend
 from kkrunner.backends.contracts import JobAttachment
-from kkrunner.backends.scheduler.engine import PsijJob
+from kkrunner.backends.psij.job import PsijJob
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.client.run_parts import RunParts
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping

@@ -8,8 +8,8 @@ from kkrunner import RunState
 from kkrunner.backends import ProcessBackend
 from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.backends.handles import _encode_handle
-from kkrunner.backends.process import managed as local_project
-from kkrunner.backends.process import operations as process_operations
+from kkrunner.backends.process.supervised import local as local_project
+from kkrunner.backends.process.supervised import operations as process_operations
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory

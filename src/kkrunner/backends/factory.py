@@ -5,8 +5,8 @@ from importlib import import_module
 from kkrunner.backends.handles import _decode_handle
 
 _BACKENDS = {
-    "process": "kkrunner.backends.process.operations",
-    "psij": "kkrunner.backends.scheduler.operations",
+    "process": "kkrunner.backends.process.supervised.operations",
+    "psij": "kkrunner.backends.psij.agent",
 }
 
 

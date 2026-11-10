@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from kkrunner.backends.process.engine import ProcessJob
+from kkrunner.backends.process.direct.job import ProcessJob
 from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import ExecutionSpec, RunState
 

@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kkrunner.backends.process.engine import ProcessJob
-from kkrunner.backends.process.managed import _ObserverSink
-from kkrunner.backends.scheduler.engine import PsijJob
+from kkrunner.backends.process.supervised.job import _ObserverSink
+from kkrunner.backends.psij.job import PsijJob
 from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import OutputObservers
 
@@ -55,7 +55,7 @@ def test_remote_pump_delivers_bytes_without_runner_decoder():
 
 
 def test_psij_monitor_forwards_follow_bytes(monkeypatch):
-    import kkrunner.backends.scheduler.engine as psij_module
+    import kkrunner.backends.psij.job as psij_module
 
     received = []
 

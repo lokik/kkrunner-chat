@@ -4,7 +4,7 @@ import pytest
 
 from kkrunner.runs import FailurePhase
 from kkrunner import RunState
-from kkrunner.backends.process import mailbox as remote_mailbox
+from kkrunner.backends.process.supervised import mailbox as remote_mailbox
 
 
 @pytest.fixture(autouse=True)

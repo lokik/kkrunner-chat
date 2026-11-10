@@ -101,18 +101,83 @@ from kkrunner import ExecutionSpec, RunStore
 from kkrunner import backends
 assert 'ProcessBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.process.engine',
-    'kkrunner.backends.scheduler.engine',
+    'kkrunner.backends.process.backend',
+    'kkrunner.backends.psij.backend',
     'kkrunner.client.agent', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import ProcessBackend
-from kkrunner.backends.process.engine import ProcessBackend as implementation
+from kkrunner.backends.process.backend import ProcessBackend as implementation
 assert ProcessBackend is implementation
 assert backends.ProcessBackend is ProcessBackend
-assert 'kkrunner.backends.scheduler.engine' not in sys.modules
+assert 'kkrunner.backends.psij.backend' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
+
+
+def test_process_strategies_have_distinct_implementations():
+    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.direct.job import ProcessJob
+    from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+    assert ProcessBackend.__module__ == "kkrunner.backends.process.backend"
+    assert ProcessJob.__module__ == "kkrunner.backends.process.direct.job"
+    assert SupervisedProcessJob.__module__ == "kkrunner.backends.process.supervised.job"
+
+
+def test_local_process_backend_selects_one_execution_strategy(tmp_path):
+    from kkrunner import ExecutionSpec
+    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.direct.job import ProcessJob
+    from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+
+    backend = ProcessBackend()
+    spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
+    assert isinstance(backend.create_job(spec), ProcessJob)
+    assert isinstance(backend.create_job(spec, submission_key="run-1"), SupervisedProcessJob)
+
+
+def test_remote_process_service_reuses_supervised_backend_operations():
+    from kkrunner.backends.factory import backend_for_kind
+    from kkrunner.backends.process.supervised import operations
+    from kkrunner.remote import service
+
+    assert backend_for_kind("process") is operations
+    assert service.submit_remote.__module__ == "kkrunner.remote.service"
+
+
+def test_direct_process_import_does_not_load_supervisor():
+    code = """
+import sys
+from kkrunner.backends.process.direct.job import ProcessJob
+assert 'kkrunner.backends.process.supervised.operations' not in sys.modules
+assert 'kkrunner.backends.process.supervised.worker' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
+def test_slurm_native_module_does_not_load_psij_executor():
+    code = """
+import sys
+from kkrunner.backends.psij import slurm
+assert callable(slurm._slurm_status_native)
+assert 'psij' not in sys.modules
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'kkrunner.backends.psij.job' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
+def test_psij_agent_import_does_not_load_executor_implementation():
+    # Agent command definitions should load without constructing or importing
+    # the reusable PSI/J executor; it is only needed on actual submission.
+    code = """
+import sys
+from kkrunner.backends.psij import agent
+assert callable(agent.follow_remote)
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'psij' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
 
 def test_facade_exports_resolve_without_optional_scheduler_dependency():

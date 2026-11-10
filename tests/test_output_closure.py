@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from kkrunner.backends.process.engine import ProcessJob
-from kkrunner.backends.process.managed import SupervisedProcessJob
+from kkrunner.backends.process.direct.job import ProcessJob
+from kkrunner.backends.process.supervised.job import SupervisedProcessJob
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import ExecutionSpec, RunState, close_output_files
@@ -36,7 +36,7 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
         async def fail_to_launch(_spec):
             raise RuntimeError("launch failed")
 
-        monkeypatch.setattr("kkrunner.backends.process.engine.start_local_process", fail_to_launch)
+        monkeypatch.setattr("kkrunner.backends.process.direct.job.start_local_process", fail_to_launch)
         runner = ProcessJob(spec)
         with pytest.raises(RuntimeError, match="launch failed"):
             asyncio.run(runner._execute())

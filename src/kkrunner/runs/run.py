@@ -279,7 +279,14 @@ class Run:
     def _start_completion(self):
         self._started = True
         self._thread = Thread(target=self._finish, daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:
+            # A monitor that never started cannot own completion or cleanup.
+            # The caller retains the accepted backend identity for recovery.
+            self._thread = None
+            self._started = False
+            raise
 
     def _observed_submission_state(self):
         """Persist execution progress, never a premature client completion.
@@ -307,19 +314,33 @@ class Run:
             )
 
     def submit(self):
-        if self._started:
+        if self._started or self._settled:
             raise RuntimeError("Run already submitted")
         if self.manager is None:
-            if self._file_session is not None:
-                try:
+            try:
+                if self._file_session is not None:
                     self._prepare_remote_job()
-                    self._job.submit()
-                except BaseException:
-                    self._close_files_after_failed_submission()
-                    raise
-            else:
                 self._job.submit()
-            self._start_completion()
+                self._start_completion()
+            except SubmissionNotStarted as exc:
+                # Preparation is provably before the backend submit boundary.
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.SUBMISSION
+                self._failure_message = str(exc)
+                self._exception = exc
+                self._settled = True
+                self._close_files_after_failed_submission()
+                raise
+            except BaseException as exc:
+                # Once submit is attempted, a missing acknowledgement cannot
+                # justify launching the calculation a second time.
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
+                self._failure_message = str(exc)
+                self._exception = exc
+                self._settled = True
+                self._close_files_after_failed_submission()
+                raise
             return
 
         if self._record.state != RunState.NEW:
@@ -351,6 +372,18 @@ class Run:
                     )
                     self._monitor_record_version = self._record.updated_at
             self._job.submit()
+            if self.backend_id is None:
+                # Do not start client completion without a recoverable job
+                # identity: an unacknowledged submit must stay SUBMITTING.
+                raise RuntimeError("Backend submit returned without a job identity")
+            # Persist accepted identity before creating the completion
+            # observer. A failed monitor start must remain reattachable.
+            self._record = self.manager.transition(
+                self._record,
+                execution=self.execution,
+                files=self.files if self.files is not None else _UNCHANGED,
+            )
+            self._monitor_record_version = self._record.updated_at
             self._start_completion()
         except SubmissionNotStarted as exc:
             self._close_files_after_failed_submission()
@@ -377,8 +410,6 @@ class Run:
             # Without a backend identity, SUBMITTING remains unresolved.
             raise
 
-        if self.backend_id is None:
-            raise RuntimeError("Backend submit returned without a job identity")
         self.manager.register_backend(self.backend, self._record.execution.endpoint)
         with self._completion_lock:
             if not self._completion_persisted:
@@ -395,6 +426,8 @@ class Run:
     def start(self):
         if self._started:
             return
+        if self._settled:
+            raise RuntimeError("A failed or uncertain Run cannot be restarted")
         if self._record is not None:
             if self._record.state.is_terminal:
                 raise RuntimeError("A completed Run cannot be started again")

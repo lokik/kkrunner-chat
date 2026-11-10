@@ -22,8 +22,8 @@ from uuid import uuid4
 from kkrunner.backends.handles import _decode_handle, _encode_handle
 from kkrunner.backends.replies import _status_reply
 from kkrunner.backends.specs import _request_spec
-from kkrunner.backends.process.mailbox import _state_root, acknowledge_outcome, read_outcome
-from kkrunner.backends.process.worker import _SPEC_ENV, _START_FD_ENV
+from kkrunner.backends.process.supervised.mailbox import _state_root, acknowledge_outcome, read_outcome
+from kkrunner.backends.process.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.files.availability import clear_declared_outputs, validate_output_collisions
 from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync_directory
@@ -71,9 +71,6 @@ def _absolute(directory, value):
     if not path.is_absolute():
         path = Path(directory) / path
     return os.fspath(path)
-
-def _process_running(handle):
-    return ProcessIdentity.from_dict(handle["identity"]).is_running()
 
 def _clean_request_outputs(spec, directory, output_path=None, error_path=None):
     """Clear prior outputs while protecting inputs and caches in the parsed spec."""
@@ -142,7 +139,7 @@ def _local_submit(request):
         env[_START_FD_ENV] = str(start_fd)
         try:
             process = subprocess.Popen(
-                [sys.executable, "-m", "kkrunner.backends.process.worker"],
+                [sys.executable, "-m", "kkrunner.backends.process.supervised.worker"],
                 cwd=directory,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -244,7 +241,7 @@ def status_remote(remote_id):
     if outcome is not None:
         state, return_code, failure_phase, error = outcome
     else:
-        state = RunState.RUNNING if _process_running(handle) else RunState.UNKNOWN
+        state = RunState.RUNNING if ProcessIdentity.from_dict(handle["identity"]).is_running() else RunState.UNKNOWN
         return_code = None
         failure_phase = None
         error = None
@@ -308,7 +305,7 @@ def follow_remote(
 
     if handle["kind"] != "process":
         raise ValueError("Unknown execution backend")
-    from kkrunner.backends.process.supervisor import SupervisorClosedBeforeFollow, follow_socket
+    from kkrunner.backends.process.supervised.streams import SupervisorClosedBeforeFollow, follow_socket
 
     path = handle.get("socket_path")
     if path is None:
