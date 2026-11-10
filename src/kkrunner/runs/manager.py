@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 from dataclasses import replace
 from datetime import datetime, timezone
 from threading import Lock
@@ -70,6 +73,35 @@ class DuplicateSubmissionError(RuntimeError):
 class RunManager(RunFileHistory):
     """Persist public run lifecycle without task-specific knowledge."""
 
+    _default_override = ContextVar("kkrunner_default_run_manager", default=None)
+    _default_lock = Lock()
+    _fallback = None
+
+    @classmethod
+    def get_default(cls):
+        """Return a context-selected manager or a stable user-level manager."""
+        selected = RunManager._default_override.get()
+        if selected is not None:
+            return selected
+        with RunManager._default_lock:
+            if RunManager._fallback is None:
+                from kkrunner.runs.records import RunStore
+                root = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+                RunManager._fallback = RunManager(RunStore(Path(root) / "kkrunner" / "runs"))
+            return RunManager._fallback
+
+    @classmethod
+    @contextmanager
+    def as_default(cls, manager):
+        """Select a manager for the current context without affecting other contexts."""
+        if not isinstance(manager, RunManager):
+            raise TypeError("Default manager must be a RunManager")
+        token = RunManager._default_override.set(manager)
+        try:
+            yield manager
+        finally:
+            RunManager._default_override.reset(token)
+
     def __init__(self, store=None, *, backend_pool=None, submitting_grace=60.0):
         if submitting_grace < 0:
             raise ValueError("submitting_grace must be non-negative")
@@ -98,6 +130,7 @@ class RunManager(RunFileHistory):
         project_id=None,
         metadata=None,
         processing_required=False,
+        submission_key=None,
     ):
         now = _now()
         local = os.path.abspath(os.fspath(directory))
@@ -108,7 +141,8 @@ class RunManager(RunFileHistory):
             updated_at=now,
             metadata={} if metadata is None else metadata,
             processing_required=processing_required,
-            execution=Execution(endpoint or ExecutionEndpoint(), WorkingDirectory(local, remote_directory)),
+            execution=Execution(endpoint or ExecutionEndpoint(), WorkingDirectory(local, remote_directory),
+                                 submission_key=submission_key),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
         )
@@ -194,6 +228,8 @@ class RunManager(RunFileHistory):
             if execution is not _UNCHANGED and execution is not None:
                 if latest.execution.backend_id is not None and execution.backend_id != latest.execution.backend_id:
                     raise ValueError("Backend identity cannot change")
+                if execution.submission_key != latest.execution.submission_key:
+                    raise ValueError("Submission key cannot change")
                 changes["execution"] = execution
             if return_code is not _UNCHANGED and return_code is not None:
                 if not final_locked or latest.return_code is None:
@@ -226,10 +262,18 @@ class RunManager(RunFileHistory):
         if not self._is_stale_submitting(record):
             return record
         executor = self.backend_for(record)
+        if not hasattr(executor, "recover_submission"):
+            # A tracked direct process has no durable backend identity. Keep
+            # uncertainty rather than claiming that no process was launched.
+            return self.transition(
+                record, state=RunState.UNKNOWN,
+                message="Direct submission cannot be resolved after client loss",
+            )
         from kkrunner.runs.model import WorkingDirectory
         try:
             recovery = executor.recover_submission(
-                record.id, JobAttachment(record.execution, record.files),
+                record.execution.submission_key or record.id,
+                JobAttachment(record.execution, record.files),
                 submitted_at=record.updated_at,
             )
         except NotImplementedError:
@@ -262,6 +306,14 @@ class RunManager(RunFileHistory):
                 executor.status(JobAttachment(attached.execution, attached.files))[0],
             )
         if recovery.disposition is not RecoveryDisposition.ABSENT:
+            if (
+                record.execution.endpoint.executor == "ssh-direct"
+                and recovery.disposition is RecoveryDisposition.UNSUPPORTED
+            ):
+                return self.transition(
+                    record, state=RunState.UNKNOWN,
+                    message="Direct SSH submission cannot be recovered after connection loss",
+                )
             return record
 
         def mark_absent(latest):
@@ -345,12 +397,29 @@ class RunManager(RunFileHistory):
         if latest.state.is_terminal or latest.state == RunState.POSTPROCESSING:
             return latest
         record = latest
+        if (
+            record.execution.endpoint.executor == "local-supervised"
+            and status.state.is_terminal and status.files is None
+        ):
+            # Backend status contains execution facts only. The client-side
+            # manifest projection owns streams and application artifacts.
+            from kkrunner.files.availability import local_manifest
+            status = replace(status, files=local_manifest(record.files, status))
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
         state = self._observed_run_state(record, status)
         execution = status.execution
         if execution is None and status.backend_id is not None:
             execution = record.execution.submitted(status.backend_id)
+        elif execution is not None and record.execution.submission_key is not None:
+            # A backend reports execution facts, not the client submission
+            # ticket. Preserve our original ticket, but reject disagreement.
+            if execution.submission_key is None:
+                execution = replace(
+                    execution, submission_key=record.execution.submission_key,
+                )
+            elif execution.submission_key != record.execution.submission_key:
+                raise ValueError("Backend status returned another submission key")
         if state in (RunState.FINISHED, RunState.POSTPROCESSING):
             result_files = status.files if status.files is not None else record.files
             if record.execution.directory.remote is None and result_files is not None:
@@ -638,7 +707,7 @@ class RunManager(RunFileHistory):
 
     def create_run(
         self, backend, spec, *, process_result=None, metadata=None,
-        processing_required=None, callback=None, run_id=None,
+        processing_required=None, callback=None, run_id=None, detached=None,
     ):
         """Create one tracked Run; backend owns raw execution only."""
         from kkrunner.runs.run import Run
@@ -646,8 +715,6 @@ class RunManager(RunFileHistory):
             spec.require_complete()
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
-        if not getattr(backend, "supports_tracked_runs", True):
-            raise ValueError("Backend cannot create a recoverable tracked run; select a supervised backend")
         endpoint = endpoint_for_backend(backend)
         record = self.new_record(
             metadata=metadata,
@@ -657,10 +724,17 @@ class RunManager(RunFileHistory):
             remote_directory=(backend.submission_directory(spec) if endpoint.executor == "ssh" else None),
             files=FileManifest.from_spec(spec),
             run_id=run_id,
+            submission_key=uuid4().hex,
         )
         self.register_backend(backend, endpoint)
         from kkrunner.client.run_parts import run_endpoint_for_backend
-        parts = run_endpoint_for_backend(backend).create_run_parts(spec, submission_key=record.id)
+        parts = run_endpoint_for_backend(backend).create_run_parts(
+            spec, submission_key=record.execution.submission_key,
+        )
+        parts.configure_detached(
+            getattr(backend, "default_detached", False) if detached is None else detached,
+            default=getattr(backend, "default_detached", False),
+        )
         return Run(
             parts.job, backend=backend, manager=self, record=record,
             process_result=process_result, callback=callback, parts=parts,
@@ -688,6 +762,16 @@ class RunManager(RunFileHistory):
             groups.setdefault(executor, []).append(record)
 
         for executor, group in groups.items():
+            if not hasattr(executor, "status"):
+                # Direct Jobs have no independently queryable durable status.
+                # Their client-side completion thread remains authoritative;
+                # never infer FINISHED from a PID or a closed SSH channel.
+                for record in group:
+                    current[record.id] = self.transition(
+                        record, state=RunState.UNKNOWN,
+                        message="Direct execution has no independent recovery status",
+                    )
+                continue
             statuses = executor.status(
                 *(JobAttachment(record.execution, record.files) for record in group)
             )

@@ -57,9 +57,12 @@ def test_project_job_carries_kkrunner_identity(monkeypatch, tmp_path, backend):
         assert job_spec.attributes is None
 
 
-def test_nonpersistent_psij_job_has_no_recovery_metadata(monkeypatch, tmp_path):
+def test_nonpersistent_psij_job_has_independent_recovery_key(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, "slurm")
     runner = executor.create_job(_spec(tmp_path))
     job_spec = runner._job.spec
-    assert job_spec.environment is None
-    assert job_spec.attributes is None
+    key = job_spec.environment["KKRunner_RUN_ID"]
+    assert key and key == runner._run_id
+    assert job_spec.attributes.custom_attributes == {
+        "slurm.comment": psij_slurm.submission_marker(key)
+    }

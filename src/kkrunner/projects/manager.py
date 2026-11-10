@@ -73,6 +73,7 @@ class ProjectExecutionManager(RunManager):
         callback=None,
         run_id=None,
         project=None,
+        detached=None,
     ):
         manager = self if project is None else self.for_project(project)
         if manager.project_id is None:
@@ -86,4 +87,5 @@ class ProjectExecutionManager(RunManager):
             processing_required=processing_required,
             callback=callback,
             run_id=run_id,
+            detached=detached,
         )

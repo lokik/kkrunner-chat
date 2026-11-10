@@ -12,7 +12,7 @@ from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.backends.process.supervised.local import local_manifest
+from kkrunner.files.availability import local_manifest
 from kkrunner.backends.process.supervised.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.backends.process.supervised.operations import (

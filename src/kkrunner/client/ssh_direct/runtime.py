@@ -22,6 +22,14 @@ class SshProcessAdapter:
         self._request = None
         self._stream_writer = None
         self._cancel_unconfirmed = False
+        self._detached = False
+
+    @property
+    def detached(self):
+        return self._detached
+
+    def configure_detached(self, detached):
+        self._detached = detached
 
     def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
         if self._request is not None:
@@ -37,6 +45,7 @@ class SshProcessAdapter:
 
     async def launch(self, spec):
         request, self._request = self._request, None
+        request["detached"] = self._detached
         python_command = getattr(self.context.transport, "python_command", ("python3",))
         return await self.context.transport.start(
             (*python_command, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
@@ -70,6 +79,11 @@ class SshProcessAdapter:
                 process.kill()
                 await process.wait()
         return False
+
+    def detached_output_paths(self, spec):
+        # Target files are retrieved at terminal completion, not tailed on
+        # the client as if they were local files.
+        return {}
 
     def output(self, data, kind):
         if self._stream_writer is None:

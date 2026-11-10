@@ -69,7 +69,6 @@ class SupervisedProcessJob:
         self._failure_phase = failure_phase
         self._failure_message = failure_message
         self._return_code = None
-        self._files = None
         self._output_observers = OutputObservers(output_listener)
         self._lock = Lock()
         self._done = Event()
@@ -82,13 +81,6 @@ class SupervisedProcessJob:
         self._observation_task = None
         if start:
             self.start()
-
-    def set_manifest(self, files):
-        self._files = files
-
-    @property
-    def files(self):
-        return self._files
 
     @property
     def backend_id(self):
@@ -112,14 +104,12 @@ class SupervisedProcessJob:
         # may disappear while the supervisor process is still shutting down.
         if self._backend_id is None or self._state.is_terminal:
             return self._state
-        status = local_status(self._backend_id, self._files)
+        status = local_status(self._backend_id)
         self._state = status.state
         self._failure_phase = status.failure_phase
         self._failure_message = status.message
         self._return_code = status.return_code
         self.result.return_code = self._return_code
-        if status.files is not None:
-            self._files = status.files
         return self._state
 
     @property

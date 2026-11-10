@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import posixpath
 import shlex
@@ -12,10 +13,9 @@ from pathlib import Path, PurePosixPath
 from typing import Optional, Protocol
 from uuid import uuid4
 
-from kkrunner.files.queries import _sources, checked_files, expand_local_files, local_file_signature, query_files
+from kkrunner.files.queries import _sources, checked_files, expand_local_files, local_file_signature, query_files, finalize_upload
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
-from kkrunner.remote.protocol import json_request
 
 
 class RunningCommand(Protocol):
@@ -206,8 +206,16 @@ class LocalTransport(Transport):
 class SshTransport(Transport):
     """Transport using the system ``ssh`` client."""
 
-    def __init__(self, host, *, ssh="ssh", options=(), zstd=False, command=("kkrunner-agent",)):
+    def __init__(
+        self, host, *, ssh="ssh", options=(), zstd=False,
+        command=("kkrunner-agent",), python_command=("python3",),
+    ):
         self.command = tuple(command)
+        self.python_command = (
+            (python_command,) if isinstance(python_command, str) else tuple(python_command)
+        )
+        if not self.python_command:
+            raise ValueError("SSH target Python command cannot be empty")
         self.host = host
         self.ssh = ssh
         self.options = tuple(options)
@@ -273,11 +281,16 @@ class SshTransport(Transport):
                 pass
             raise
 
+    async def call_function(self, function, *args, **kwargs):
+        """Execute a standalone stdlib-compatible Python function on target."""
+        from kkrunner.client.portable_functions import function_source
+        script = function_source(function)
+        payload = json.dumps({"args": args, "kwargs": kwargs}).encode("utf-8")
+        response = await self.run((*self.python_command, "-c", script), input=payload)
+        return json.loads(response.stdout.decode("utf-8"))
+
     async def _finalize_upload(self, temporary, destination, mtime_ns):
-        await json_request(
-            self, self.command, "finalize-upload",
-            payload={"temporary": temporary, "destination": destination, "mtime_ns": mtime_ns},
-        )
+        await self.call_function(finalize_upload, temporary, destination, mtime_ns)
 
     async def get_file(self, source, destination):
         source = os.fspath(source)
@@ -322,15 +335,12 @@ class SshTransport(Transport):
         return Path(destination)
 
     async def query_files(self, sources, *, root=None, digest=False):
-        results = await json_request(
-            self,
-            self.command,
-            "query-files",
-            payload={
-                "paths": [os.fsdecode(path) for path in _sources(sources)],
-                "root": None if root is None else os.fsdecode(root),
-                "digest": digest,
-            },
+        # Identical portable implementation for raw SSH and agent-backed SSH.
+        results = await self.call_function(
+            query_files,
+            [os.fsdecode(path) for path in _sources(sources)],
+            root=None if root is None else os.fsdecode(root),
+            digest=digest,
         )
         return checked_files(results)
 

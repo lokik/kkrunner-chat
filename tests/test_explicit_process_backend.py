@@ -13,18 +13,15 @@ def test_direct_mode_never_switches_implicitly(tmp_path):
     backend = ProcessBackend()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
     assert isinstance(backend.create_job(spec), ProcessJob)
-    with pytest.raises(NotImplementedError, match="SupervisedProcessBackend"):
-        backend.create_job(spec, submission_key="run-id")
+    assert isinstance(backend.create_job(spec, submission_key="run-id"), ProcessJob)
     manager = RunManager(RunStore(tmp_path / "runs"))
-    with pytest.raises(ValueError, match="supervised backend"):
-        manager.create_run(backend, spec)
+    assert manager.create_run(backend, spec).record is not None
 
 
 def test_supervised_mode_is_explicit_and_persistable(tmp_path):
     backend = SupervisedProcessBackend()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
-    with pytest.raises(ValueError, match="submission key"):
-        backend.create_job(spec)
+    assert isinstance(backend.create_job(spec), SupervisedProcessJob)
     assert isinstance(backend.create_job(spec, submission_key="run-id"), SupervisedProcessJob)
     endpoint = endpoint_for_backend(backend)
     assert endpoint == ExecutionEndpoint(executor="local-supervised")

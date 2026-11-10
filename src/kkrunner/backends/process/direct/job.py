@@ -13,6 +13,7 @@ from typing import Protocol
 
 from kkrunner.backends.process.primitives import pump_stream
 from kkrunner.files.paths import file_path
+from kkrunner.support.growing_file_tail import follow_growing_files
 from kkrunner.runs.base import (
     ExecutionOutcome, ExecutionSpec, FailurePhase, OutputObservers, RunState,
     SubmissionNotStarted, finish_monitor, wait_for_monitor,
@@ -24,6 +25,7 @@ class DirectProcessAdapter(Protocol):
 
     expose_pid: bool
     uncertain_after_launch: bool
+    detached: bool
 
     def prepare(self, spec: ExecutionSpec) -> None: ...
 
@@ -32,6 +34,8 @@ class DirectProcessAdapter(Protocol):
     async def stop(self, process) -> bool: ...
 
     def output(self, data: bytes, kind: str): ...
+
+    def detached_output_paths(self, spec: ExecutionSpec) -> dict: ...
 
     def exit_status(self, code: int): ...
 
@@ -45,6 +49,7 @@ class ProcessJob:
             from .local import LocalProcessAdapter
             adapter = LocalProcessAdapter()
         self.adapter = adapter
+        self._detached = False
         self.spec = spec
         self.callback = callback
         self.result = ExecutionOutcome(
@@ -102,6 +107,13 @@ class ProcessJob:
     def output_error(self):
         """Client stream delivery errors, independent of backend execution."""
         return self._output_error
+
+    def configure_detached(self, detached):
+        """Set process lifetime before submission, independently of RunRecord."""
+        if self._state != RunState.NEW:
+            raise RuntimeError("Cannot change detached policy after submission")
+        self.adapter.configure_detached(detached)
+        self._detached = detached
 
     def status(self):
         from kkrunner.backends.contracts import job_status_from_facts
@@ -175,17 +187,41 @@ class ProcessJob:
             # Start draining both streams before a stop() operation can wait
             # for the child. Otherwise full pipes can deadlock cancellation.
             wait_task = asyncio.create_task(self._process.wait())
-            stdout_task = asyncio.create_task(
-                pump_stream(self._process.stdout, lambda data: self._forward_output(data, "out"))
+            stdout_task = (
+                asyncio.create_task(pump_stream(
+                    self._process.stdout, lambda data: self._forward_output(data, "out"),
+                ))
+                if self._process.stdout is not None else None
             )
-            stderr_task = asyncio.create_task(
-                pump_stream(self._process.stderr, lambda data: self._forward_output(data, "err"))
+            stderr_task = (
+                asyncio.create_task(pump_stream(
+                    self._process.stderr, lambda data: self._forward_output(data, "err"),
+                ))
+                if self._process.stderr is not None else None
             )
-            tasks = (wait_task, stdout_task, stderr_task)
+            tasks = (wait_task,) + tuple(
+                task for task in (stdout_task, stderr_task) if task is not None
+            )
+            paths = self.adapter.detached_output_paths(self.spec) if self._detached else {}
+            if paths:
+                async def terminal():
+                    return wait_task.result() if wait_task.done() else None
+
+                # Exactly the same file-following mechanism used by PSI/J.
+                # The adapter writes directly to disk, so these bytes go
+                # only to observers; forwarding them back to output() would
+                # duplicate output in the declared files.
+                observer = asyncio.create_task(follow_growing_files(
+                    paths,
+                    lambda kind, data: self._output_observers.emit_bytes(data, kind),
+                    terminal,
+                    wakeup=wait_task,
+                ))
+                tasks += (observer,)
             if self._cancel_requested.is_set():
                 self._ensure_stop_task()
             try:
-                return_code, _, _ = await asyncio.gather(*tasks)
+                return_code = (await asyncio.gather(*tasks))[0]
             finally:
                 for task in tasks:
                     if not task.done():
@@ -232,7 +268,13 @@ class ProcessJob:
                     self._failure_phase = (
                         FailurePhase.EXECUTION if self._pid is not None else FailurePhase.LAUNCH
                     )
-            if self._process is not None and self._process.returncode is None:
+            if (
+                self._process is not None
+                and self._process.returncode is None
+                and (not self._detached or self._cancel_requested.is_set())
+            ):
+                # Observation failure on a detached process must never turn
+                # into an implicit backend cancellation.
                 await self.adapter.stop(self._process)
             raise
         finally:

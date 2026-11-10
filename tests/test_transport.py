@@ -518,3 +518,39 @@ def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, 
     asyncio.run(check())
     assert cleanup_calls == [True]
     assert not (tmp_path / "result").exists()
+
+
+def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
+    """File queries and upload publication must never invoke the agent."""
+    import asyncio
+    from kkrunner.files.versions import file_digest
+
+    transport = _LoopbackSshTransport()
+    transport.command = ("__must_not_invoke_agent__",)
+    source = tmp_path / "sample"
+    source.write_text("abc")
+    temporary = tmp_path / "stage"
+    destination = tmp_path / "published"
+    temporary.write_text("stored")
+    mtime_ns = 1729000000123456789
+
+    async def verify():
+        entries = await transport.query_files([str(source)], digest=True)
+        assert entries[0]["digest"] == file_digest(source)
+        await transport._finalize_upload(str(temporary), str(destination), mtime_ns)
+
+    asyncio.run(verify())
+    assert destination.read_text() == "stored"
+    assert destination.stat().st_mtime_ns == mtime_ns
+
+
+def test_agent_endpoint_retains_target_python_configuration():
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.endpoint import endpoint_for_backend, create_backend_from_endpoint
+
+    backend = AgentBackendProxy(
+        SshTransport("cluster", python_command=("python3.12",))
+    )
+    endpoint = endpoint_for_backend(backend)
+    assert endpoint.python_command == ("python3.12",)
+    assert endpoint_for_backend(create_backend_from_endpoint(endpoint)) == endpoint

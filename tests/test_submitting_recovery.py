@@ -85,7 +85,7 @@ def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
     assert old.state == RunState.FAILED
     assert "not found" in old.message
     assert replacement.record.state == RunState.QUEUED
-    assert executor.recovery_calls[0][0] == abandoned.id
+    assert executor.recovery_calls[0][0] == abandoned.record.execution.submission_key
     assert executor.recovery_calls[0][2] is not None
 
 

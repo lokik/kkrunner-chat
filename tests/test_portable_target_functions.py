@@ -12,7 +12,7 @@ from kkrunner.backends.contracts import Backend
 from kkrunner.backends.mpi import resolve_mpi_options
 from kkrunner.backends.process.backend import ProcessBackend
 from kkrunner.client.run_parts import NativeRunEndpoint, run_endpoint_for_backend
-from kkrunner.client.ssh_direct.functions import function_source
+from kkrunner.client.portable_functions import function_source
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
 

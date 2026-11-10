@@ -34,6 +34,7 @@ class Execution:
     endpoint: ExecutionEndpoint
     directory: WorkingDirectory
     backend_id: Optional[str] = None
+    submission_key: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.endpoint, dict):
@@ -44,6 +45,9 @@ class Execution:
             raise TypeError("Execution.endpoint must be an ExecutionEndpoint")
         if not isinstance(self.directory, WorkingDirectory):
             raise TypeError("Execution.directory must be a WorkingDirectory")
+        if self.submission_key is not None:
+            if not isinstance(self.submission_key, str) or not self.submission_key:
+                raise ValueError("submission_key must be a nonempty string or None")
         if self.backend_id is not None:
             identifier = str(self.backend_id)
             if not identifier:

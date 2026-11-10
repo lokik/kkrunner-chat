@@ -47,6 +47,20 @@ class RunParts:
             # The execution mechanism has not been submitted yet.
             raise SubmissionNotStarted(str(exc)) from exc
 
+    def configure_detached(self, detached, *, default=False):
+        """Configure process lifetime only when the mechanism supports the choice."""
+        if type(detached) is not bool:
+            raise TypeError("detached must be bool")
+        configure = getattr(self.job, "configure_detached", None)
+        if configure is not None:
+            configure(detached)
+            if self.files is not None:
+                # Only direct SSH has a configurable Job and remote file
+                # session. Agent/PSI-J continue following their own streams.
+                self.files.configure_direct_detached_streams(detached)
+        elif detached != default:
+            raise ValueError("This backend does not support changing its detached policy")
+
     def configure_observation(self):
         if self.files is not None:
             self.job.configure_observation(**self.files.observation())

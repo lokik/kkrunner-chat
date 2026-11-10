@@ -36,6 +36,8 @@ class PsijBackend:
 
     name = "psij"
     supports_result_file_retrieval = False
+    default_persistent = True
+    default_detached = True
 
     def __init__(
         self,
@@ -61,8 +63,10 @@ class PsijBackend:
         self._max_idle_jobs = 64
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        from uuid import uuid4
         spec.require_complete()
-        return PsijJob(self, spec, callback=callback, run_id=submission_key)
+        # A scheduler submission has its own identity even without a RunRecord.
+        return PsijJob(self, spec, callback=callback, run_id=submission_key or uuid4().hex)
 
     def status(self, *runs):
         from kkrunner.client.endpoint import endpoint_for_backend

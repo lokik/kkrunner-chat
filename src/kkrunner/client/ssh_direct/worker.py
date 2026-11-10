@@ -52,11 +52,22 @@ def execute(request):
                 os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
                 if target not in stream_files:
                     stream_files[target] = resources.enter_context(open(target, "wb", buffering=0))
+        detached = bool(request.get("detached", False))
         child = subprocess.Popen(
             argv, cwd=request["directory"], stdin=stdin,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=(
+                stream_files.get(request.get("output_file"), subprocess.DEVNULL)
+                if detached else subprocess.PIPE
+            ),
+            stderr=(
+                stream_files.get(request.get("error_file"), subprocess.DEVNULL)
+                if detached else subprocess.PIPE
+            ),
             start_new_session=True,
         )
+        # Keep the control channel alive while the client remains attached:
+        # detached execution must still support explicit cancel and wait.
+        # Independent child streams make a broken SSH connection harmless.
         stopping = threading.Event()
         def stop():
             if stopping.is_set():
@@ -85,7 +96,7 @@ def execute(request):
             finally:
                 # An unexpected SSH disconnect closes stdin. Without this,
                 # the remote calculation could outlive the direct Job.
-                if child.poll() is None:
+                if not detached and child.poll() is None:
                     stop()
         threading.Thread(target=control, daemon=True).start()
         stream_lock = threading.Lock()
@@ -104,15 +115,21 @@ def execute(request):
                 except BrokenPipeError:
                     stop()
                     return
-        out = threading.Thread(target=pump, args=(child.stdout, sys.stdout.buffer, "out"))
-        err = threading.Thread(target=pump, args=(child.stderr, sys.stderr.buffer, "err"))
-        out.start()
-        err.start()
-        try:
-            code = child.wait()
-        finally:
-            out.join()
-            err.join()
+        if detached:
+            # The child writes directly to its declared files (or DEVNULL).
+            # No relay thread may depend on the SSH channel's pipes.
+            returncode = child.wait()
+        else:
+            out = threading.Thread(target=pump, args=(child.stdout, sys.stdout.buffer, "out"))
+            err = threading.Thread(target=pump, args=(child.stderr, sys.stderr.buffer, "err"))
+            out.start()
+            err.start()
+            try:
+                returncode = child.wait()
+            finally:
+                out.join()
+                err.join()
+        code = returncode
         return code if code >= 0 else 128 - code
 
 try:

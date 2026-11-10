@@ -76,7 +76,6 @@ class ExecutionEndpoint:
             object.__setattr__(self, "psij_backend", None)
             object.__setattr__(self, "psij_url", None)
         elif self.executor == "ssh":
-            object.__setattr__(self, "python_command", ("python3",))
             if not self.remote_command:
                 object.__setattr__(self, "remote_command", ("kkrunner-agent",))
             if self.psij_backend is not None or self.psij_url is not None:
@@ -148,6 +147,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
             ssh_zstd=transport.zstd,
             remote_command=executor.command,
             filesystem_id=executor.filesystem_id,
+            python_command=transport.python_command,
             psij_backend=psij_backend,
             psij_url=psij_url,
         )
@@ -210,6 +210,7 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
                 endpoint.host,
                 options=endpoint.ssh_options,
                 zstd=endpoint.ssh_zstd,
+                python_command=endpoint.python_command,
             ),
             filesystem_id=endpoint.filesystem_id,
             **kwargs,

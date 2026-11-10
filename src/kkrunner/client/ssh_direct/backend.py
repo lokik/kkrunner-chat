@@ -16,6 +16,9 @@ class SshDirectBackend:
 
     name = "ssh-direct"
     supports_result_file_retrieval = False
+    default_persistent = False
+    default_detached = False
+    requires_backend_identity = False
 
     def __init__(self, transport, *, filesystem_id=None):
         self.transport = transport
@@ -33,10 +36,6 @@ class SshDirectBackend:
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         spec.require_complete()
-        if submission_key is not None:
-            raise UnsupportedCapability(
-                "SSH direct jobs cannot be persisted or recovered; use an agent-backed SSH endpoint"
-            )
         from kkrunner.backends.process.direct.job import ProcessJob
         from .runtime import SshProcessAdapter
         context = RemotePathContext(self, spec.launch)
