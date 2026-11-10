@@ -22,7 +22,7 @@ from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.remote.messages import request_to_spec, status_reply
 from kkrunner.backends.process.supervised import mailbox
 from kkrunner.backends.process.supervised.worker import _SPEC_ENV, _START_FD_ENV
-from kkrunner.files.availability import clear_declared_outputs, validate_output_collisions
+from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.support.process_identity import ProcessIdentity
 
@@ -39,17 +39,21 @@ def _absolute(directory, value):
     return os.fspath(path)
 
 def _clean_request_outputs(spec, directory, output_path=None, error_path=None):
-    """Clear prior outputs while protecting inputs and caches in the parsed spec."""
-    declared = tuple(
-        _absolute(directory, path) for path in (*spec.output_files, output_path, error_path) if path is not None
-    )
-    protected = tuple(
-        _absolute(directory, path)
-        for path in (spec.input_file, spec.stdin, *spec.input_files, *spec.cache_files)
-        if path is not None
-    )
-    validate_output_collisions(declared, protected=protected)
-    clear_declared_outputs(declared, protected=protected)
+    """Adapt supervised process declarations to the shared target-side rules."""
+    def paths(values):
+        return [_absolute(directory, value) for value in values if value is not None]
+
+    prepare_target_outputs({
+        "input_file": _absolute(directory, spec.input_file),
+        "stdin": _absolute(directory, spec.stdin),
+        "input_files": paths(spec.input_files),
+        "output_file": output_path,
+        "error_file": error_path,
+        "client_sync": {
+            "output_files": paths(spec.output_files),
+            "cache_files": [{"path": path} for path in paths(spec.cache_files)],
+        },
+    })
 
 def _local_submit(request):
     if os.name != "posix":

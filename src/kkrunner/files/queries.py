@@ -6,7 +6,6 @@ import stat
 from pathlib import Path
 
 from kkrunner.files.paths import expand_local_candidates
-from kkrunner.files.versions import file_digest
 
 
 def _sources(sources):
@@ -33,33 +32,49 @@ def _local_pattern(source, root):
 
 
 def query_files(sources, *, root=None, digest=False):
-    """Return JSON-ready metadata for exact paths or root-confined patterns.
+    """Return JSON-safe metadata, including root-constrained wildcard matches.
 
-    Without a root, names are literal (including wildcard characters). With a
-    root, patterns use Python's recursive glob semantics and results are
-    deduplicated in request order (sorted within each pattern). Symlinks are
-    followed, but may not escape the source root.
-    Missing exact paths have status ``missing``; other OS errors retain errno.
-    A batch is a sequence of observations, not an atomic filesystem snapshot.
+    This function is deliberately standalone: SSH can execute its source on a
+    target with Python stdlib but without kkrunner. No module-level helpers,
+    annotations, decorators or nonliteral default arguments are required.
     """
-    real_root = None if root is None else Path(root).expanduser().resolve()
-    paths = []
-    if root is None:
-        paths = [os.fsdecode(path) for path in _sources(sources)]
+    import glob
+    import hashlib
+    import os
+    import stat
+    from pathlib import Path
+
+    if isinstance(sources, (str, bytes, os.PathLike)):
+        sources = (sources,)
     else:
-        for source in _sources(sources):
-            _, pattern = _local_pattern(source, root)
-            for match in expand_local_candidates(pattern):
-                # Preserve the requested namespace (e.g. /tmp on macOS is
-                # a symlink), while checking containment using real paths.
-                paths.append(os.path.abspath(match))
+        sources = tuple(sources)
+
+    if root is None:
+        paths = [os.fsdecode(path) for path in sources]
+        real_root = None
+    else:
+        absolute_root = Path(os.path.abspath(os.path.expanduser(os.fspath(root))))
+        real_root = absolute_root.resolve()
+        paths = []
+        for source in sources:
+            given = Path(os.fspath(source)).expanduser()
+            path = given if given.is_absolute() else absolute_root / given
+            pattern = os.path.abspath(os.fspath(path))
+            try:
+                relative = os.path.relpath(pattern, absolute_root)
+            except ValueError as exc:
+                raise ValueError(f"File pattern {source!r} is outside source root {root}") from exc
+            if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+                raise ValueError(f"File pattern {source!r} is outside source root {root}")
+            matches = sorted(glob.glob(pattern, recursive=True)) if glob.has_magic(pattern) else [pattern]
+            paths.extend(os.path.abspath(match) for match in matches)
         paths = list(dict.fromkeys(paths))
 
     results = []
     for path in paths:
         try:
             info = os.stat(path)
-            if root is not None:
+            if real_root is not None:
                 resolved = Path(path).resolve()
                 try:
                     resolved.relative_to(real_root)
@@ -68,7 +83,11 @@ def query_files(sources, *, root=None, digest=False):
             kind = "file" if stat.S_ISREG(info.st_mode) else "directory" if stat.S_ISDIR(info.st_mode) else "other"
             item = {"path": path, "status": "ok", "size": info.st_size, "mtime_ns": info.st_mtime_ns, "type": kind}
             if digest and kind == "file":
-                item["digest"] = file_digest(path)
+                sha = hashlib.sha256()
+                with open(path, "rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        sha.update(block)
+                item["digest"] = sha.hexdigest()
         except FileNotFoundError:
             item = {"path": path, "status": "missing"}
         except OSError as exc:
@@ -104,7 +123,9 @@ def local_file_signature(path):
 
 
 def finalize_upload(temporary, destination, mtime_ns):
-    """Preserve nanosecond timestamps before atomically publishing an upload."""
+    """Atomically publish a completed upload; standalone on remote Python."""
+    import os
+
     info = os.stat(temporary)
-    os.utime(temporary, ns=(info.st_atime_ns, mtime_ns))
+    os.utime(temporary, ns=(info.st_atime_ns, int(mtime_ns)))
     os.replace(temporary, destination)

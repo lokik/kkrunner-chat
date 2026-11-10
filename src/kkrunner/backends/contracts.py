@@ -213,14 +213,15 @@ class Job(Protocol):
     def cancel(self) -> None: ...
 
 
+@runtime_checkable
 class Backend(Protocol):
-    """Client-facing execution endpoint; returns an owned RunParts session."""
+    """Native execution mechanism; creates Jobs but never client sessions."""
 
-    def create_run_parts(self, spec: ExecutionSpec, *, submission_key=None, callback=None): ...
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None) -> Job: ...
 
 
 class ReopenableBackend(Backend, Protocol):
-    def open_run_parts(self, attachment: JobAttachment, *, callback=None, output_listener=None): ...
+    def open_job(self, attachment: JobAttachment, *, callback=None, output_listener=None, start=False) -> Job: ...
 
 
 class RecoverableBackend(ReopenableBackend, Protocol):

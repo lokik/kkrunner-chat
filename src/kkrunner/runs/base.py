@@ -17,33 +17,7 @@ from kkrunner.files.paths import file_path
 from kkrunner.runs.model import Execution
 
 
-def _close_distinct(resources, *, suppress_errors=False):
-    """Close each distinct resource once; keep closing after an error."""
-    seen = set()
-    first_error = None
-    for resource in resources:
-        if resource is None or id(resource) in seen:
-            continue
-        seen.add(id(resource))
-        close = getattr(resource, "close", None)
-        if close is None or getattr(resource, "closed", False):
-            continue
-        try:
-            close()
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
-    if first_error is not None and not suppress_errors:
-        raise first_error
-
-
-def close_output_files(*files):
-    """Close distinct output handles, including merged stdout/stderr.
-
-    Paths and absent streams need no closing. An error must not leave another
-    open output handle behind; propagate the first error after cleanup.
-    """
-    _close_distinct(files)
+from kkrunner.files.streams import _close_distinct, close_output_files
 
 
 def dispatch_cancellation(action):
@@ -218,6 +192,7 @@ class FailurePhase(str, Enum):
     LAUNCH = "launch"
     EXECUTION = "execution"
     ARTIFACTS = "artifacts"
+    OUTPUT = "output"
     DOWNLOAD = "download"
     POSTPROCESSING = "postprocessing"
 

@@ -63,9 +63,14 @@ class _AgentRunContext(RemotePathContext):
         )
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
-        files = RemoteFileSession(self, spec, run_id=submission_key)
+        files = RemoteFileSession(self, spec)
         job = RemoteJob(self, spec, callback=callback)
-        return RunParts(job, files)
+        return RunParts(
+            job, files,
+            submission_builder=lambda prepared: self.endpoint.submission_request(
+                prepared, submission_key=submission_key,
+            ),
+        )
 
     async def attach_run_parts(self, attachment, *, callback=None, output_listener=None):
         execution = attachment.execution
@@ -118,6 +123,16 @@ class AgentBackendProxy:
         if self._remote_home_cache is None:
             self._remote_home_cache = await query_remote_home(self.transport)
         return self._remote_home_cache
+
+    def submission_request(self, prepared_files, *, submission_key=None):
+        """Only the execution endpoint chooses backend protocol and durability."""
+        return {
+            **prepared_files,
+            "id": submission_key,
+            "executor": self.backend,
+            "executor_options": dict(self.backend_options),
+            "detached": submission_key is not None,
+        }
 
     async def _json_request(self, action, *args, payload=None):
         return await json_request(self.transport, self.command, action, *args, payload=payload)

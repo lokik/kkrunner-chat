@@ -43,6 +43,7 @@ _UNCHANGED = object()
 _NO_ARTIFACTS_FAILURES = {
     FailurePhase.SUBMISSION,
     FailurePhase.LAUNCH,
+    FailurePhase.OUTPUT,
     FailurePhase.ARTIFACTS,
     FailurePhase.DOWNLOAD,
 }
@@ -466,11 +467,15 @@ class RunManager:
         if execution is None and status.backend_id is not None:
             execution = record.execution.submitted(status.backend_id)
         if state in (RunState.FINISHED, RunState.POSTPROCESSING):
+            result_files = status.files if status.files is not None else record.files
+            if record.execution.directory.remote is None and result_files is not None:
+                from kkrunner.files.availability import discover_local_files
+                result_files = discover_local_files(result_files)
             updated = self.complete(
                 record,
                 state=state,
                 execution=execution,
-                files=status.files if status.files is not None else record.files,
+                files=result_files,
                 return_code=return_code,
                 message=status.message,
                 failure_phase=phase,
@@ -860,11 +865,8 @@ class RunManager:
             run_id=run_id,
         )
         self.register_backend(backend, endpoint)
-        parts = backend.create_run_parts(spec, submission_key=record.id)
-        if parts.files is None:
-            set_manifest = getattr(parts.job, "set_manifest", None)
-            if set_manifest is not None:
-                set_manifest(record.files)
+        from kkrunner.client.run_parts import run_endpoint_for_backend
+        parts = run_endpoint_for_backend(backend).create_run_parts(spec, submission_key=record.id)
         return Run(
             parts.job, backend=backend, manager=self, record=record,
             process_result=process_result, callback=callback, parts=parts,
@@ -916,7 +918,8 @@ class RunManager:
             raise RuntimeError(f"Run {record.id} has no backend reference")
         backend = self.backend_for(record) if backend is None else backend
         self.register_backend(backend, record.execution.endpoint)
-        parts = backend.open_run_parts(
+        from kkrunner.client.run_parts import run_endpoint_for_backend
+        parts = run_endpoint_for_backend(backend).open_run_parts(
             JobAttachment(record.execution, record.files),
             output_listener=output_listener,
         )

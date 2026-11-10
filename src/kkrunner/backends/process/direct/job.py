@@ -35,8 +35,6 @@ class DirectProcessAdapter(Protocol):
 
     def exit_status(self, code: int): ...
 
-    def verify(self, spec: ExecutionSpec): ...  # FileManifest or None
-
     def close(self, process) -> None: ...
 
 class ProcessJob:
@@ -222,12 +220,6 @@ class ProcessJob:
                     self._state = RunState.FAILED
                     self._failure_phase = FailurePhase.EXECUTION
                     self._failure_message = f"Process exited with status {return_code}"
-            if self._state == RunState.FINISHED:
-                verified = self.adapter.verify(self.spec)
-                if verified is not None and verified.failed_artifacts:
-                    self._state = RunState.FAILED
-                    self._failure_phase = FailurePhase.ARTIFACTS
-                    self._failure_message = verified.availability_message
             return self.result
         except BaseException:
             self._started.set()

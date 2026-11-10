@@ -11,7 +11,6 @@ import os
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from uuid import uuid4
 
 from kkrunner.client.transport import expand_local_files
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
@@ -27,13 +26,12 @@ class RemoteFileSession:
     """Own mapped files and local streams for exactly one client Run."""
 
     def __init__(
-        self, context, spec, *, run_id=None, files=None, remote_directory=None,
+        self, context, spec, *, files=None, remote_directory=None,
         output_targets=None, cache_targets=None, output_patterns=None,
         cache_patterns=None, cache_before=None,
     ):
         self.context = context
         self.spec = spec
-        self._run_id = run_id
         self._files = files
         self._remote_directory = remote_directory
         self._prepared = None
@@ -419,7 +417,7 @@ class RemoteFileSession:
             out.append(replacement or value)
         return out
 
-    async def _prepare_request(self, run_id, remote_directory, manifest):
+    async def _prepare_request(self, remote_directory, manifest):
         used = {}
         # The declared manifest merges aliases with required-wins semantics.
         # Stage the primary input and stdin first: an optional auxiliary alias
@@ -452,9 +450,6 @@ class RemoteFileSession:
         }
 
         return {
-            "id": run_id,
-            "executor": self.context.endpoint.backend,
-            "executor_options": self.context.endpoint.backend_options,
             "directory": remote_directory,
             **self.spec.command_request(lambda args: self._remote_argv(args, staged)),
             "input_file": input_target,
@@ -522,12 +517,9 @@ class RemoteFileSession:
                 # offsets. They cannot reproduce the order of two writers
                 # sharing one physical stream file without a merged protocol.
                 raise ValueError("Remote stdout and stderr must have distinct output files")
-            run_id = self._run_id or uuid4().hex
             remote_directory = await self.context.map_directory(self.spec.directory)
             await self.context.transport.run(("mkdir", "-p", "--", remote_directory))
-            request = await self._prepare_request(run_id, remote_directory, local)
-            if self._run_id is None:
-                request["id"] = None
+            request = await self._prepare_request(remote_directory, local)
             manifest = await self._submitted_manifest(request, local)
             return request, manifest
         except Exception as exc:
@@ -628,8 +620,7 @@ class RemoteFileSession:
                 self._streams = open_output_streams(self.spec)
             except Exception as exc:
                 raise SubmissionNotStarted(str(exc)) from exc
-        request["detached"] = self._run_id is not None
-        return request
+        return dict(request)
 
     @property
     def stream_paths(self):

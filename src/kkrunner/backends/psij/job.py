@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from threading import Event, Lock
 
-from kkrunner.files.availability import clear_declared_outputs, discover_local_files, validate_output_collisions
+from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.paths import file_path
 from kkrunner.runs.base import (
     ExecutionOutcome, ExecutionSpec, FailurePhase, OutputObservers, RunState,
@@ -103,7 +103,6 @@ class PsijJob:
         self._thread = None
         self._attached = attached
         self._submission_attempted = False
-        self._files = None
         self._cancel_future = None
         self._observed_state = None
         self._observation_stopped = Event()
@@ -195,25 +194,6 @@ class PsijJob:
     def failure_message(self):
         return self._failure_message
 
-    def set_manifest(self, files):
-        self._files = files
-
-    @property
-    def files(self):
-        return self._files
-
-    def _update_files(self):
-        if self._files is None:
-            return
-        self._files = discover_local_files(
-            self._files,
-            require_outputs=self._observed_state == RunState.FINISHED,
-        )
-        if self._observed_state == RunState.FINISHED and self._files.failed_artifacts:
-            self._observed_state = RunState.FAILED
-            self._failure_phase = FailurePhase.ARTIFACTS
-            self._failure_message = self._files.availability_message
-
     @property
     def backend_id(self):
         native_id = getattr(self._job, "native_id", None)
@@ -244,17 +224,21 @@ class PsijJob:
             _path(value, self.spec.directory)
             for value in (self.spec.input_file, self.spec.stdin, *self.spec.input_files, *self.spec.cache_files)
         ]
-        declared = [
-            *(_path(value, self.spec.directory) for value in self.spec.output_files),
-            self._stdout_path,
-            self._stderr_path,
-        ]
-        validate_output_collisions(declared, protected=protected)
         for stream in (self.spec.output_file, self.spec.error_file):
             if stream is not None and hasattr(stream, "flush"):
                 stream.flush()
         close_output_files(self.spec.output_file, self.spec.error_file)
-        clear_declared_outputs(declared, protected=protected)
+        prepare_target_outputs({
+            "input_file": protected[0],
+            "stdin": protected[1],
+            "input_files": protected[2:2 + len(self.spec.input_files)],
+            "output_file": self._stdout_path,
+            "error_file": self._stderr_path,
+            "client_sync": {
+                "output_files": [_path(value, self.spec.directory) for value in self.spec.output_files],
+                "cache_files": [{"path": path} for path in protected[2 + len(self.spec.input_files):]],
+            },
+        })
         for path in {self._stdout_path, self._stderr_path} - {None}:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"")
@@ -362,20 +346,13 @@ class PsijJob:
             )
         if read_error is not None and observed_state == RunState.FINISHED:
             self._observed_state = RunState.FAILED
-            self._failure_phase = FailurePhase.ARTIFACTS
+            self._failure_phase = FailurePhase.OUTPUT
             self._failure_message = str(read_error)
             return self.result
         if read_error is not None:
             # A failed or cancelled scheduler job remains terminal regardless
             # of whether its output stream could be read.
             return self.result
-        try:
-            self._update_files()
-        except OSError as exc:
-            if observed_state == RunState.FINISHED:
-                self._observed_state = RunState.FAILED
-                self._failure_phase = FailurePhase.ARTIFACTS
-                self._failure_message = str(exc)
         return self.result
 
     def _record_observation_error(self, exc):

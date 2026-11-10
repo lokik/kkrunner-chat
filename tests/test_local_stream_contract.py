@@ -95,18 +95,22 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
     assert runner.state == RunState.FAILED
     assert stopped == [pid]
 
-def test_direct_adapter_returns_verification_without_mutating_job(tmp_path):
-    import sys
-    from kkrunner.backends.process.direct.local import LocalProcessAdapter
-    adapter = LocalProcessAdapter()
+def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
+    from kkrunner import Run
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "print('ok')"),
         directory=str(tmp_path),
         output_files=("missing.output",),
     )
-    manifest = adapter.verify(spec)
-    assert manifest.failed_artifacts
-    assert manifest.availability_message
+    native = ProcessBackend().create_job(spec)
+    native.run()
+    assert native.state == RunState.FINISHED
+
+    run = Run.direct(ProcessBackend(), spec)
+    run.run()
+    assert run.state == RunState.FAILED
+    assert run.files.failed_artifacts
+    assert run.failure_phase.value == "artifacts"
 
 def test_local_direct_spec_retains_declared_paths_during_execution(tmp_path):
     from kkrunner import Run, ExecutionSpec

@@ -140,6 +140,12 @@ def test_direct_endpoint_round_trip_and_normalized_identity():
     restored = create_backend_from_endpoint(endpoint)
     assert isinstance(restored, SshDirectBackend)
     assert endpoint_for_backend(restored) == endpoint
+    configured = SshDirectBackend(
+        SshDirectTransport("user@example.net", python_command=("python3.12",))
+    )
+    normalized_python = endpoint_for_backend(configured)
+    assert normalized_python.python_command == ("python3.12",)
+    assert endpoint_for_backend(create_backend_from_endpoint(normalized_python)) == normalized_python
     normalized = ExecutionEndpoint(
         executor="ssh-direct", host="user@example.net",
         remote_command=("unrelated-agent",), psij_backend="slurm",
