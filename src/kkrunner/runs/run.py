@@ -279,7 +279,14 @@ class Run:
     def _start_completion(self):
         self._started = True
         self._thread = Thread(target=self._finish, daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:
+            # A monitor that never started cannot own completion or cleanup.
+            # The caller retains the accepted backend identity for recovery.
+            self._thread = None
+            self._started = False
+            raise
 
     def _observed_submission_state(self):
         """Persist execution progress, never a premature client completion.

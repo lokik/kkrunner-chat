@@ -272,6 +272,35 @@ def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch
     assert saved.execution.backend_id is None
 
 
+def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypatch):
+    from kkrunner import Run
+
+    class Backend:
+        name = "monitor-error"
+
+    class FailingThread:
+        def __init__(self, *, target, daemon):
+            pass
+
+        def start(self):
+            raise RuntimeError("client thread unavailable")
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    backend = Backend()
+    record = manager.new_record(directory=tmp_path)
+    manager.register_backend(backend, record.execution.endpoint)
+    run = Run(_ImmediatelyFinishedJob(), backend=backend, manager=manager, record=record)
+
+    monkeypatch.setattr("kkrunner.runs.run.Thread", FailingThread)
+    with pytest.raises(RuntimeError, match="client thread unavailable"):
+        run.submit()
+    assert not run._started
+    assert run._thread is None
+    saved = manager.store.get(run.id)
+    assert saved.state == RunState.UNKNOWN
+    assert saved.execution.backend_id == "native-1"
+
+
 def test_known_backend_identity_survives_failed_client_submission(tmp_path):
     from kkrunner import Run
 
