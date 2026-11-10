@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 
-from kkrunner.backends.handles import _decode_handle
+from kkrunner.remote.handles import decode_handle
 from kkrunner.files.availability import discover_local_files
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
 from .operations import status_remote
@@ -79,7 +79,7 @@ def attach_local(executor, run, *, callback=None, output_listener=None, start=Tr
     if run.execution.endpoint.executor != "local":
         raise ValueError("Run does not belong to the local backend")
     backend_id = run.execution.backend_id
-    if _decode_handle(backend_id).get("kind") != "process":
+    if decode_handle(backend_id).get("kind") != "process":
         raise ValueError("Local project does not have a supervisor handle")
     files = run.files
     spec = ExecutionSpec(

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from kkrunner.backends.handles import _decode_handle, _encode_handle
-from kkrunner.backends.replies import _status_reply
-from kkrunner.backends.specs import _request_spec
+from kkrunner.remote.handles import decode_handle, encode_handle
+from kkrunner.remote.messages import request_to_spec, status_reply
 from kkrunner.runs.base import FailurePhase, RunState
 from kkrunner.support.growing_file_tail import follow_job_files
 
@@ -18,7 +17,7 @@ def _psij_executor(options):
 
 def submit_remote(request):
     executor = _psij_executor(request.get("executor_options"))
-    spec = _request_spec(request)
+    spec = request_to_spec(request)
     runner = executor.create_job(spec, submission_key=request.get("id"))
     # PSI/J's _prepare_io() owns cleanup of its complete declared manifest.
     # Running a second cleanup here would duplicate it and risk wildcard caches.
@@ -26,7 +25,7 @@ def submit_remote(request):
     backend_id = runner.backend_id
     if backend_id is None:
         raise RuntimeError("PSI/J submission did not return a backend id")
-    remote_id = _encode_handle(
+    remote_id = encode_handle(
         {
             "kind": "psij",
             "backend": executor.backend,
@@ -48,23 +47,23 @@ def submit_remote(request):
 
 
 def status_remote(remote_id):
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
     if str(handle["backend"]).lower() == "slurm" and handle.get("url") is None:
         from kkrunner.backends.psij import slurm
-        status = slurm._slurm_status_native(handle["native_id"])
+        status = slurm.status_native(handle["native_id"])
     else:
         executor = _psij_executor(handle)
         status = executor.status_native(handle["native_id"])
-    return _status_reply(
+    return status_reply(
         status.state, status.return_code,
         failure_phase=status.failure_phase, error=status.message,
     )
 
 
 def cancel_remote(remote_id):
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
     executor = _psij_executor(handle)
@@ -89,7 +88,7 @@ def recover_remote(run_id, request, *, submitted_at=None):
     if facts is None:
         return None
     native_id = facts["native_id"]
-    remote_id = _encode_handle(
+    remote_id = encode_handle(
         {
             "kind": "psij",
             "backend": backend.backend,
@@ -111,9 +110,9 @@ def recover_remote(run_id, request, *, submitted_at=None):
 
 async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval):
     """Follow scheduler-owned files while PSI/J waits for terminal completion."""
-    from kkrunner.backends.psij.job import _psij_state
+    from kkrunner.backends.psij.job import psij_state
 
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     executor = _psij_executor(handle)
     job = executor.attach_native_job(handle["native_id"])
 
@@ -126,8 +125,8 @@ async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_inter
         if RunState(status["state"]).is_terminal:
             return status
         native = job.status
-        state = _psij_state(native)
-        return _status_reply(
+        state = psij_state(native)
+        return status_reply(
             state,
             getattr(native, "exit_code", None),
             failure_phase=(FailurePhase.EXECUTION if state == RunState.FAILED else None),
@@ -148,7 +147,7 @@ def follow_remote(
     poll_interval=0.1, stdout_path=None, stderr_path=None,
     observation_started=None,
 ):
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
     offsets = {"out": stdout_offset, "err": stderr_offset}

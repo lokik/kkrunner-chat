@@ -7,7 +7,7 @@ import pytest
 from kkrunner import RunState
 from kkrunner.backends import ProcessBackend
 from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
-from kkrunner.backends.handles import _encode_handle
+from kkrunner.remote.handles import encode_handle
 from kkrunner.backends.process.supervised import local as local_project
 from kkrunner.backends.process.supervised import operations as process_operations
 from kkrunner.client.endpoint import ExecutionEndpoint
@@ -17,7 +17,7 @@ from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
 def test_disappeared_local_process_is_unknown(monkeypatch):
     executor = ProcessBackend()
-    handle = _encode_handle({
+    handle = encode_handle({
         "kind": "process",
         "identity": {"pid": 12345, "start_time": 0, "time_basis": "linux-boot"},
         "receipt_id": "a" * 32,

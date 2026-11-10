@@ -1,36 +1,60 @@
 """Stateless agent adapter: transport protocol to backend operations.
 
 All execution, status, cancellation, recovery, follow and acknowledgements
-are delegated to the single backend registry.  No backend branching lives
-in this module.
+are delegated through the registry below. Backend-specific execution logic
+remains in the respective backend modules.
 """
 
-from kkrunner.backends.factory import backend_for_kind, backend_for_ref, backend_for_request
+from importlib import import_module
+
+from kkrunner.remote.handles import decode_handle
+
+
+_BACKENDS = {
+    "process": "kkrunner.backends.process.supervised.operations",
+    "psij": "kkrunner.backends.psij.agent",
+}
+
+
+def _backend_for_kind(kind):
+    try:
+        module = _BACKENDS[kind]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported backend: {kind!r}") from exc
+    return import_module(module)
+
+
+def _backend_for_request(request):
+    return _backend_for_kind(request.get("executor", "process"))
+
+
+def _backend_for_ref(ref):
+    return _backend_for_kind(decode_handle(ref)["kind"])
 
 
 def submit_remote(request):
-    return backend_for_request(request).submit_remote(request)
+    return _backend_for_request(request).submit_remote(request)
 
 
 def status_remote(remote_id):
-    return backend_for_ref(remote_id).status_remote(remote_id)
+    return _backend_for_ref(remote_id).status_remote(remote_id)
 
 
 def cancel_remote(remote_id):
-    return backend_for_ref(remote_id).cancel_remote(remote_id)
+    return _backend_for_ref(remote_id).cancel_remote(remote_id)
 
 
 def follow_remote(remote_id, stdout, stderr, **options):
-    return backend_for_ref(remote_id).follow_remote(remote_id, stdout, stderr, **options)
+    return _backend_for_ref(remote_id).follow_remote(remote_id, stdout, stderr, **options)
 
 
 def recover_remote(run_id, request, *, submitted_at=None):
-    return backend_for_request(request).recover_remote(run_id, request, submitted_at=submitted_at)
+    return _backend_for_request(request).recover_remote(run_id, request, submitted_at=submitted_at)
 
 
 def acknowledge_remote(remote_id):
-    return backend_for_ref(remote_id).acknowledge_remote(remote_id)
+    return _backend_for_ref(remote_id).acknowledge_remote(remote_id)
 
 
 def acknowledge_submission(backend, run_id):
-    return backend_for_kind(backend).acknowledge_submission(run_id)
+    return _backend_for_kind(backend).acknowledge_submission(run_id)

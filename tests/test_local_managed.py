@@ -13,9 +13,10 @@ from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.backends.process.supervised.local import local_manifest
-from kkrunner.backends.handles import _decode_handle, _encode_handle
+from kkrunner.backends.process.supervised.mailbox import recover_submission
+from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.backends.process.supervised.operations import (
-    _process_running, _recover_submission, acknowledge_submission, status_remote,
+    _process_running, acknowledge_submission, status_remote,
 )
 from kkrunner.runs.base import FailurePhase, RunStatus
 
@@ -65,18 +66,18 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     runner = executor.create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     handle = runner.backend_id
-    assert _decode_handle(handle)["kind"] == "process"
-    assert _recover_submission(RUN_ID)["remote_id"] == handle
+    assert decode_handle(handle)["kind"] == "process"
+    assert recover_submission(RUN_ID)["remote_id"] == handle
     assert runner.wait().return_code == 0
     assert runner.state == RunState.FINISHED
     assert not _process_running(
-        {**_decode_handle(handle), "identity": {"pid": 1, "start_time": 0, "time_basis": "epoch"}}
+        {**decode_handle(handle), "identity": {"pid": 1, "start_time": 0, "time_basis": "epoch"}}
     )
     assert (tmp_path / "out.txt").read_text() == "output\n"
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     assert executor.recover_submission(RUN_ID, _attachment(_record(tmp_path, None))).ref.token == handle
     executor.acknowledge_submission(_record(tmp_path, handle))
-    assert _recover_submission(RUN_ID) is None
+    assert recover_submission(RUN_ID) is None
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     seen = []
     attached = executor.open_job(
@@ -130,7 +131,7 @@ def test_missing_ticket_keeps_submission_uncertain(tmp_path):
 
 
 def test_missing_supervisor_outcome_is_unknown(tmp_path):
-    handle = _encode_handle(
+    handle = encode_handle(
         {
             "kind": "process",
             "identity": {"pid": 9999999, "start_time": 0, "time_basis": "linux-boot"},
@@ -205,7 +206,7 @@ def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch
     assert runner.backend_id is None
     assert runner.state == RunState.FAILED
     assert runner.failure_phase == FailurePhase.SUBMISSION
-    assert not _recover_submission(RUN_ID)
+    assert not recover_submission(RUN_ID)
 
 
 def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
@@ -259,7 +260,7 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
     from kkrunner.backends.process.supervised.operations import _clean_request_outputs
-    from kkrunner.backends.specs import _request_spec
+    from kkrunner.remote.messages import request_to_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
         (tmp_path / name).write_text(name)
@@ -272,7 +273,7 @@ def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
         "cache_files": ["cache.dat"],
         "client_sync": {"cache_files": [{"path": "sync-cache.dat", "before": None}]},
     }
-    spec = _request_spec(request)
+    spec = request_to_spec(request)
     _clean_request_outputs(spec, tmp_path)
     assert not (tmp_path / "stale.dat").exists()
     for name in ("input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
@@ -281,7 +282,7 @@ def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
 
 def test_local_project_request_uses_common_command_fields(tmp_path):
     from kkrunner.runs import LaunchSpec
-    from kkrunner.backends.specs import _request_spec
+    from kkrunner.remote.messages import request_to_spec
 
     spec = replace(
         _spec(tmp_path), mpi_argv=("mpi-program", "input.inp"), mpi_uses_stdin=False, launch=LaunchSpec.from_mpi(3)
@@ -289,7 +290,7 @@ def test_local_project_request_uses_common_command_fields(tmp_path):
     request = ProcessBackend().create_job(spec, submission_key=RUN_ID)._request()
     for key, value in spec.command_request().items():
         assert request[key] == value
-    reconstructed = _request_spec(request)
+    reconstructed = request_to_spec(request)
     assert reconstructed.mpi_uses_stdin is False
     assert reconstructed.mpi_argv == spec.mpi_argv
 
@@ -326,7 +327,7 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     assert runner.backend_id is None
     assert existing.read_text() == "restart cache"
     assert extra.read_text() == "old output"
-    assert _recover_submission(RUN_ID) is None
+    assert recover_submission(RUN_ID) is None
 
 
 def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(tmp_path):

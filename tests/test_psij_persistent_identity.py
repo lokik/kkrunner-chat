@@ -51,7 +51,7 @@ def test_project_job_carries_kkrunner_identity(monkeypatch, tmp_path, backend):
     assert job_spec.environment == {"KKRunner_RUN_ID": "run-123"}
     if backend == "slurm":
         assert job_spec.attributes.custom_attributes == {
-            "slurm.comment": psij_slurm._submission_marker("run-123")
+            "slurm.comment": psij_slurm.submission_marker("run-123")
         }
     else:
         assert job_spec.attributes is None

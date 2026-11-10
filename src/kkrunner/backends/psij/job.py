@@ -35,7 +35,7 @@ _STATE_MAP = {
 
 
 
-def _psij_state(status, *, attached=False, return_code=None):
+def psij_state(status, *, attached=False, return_code=None):
     """Interpret native PSI/J job facts consistently across all observers.
 
     A newly attached job reports NEW before PSI/J has received its real
@@ -135,7 +135,7 @@ class PsijJob:
         environment = {"KKRunner_RUN_ID": self._run_id}
         attributes = None
         if self.executor.backend.lower() == "slurm":
-            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": slurm._submission_marker(self._run_id)})
+            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": slurm.submission_marker(self._run_id)})
         return environment, attributes
 
     def _create_job(self):
@@ -172,7 +172,7 @@ class PsijJob:
             # A submission error may have occurred after scheduler acceptance.
             # PSI/J's still-NEW native status is not proof of non-submission.
             return RunState.UNKNOWN
-        return _psij_state(self._job.status, attached=self._attached, return_code=self.return_code)
+        return psij_state(self._job.status, attached=self._attached, return_code=self.return_code)
 
     @property
     def exception(self):
@@ -287,7 +287,7 @@ class PsijJob:
         def receive(status):
             if self._observation_stopped.is_set():
                 return
-            if _psij_state(status) not in (
+            if psij_state(status) not in (
                 RunState.FINISHED,
                 RunState.FAILED,
                 RunState.CANCELLED,
@@ -333,7 +333,7 @@ class PsijJob:
         if status is _OBSERVATION_STOPPED:
             status = None
 
-        observed_state = _psij_state(status) if status is not None else RunState.UNKNOWN
+        observed_state = psij_state(status) if status is not None else RunState.UNKNOWN
         if observed_state not in (
             RunState.FINISHED,
             RunState.FAILED,

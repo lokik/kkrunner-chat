@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from collections import OrderedDict
 from datetime import timedelta
 from threading import RLock
@@ -12,7 +11,7 @@ from kkrunner.files.manifest import FileManifest
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
 
 from . import slurm
-from .job import PsijJob, _psij_state
+from .job import PsijJob, psij_state
 
 _log = logging.getLogger(__name__)
 
@@ -155,7 +154,7 @@ class PsijBackend:
                 if (
                     native_id is not None
                     and self._jobs.get(str(native_id)) is job
-                    and _psij_state(job.status)
+                    and psij_state(job.status)
                     in (
                         RunState.FINISHED,
                         RunState.FAILED,
@@ -177,11 +176,11 @@ class PsijBackend:
         """Return the currently known native job status without waiting."""
         native_id = str(native_id)
         if self.backend.lower() == "slurm" and self.url is None:
-            return slurm._slurm_status_native(native_id)
+            return slurm.status_native(native_id)
 
         job = self.attach_native_job(native_id)
         status = getattr(job, "status", None)
-        state = _psij_state(status, attached=True)
+        state = psij_state(status, attached=True)
         return_code = getattr(status, "exit_code", None)
         if state in (RunState.FINISHED, RunState.FAILED, RunState.CANCELLED):
             with self._jobs_lock:
@@ -224,54 +223,7 @@ class PsijBackend:
                 f"PSI/J backend {self.backend!r} at {self.url!r} cannot "
                 "recover uncertain submissions using local Slurm commands"
             )
-        matches = slurm._slurm_current_matches(run_id)
-        if len(matches) > 1:
-            raise RuntimeError(f"Multiple live Slurm jobs carry KKRunner run id {run_id!r}")
-        if matches:
-            native_id, state, workdir = matches[0]
-            try:
-                details = slurm._slurm_details(native_id)
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                # The job may have finished between squeue and scontrol.
-                # Recover its terminal facts from accounting instead.
-                details = None
-            if details:
-                return {
-                    "native_id": str(native_id),
-                    "state": slurm._slurm_state(state),
-                    "directory": details.get("WorkDir") or workdir or directory,
-                    "stdout": details.get("StdOut"),
-                    "stderr": details.get("StdErr"),
-                    "return_code": None,
-                }
-
-        if submitted_at is None or not slurm._slurm_accounting_stores_comments():
-            raise NotImplementedError(
-                "Slurm cannot safely determine whether this submission already "
-                "finished because job comments are unavailable in accounting"
-            )
-        accounting = slurm._slurm_accounting_matches(run_id, submitted_at)
-        if len(accounting) > 1:
-            raise RuntimeError(f"Multiple Slurm accounting records carry KKRunner run id {run_id!r}")
-        if not accounting:
-            # An empty sacct result is not authoritative negative evidence:
-            # Slurm accounting can lag behind the scheduler. Do not release
-            # the client's SUBMITTING reservation and risk a duplicate job.
-            raise NotImplementedError(
-                "Slurm has no matching job in squeue or accounting yet; submission acceptance is still uncertain"
-            )
-        native_id, state, workdir, stdout, stderr, return_code = accounting[0]
-        recovered_state = slurm._slurm_state(state)
-        if recovered_state == RunState.FINISHED and return_code not in (None, 0):
-            recovered_state = RunState.FAILED
-        return {
-            "native_id": str(native_id),
-            "state": recovered_state,
-            "directory": workdir or directory,
-            "stdout": stdout,
-            "stderr": stderr,
-            "return_code": return_code,
-        }
+        return slurm.recover_native(run_id, directory, submitted_at=submitted_at)
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         facts = self.recover_native(

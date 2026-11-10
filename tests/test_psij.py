@@ -290,7 +290,7 @@ def test_psij_merged_output_is_followed_once(monkeypatch, tmp_path):
 )
 def test_native_psij_state_normalization(native_name, return_code, attached, expected):
     native = None if native_name is None else _Status(native_name, return_code)
-    assert psij_backend._psij_state(native, attached=attached) == expected
+    assert psij_backend.psij_state(native, attached=attached) == expected
 
 
 def test_psij_runner_prefers_observed_return_code_over_cached_job_status(monkeypatch, tmp_path):
@@ -663,7 +663,7 @@ def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):
     def scheduler_output(argv):
         calls.append(tuple(argv))
         if argv[0] == "squeue":
-            return f"123|{psij_slurm._submission_marker('run-1')}|RUNNING|{tmp_path}\n"
+            return f"123|{psij_slurm.submission_marker('run-1')}|RUNNING|{tmp_path}\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             return f"JobId=123 WorkDir={tmp_path} StdOut={tmp_path / 'run.out'} StdErr={tmp_path / 'run.err'}\n"
         raise AssertionError(argv)
@@ -698,7 +698,7 @@ def test_psij_recovers_completed_slurm_submission_from_accounting(
                 if use_workdir_paths
                 else ("/tmp", "out", "err")
             )
-            return f"456|{psij_slurm._submission_marker('run-2')}|COMPLETED|{directory}|{stdout}|{stderr}|{exit_code}:0|\n"
+            return f"456|{psij_slurm.submission_marker('run-2')}|COMPLETED|{directory}|{stdout}|{stderr}|{exit_code}:0|\n"
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
@@ -750,13 +750,13 @@ def test_psij_recovery_handles_job_disappearing_between_queries(monkeypatch, tmp
 
     def scheduler_output(argv):
         if argv[0] == "squeue":
-            return f"123|{psij_slurm._submission_marker('run-race')}|RUNNING|{tmp_path}\n"
+            return f"123|{psij_slurm.submission_marker('run-race')}|RUNNING|{tmp_path}\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             raise subprocess.CalledProcessError(1, argv)
         if argv[:3] == ("scontrol", "show", "config"):
             return "AccountingStoreFlags = job_comment\n"
         if argv[0] == "sacct":
-            return f"123|{psij_slurm._submission_marker('run-race')}|COMPLETED|{tmp_path}|{tmp_path / 'run.out'}|{tmp_path / 'run.err'}|0:0|\n"
+            return f"123|{psij_slurm.submission_marker('run-race')}|COMPLETED|{tmp_path}|{tmp_path / 'run.out'}|{tmp_path / 'run.err'}|0:0|\n"
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
@@ -772,8 +772,8 @@ def test_psij_recovery_rejects_ambiguous_live_jobs(monkeypatch, tmp_path):
         psij_slurm,
         "_scheduler_output",
         lambda argv: (
-            f"123|{psij_slurm._submission_marker('duplicate')}|RUNNING|/one\n"
-            f"124|{psij_slurm._submission_marker('duplicate')}|PENDING|/two\n"
+            f"123|{psij_slurm.submission_marker('duplicate')}|RUNNING|/one\n"
+            f"124|{psij_slurm.submission_marker('duplicate')}|PENDING|/two\n"
         ),
     )
     with pytest.raises(RuntimeError, match="Multiple live Slurm jobs"):

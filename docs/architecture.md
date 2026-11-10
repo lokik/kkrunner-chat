@@ -181,7 +181,10 @@ Within the PSI/J backend, `backends.psij.job` owns a live job's submission
 and observation, `backends.psij.backend` owns the reusable executor,
 native job cache and callback subscriptions, and `backends.psij.slurm`
 contains Slurm-native status/accounting queries without loading PSI/J.
-Target-side control dispatch for PSI/J lives in `backends.psij.agent`;
+Stateless target dispatch and its backend registry live in `remote.service`;
+`remote.handles` and `remote.messages` own protocol identity and payload
+conversion. The process mailbox owns submission tickets and terminal receipts.
+Target-side PSI/J operations live in `backends.psij.agent`;
 it does not own a client `RunRecord` or file synchronization.
 
 `files` and `support` do not import the run lifecycle, projects, backends or
