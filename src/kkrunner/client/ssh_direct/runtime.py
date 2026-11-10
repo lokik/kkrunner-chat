@@ -37,8 +37,9 @@ class SshProcessAdapter:
 
     async def launch(self, spec):
         request, self._request = self._request, None
+        python_command = getattr(self.context.transport, "python_command", ("python3",))
         return await self.context.transport.start(
-            ("python3", "-u", "-c", WORKER_SOURCE, json.dumps(request)),
+            (*python_command, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
             stdin=asyncio.subprocess.PIPE,
         )
 
@@ -86,10 +87,6 @@ class SshProcessAdapter:
         if self._cancel_unconfirmed:
             return (RunState.UNKNOWN, None, "Unable to confirm target cancellation over SSH")
         return None
-
-    def verify(self, spec):
-        # RemoteFileSession synchronizes declared files after a terminal Job.
-        pass
 
     def close(self, process):
         if process is not None and process.stdin is not None and not process.stdin.is_closing():

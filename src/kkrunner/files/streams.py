@@ -11,6 +11,37 @@ from typing import Any
 from kkrunner.files.paths import file_path
 
 
+def _close_distinct(resources, *, suppress_errors=False):
+    """Close each distinct resource once; keep closing after an error."""
+    seen = set()
+    first_error = None
+    for resource in resources:
+        if resource is None or id(resource) in seen:
+            continue
+        seen.add(id(resource))
+        close = getattr(resource, "close", None)
+        if close is None or getattr(resource, "closed", False):
+            continue
+        try:
+            close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None and not suppress_errors:
+        raise first_error
+
+
+def close_output_files(*files):
+    """Close distinct output handles, including merged stdout/stderr.
+
+    Paths and absent streams need no closing. An error must not leave another
+    open output handle behind; propagate the first error after cleanup.
+    """
+    _close_distinct(files)
+
+
+
+
 @dataclass(frozen=True)
 class OutputStreams:
     """Live output handles acquired by a Job adapter or file session."""
@@ -19,8 +50,6 @@ class OutputStreams:
     error_file: Any = None
 
     def close(self):
-        from kkrunner.runs.base import close_output_files
-
         close_output_files(self.output_file, self.error_file)
 
 

@@ -26,6 +26,7 @@ class Run:
     def __init__(
         self, job, *, backend=None, manager=None, record=None,
         process_result=None, callback=None, file_session=None, parts=None,
+        local_files=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
@@ -35,6 +36,10 @@ class Run:
         self._parts = parts if parts is not None else RunParts(job, file_session)
         self._job = self._parts.job
         self._file_session = self._parts.files
+        self._local_files = (
+            None if self._file_session is not None else
+            record.files if record is not None else local_files
+        )
         self.backend = backend
         self.manager = manager
         self._record = record
@@ -62,8 +67,11 @@ class Run:
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
-        parts = backend.create_run_parts(spec)
-        return cls(parts.job, backend=backend, parts=parts,
+        from kkrunner.client.run_parts import run_endpoint_for_backend
+        parts = run_endpoint_for_backend(backend).create_run_parts(spec)
+        from kkrunner.files.manifest import FileManifest
+        local_files = None if parts.files is not None or not isinstance(spec, ExecutionSpec) else FileManifest.from_spec(spec)
+        return cls(parts.job, backend=backend, parts=parts, local_files=local_files,
                    process_result=process_result, callback=callback)
 
     @property
@@ -97,7 +105,7 @@ class Run:
     def files(self):
         if self._file_session is not None:
             return self._file_session.files
-        return getattr(self._job, "files", None)
+        return self._local_files
 
     @property
     def exception(self):
@@ -197,6 +205,24 @@ class Run:
                 return
             if raw_state != RunState.FINISHED:
                 raise RuntimeError(f"Backend observer completed in unexpected state {raw_state.value}")
+
+            # A Job finishes once its process ends. The client then verifies
+            # application artifacts, after native output streams were closed.
+            if self._local_files is not None:
+                from kkrunner.files.availability import discover_local_files
+                try:
+                    self._local_files = discover_local_files(self._local_files)
+                except OSError as exc:
+                    self._exception = exc
+                    self._state = RunState.FAILED
+                    self._failure_phase = FailurePhase.ARTIFACTS
+                    self._failure_message = str(exc)
+                    return
+                if self._local_files.failed_artifacts:
+                    self._state = RunState.FAILED
+                    self._failure_phase = FailurePhase.ARTIFACTS
+                    self._failure_message = self._local_files.availability_message
+                    return
 
             self._processing = True
             try:
@@ -436,9 +462,8 @@ class Run:
             start()
         elif self._job.state == RunState.NEW:
             self._job.submit()
-        # A backend observer may already own the open file session before the
-        # Run's completion monitor is started. The attachment must not abort it.
-        self._parts.claim()
+        # Completion claims the file session only after its observer started.
+        # A failed monitor start must leave abort() able to close the streams.
         self._start_completion()
         if self.manager is None:
             return

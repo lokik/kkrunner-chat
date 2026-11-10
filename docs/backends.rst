@@ -29,9 +29,11 @@ Direct SSH execution
 ``kkrunner-agent`` or supervisor runs on the target; a minimal one-shot
 Python worker provides separate live stdout/stderr, cancellation and target-side
 file writing. File staging and synchronization still use ``RemoteFileSession``.
-Both directions of transfer use SSH and Python stdlib metadata queries. The
-same ``ProcessJob`` handles direct local and direct SSH process lifecycles;
-only the launch/stop/output adapter differs.
+Both directions of transfer use SSH; agentless file metadata queries and
+atomic upload publication execute source-transferred, stdlib-only Python functions.
+The same ``ProcessJob`` handles direct local and direct SSH process lifecycles;
+only the launch/stop/output adapter differs. The target Python command can be
+configured with ``SshDirectTransport(python_command=("python3.12",))``.
 
 .. code-block:: python
 
@@ -156,10 +158,16 @@ does not supply MPI libraries or repair a binary's runtime linkage.
 Architecture boundary
 ---------------------
 
-Execution endpoints create a RunParts session containing one raw Job
-and, when necessary, a file session. The latter prepares and synchronizes
-files, and the former owns process/scheduler execution. The Run owns
-client-side completion, and the RunManager persists its result.
+The native ``Backend`` contract creates or opens a ``Job`` and does not
+import client-side sessions. A client ``RunEndpoint`` composes the Job with a
+file session as ``RunParts``. Native process and PSI/J backends are adapted by
+``NativeRunEndpoint``; remote proxies compose their own sessions.
+
+The file session prepares mapped paths and a manifest, but does not decide
+which executor runs or whether the submission is detached. The endpoint builds
+the backend request and selects durability policy. ``Run`` owns completion,
+synchronization and application artifact verification; ``RunManager`` persists
+durable state and history.
 
 Backend status queries report backend facts only. A remote backend reporting
 finished does not itself imply the client Run is complete: RunManager
@@ -167,10 +175,16 @@ maps it to downloading until the Run synchronizes output and finishes
 optional postprocessing.
 
 Direct local and direct SSH processes share the same ProcessJob lifecycle.
-Their adapters receive command specifications and processes and return
-verification/transport observations, rather than mutating the Job's internal
-state. RunParts owns the transfer-resource handoff to the Run completion
-observer, including failed attachment cleanup.
+Their adapters receive command specifications and processes and report transport
+observations; required application output verification belongs to the client,
+not to a native Job. The host-side MPI launcher decision and safe deletion of
+stale output files are shared with supervised and PSI/J launch paths.
+SSH-direct transfers these independent native functions as source when no
+KKRunner is installed on the target.
+
+``RunParts`` owns the transfer-resource handoff to the Run completion observer,
+including failed attachment cleanup. Supervised execution retains its installed
+KKRunner agent and detached supervisor for receipts and recovery.
 
 Runtime ownership and immutable declarations
 -------------------------------------------

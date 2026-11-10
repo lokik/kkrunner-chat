@@ -63,10 +63,10 @@ def test_launch_spec_json_round_trip_uses_nested_mpi_spec():
 def test_auto_disables_mpi_when_only_one_cpu_is_available(monkeypatch):
     monkeypatch.setattr(mpi_runtime.os, "sched_getaffinity", lambda _pid: {3})
 
-    def must_not_probe():
+    def must_not_probe(_command):
         raise AssertionError("single-CPU auto mode must not probe MPI launchers")
 
-    monkeypatch.setattr(mpi_runtime, "find_default_mpi_launcher", must_not_probe)
+    monkeypatch.setattr(__import__("shutil"), "which", must_not_probe)
     spec = LaunchSpec.from_mpi("auto").mpi
     assert mpi_runtime.resolve_mpi_command(spec) is None
 
@@ -77,24 +77,26 @@ def test_auto_mpi_probes_host_when_cpu_count_is_not_one(monkeypatch, affinity):
         monkeypatch.delattr(mpi_runtime.os, "sched_getaffinity", raising=False)
     else:
         monkeypatch.setattr(mpi_runtime.os, "sched_getaffinity", lambda _pid: affinity)
-    monkeypatch.setattr(mpi_runtime, "find_default_mpi_launcher", lambda: ("mpirun",))
+    monkeypatch.setattr(__import__("shutil"), "which", lambda command: "/bin/mpirun" if command == "mpirun" else None)
     spec = LaunchSpec.from_mpi("auto").mpi
     assert mpi_runtime.resolve_mpi_command(spec) == ("mpirun",)
 
 
 def test_explicit_mpi_command_does_not_probe_host(monkeypatch):
 
-    def must_not_probe():
+    def must_not_probe(_command):
         raise AssertionError("explicit MPI command must not probe the host")
 
-    monkeypatch.setattr(mpi_runtime, "find_default_mpi_launcher", must_not_probe)
+    monkeypatch.setattr(__import__("shutil"), "which", must_not_probe)
     spec = LaunchSpec.from_mpi(("custom-mpi", "--bind")).mpi
     assert mpi_runtime.resolve_mpi_command(spec) == ("custom-mpi", "--bind")
 
 
 @pytest.mark.parametrize(("launcher", "count_option"), (("mpirun", "-np"), ("srun", "-n")))
 def test_process_count_is_materialized_for_launcher(monkeypatch, launcher, count_option):
-    monkeypatch.setattr(mpi_runtime, "find_default_mpi_launcher", lambda: (launcher,))
+    monkeypatch.setattr(__import__("shutil"), "which", lambda command: "/bin/" + command if command == launcher else None)
+    if launcher == "srun":
+        monkeypatch.setenv("SLURM_NODELIST", "node1")
     spec = LaunchSpec.from_mpi(4).mpi
     assert mpi_runtime.resolve_mpi_command(spec) == (launcher, count_option, "4")
 
@@ -113,7 +115,8 @@ def test_mpi_process_count_is_portable_launch_intent():
 
 
 def test_local_executor_materializes_mpi_on_execution_host(monkeypatch, tmp_path):
-    monkeypatch.setattr("kkrunner.backends.mpi.find_default_mpi_launcher", lambda: ("srun",))
+    monkeypatch.setenv("SLURM_NODELIST", "node")
+    monkeypatch.setattr(mpi_runtime.shutil, "which", lambda name: "/bin/srun" if name == "srun" else None)
     input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
         argv=("serial-program",),
@@ -131,7 +134,7 @@ def test_local_executor_materializes_mpi_on_execution_host(monkeypatch, tmp_path
 
 
 def test_required_local_mpi_without_launcher_fails(monkeypatch, tmp_path):
-    monkeypatch.setattr("kkrunner.backends.mpi.find_default_mpi_launcher", lambda: None)
+    monkeypatch.setattr(mpi_runtime.shutil, "which", lambda name: None)
     input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
         argv=("serial-program",),

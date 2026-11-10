@@ -8,7 +8,6 @@ from collections import OrderedDict
 from datetime import timedelta
 from threading import RLock
 
-from kkrunner.files.manifest import FileManifest
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
 
 from . import slurm
@@ -62,21 +61,9 @@ class PsijBackend:
         self._jobs_lock = RLock()
         self._max_idle_jobs = 64
 
-    def create_run_parts(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
-        from kkrunner.client.run_parts import RunParts
-        return RunParts(self.create_job(spec, submission_key=submission_key, callback=callback))
-
-    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-        from kkrunner.client.run_parts import RunParts
-        return RunParts(self.open_job(
-            attachment, callback=callback, output_listener=output_listener, start=False,
-        ))
-
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
-        job = PsijJob(self, spec, callback=callback, run_id=submission_key)
-        job.set_manifest(FileManifest.from_spec(spec))
-        return job
+        return PsijJob(self, spec, callback=callback, run_id=submission_key)
 
     def status(self, *runs):
         from kkrunner.client.endpoint import endpoint_for_backend
@@ -316,7 +303,6 @@ class PsijBackend:
             job=job,
             attached=True,
         )
-        runner.set_manifest(run.files)
         if start:
             runner.start()
         return runner
