@@ -1,46 +1,49 @@
-"""Local ProcessBackend facade over direct and supervised process Jobs.
+"""Direct and supervisor-backed local process backends.
 
-The direct ProcessJob is transport-neutral: direct local and direct SSH
-share its lifecycle, with distinct launch/output adapters. Managed process
-jobs use a separate durable supervisor and reconnectable lifecycle.
+Execution mode is determined by the backend type, never inferred from the
+presence of a client persistence/submission identifier.
 """
 
 from __future__ import annotations
 
+from kkrunner.backends.contracts import UnsupportedCapability
 from kkrunner.runs.base import ExecutionSpec
 
 
 class ProcessBackend:
-    """Select direct-local or reconnectable supervisor-backed process Jobs.
-
-    The presence of a client submission key requests a durable supervised
-    execution. Transport-specific direct Jobs (such as a future SSH-direct
-    Job) should implement the shared Job/RunParts contract independently,
-    rather than forwarding through the supervisor operations.
-    """
+    """Direct local process backend; not durable or reopenable."""
 
     name = "process"
     supports_result_file_retrieval = False
+    supports_tracked_runs = False
+
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        if submission_key is not None:
+            raise UnsupportedCapability(
+                "Direct local jobs cannot be tracked; use SupervisedProcessBackend"
+            )
+        spec.require_complete()
+        from kkrunner.backends.process.direct.job import ProcessJob
+        return ProcessJob(spec, callback=callback)
+
+
+class SupervisedProcessBackend(ProcessBackend):
+    """Reconnectable local execution using the durable process supervisor."""
+
+    supports_tracked_runs = True
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
-        if submission_key is None:
-            from kkrunner.backends.process.direct.job import ProcessJob
-            return ProcessJob(spec, callback=callback)
+        if not submission_key:
+            raise ValueError("Supervised execution requires a submission key")
         from kkrunner.backends.process.supervised.job import SupervisedProcessJob
-        return SupervisedProcessJob(
-            self, spec, run_id=submission_key, callback=callback,
-        )
+        return SupervisedProcessJob(self, spec, run_id=submission_key, callback=callback)
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         from kkrunner.backends.process.supervised.operations import recover_remote
-
         reply = recover_remote(
             run_id,
-            {
-                "executor": "process",
-                "directory": submission.execution.directory.local,
-            },
+            {"executor": "process", "directory": submission.execution.directory.local},
         )
         from kkrunner.backends.contracts import JobRef, RecoveryResult
         if reply is None:
@@ -54,31 +57,23 @@ class ProcessBackend:
 
     def open_job(self, run, callback=None, output_listener=None, start=True):
         from kkrunner.backends.process.supervised.local import attach_local
-
         return attach_local(
-            self,
-            run,
-            callback=callback,
-            output_listener=output_listener,
-            start=start,
+            self, run, callback=callback, output_listener=output_listener, start=start,
         )
 
     def acknowledge_submission(self, run):
         from kkrunner.backends.process.supervised.operations import acknowledge_submission
-
         acknowledge_submission(run.id)
 
     def acknowledge(self, run):
         from kkrunner.backends.process.supervised.operations import acknowledge_remote
-
         acknowledge_remote(run.execution.backend_id)
 
     def status(self, *runs):
         from kkrunner.backends.process.supervised.local import local_status
-
         statuses = []
         for run in runs:
-            if run.execution.endpoint.executor != "local":
-                raise ValueError("Run does not belong to the local backend")
+            if run.execution.endpoint.executor != "local-supervised":
+                raise ValueError("Run does not belong to the supervised local backend")
             statuses.append(local_status(run.execution.backend_id, run.files))
         return tuple(statuses)

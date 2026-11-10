@@ -76,7 +76,7 @@ def local_status(backend_id, files=None):
 
 def attach_local(executor, run, *, callback=None, output_listener=None, start=True):
     from .job import SupervisedProcessJob
-    if run.execution.endpoint.executor != "local":
+    if run.execution.endpoint.executor != "local-supervised":
         raise ValueError("Run does not belong to the local backend")
     backend_id = run.execution.backend_id
     if decode_handle(backend_id).get("kind") != "process":

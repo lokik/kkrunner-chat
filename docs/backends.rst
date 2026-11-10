@@ -9,8 +9,11 @@ Choose an execution backend
      - Use
      - Requirements and limits
    * - ``ProcessBackend``
-     - A command on the client machine
-     - Raw subprocesses have no reconnect guarantee; managed runs require POSIX process groups and Unix sockets.
+     - A direct subprocess on the client machine
+     - No durable handle or reattachment.
+   * - ``SupervisedProcessBackend``
+     - A reconnectable process on the client machine
+     - POSIX process groups and Unix sockets, plus retained supervisor receipts.
    * - ``PsijBackend``
      - A scheduler visible from the client
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
@@ -61,9 +64,10 @@ an uncertain connection loss, or stored as a managed run. An SSH failure (exit
 Local and scheduler execution
 -------------------------------
 
-Use ``Run.direct(ProcessBackend(), spec)`` for an untracked run, or pass the backend
-to ``RunManager.create_run`` for durable supervision. The same manager interface
-accepts a scheduler executor:
+Use ``Run.direct(ProcessBackend(), spec)`` for an untracked run. Use
+``RunManager.create_run(SupervisedProcessBackend(), spec)`` for durable local
+supervision; the execution mode does not depend on whether a submission key
+was supplied. The same manager interface accepts a scheduler executor:
 
 .. code-block:: python
 

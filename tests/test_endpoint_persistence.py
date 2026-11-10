@@ -5,7 +5,7 @@ from threading import Event
 from kkrunner import RunState, RunStore
 from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
 from kkrunner.client.pool import BackendPool
-from kkrunner.backends import ProcessBackend
+from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.backends.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client import AgentBackendProxy, SshTransport
@@ -30,7 +30,7 @@ def test_run_store_roundtrips_endpoint(tmp_path):
 
 def test_manager_reconstructs_local_executor_after_restart(tmp_path):
     store = RunStore(tmp_path / "runs")
-    endpoint = ExecutionEndpoint()
+    endpoint = ExecutionEndpoint(executor="local-supervised")
     first = RunManager(store, backend_pool=BackendPool())
     record = first.new_record(
         directory=tmp_path,
@@ -41,7 +41,7 @@ def test_manager_reconstructs_local_executor_after_restart(tmp_path):
     store.save(record)
     restarted = RunManager(store, backend_pool=BackendPool())
     executor = restarted.backend_for(store.get(record.id))
-    assert isinstance(executor, ProcessBackend)
+    assert isinstance(executor, SupervisedProcessBackend)
 
 
 def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):

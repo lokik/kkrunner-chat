@@ -55,7 +55,7 @@ class ExecutionEndpoint:
 
         # Identity describes the backend actually constructed below. Irrelevant
         # profile fields must not split its pool key or collision namespace.
-        if self.executor in ("local", "psij"):
+        if self.executor in ("local", "local-supervised", "psij"):
             for name, value in (
                 ("host", None),
                 ("ssh_options", ()),
@@ -64,7 +64,7 @@ class ExecutionEndpoint:
                 ("ssh_zstd", False),
             ):
                 object.__setattr__(self, name, value)
-        if self.executor == "local":
+        if self.executor in ("local", "local-supervised"):
             object.__setattr__(self, "psij_backend", None)
             object.__setattr__(self, "psij_url", None)
         elif self.executor == "psij":
@@ -85,12 +85,14 @@ class ExecutionEndpoint:
 
 def endpoint_for_backend(executor) -> ExecutionEndpoint:
     """Describe a live executor without persisting launch/staging policy."""
-    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
     from kkrunner.client.agent import AgentBackendProxy
     from kkrunner.client.ssh_direct import SshDirectBackend, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
+    if isinstance(executor, SupervisedProcessBackend):
+        return ExecutionEndpoint(executor="local-supervised")
     if isinstance(executor, ProcessBackend):
         return ExecutionEndpoint()
     if isinstance(executor, PsijBackend):
@@ -174,6 +176,8 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
 
     if endpoint.executor == "local":
         return ProcessBackend()
+    if endpoint.executor == "local-supervised":
+        return SupervisedProcessBackend()
     if endpoint.executor == "psij":
         return PsijBackend(
             endpoint.psij_backend or "slurm",

@@ -11,7 +11,7 @@ from pathlib import Path
 import kkrunner
 from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.runs import LaunchSpec
-from kkrunner.backends import ProcessBackend
+from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
 from kkrunner.client import LocalTransport, AgentBackendProxy
 from kkrunner.projects import ProjectExecutionManager, ProjectRepository
 
@@ -39,7 +39,7 @@ projects = ProjectRepository(root / "projects")
 project = projects.create("Wheel review", directory=root)
 manager = ProjectExecutionManager(project_repository=projects, project=project)
 run = manager.create_run(
-    ProcessBackend(),
+    SupervisedProcessBackend(),
     ExecutionSpec(
         [sys.executable, "-c", "print(43)"],
         directory=root,

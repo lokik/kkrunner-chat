@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import RunState
-from kkrunner.backends import ProcessBackend
+from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.remote.handles import encode_handle
 from kkrunner.backends.process.supervised import local as local_project
@@ -16,7 +16,7 @@ from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
 
 def test_disappeared_local_process_is_unknown(monkeypatch):
-    executor = ProcessBackend()
+    executor = SupervisedProcessBackend()
     handle = encode_handle({
         "kind": "process",
         "identity": {"pid": 12345, "start_time": 0, "time_basis": "linux-boot"},
@@ -28,7 +28,7 @@ def test_disappeared_local_process_is_unknown(monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutionEndpoint(), WorkingDirectory("/tmp"), handle),
+        execution=Execution(ExecutionEndpoint(executor="local-supervised"), WorkingDirectory("/tmp"), handle),
         files=FileManifest(),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -84,10 +84,10 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         ),
     )
     submission = JobAttachment(
-        Execution(ExecutionEndpoint(), WorkingDirectory(str(tmp_path))),
+        Execution(ExecutionEndpoint(executor="local-supervised"), WorkingDirectory(str(tmp_path))),
         files,
     )
-    recovered = ProcessBackend().recover_submission("test-run", submission)
+    recovered = SupervisedProcessBackend().recover_submission("test-run", submission)
     assert recovered.disposition is RecoveryDisposition.FOUND
     assert recovered.ref.backend == "process"
     assert recovered.ref.token == backend_id

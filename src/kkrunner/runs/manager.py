@@ -354,7 +354,7 @@ class RunManager:
             expected_kind = (
                 "psij" if endpoint.executor == "psij" or (
                     endpoint.executor == "ssh" and endpoint.psij_backend is not None
-                ) else "process" if endpoint.executor in ("local", "ssh") else None
+                ) else "process" if endpoint.executor in ("local-supervised", "ssh") else None
             )
             if expected_kind is not None and recovery.ref.backend != expected_kind:
                 raise ValueError("Recovered job belongs to a different backend")
@@ -854,6 +854,8 @@ class RunManager:
             spec.require_complete()
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
+        if not getattr(backend, "supports_tracked_runs", True):
+            raise ValueError("Backend cannot create a recoverable tracked run; select a supervised backend")
         endpoint = endpoint_for_backend(backend)
         record = self.new_record(
             metadata=metadata,

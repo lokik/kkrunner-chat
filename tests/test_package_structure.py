@@ -116,10 +116,11 @@ assert 'kkrunner.backends.psij.backend' not in sys.modules
 
 
 def test_process_strategies_have_distinct_implementations():
-    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.process.direct.job import ProcessJob
     from kkrunner.backends.process.supervised.job import SupervisedProcessJob
     assert ProcessBackend.__module__ == "kkrunner.backends.process.backend"
+    assert SupervisedProcessBackend.__module__ == "kkrunner.backends.process.backend"
     assert ProcessJob.__module__ == "kkrunner.backends.process.direct.job"
     assert SupervisedProcessJob.__module__ == "kkrunner.backends.process.supervised.job"
 
@@ -133,7 +134,9 @@ def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     backend = ProcessBackend()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
     assert isinstance(backend.create_job(spec), ProcessJob)
-    assert isinstance(backend.create_job(spec, submission_key="run-1"), SupervisedProcessJob)
+    with pytest.raises(NotImplementedError, match="SupervisedProcessBackend"):
+        backend.create_job(spec, submission_key="run-1")
+    assert isinstance(SupervisedProcessBackend().create_job(spec, submission_key="run-1"), SupervisedProcessJob)
 
 
 def test_remote_process_service_reuses_supervised_backend_operations():

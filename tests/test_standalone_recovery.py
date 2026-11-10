@@ -12,7 +12,7 @@ import pytest
 from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.backends import ProcessBackend
+from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.processing import ProcessingPending
 
@@ -128,7 +128,7 @@ def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        ProcessBackend(),
+        SupervisedProcessBackend(),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -145,7 +145,7 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        ProcessBackend(),
+        SupervisedProcessBackend(),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -166,7 +166,7 @@ def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypat
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        ProcessBackend(),
+        SupervisedProcessBackend(),
         ExecutionSpec(
             [sys.executable, "-c", "import time; time.sleep(.4); print(42)"],
             directory=tmp_path,

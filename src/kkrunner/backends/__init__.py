@@ -4,18 +4,19 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kkrunner.backends.contracts import Backend, Job, JobAttachment, JobRef, JobStatus
-    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
 
-__all__ = ["Backend", "Job", "JobAttachment", "JobRef", "JobStatus", "ProcessBackend", "PsijBackend"]
+__all__ = ["Backend", "Job", "JobAttachment", "JobRef", "JobStatus", "ProcessBackend", "SupervisedProcessBackend", "PsijBackend"]
 
 
 def __getattr__(name):
     if name in ("Backend", "Job", "JobAttachment", "JobRef", "JobStatus"):
         from . import contracts
         value = getattr(contracts, name)
-    elif name == "ProcessBackend":
-        from .process.backend import ProcessBackend as value
+    elif name in ("ProcessBackend", "SupervisedProcessBackend"):
+        from .process import backend
+        value = getattr(backend, name)
     elif name == "PsijBackend":
         from .psij.backend import PsijBackend as value
     else:

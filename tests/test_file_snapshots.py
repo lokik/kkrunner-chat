@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from kkrunner import RunState, RunStore
-from kkrunner.backends import ProcessBackend
+from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
 from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
 from kkrunner.client.agent import AgentBackendProxy
@@ -142,7 +142,7 @@ def test_snapshot_runner_convenience(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "history"))
     run = manager.create_run(
-        ProcessBackend(),
+        SupervisedProcessBackend(),
         ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"),
     )
     run.run()
