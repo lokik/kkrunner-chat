@@ -18,7 +18,8 @@ test = ["pytest"]
 docs = ["sphinx>=7", "sphinx-rtd-theme>=3", "myst-parser>=3"]
 
 [project.scripts]
-kkrunner = "kkrunner_cli.main:main"
+kkrunner = "kkrunner_cli.client:main"
+kkrunner-agent = "kkrunner_cli.main:main"
 
 [project.urls]
 Documentation = "https://ase2sprkkr.github.io/kkrunner/"

@@ -164,7 +164,7 @@ class _LoopbackSshTransport(SshTransport):
     """Exercise the real SSH transfer implementation without an SSH server."""
 
     def __init__(self, *, zstd=False):
-        super().__init__("local-test", zstd=zstd, command=(sys.executable, "-m", "kkrunner"))
+        super().__init__("local-test", zstd=zstd, command=(sys.executable, "-m", "kkrunner_cli"))
 
     def _command(self, argv, cwd=None):
         assert cwd is None
@@ -366,7 +366,7 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
         assert asyncio.run(query(path)) == (None if status == "missing" else expected)
     assert calls == [
         (
-            ("kkrunner", "--protocol-version", "1", "query-files"),
+            ("kkrunner-agent", "--protocol-version", "1", "query-files"),
             {"paths": [path], "root": None, "digest": method == "file_digest"},
             True,
         )

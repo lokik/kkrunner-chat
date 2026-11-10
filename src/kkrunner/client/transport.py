@@ -206,7 +206,7 @@ class LocalTransport(Transport):
 class SshTransport(Transport):
     """Transport using the system ``ssh`` client."""
 
-    def __init__(self, host, *, ssh="ssh", options=(), zstd=False, command=("kkrunner",)):
+    def __init__(self, host, *, ssh="ssh", options=(), zstd=False, command=("kkrunner-agent",)):
         self.command = tuple(command)
         self.host = host
         self.ssh = ssh

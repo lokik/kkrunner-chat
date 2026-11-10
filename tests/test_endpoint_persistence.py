@@ -119,7 +119,7 @@ def test_pool_reconstructs_and_reuses_ssh_endpoint():
         host="cluster",
         ssh_options=("-p", "2222"),
         ssh_zstd=True,
-        remote_command=("kkrunner",),
+        remote_command=("kkrunner-agent",),
         psij_backend="slurm",
         psij_url="local://slurm",
     )

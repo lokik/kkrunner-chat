@@ -18,7 +18,7 @@ from kkrunner.runs.records import RunRecord
 
 def _executor(*, backend="process"):
     return AgentBackendProxy(
-        LocalTransport(), backend=backend, command=(sys.executable, "-m", "kkrunner")
+        LocalTransport(), backend=backend, command=(sys.executable, "-m", "kkrunner_cli")
     )
 
 
