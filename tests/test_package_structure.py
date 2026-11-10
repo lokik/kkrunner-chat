@@ -115,6 +115,18 @@ assert 'kkrunner.backends.psij.backend' not in sys.modules
 
 
 
+def test_slurm_native_module_does_not_load_psij_executor():
+    code = """
+import sys
+from kkrunner.backends.psij import slurm
+assert callable(slurm._slurm_status_native)
+assert 'psij' not in sys.modules
+assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'kkrunner.backends.psij.job' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
+
+
 def test_facade_exports_resolve_without_optional_scheduler_dependency():
     for package in (kkrunner.runs, kkrunner.files, kkrunner.backends, kkrunner.projects, kkrunner.remote):
         for name in package.__all__:
