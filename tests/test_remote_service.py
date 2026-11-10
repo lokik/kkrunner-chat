@@ -125,7 +125,7 @@ def test_remote_id_rejects_wrong_field_types():
 def test_mailbox_receipt_survives_until_client_ack(tmp_path, monkeypatch):
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path))
     _, remote_id, outcome = _process_handle(tmp_path)
-    monkeypatch.setattr(process_operations, "_process_running", lambda _handle: False)
+    monkeypatch.setattr(process_operations.ProcessIdentity, "is_running", lambda self: False)
     assert remote_service.status_remote(remote_id)["state"] == RunState.UNKNOWN.value
     _write_outcome(outcome, RunState.FINISHED, 0)
     assert remote_service.status_remote(remote_id)["state"] == RunState.FINISHED.value
@@ -137,7 +137,7 @@ def test_mailbox_receipt_survives_until_client_ack(tmp_path, monkeypatch):
 
 def test_status_distinguishes_launch_and_execution_failure(tmp_path, monkeypatch):
     _, remote_id, outcome = _process_handle(tmp_path)
-    monkeypatch.setattr(process_operations, "_process_running", lambda _handle: False)
+    monkeypatch.setattr(process_operations.ProcessIdentity, "is_running", lambda self: False)
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path))
     _write_outcome(outcome, RunState.FAILED, 127, FailurePhase.LAUNCH)
     launch = remote_service.status_remote(remote_id)
@@ -279,7 +279,7 @@ def test_follow_fallback_treats_completed_nonzero_psij_as_failed(tmp_path, monke
 def test_cancel_requests_supervisor_without_inventing_terminal_state(tmp_path, monkeypatch):
     _, remote_id, outcome = _process_handle(tmp_path)
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(process_operations, "_process_running", lambda _handle: True)
+    monkeypatch.setattr(process_operations.ProcessIdentity, "is_running", lambda self: True)
     sent = []
 
     class Connection:
