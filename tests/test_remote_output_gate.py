@@ -190,10 +190,11 @@ def test_unframed_backend_follow_failure_does_not_disguise_client_failure(tmp_pa
               status={"state": "running"})
     run = Run(job)
     run.start()
-    outcome = run.wait()
-    assert outcome.return_code == 0
+    with pytest.raises(subprocess.CalledProcessError):
+        run.wait()
+    assert run.result.return_code == 0
     assert job.state is RunState.FINISHED
     assert job.failure_phase is None
     assert isinstance(job.output_error, subprocess.CalledProcessError)
     assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.ARTIFACTS
+    assert run.failure_phase is FailurePhase.OUTPUT

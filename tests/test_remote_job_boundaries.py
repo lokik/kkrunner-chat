@@ -204,7 +204,7 @@ def test_run_parts_own_file_cleanup_before_and_after_handoff(tmp_path):
 @pytest.mark.parametrize(
     "backend_state, expected_state, expected_phase",
     [
-        (RunState.FINISHED, RunState.FAILED, FailurePhase.ARTIFACTS),
+        (RunState.FINISHED, RunState.FAILED, FailurePhase.OUTPUT),
         (RunState.FAILED, RunState.FAILED, FailurePhase.EXECUTION),
         (RunState.CANCELLED, RunState.CANCELLED, None),
     ],
@@ -238,5 +238,28 @@ def test_untracked_run_does_not_postprocess_after_failed_local_follow():
     run = Run(job, process_result=lambda outcome: observed.append("processed"))
     run._finish()
     assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.ARTIFACTS
-    assert observed == []
+    assert run.failure_phase is FailurePhase.OUTPUT
+    assert observed == ["wait"]
+
+
+def test_incomplete_local_follow_marks_only_declared_streams_failed(tmp_path):
+    from kkrunner.files.manifest import FileManifest
+
+    spec = ExecutionSpec(
+        argv=("true",), directory=str(tmp_path),
+        output_file="stdout.txt", error_file="stderr.txt",
+        output_files=("other-result.dat",),
+    )
+    job = _FinishedJob([])
+    job.state = RunState.FINISHED
+    job.output_error = OSError("FOLLOW stream truncated")
+    run = Run(job, local_files=FileManifest.from_spec(spec).initialize_availability())
+
+    run._finish()
+
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.OUTPUT
+    assert run.files.stdout.availability_state == "failed"
+    assert run.files.stderr.availability_state == "failed"
+    assert run.files.stdout.availability_message == "FOLLOW stream truncated"
+    assert run.files.outputs[0].availability_state == "pending"

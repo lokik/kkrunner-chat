@@ -206,12 +206,13 @@ def test_confirmed_job_output_cleanup_error_is_reported_by_run(tmp_path, monkeyp
     # real target calculation, which the test does not need.
     job._backend_id = "confirmed-native-job"
     run.start()
-    result = run.wait()
-    assert result.return_code == 0
+    with pytest.raises(OSError, match="cannot close output"):
+        run.wait()
+    assert run.result.return_code == 0
     assert job.state is RunState.FINISHED
     assert job.exception is None
     assert job.failure_phase is None
     assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.ARTIFACTS
+    assert run.failure_phase is FailurePhase.OUTPUT
     assert isinstance(run.exception, OSError)
     assert output.close_calls == 1

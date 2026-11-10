@@ -202,3 +202,18 @@ def test_framed_follow_rejects_clean_exit_without_terminal_receipt():
         assert command.terminal is None
 
     asyncio.run(check())
+
+
+def test_framed_follow_rejects_data_after_terminal_frame():
+    async def check():
+        process = _FinishedCommand(
+            STREAM_MAGIC
+            + encode_terminal_frame({"state": "finished", "return_code": 0})
+            + encode_stream_frame("out", b"late bytes")
+        )
+        command = FramedRunningCommand(process)
+        with pytest.raises(StreamProtocolError, match="data after terminal frame"):
+            await command.wait()
+        assert process.terminated
+
+    asyncio.run(check())

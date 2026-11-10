@@ -72,6 +72,11 @@ async def read_stream_frames(source):
             except (TypeError, ValueError) as exc:
                 raise StreamProtocolError("Invalid terminal frame outcome") from exc
             yield "terminal", outcome
+            # The terminal receipt ends the framed stream. Reading through
+            # EOF also prevents a misbehaving helper from blocking on a full
+            # pipe after sending the terminal frame.
+            if await source.read(1):
+                raise StreamProtocolError("Remote stream contains data after terminal frame")
             return
         if size > 65536:
             raise StreamProtocolError("Stream frame is too large")
