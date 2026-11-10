@@ -318,16 +318,7 @@ class Job:
                 # gather() does not cancel other tasks when a stream writer
                 # fails. Reap the helper before querying backend status, while
                 # its stdout/stderr readers are still available for draining.
-                try:
-                    await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-                except asyncio.TimeoutError:
-                    self._follow_process.kill()
-                    try:
-                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-                    except (asyncio.TimeoutError, Exception):
-                        pass  # Preserve the primary stream-delivery error.
-                except Exception:
-                    pass  # A failed wait() is already the recorded error.
+                await self._reap_follow(wait_task)
             if self._observation_stopped.is_set():
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
@@ -370,20 +361,32 @@ class Job:
             # unresponsive helper; do not leave an asyncio Task unobserved.
             if wait_task is not None and not wait_task.done():
                 self._terminate_follow()
-                try:
-                    await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-                except asyncio.TimeoutError:
-                    self._follow_process.kill()
-                    try:
-                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-                    except (asyncio.TimeoutError, Exception):
-                        pass
-                except Exception:
-                    pass
+                await self._reap_follow(wait_task)
                 if not wait_task.done():
                     wait_task.cancel()
                     await asyncio.gather(wait_task, return_exceptions=True)
             self._loop = None
+
+    async def _reap_follow(self, wait_task):
+        """Bounded reap of an already terminated observation helper.
+
+        Read tasks stay active while wait() drains; force-kill is only for
+        a helper that ignores termination. The caller retains the original
+        stream error rather than replacing it with cleanup diagnostics.
+        """
+        try:
+            await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+        except asyncio.TimeoutError:
+            try:
+                self._follow_process.kill()
+            except (ProcessLookupError, RuntimeError):
+                pass
+            try:
+                await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        except Exception:
+            pass
 
     def _terminate_follow(self):
         if self._follow_process is not None:
