@@ -301,10 +301,9 @@ class Run:
         try:
             self._file_session.close()
         except BaseException as cleanup_error:
-            import warnings
-            warnings.warn(
-                f"Remote file cleanup after failed submission also failed: {cleanup_error}",
-                RuntimeWarning, stacklevel=2,
+            import logging
+            logging.getLogger(__name__).warning(
+                "Remote file cleanup after failed submission also failed: %s", cleanup_error,
             )
 
     def submit(self):
