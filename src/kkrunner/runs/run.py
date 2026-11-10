@@ -294,6 +294,19 @@ class Run:
             return RunState.RUNNING
         return state
 
+    def _close_files_after_failed_submission(self):
+        """Cleanup must not replace the submission error or skip its record."""
+        if self._file_session is None:
+            return
+        try:
+            self._file_session.close()
+        except BaseException as cleanup_error:
+            import warnings
+            warnings.warn(
+                f"Remote file cleanup after failed submission also failed: {cleanup_error}",
+                RuntimeWarning, stacklevel=2,
+            )
+
     def submit(self):
         if self._started:
             raise RuntimeError("Run already submitted")
@@ -303,7 +316,7 @@ class Run:
                     self._prepare_remote_job()
                     self._job.submit()
                 except BaseException:
-                    self._file_session.close()
+                    self._close_files_after_failed_submission()
                     raise
             else:
                 self._job.submit()
@@ -341,8 +354,7 @@ class Run:
             self._job.submit()
             self._start_completion()
         except SubmissionNotStarted as exc:
-            if self._file_session is not None:
-                self._file_session.close()
+            self._close_files_after_failed_submission()
             self._record = self.manager.complete(
                 self._record,
                 state=RunState.FAILED,
@@ -352,8 +364,7 @@ class Run:
             )
             raise
         except BaseException:
-            if self._file_session is not None:
-                self._file_session.close()
+            self._close_files_after_failed_submission()
             if self.backend_id is not None:
                 # The backend identity is recoverable, but this client did not
                 # establish a working completion observer. Persist uncertainty
