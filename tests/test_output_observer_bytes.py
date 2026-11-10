@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kkrunner.backends.process.engine import ProcessJob
-from kkrunner.backends.process.managed import _ObserverSink
+from kkrunner.backends.process.supervised.job import _ObserverSink
 from kkrunner.backends.psij.job import PsijJob
 from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import OutputObservers

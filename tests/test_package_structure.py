@@ -101,18 +101,37 @@ from kkrunner import ExecutionSpec, RunStore
 from kkrunner import backends
 assert 'ProcessBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.process.engine',
+    'kkrunner.backends.process.backend',
     'kkrunner.backends.psij.backend',
     'kkrunner.client.agent', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import ProcessBackend
-from kkrunner.backends.process.engine import ProcessBackend as implementation
+from kkrunner.backends.process.backend import ProcessBackend as implementation
 assert ProcessBackend is implementation
 assert backends.ProcessBackend is ProcessBackend
 assert 'kkrunner.backends.psij.backend' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
+
+
+def test_process_strategies_have_distinct_implementations():
+    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.direct.job import ProcessJob
+    from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+    assert ProcessBackend.__module__ == "kkrunner.backends.process.backend"
+    assert ProcessJob.__module__ == "kkrunner.backends.process.direct.job"
+    assert SupervisedProcessJob.__module__ == "kkrunner.backends.process.supervised.job"
+
+
+def test_direct_process_import_does_not_load_supervisor():
+    code = """
+import sys
+from kkrunner.backends.process.direct.job import ProcessJob
+assert 'kkrunner.backends.process.supervised.operations' not in sys.modules
+assert 'kkrunner.backends.process.supervised.worker' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
 
 def test_slurm_native_module_does_not_load_psij_executor():

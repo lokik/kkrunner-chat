@@ -133,8 +133,8 @@ helpers. They are not re-exported by the public facades.
 .. autosummary::
    :toctree: _generated
 
-   backends.process.engine.ProcessJob
-   backends.process.managed.SupervisedProcessJob
+   backends.process.direct.job.ProcessJob
+   backends.process.supervised.job.SupervisedProcessJob
    backends.psij.job.PsijJob
    client.remote_job.RemoteJob
    client.remote_files.RemoteFileSession

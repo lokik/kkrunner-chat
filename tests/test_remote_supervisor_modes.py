@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from kkrunner.backends.process import worker as remote_process_worker
+from kkrunner.backends.process.supervised import worker as remote_process_worker
 
 
 def _spec(tmp_path, socket_fd, *, detached, argv=None):
@@ -132,7 +132,7 @@ def test_failed_detached_launch_clears_previous_output(tmp_path, monkeypatch):
 def test_supervisor_output_failure_is_reported_without_losing_diagnosis(
     tmp_path, monkeypatch, failure, expected_phase, expected_message
 ):
-    from kkrunner.backends.process.supervisor import SupervisorStreams
+    from kkrunner.backends.process.supervised.streams import SupervisorStreams
     from kkrunner.runs.base import FailurePhase, RunState
 
     reported = []
@@ -167,7 +167,7 @@ def test_supervisor_output_failure_is_reported_without_losing_diagnosis(
 
 
 def test_receipt_write_failure_never_emits_durable_terminal_claim(tmp_path, monkeypatch):
-    from kkrunner.backends.process.supervisor import SupervisorStreams
+    from kkrunner.backends.process.supervised.streams import SupervisorStreams
 
     observed = []
     original_terminal = SupervisorStreams.terminal

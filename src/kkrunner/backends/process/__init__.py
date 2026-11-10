@@ -1,1 +1,1 @@
-"""Process backend and its optional durable supervisor."""
+"""Local direct and supervisor-backed process execution strategies."""

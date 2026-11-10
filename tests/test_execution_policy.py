@@ -4,7 +4,8 @@ import sys
 import pytest
 
 from kkrunner.client.endpoint import endpoint_for_backend
-from kkrunner.backends.process.engine import ProcessBackend, ProcessJob
+from kkrunner.backends.process.backend import ProcessBackend
+from kkrunner.backends.process.direct.job import ProcessJob
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
 from kkrunner.client.transport import LocalTransport

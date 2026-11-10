@@ -4,7 +4,7 @@ import pytest
 from kkrunner import RunState
 from kkrunner.remote import service as remote_service
 from kkrunner.backends.handles import _decode_handle
-from kkrunner.backends.process import operations as process_operations
+from kkrunner.backends.process.supervised import operations as process_operations
 from kkrunner.backends.psij import agent as scheduler_operations
 
 
@@ -64,7 +64,7 @@ def test_psij_recovery_returns_none_when_backend_has_no_match(monkeypatch):
 
 
 def test_ticket_and_outcome_share_configured_state_root(tmp_path, monkeypatch):
-    from kkrunner.backends.process import mailbox as remote_mailbox
+    from kkrunner.backends.process.supervised import mailbox as remote_mailbox
 
     key = "f" * 32
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))

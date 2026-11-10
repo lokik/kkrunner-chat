@@ -4,8 +4,8 @@ import sys
 
 import pytest
 
-import kkrunner.backends.process.engine as local
-from kkrunner.backends.process.engine import ProcessBackend
+import kkrunner.backends.process.direct.job as local
+from kkrunner.backends.process.backend import ProcessBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
 

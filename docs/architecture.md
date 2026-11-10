@@ -176,7 +176,7 @@ are loaded only when requested from `kkrunner.backends`: run contracts depend on
 endpoint metadata, so loading implementations while initializing that package
 would reverse the dependency and create an import cycle. The root import does
 not load local/PSI/J implementations, projects or the remote client/service.
-The supervised process worker lives in `kkrunner.backends.process.worker`.
+Direct subprocess execution is isolated in `kkrunner.backends.process.direct.job`, with no supervisor dependency. The `supervised` package contains the reusable supervisor, durable receipts and FOLLOW logic used by both managed-local execution and remote agents. The supervised worker lives in `kkrunner.backends.process.supervised.worker`. A future SSH-direct backend can supply its own Job and RunParts without duplicating or coupling to the supervisor.
 Within the PSI/J backend, `backends.psij.job` owns a live job's submission
 and observation, `backends.psij.backend` owns the reusable executor,
 native job cache and callback subscriptions, and `backends.psij.slurm`

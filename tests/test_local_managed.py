@@ -12,9 +12,9 @@ from kkrunner.backends import ProcessBackend
 from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.backends.process.managed import local_manifest
+from kkrunner.backends.process.supervised.local import local_manifest
 from kkrunner.backends.handles import _decode_handle, _encode_handle
-from kkrunner.backends.process.operations import (
+from kkrunner.backends.process.supervised.operations import (
     _process_running, _recover_submission, acknowledge_submission, status_remote,
 )
 from kkrunner.runs.base import FailurePhase, RunStatus
@@ -192,7 +192,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.backends.process import operations as process_operations
+    from kkrunner.backends.process.supervised import operations as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):
@@ -218,7 +218,7 @@ def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
 
 
 def test_terminal_local_runner_never_regresses_to_running(tmp_path, monkeypatch):
-    from kkrunner.backends.process import managed as local_project
+    from kkrunner.backends.process.supervised import local as local_project
 
     runner = ProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner._backend_id = "opaque-handle"
@@ -258,7 +258,7 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.backends.process.operations import _clean_request_outputs
+    from kkrunner.backends.process.supervised.operations import _clean_request_outputs
     from kkrunner.backends.specs import _request_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
@@ -297,13 +297,13 @@ def test_local_project_request_uses_common_command_fields(tmp_path):
 def test_terminal_project_runner_does_not_query_backend(monkeypatch, tmp_path):
     import pytest
 
-    from kkrunner.backends.process.managed import SupervisedProcessJob
+    from kkrunner.backends.process.supervised.job import SupervisedProcessJob
     from kkrunner.runs.base import RunState
 
     spec = _spec(tmp_path)
     runner = SupervisedProcessJob(ProcessBackend(), spec, backend_id="old-supervisor", state=RunState.FINISHED)
     monkeypatch.setattr(
-        "kkrunner.backends.process.managed.local_status",
+        "kkrunner.backends.process.supervised.local.local_status",
         lambda *args: pytest.fail("Terminal runner must not query backend"),
     )
     assert runner.state is RunState.FINISHED
@@ -383,7 +383,7 @@ assert (root / 'run.out').read_text() == '42\\n'
 
 def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatch):
     """A durable terminal state must not conceal an invalid wire greeting."""
-    from kkrunner.backends.process import managed as local_managed
+    from kkrunner.backends.process.supervised import job as local_managed
 
     runner = ProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     monkeypatch.setattr(runner, "_refresh", lambda: RunState.FAILED)

@@ -22,8 +22,8 @@ from uuid import uuid4
 from kkrunner.backends.handles import _decode_handle, _encode_handle
 from kkrunner.backends.replies import _status_reply
 from kkrunner.backends.specs import _request_spec
-from kkrunner.backends.process.mailbox import _state_root, acknowledge_outcome, read_outcome
-from kkrunner.backends.process.worker import _SPEC_ENV, _START_FD_ENV
+from kkrunner.backends.process.supervised.mailbox import _state_root, acknowledge_outcome, read_outcome
+from kkrunner.backends.process.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.files.availability import clear_declared_outputs, validate_output_collisions
 from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync_directory
@@ -139,7 +139,7 @@ def _local_submit(request):
         env[_START_FD_ENV] = str(start_fd)
         try:
             process = subprocess.Popen(
-                [sys.executable, "-m", "kkrunner.backends.process.worker"],
+                [sys.executable, "-m", "kkrunner.backends.process.supervised.worker"],
                 cwd=directory,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -305,7 +305,7 @@ def follow_remote(
 
     if handle["kind"] != "process":
         raise ValueError("Unknown execution backend")
-    from kkrunner.backends.process.supervisor import SupervisorClosedBeforeFollow, follow_socket
+    from kkrunner.backends.process.supervised.streams import SupervisorClosedBeforeFollow, follow_socket
 
     path = handle.get("socket_path")
     if path is None:

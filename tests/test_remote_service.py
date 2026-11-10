@@ -6,10 +6,10 @@ import pytest
 from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner import RunState
 from kkrunner.backends.handles import _decode_handle, _encode_handle
-from kkrunner.backends.process import mailbox as remote_mailbox
-from kkrunner.backends.process import operations as process_operations
-from kkrunner.backends.process import supervisor
-from kkrunner.backends.process import worker as remote_process_worker
+from kkrunner.backends.process.supervised import mailbox as remote_mailbox
+from kkrunner.backends.process.supervised import operations as process_operations
+from kkrunner.backends.process.supervised import streams as supervisor
+from kkrunner.backends.process.supervised import worker as remote_process_worker
 from kkrunner.backends.psij import slurm as psij_slurm
 from kkrunner.backends.psij import agent as scheduler_operations
 from kkrunner.backends import replies
@@ -33,7 +33,7 @@ def _psij_handle(tmp_path):
 
 
 def _write_outcome(path, state, return_code, failure_phase=None):
-    from kkrunner.backends.process import mailbox as remote_mailbox
+    from kkrunner.backends.process.supervised import mailbox as remote_mailbox
 
     return remote_mailbox.publish_outcome("a" * 32, state, return_code, failure_phase)
 
@@ -601,7 +601,7 @@ def test_supervisor_prelaunch_failure_publishes_durable_receipt_and_closes_fd(tm
     import asyncio
     import os
 
-    from kkrunner.backends.process import mailbox as remote_mailbox
+    from kkrunner.backends.process.supervised import mailbox as remote_mailbox
 
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
     read_fd, write_fd = os.pipe()
@@ -664,7 +664,7 @@ def test_supervisor_stdin_close_failure_preserves_terminal_receipt(tmp_path, mon
     import os
     import sys
 
-    from kkrunner.backends.process import mailbox as remote_mailbox
+    from kkrunner.backends.process.supervised import mailbox as remote_mailbox
 
     original_input = tmp_path / "input"
     original_input.write_bytes(b"input")
@@ -852,7 +852,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 ):
     import asyncio
 
-    from kkrunner.backends.process import supervisor
+    from kkrunner.backends.process.supervised import streams as supervisor
 
     _, remote_id, _ = _process_handle(tmp_path)
     facts = replies._status_reply(state, 127, failure_phase=phase)
@@ -878,7 +878,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_path, monkeypatch):
     import asyncio
 
-    from kkrunner.backends.process import supervisor
+    from kkrunner.backends.process.supervised import streams as supervisor
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
@@ -899,7 +899,7 @@ def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_p
 
 @pytest.mark.parametrize("offset", [-1, 1, False])
 def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, monkeypatch, offset):
-    from kkrunner.backends.process import supervisor
+    from kkrunner.backends.process.supervised import streams as supervisor
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
