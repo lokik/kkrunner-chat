@@ -76,7 +76,7 @@ required result processing. Detaching observation does not release it.
 
 Coordination applies to runs in the same ``RunStore``, even when different
 manager instances or projects use that store. ``ProjectExecutionManager`` uses
-the same mechanism. Raw ``executor.create_run`` calls and separate stores do
+the same mechanism. Untracked ``Run.direct`` calls and separate stores do
 not coordinate these reservations.
 
 Two active runs may read the same file. A write conflicts with another run's
@@ -86,7 +86,7 @@ the backend. Remote paths are also checked in their target filesystem namespace.
 A :class:`~kkrunner.runs.DuplicateSubmissionError` reports an active conflict.
 
 For host aliases or shared mounts, supply the same ``filesystem_id`` to
-:class:`~kkrunner.remote.RemoteEndpointExecutor`. KKRunner does not infer shared mounts
+:class:`~kkrunner.client.AgentBackendProxy`. KKRunner does not infer shared mounts
 from different hostnames. Distinct IDs declare distinct target filesystems.
 
 Transfers and captured contents
@@ -109,7 +109,7 @@ Read files during a running calculation
 
 ``RunManager.snapshot_file(run, file)`` reads the currently visible contents
 of a declared output, saved stdout/stderr stream, or cache. It works while the
-calculation is running and after completion. A ``PersistentRunner`` also offers
+calculation is running and after completion. A tracked ``Run`` also offers
 ``run.snapshot_file(file)``.
 
 .. code-block:: python

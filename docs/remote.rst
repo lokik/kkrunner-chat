@@ -10,12 +10,12 @@ applications are needed there only when the command itself uses them.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.runs import LaunchSpec
-   from kkrunner.remote import RemoteEndpointExecutor, SshTransport
+   from kkrunner.client import AgentBackendProxy, SshTransport
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
    manager = RunManager(RunStore(directory / "runs"))
-   executor = RemoteEndpointExecutor(SshTransport("user@cluster"))
+   executor = AgentBackendProxy(SshTransport("user@cluster"))
    spec = ExecutionSpec(
        ["python3", "-c", "print(42)"],
        directory=directory,
@@ -38,7 +38,7 @@ For a nonstandard installation, pass an explicit protocol command:
 
 .. code-block:: python
 
-   executor = RemoteEndpointExecutor(
+   executor = AgentBackendProxy(
        SshTransport("user@cluster"),
        command=("/opt/kkrunner/bin/kkrunner"),
        filesystem_id="cluster-home",
@@ -46,8 +46,8 @@ For a nonstandard installation, pass an explicit protocol command:
 
 Use a consistent ``filesystem_id`` when aliases or shared mounts name the same
 target filesystem. It is independent of SSH flags and command selection.
-For a scheduler on that target, supply ``backend="slurm"`` (or another PSI/J
-backend) and install ``kkrunner[psij]`` on the target.
+For a scheduler on that target, supply ``backend="psij"`` and
+``backend_options={"backend": "slurm"}`` (or another PSI/J backend) and install ``kkrunner[psij]`` on the target.
 
 Test the protocol without SSH
 -------------------------------
@@ -62,17 +62,18 @@ It is useful for development and does not require a second machine:
    from pathlib import Path
    from kkrunner import ExecutionSpec
    from kkrunner.runs import LaunchSpec
-   from kkrunner.remote import LocalTransport, RemoteEndpointExecutor
+   from kkrunner import Run
+   from kkrunner.client import AgentBackendProxy, LocalTransport
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
    local, remote = directory / "local", directory / "remote"
    local.mkdir()
    remote.mkdir()
-   executor = RemoteEndpointExecutor(
+   executor = AgentBackendProxy(
        LocalTransport(), command=(sys.executable, "-m", "kkrunner"),
    )
-   outcome = executor.create_run(ExecutionSpec(
+   outcome = Run.direct(executor, ExecutionSpec(
        [sys.executable, "-c", "print(44)"],
        directory=local,
        output_file="stdout.txt",
