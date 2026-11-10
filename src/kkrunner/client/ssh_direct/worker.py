@@ -65,11 +65,9 @@ def execute(request):
             ),
             start_new_session=True,
         )
-        if detached:
-            # This worker is not a supervisor. The child has independent
-            # standard streams and process session; it cannot report an exit
-            # code after SSH disconnects.
-            return 0
+        # Keep the control channel alive while the client remains attached:
+        # detached execution must still support explicit cancel and wait.
+        # Independent child streams make a broken SSH connection harmless.
         stopping = threading.Event()
         def stop():
             if stopping.is_set():
@@ -98,7 +96,7 @@ def execute(request):
             finally:
                 # An unexpected SSH disconnect closes stdin. Without this,
                 # the remote calculation could outlive the direct Job.
-                if child.poll() is None:
+                if not detached and child.poll() is None:
                     stop()
         threading.Thread(target=control, daemon=True).start()
         stream_lock = threading.Lock()
@@ -117,15 +115,21 @@ def execute(request):
                 except BrokenPipeError:
                     stop()
                     return
-        out = threading.Thread(target=pump, args=(child.stdout, sys.stdout.buffer, "out"))
-        err = threading.Thread(target=pump, args=(child.stderr, sys.stderr.buffer, "err"))
-        out.start()
-        err.start()
-        try:
-            code = child.wait()
-        finally:
-            out.join()
-            err.join()
+        if detached:
+            # The child writes directly to its declared files (or DEVNULL).
+            # No relay thread may depend on the SSH channel's pipes.
+            returncode = child.wait()
+        else:
+            out = threading.Thread(target=pump, args=(child.stdout, sys.stdout.buffer, "out"))
+            err = threading.Thread(target=pump, args=(child.stderr, sys.stderr.buffer, "err"))
+            out.start()
+            err.start()
+            try:
+                returncode = child.wait()
+            finally:
+                out.join()
+                err.join()
+        code = returncode
         return code if code >= 0 else 128 - code
 
 try:

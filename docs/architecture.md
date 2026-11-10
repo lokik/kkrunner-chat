@@ -257,10 +257,11 @@ not disable supervisors, scheduler submission or their backend identities.
 A detached direct process outlives the client's connection, but it need not
 have a durable backend identity. The target never silently creates stdout or
 stderr files; declared file paths receive output directly and undeclared
-streams may be discarded. A detached SSH direct submission acknowledges
-launch only: its exit code and subsequent client-side synchronization are not
-guaranteed. The client must remain connected or use a recoverable backend
-to complete client-side transfer, validation and postprocessing. Detached
+streams may be discarded. For detached SSH direct execution, the connected observer can still wait,
+cancel, retrieve declared streams and complete normal client processing.
+Once the client disconnects, the target process survives but its exit code and
+client-side synchronization are no longer guaranteed. A recoverable backend
+is required for reliable reattachment and completion after client loss. Detached
 execution does not provide a second Run lifecycle.
 
 Submission identity belongs to the backend, not the client RunRecord ID.
@@ -270,3 +271,7 @@ submission after the connection is lost: they preserve UNKNOWN rather than
 claiming success or automatically launching again. Cross-process exclusive
 postprocessing requires the RunStore coordination available to persisted runs;
 a memory-only Run has no cross-client processing lease.
+
+Explicit `detached=False` cannot change a supervisor or scheduler into a
+client-owned process: such a backend rejects an unsupported policy rather
+than pretending that a lost client will terminate the job.

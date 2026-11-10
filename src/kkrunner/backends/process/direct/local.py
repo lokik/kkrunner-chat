@@ -18,6 +18,10 @@ class LocalProcessAdapter:
         self._streams = None
         self._detached = False
 
+    @property
+    def detached(self):
+        return self._detached
+
     def configure_detached(self, detached):
         self._detached = detached
 
@@ -65,6 +69,15 @@ class LocalProcessAdapter:
     async def stop(self, process):
         await stop_local_process(process, process_group=self._detached)
         return True
+
+    def detached_output_paths(self, spec):
+        if not self._detached:
+            return {}
+        return {
+            kind: path
+            for kind, value in (("out", spec.output_file), ("err", spec.error_file))
+            if (path := file_path(value, spec.directory)) is not None
+        }
 
     def output(self, data, kind):
         target = (

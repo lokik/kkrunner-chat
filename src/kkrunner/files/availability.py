@@ -149,3 +149,41 @@ def clear_declared_outputs(paths, *, protected=()):
             if path in protected or not os.path.isfile(path):
                 continue
             os.unlink(path)
+
+
+def local_manifest(files, status):
+    """Resolve stream availability, including partial cancelled-run output.
+
+    The supervisor writes streams directly during execution. Cancellation and
+    execution failure do not retract already written bytes.
+    """
+    import os
+    from kkrunner.runs.base import FailurePhase, RunState
+
+    published = status.state in (RunState.FINISHED, RunState.CANCELLED) or (
+        status.state == RunState.FAILED and status.failure_phase == FailurePhase.EXECUTION
+    )
+    for entry in (files.stdout, files.stderr):
+        if entry is None or entry.local_path is None:
+            continue
+        if status.failure_phase == FailurePhase.ARTIFACTS:
+            state, message = "failed", status.message or "Output publication failed"
+        elif published:
+            exists = os.path.isfile(entry.local_path)
+            state, message = (
+                ("available", None)
+                if exists
+                else (
+                    "failed",
+                    "Published output file is missing",
+                )
+            )
+        else:
+            state, message = "skipped", None
+        files = files.with_file_availability(entry.local_path, state, message)
+
+    if status.failure_phase in (FailurePhase.LAUNCH, FailurePhase.SUBMISSION):
+        return files
+    return discover_local_files(files, include_streams=False, require_outputs=status.state == RunState.FINISHED)
+
+

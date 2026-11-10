@@ -15,6 +15,7 @@ class ProcessBackend:
     name = "process"
     supports_result_file_retrieval = False
     supports_tracked_runs = True
+    requires_backend_identity = False
     default_persistent = False
     default_detached = False
 
@@ -28,6 +29,7 @@ class SupervisedProcessBackend(ProcessBackend):
     """Reconnectable local execution using the durable process supervisor."""
 
     supports_tracked_runs = True
+    requires_backend_identity = True
     default_persistent = True
     default_detached = True
 
@@ -75,5 +77,5 @@ class SupervisedProcessBackend(ProcessBackend):
         for run in runs:
             if run.execution.endpoint.executor != "local-supervised":
                 raise ValueError("Run does not belong to the supervised local backend")
-            statuses.append(local_status(run.execution.backend_id, run.files))
+            statuses.append(local_status(run.execution.backend_id))
         return tuple(statuses)

@@ -24,6 +24,10 @@ class SshProcessAdapter:
         self._cancel_unconfirmed = False
         self._detached = False
 
+    @property
+    def detached(self):
+        return self._detached
+
     def configure_detached(self, detached):
         self._detached = detached
 
@@ -76,6 +80,11 @@ class SshProcessAdapter:
                 await process.wait()
         return False
 
+    def detached_output_paths(self, spec):
+        # Target files are retrieved at terminal completion, not tailed on
+        # the client as if they were local files.
+        return {}
+
     def output(self, data, kind):
         if self._stream_writer is None:
             return
@@ -87,11 +96,6 @@ class SshProcessAdapter:
         return None
 
     def exit_status(self, code):
-        if self._detached and code == 0:
-            return (
-                RunState.UNKNOWN, None,
-                "Detached SSH process was launched; no durable exit status is available",
-            )
         if code == 255:
             return (RunState.UNKNOWN, None, "SSH disconnected or remote command returned status 255")
         if self._cancel_unconfirmed:

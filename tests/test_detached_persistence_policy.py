@@ -82,18 +82,106 @@ Run.create(ProcessBackend(), spec, detached=True).submit()
 
 
 def test_raw_ssh_worker_detached_does_not_require_agent_or_client_streams(tmp_path):
+    started = tmp_path / "remote-started"
     marker = tmp_path / "remote-result"
+    child_script = (
+        "import pathlib,time; pathlib.Path(%r).write_text('started'); "
+        "time.sleep(.6); pathlib.Path(%r).write_text('remote')"
+    ) % (str(started), str(marker))
     request = {
         "directory": str(tmp_path),
-        "argv": [sys.executable, "-c",
-                 "import pathlib,time; time.sleep(.6); pathlib.Path(%r).write_text('remote')" % str(marker)],
+        "argv": [sys.executable, "-c", child_script],
         "detached": True,
         "output_file": str(tmp_path / "worker.out"),
     }
-    child = subprocess.run(
+    worker = subprocess.Popen(
         [sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps(request)],
-        input=b"", capture_output=True, timeout=10,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    assert child.returncode == 0, child.stderr
-    assert _eventually_exists(marker)
-    assert marker.read_text() == "remote"
+    try:
+        assert _eventually_exists(started), "target child was not launched"
+        # Simulate a broken SSH worker. The child owns separate process and
+        # file descriptors and must complete despite its parent's death.
+        worker.kill()
+        worker.wait(timeout=5)
+        assert _eventually_exists(marker)
+        assert marker.read_text() == "remote"
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=5)
+        worker.stdin.close()
+        worker.stdout.close()
+        worker.stderr.close()
+
+
+def test_direct_ssh_detached_waits_and_retrieves_declared_streams(tmp_path):
+    """An attached observer still knows exit code and obtains target files."""
+    from kkrunner.client import LocalTransport, SshDirectBackend
+    from kkrunner.runs import LaunchSpec
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    spec = ExecutionSpec(
+        (sys.executable, "-c",
+         "import sys; print('out', flush=True); print('err', file=sys.stderr, flush=True)"),
+        directory=str(local),
+        output_file=str(local / "stdout.txt"),
+        error_file=str(local / "stderr.txt"),
+        launch=LaunchSpec(local_root=local, remote_root=remote),
+    )
+    run = Run.create(SshDirectBackend(LocalTransport()), spec, detached=True)
+    result = run.run()
+    assert result.return_code == 0
+    assert run.state == RunState.FINISHED
+    assert (local / "stdout.txt").read_text() == "out\n"
+    assert (local / "stderr.txt").read_text() == "err\n"
+    assert (remote / "stdout.txt").read_text() == "out\n"
+
+
+def test_supervised_job_never_owns_client_manifest(tmp_path):
+    job = SupervisedProcessBackend().create_job(
+        ExecutionSpec((sys.executable, "-c", "print('ok')"), directory=str(tmp_path)),
+    )
+    assert not hasattr(job, "set_manifest")
+    assert not hasattr(job, "files")
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_single_submission_path_with_and_without_store(tmp_path, persistent):
+    manager = RunManager(RunStore(tmp_path / "stored"))
+    spec = ExecutionSpec(
+        (sys.executable, "-c", "print('finished')"),
+        output_file=str(tmp_path / "out.txt"),
+        directory=str(tmp_path),
+    )
+    run = Run.create(ProcessBackend(), spec, persistent=manager if persistent else False)
+    result = run.run()
+    assert result.return_code == 0
+    assert run.state == RunState.FINISHED
+    assert (tmp_path / "out.txt").read_text() == "finished\n"
+    if persistent:
+        assert manager.store.get(run.id).state == RunState.FINISHED
+    else:
+        assert run.id is None
+
+
+def test_detached_local_uses_shared_file_tail_for_live_observation(tmp_path):
+    spec = ExecutionSpec(
+        (sys.executable, "-u", "-c",
+         "import sys,time; print('first', flush=True); time.sleep(.15); print('second', file=sys.stderr, flush=True)"),
+        directory=str(tmp_path),
+        output_file=str(tmp_path / "out.txt"),
+        error_file=str(tmp_path / "err.txt"),
+    )
+    run = Run.create(ProcessBackend(), spec, detached=True)
+    received = []
+    run.add_output_listener(lambda data, kind: received.append((kind, data)))
+    assert run.run().return_code == 0
+    assert ("out", "first\n") in received
+    assert ("err", "second\n") in received
+    assert (tmp_path / "out.txt").read_text() == "first\n"
+    assert (tmp_path / "err.txt").read_text() == "second\n"

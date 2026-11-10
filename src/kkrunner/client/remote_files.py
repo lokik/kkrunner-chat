@@ -42,11 +42,16 @@ class RemoteFileSession:
         self._cache_patterns = tuple(cache_patterns or ())
         self._cache_before = dict(cache_before or {})
         self._stream_positions = {}
+        self._retrieve_primary_streams = False
         self.result = ExecutionOutcome(
             output_file=self._local_path(spec.output_file),
             input_file=self._local_path(spec.input_file),
             error_file=self._local_path(spec.error_file),
         )
+
+    def configure_direct_detached_streams(self, detached):
+        """Use target-file retrieval when direct SSH child has no relay pipes."""
+        self._retrieve_primary_streams = detached
 
     @property
     def files(self):
@@ -685,9 +690,35 @@ class RemoteFileSession:
                 self._set_file_availability(local, "failed", str(exc))
                 raise
 
+    async def _retrieve_target_streams(self, *, required):
+        # The target process wrote directly to named files. Release client
+        # stream handles before downloading, so data is never truncated by a
+        # stale local writer or blocked by an open descriptor on Windows.
+        self.close()
+        seen = set()
+        for entry in (self._files.stdout, self._files.stderr):
+            if entry is None or entry.local_path is None or entry.remote_path is None:
+                continue
+            if entry.local_path in seen:
+                continue
+            seen.add(entry.local_path)
+            try:
+                if await self.context.transport.file_signature(entry.remote_path) is None:
+                    if required:
+                        raise FileNotFoundError(f"Remote output stream is missing: {entry.remote_path}")
+                    self._set_file_availability(entry.local_path, "skipped")
+                    continue
+                await self.context.transport.get_file(entry.remote_path, entry.local_path)
+                self._set_file_availability(entry.local_path, "available")
+            except Exception as exc:
+                self._set_file_availability(entry.local_path, "failed", str(exc))
+                raise
+
     async def _synchronize(self, state):
         required = state == RunState.FINISHED
         try:
+            if self._retrieve_primary_streams:
+                await self._retrieve_target_streams(required=required)
             await self._sync_output_files(required=required)
             await self._sync_cache_files()
             if required:

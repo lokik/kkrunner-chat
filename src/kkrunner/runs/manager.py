@@ -397,12 +397,29 @@ class RunManager(RunFileHistory):
         if latest.state.is_terminal or latest.state == RunState.POSTPROCESSING:
             return latest
         record = latest
+        if (
+            record.execution.endpoint.executor == "local-supervised"
+            and status.state.is_terminal and status.files is None
+        ):
+            # Backend status contains execution facts only. The client-side
+            # manifest projection owns streams and application artifacts.
+            from kkrunner.files.availability import local_manifest
+            status = replace(status, files=local_manifest(record.files, status))
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
         state = self._observed_run_state(record, status)
         execution = status.execution
         if execution is None and status.backend_id is not None:
             execution = record.execution.submitted(status.backend_id)
+        elif execution is not None and record.execution.submission_key is not None:
+            # A backend reports execution facts, not the client submission
+            # ticket. Preserve our original ticket, but reject disagreement.
+            if execution.submission_key is None:
+                execution = replace(
+                    execution, submission_key=record.execution.submission_key,
+                )
+            elif execution.submission_key != record.execution.submission_key:
+                raise ValueError("Backend status returned another submission key")
         if state in (RunState.FINISHED, RunState.POSTPROCESSING):
             result_files = status.files if status.files is not None else record.files
             if record.execution.directory.remote is None and result_files is not None:

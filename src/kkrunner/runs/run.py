@@ -378,112 +378,107 @@ class Run:
             )
 
     def submit(self):
+        """Submit exactly once, whether or not a RunRecord is persisted.
+
+        The irreversible boundary is Job.submit(). File staging precedes it,
+        and accepted backend identity is stored before the completion monitor
+        starts. A lost reply after that boundary is never retried implicitly.
+        """
         if self._started or self._settled:
             raise RuntimeError("Run already submitted")
-        if self.manager is None:
-            try:
-                if self._file_session is not None:
-                    self._parts.prepare_job()
-                self._job.submit()
-                self._start_completion()
-            except SubmissionNotStarted as exc:
-                # Preparation is provably before the backend submit boundary.
-                self._state = RunState.FAILED
-                self._failure_phase = FailurePhase.SUBMISSION
-                self._failure_message = str(exc)
-                self._exception = exc
-                self._settled = True
-                self._close_files_after_failed_submission()
-                raise
-            except BaseException as exc:
-                # Once submit is attempted, a missing acknowledgement cannot
-                # justify launching the calculation a second time.
-                self._state = RunState.UNKNOWN
-                self._failure_phase = None
-                self._failure_message = str(exc)
-                self._exception = exc
-                self._settled = True
-                self._close_files_after_failed_submission()
-                raise
-            return
 
-        if self._record.state != RunState.NEW:
-            raise RuntimeError(f"Run is already {self._record.state.value}")
-        from kkrunner.runs.manager import _UNCHANGED
-        resolve = getattr(self.backend, "resolve_submission", None)
-        if resolve is not None:
-            self._record = resolve(self._record, self.spec)
-        self._record = self.manager.reserve(self._record)
-        self._monitor_record_version = self._record.updated_at
+        manager = self.manager
+        if manager is not None:
+            if self._record.state != RunState.NEW:
+                raise RuntimeError(f"Run is already {self._record.state.value}")
+            resolve = getattr(self.backend, "resolve_submission", None)
+            if resolve is not None:
+                self._record = resolve(self._record, self.spec)
+            # Reservation and duplicate-submit checks are atomic at the store.
+            self._record = manager.reserve(self._record)
+            self._monitor_record_version = self._record.updated_at
+
+        submitted = False
         try:
-            if self._file_session is not None:
-                self._parts.prepare_submission()
-                self._record = self.manager.transition(
+            # Stage using the same session operations for tracked/untracked
+            # execution. Only the optional durable snapshot differs.
+            prepared = self._parts.prepare_submission()
+            if manager is not None and prepared:
+                from kkrunner.runs.manager import _UNCHANGED
+                self._record = manager.transition(
                     self._record,
                     execution=self.execution,
                     files=self.files if self.files is not None else _UNCHANGED,
                 )
                 self._monitor_record_version = self._record.updated_at
+
+            if self._file_session is not None:
                 self._parts.prepare_job()
-            else:
-                if self._parts.prepare_submission():
-                    self._record = self.manager.transition(
+
+            submitted = True
+            self._job.submit()
+            if manager is not None:
+                if self.backend_id is None and getattr(self.backend, "requires_backend_identity", True):
+                    # An attached-only direct Job may have no durable ID.
+                    # Every other tracked backend must confirm an identity
+                    # before the completion monitor can claim its resources.
+                    raise RuntimeError("Backend submit returned without a job identity")
+                from kkrunner.runs.manager import _UNCHANGED
+                # Commit accepted identity before giving a monitor ownership
+                # of streams. Receipt ACK is only safe after that commit.
+                self._record = manager.transition(
+                    self._record,
+                    execution=self.execution,
+                    files=self.files if self.files is not None else _UNCHANGED,
+                )
+                self._monitor_record_version = self._record.updated_at
+            self._start_completion()
+        except BaseException as exc:
+            # A preflight error is provably before Job.submit(). Once the
+            # boundary has been crossed, only SubmissionNotStarted proves
+            # that nothing launched. Every other failure is uncertain.
+            definitely_absent = isinstance(exc, SubmissionNotStarted) or not submitted
+            self._close_files_after_failed_submission()
+            self._exception = exc
+            self._failure_message = str(exc)
+            self._settled = True
+            if definitely_absent:
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.SUBMISSION
+                if manager is not None:
+                    self._record = manager.complete(
                         self._record,
+                        state=RunState.FAILED,
+                        message=str(exc),
+                        failure_phase=FailurePhase.SUBMISSION,
+                        artifacts_available=False,
+                    )
+            else:
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
+                if manager is not None and self.backend_id is not None:
+                    # Without a confirmed backend identity the durable
+                    # SUBMITTING reservation must remain unresolved.
+                    self._record = manager.transition(
+                        self._record, state=RunState.UNKNOWN,
+                        execution=self.execution, failure_phase=None,
+                    )
+            raise
+
+        if manager is not None:
+            manager.register_backend(self.backend, self._record.execution.endpoint)
+            with self._completion_lock:
+                if not self._completion_persisted:
+                    from kkrunner.runs.manager import _UNCHANGED
+                    self._record = manager.transition(
+                        self._record,
+                        state=self._observed_submission_state(),
                         execution=self.execution,
+                        failure_phase=self.failure_phase,
                         files=self.files if self.files is not None else _UNCHANGED,
                     )
                     self._monitor_record_version = self._record.updated_at
-            self._job.submit()
-            if self.backend_id is None and getattr(self.backend, "default_persistent", False):
-                # A recoverable backend must return its identity. An ordinary
-                # direct process may instead have only a live Job handle.
-                raise RuntimeError("Backend submit returned without a job identity")
-            # Persist accepted identity before creating the completion
-            # observer. A failed monitor start must remain reattachable.
-            self._record = self.manager.transition(
-                self._record,
-                execution=self.execution,
-                files=self.files if self.files is not None else _UNCHANGED,
-            )
-            self._monitor_record_version = self._record.updated_at
-            self._start_completion()
-        except SubmissionNotStarted as exc:
-            self._close_files_after_failed_submission()
-            self._record = self.manager.complete(
-                self._record,
-                state=RunState.FAILED,
-                message=self.failure_message or str(exc),
-                failure_phase=self.failure_phase or FailurePhase.SUBMISSION,
-                artifacts_available=False,
-            )
-            raise
-        except BaseException:
-            self._close_files_after_failed_submission()
-            if self.backend_id is not None:
-                # The backend identity is recoverable, but this client did not
-                # establish a working completion observer. Persist uncertainty
-                # instead of accepting a raw terminal state as Run completion.
-                self._record = self.manager.transition(
-                    self._record,
-                    state=RunState.UNKNOWN,
-                    execution=self.execution,
-                    failure_phase=None,
-                )
-            # Without a backend identity, SUBMITTING remains unresolved.
-            raise
-
-        self.manager.register_backend(self.backend, self._record.execution.endpoint)
-        with self._completion_lock:
-            if not self._completion_persisted:
-                self._record = self.manager.transition(
-                    self._record,
-                    state=self._observed_submission_state(),
-                    execution=self.execution,
-                    failure_phase=self.failure_phase,
-                    files=self.files if self.files is not None else _UNCHANGED,
-                )
-                self._monitor_record_version = self._record.updated_at
-        self.manager._acknowledge_submission(self.backend, self._record)
+            manager._acknowledge_submission(self.backend, self._record)
 
     def start(self):
         if self._started:

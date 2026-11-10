@@ -18,6 +18,7 @@ class SshDirectBackend:
     supports_result_file_retrieval = False
     default_persistent = False
     default_detached = False
+    requires_backend_identity = False
 
     def __init__(self, transport, *, filesystem_id=None):
         self.transport = transport

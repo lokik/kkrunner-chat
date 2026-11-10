@@ -74,7 +74,9 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         "status_remote",
         lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity"),
     )
-    queried = local_project.local_status(backend_id, files)
+    queried = local_project.local_status(backend_id)
+    from kkrunner.files.availability import local_manifest
+    projected = local_manifest(files, queried) if state.is_terminal else None
     monkeypatch.setattr(
         process_operations, "recover_remote",
         lambda run_id, request: (
@@ -98,14 +100,15 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         assert queried.files is None
         assert files.stdout.availability_state == "pending"
     else:
-        assert queried.files.stdout.availability_state == stream_state
+        assert queried.files is None
+        assert projected.stdout.availability_state == stream_state
         assert files.stdout.availability_state == "pending"
 
 
 def test_local_status_without_manifest_keeps_backend_facts(monkeypatch):
     facts = {"state": "finished", "return_code": 0, "error": None, "failure_phase": None}
     monkeypatch.setattr(local_project, "status_remote", lambda backend_id: facts)
-    status = local_project.local_status("opaque", files=None)
+    status = local_project.local_status("opaque")
     assert status.state == RunState.FINISHED
     assert status.backend_id == "opaque"
     assert status.files is None
