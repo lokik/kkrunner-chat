@@ -216,22 +216,12 @@ class SupervisedProcessJob:
             finish_monitor(self)
 
     def _request(self):
-        def paths(values):
-            return [path for value in values if (path := _file_path(value, self.spec.directory)) is not None]
-
+        from kkrunner.client.execution_request import execution_request
         return {
+            **execution_request(self.spec),
             "executor": "process",
             "id": self._run_id,
             "detached": True,
-            "directory": os.fspath(self.spec.directory),
-            **self.spec.command_request(),
-            "input_file": self.result.input_file,
-            "stdin": _file_path(self.spec.stdin, self.spec.directory),
-            "output_file": self.result.output_file,
-            "error_file": self.result.error_file,
-            "output_files": paths(self.spec.output_files),
-            "input_files": paths(self.spec.input_files),
-            "cache_files": paths(self.spec.cache_files),
         }
 
     def submit(self):
