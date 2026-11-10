@@ -11,7 +11,13 @@ from kkrunner.runs.base import ExecutionSpec
 
 
 class ProcessBackend:
-    """Create raw runners executed as local subprocesses."""
+    """Select direct-local or reconnectable supervisor-backed process Jobs.
+
+    The presence of a client submission key requests a durable supervised
+    execution. Transport-specific direct Jobs (such as a future SSH-direct
+    Job) should implement the shared Job/RunParts contract independently,
+    rather than forwarding through the supervisor operations.
+    """
 
     name = "process"
     supports_result_file_retrieval = False

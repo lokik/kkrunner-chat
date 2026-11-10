@@ -124,6 +124,27 @@ def test_process_strategies_have_distinct_implementations():
     assert SupervisedProcessJob.__module__ == "kkrunner.backends.process.supervised.job"
 
 
+def test_local_process_backend_selects_one_execution_strategy(tmp_path):
+    from kkrunner import ExecutionSpec
+    from kkrunner.backends.process.backend import ProcessBackend
+    from kkrunner.backends.process.direct.job import ProcessJob
+    from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+
+    backend = ProcessBackend()
+    spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
+    assert isinstance(backend.create_job(spec), ProcessJob)
+    assert isinstance(backend.create_job(spec, submission_key="run-1"), SupervisedProcessJob)
+
+
+def test_remote_process_service_reuses_supervised_backend_operations():
+    from kkrunner.backends.factory import backend_for_kind
+    from kkrunner.backends.process.supervised import operations
+    from kkrunner.remote import service
+
+    assert backend_for_kind("process") is operations
+    assert service.submit_remote.__module__ == "kkrunner.remote.service"
+
+
 def test_direct_process_import_does_not_load_supervisor():
     code = """
 import sys
