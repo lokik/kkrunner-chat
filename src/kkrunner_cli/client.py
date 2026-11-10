@@ -1,0 +1,187 @@
+"""Human-facing client for persisted runs and explicit backend handles.
+
+Only this module understands a local RunStore. The target-side agent has no
+run selection, store, or application-specific parser.
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+
+
+def parser(root):
+    root.add_argument("--store", help="local RunStore directory for run IDs")
+    root.add_argument("--host", help="SSH execution host (required for remote-id over SSH)")
+    root.add_argument("--ssh-option", action="append", default=[], help="SSH option, repeatable")
+    root.add_argument("--agent", default="kkrunner-agent", help="target-side agent executable")
+    actions = root.add_subparsers(dest="action", required=True)
+    for name in ("status", "follow", "cancel"):
+        action = actions.add_parser(name)
+        identity = action.add_mutually_exclusive_group(required=True)
+        identity.add_argument("run_id", nargs="?", help="persisted client run ID")
+        identity.add_argument("--remote-id", help="opaque backend handle, without a RunStore")
+        if name == "follow":
+            action.add_argument("--from-start", action="store_true",
+                                help="replay old output (default: only new output)")
+            action.add_argument("--stdout-path", help="explicit backend stdout file (remote-id only)")
+            action.add_argument("--stderr-path", help="explicit backend stderr file (remote-id only)")
+
+
+def _facts(status):
+    return {
+        "state": status.state.value,
+        "return_code": status.return_code,
+        "error": status.message,
+        "failure_phase": None if status.failure_phase is None else status.failure_phase.value,
+    }
+
+
+def _record(args):
+    if args.store is None:
+        raise ValueError("run_id requires --store pointing to the client RunStore")
+    from kkrunner.runs.records import RunStore
+    return RunStore(args.store).get(args.run_id)
+
+
+def _direct(args, *, action):
+    from kkrunner.remote.service import status_remote, cancel_remote, follow_remote
+    if not args.host:
+        if action == "status":
+            return status_remote(args.remote_id)
+        if action == "cancel":
+            return cancel_remote(args.remote_id)
+        offset = 0 if args.from_start else None
+        return follow_remote(args.remote_id, sys.stdout.buffer, sys.stderr.buffer,
+                             stdout_offset=offset, stderr_offset=offset,
+                             stdout_path=args.stdout_path, stderr_path=args.stderr_path)
+    from kkrunner.client.transport import SshTransport
+    from kkrunner.remote.protocol import json_request
+    transport = SshTransport(args.host, options=args.ssh_option, command=(args.agent,))
+    if action != "follow":
+        from kkrunner.support.async_utils import run_coro_sync
+        return run_coro_sync(json_request(transport, (args.agent,), action, args.remote_id))
+    return _follow_remote(transport, (args.agent,), args.remote_id,
+                          args.from_start, args.stdout_path, args.stderr_path)
+
+
+def _follow_remote(transport, command, remote_id, from_start, stdout_path, stderr_path):
+    from kkrunner.remote.protocol import control_command
+    from kkrunner.remote.stream import FramedRunningCommand
+    from kkrunner.support.async_utils import run_coro_sync
+
+    async def observe():
+        options = []
+        if stdout_path:
+            options.extend(("--stdout-path", stdout_path))
+        if stderr_path:
+            options.extend(("--stderr-path", stderr_path))
+        if from_start:
+            options.extend(("--stdout-offset", "0", "--stderr-offset", "0"))
+        else:
+            options.extend(("--live-stdout", "--live-stderr"))
+        proc = await transport.start(control_command(command, "follow", remote_id, *options, "--framed"))
+        observed = FramedRunningCommand(proc)
+
+        async def drain(source, destination):
+            while data := await source.read(65536):
+                destination.write(data)
+                destination.flush()
+
+        try:
+            await asyncio.gather(drain(observed.stdout, sys.stdout.buffer),
+                                 drain(observed.stderr, sys.stderr.buffer))
+            await observed.wait()
+            if observed.terminal is None:
+                raise RuntimeError("Agent follow ended without terminal status")
+            return observed.terminal
+        except BaseException:
+            observed.terminate()
+            raise
+
+    return run_coro_sync(observe())
+
+
+def _persisted(args):
+    from kkrunner.backends.contracts import JobAttachment
+    from kkrunner.client.endpoint import create_backend_from_endpoint
+    from kkrunner.remote.service import cancel_remote, follow_remote
+    record = _record(args)
+    if args.host:
+        raise ValueError("--host is only for --remote-id; persisted runs use their recorded endpoint")
+    if args.action == "follow" and (args.stdout_path or args.stderr_path):
+        raise ValueError("Explicit stream paths require --remote-id")
+    if record.state.is_terminal:
+        if args.action == "follow":
+            if args.from_start:
+                seen = set()
+                for entry, output in ((record.files.stdout, sys.stdout.buffer),
+                                      (record.files.stderr, sys.stderr.buffer)):
+                    if entry is not None and entry.local_path and entry.local_path not in seen:
+                        seen.add(entry.local_path)
+                        with open(entry.local_path, "rb") as source:
+                            while data := source.read(65536):
+                                output.write(data)
+                                output.flush()
+        elif args.action == "cancel":
+            return {"state": record.state.value, "return_code": record.return_code,
+                    "error": record.message}
+        return {"state": record.state.value, "return_code": record.return_code,
+                "error": record.message}
+    if record.execution.backend_id is None:
+        if args.action == "follow" or args.action == "cancel":
+            raise RuntimeError("Run has not been submitted")
+        return {"state": record.state.value, "return_code": record.return_code,
+                "error": record.message}
+    backend = create_backend_from_endpoint(record.execution.endpoint)
+    attachment = JobAttachment(record.execution, record.files)
+    if args.action == "status":
+        return _facts(backend.status(attachment)[0])
+    if record.execution.endpoint.executor == "ssh":
+        if args.action == "cancel":
+            from kkrunner.support.async_utils import run_coro_sync
+            return run_coro_sync(backend._cancel(record.execution.directory.remote,
+                                                 record.execution.backend_id))
+        return _follow_remote(backend.transport, backend.command, record.execution.backend_id,
+                              args.from_start,
+                              record.files.stdout.remote_path if record.files.stdout else None,
+                              record.files.stderr.remote_path if record.files.stderr else None)
+    if args.action == "cancel":
+        return cancel_remote(record.execution.backend_id)
+    offset = 0 if args.from_start else None
+    return follow_remote(
+        record.execution.backend_id, sys.stdout.buffer, sys.stderr.buffer,
+        stdout_offset=offset, stderr_offset=offset,
+        stdout_path=record.files.stdout.local_path if record.files.stdout else None,
+        stderr_path=record.files.stderr.local_path if record.files.stderr else None,
+    )
+
+
+def run(args):
+    if args.remote_id:
+        if args.store:
+            raise ValueError("--store cannot be combined with --remote-id")
+        if args.action == "follow":
+            result = _direct(args, action="follow")
+        else:
+            result = _direct(args, action=args.action)
+    else:
+        result = _persisted(args)
+    if args.action != "follow":
+        print(json.dumps(result), flush=True)
+    return result
+
+
+def main(argv=None):
+    root = argparse.ArgumentParser(prog="kkrunner", description="Inspect, follow, and cancel execution runs.")
+    parser(root)
+    args = root.parse_args(argv)
+    try:
+        return run(args)
+    except (ValueError, FileNotFoundError) as exc:
+        root.error(str(exc))
+
+
+if __name__ == "__main__":
+    main()
