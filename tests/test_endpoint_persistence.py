@@ -6,9 +6,9 @@ from kkrunner import RunState, RunStore
 from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
 from kkrunner.client.pool import BackendPool
 from kkrunner.backends import SupervisedProcessBackend
-from kkrunner.backends.contracts import JobAttachment
+from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
-from kkrunner.client import AgentBackendProxy, SshTransport
+from kkrunner.client import AgentRunEndpoint, SshTransport
 from kkrunner.runs.manager import RunManager
 
 
@@ -127,7 +127,7 @@ def test_pool_reconstructs_and_reuses_ssh_endpoint():
     first = pool.for_endpoint(endpoint)
     second = pool.for_endpoint(endpoint)
     assert first is second
-    assert isinstance(first, AgentBackendProxy)
+    assert isinstance(first, AgentRunEndpoint)
     assert isinstance(first.transport, SshTransport)
     assert first.transport.host == "cluster"
     assert first.transport.options == ("-p", "2222")
@@ -137,10 +137,10 @@ def test_pool_reconstructs_and_reuses_ssh_endpoint():
 
 
 def test_default_remote_psij_endpoint_survives_restart():
-    live = AgentBackendProxy(SshTransport("cluster"), backend="psij")
+    live = AgentRunEndpoint(SshTransport("cluster"), backend="psij")
     endpoint = endpoint_for_backend(live)
     restored = BackendPool().for_endpoint(endpoint)
     assert endpoint.psij_backend == "slurm"
-    assert isinstance(restored, AgentBackendProxy)
+    assert isinstance(restored, AgentRunEndpoint)
     assert restored.backend == "psij"
     assert restored.backend_options == {"backend": "slurm", "url": None}

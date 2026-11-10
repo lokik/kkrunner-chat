@@ -414,10 +414,10 @@ def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd)
 
 def test_ssh_endpoint_compression_roundtrips_from_transport():
     from kkrunner.client.endpoint import create_backend_from_endpoint, endpoint_for_backend
-    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.agent import AgentRunEndpoint
 
     for compressed in (False, True):
-        endpoint = endpoint_for_backend(AgentBackendProxy(SshTransport("cluster", zstd=compressed)))
+        endpoint = endpoint_for_backend(AgentRunEndpoint(SshTransport("cluster", zstd=compressed)))
         assert endpoint.ssh_zstd is compressed
         restored = create_backend_from_endpoint(endpoint)
         assert restored.transport.zstd is compressed
@@ -545,10 +545,10 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
 
 
 def test_agent_endpoint_retains_target_python_configuration():
-    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.endpoint import endpoint_for_backend, create_backend_from_endpoint
 
-    backend = AgentBackendProxy(
+    backend = AgentRunEndpoint(
         SshTransport("cluster", python_command=("python3.12",))
     )
     endpoint = endpoint_for_backend(backend)

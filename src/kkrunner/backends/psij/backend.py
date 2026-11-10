@@ -234,21 +234,20 @@ class PsijBackend:
             error_file=facts.get("stderr"),
         )
 
-    def open_job(self, run, callback=None, output_listener=None, start=True):
+    def attach_job(self, context, *, callback=None, output_listener=None, start=False):
         from kkrunner.client.endpoint import endpoint_for_backend
 
-        if run.execution.endpoint != endpoint_for_backend(self):
+        if context.endpoint != endpoint_for_backend(self):
             raise ValueError("Run does not belong to this PSI/J endpoint")
-        backend_id = run.execution.backend_id
-        if not backend_id:
-            raise ValueError("PSI/J run lacks backend ID")
-        job = self.attach_native_job(backend_id)
+        if context.ref.backend != "psij":
+            raise ValueError("Job belongs to a different backend")
+        job = self.attach_native_job(context.ref.token)
         spec = ExecutionSpec(
             argv=None,
-            input_file=run.files.input_file,
-            output_file=run.files.output_file,
-            error_file=None if run.files.stderr is None else run.files.stderr.local_path,
-            directory=run.execution.directory.local,
+            input_file=context.input_file,
+            output_file=context.output_file,
+            error_file=context.error_file,
+            directory=context.directory.local,
         )
         runner = PsijJob(
             self,
@@ -262,3 +261,4 @@ class PsijBackend:
         if start:
             runner.start()
         return runner
+

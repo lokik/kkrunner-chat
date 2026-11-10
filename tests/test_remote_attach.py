@@ -7,17 +7,17 @@ import pytest
 
 from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files.manifest import FileManifest
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
 from kkrunner.runs.model import Execution, WorkingDirectory
-from kkrunner.backends.contracts import JobAttachment
+from kkrunner.client.contracts import JobAttachment
 from kkrunner.runs.run import Run
 from kkrunner.runs.records import RunRecord
 
 
 def _executor(*, backend="process"):
-    return AgentBackendProxy(
+    return AgentRunEndpoint(
         LocalTransport(), backend=backend, command=(sys.executable, "-m", "kkrunner_cli")
     )
 

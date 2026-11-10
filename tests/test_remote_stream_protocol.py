@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.remote.stream import STREAM_MAGIC, FramedRunningCommand, StreamProtocolError, encode_stream_frame
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, RunState
@@ -108,7 +108,7 @@ def test_remote_transport_stderr_never_enters_calculation_files(tmp_path):
     output_file = (workdir / "output.txt").open("wb")
     error_file = (workdir / "output.err").open("wb")
     remote_root = tmp_path / "remote"
-    executor = AgentBackendProxy(_DiagnosticTransport(), command=(sys.executable, "-m", "kkrunner_cli"))
+    executor = AgentRunEndpoint(_DiagnosticTransport(), command=(sys.executable, "-m", "kkrunner_cli"))
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"),
         input_file=input_file,

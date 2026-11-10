@@ -1,6 +1,6 @@
 """Agentless SSH direct execution: no durable supervisor or reattachment."""
 
-from .backend import SshDirectBackend
+from .endpoint import SshDirectRunEndpoint
 from .transport import SshDirectTransport
 
-__all__ = ["SshDirectBackend", "SshDirectTransport"]
+__all__ = ["SshDirectRunEndpoint", "SshDirectTransport"]

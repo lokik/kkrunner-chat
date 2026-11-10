@@ -10,12 +10,12 @@ applications are needed there only when the command itself uses them.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.runs import LaunchSpec
-   from kkrunner.client import AgentBackendProxy, SshTransport
+   from kkrunner.client import AgentRunEndpoint, SshTransport
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
    manager = RunManager(RunStore(directory / "runs"))
-   executor = AgentBackendProxy(SshTransport("user@cluster"))
+   executor = AgentRunEndpoint(SshTransport("user@cluster"))
    spec = ExecutionSpec(
        ["python3", "-c", "print(42)"],
        directory=directory,
@@ -38,7 +38,7 @@ For a nonstandard installation, pass an explicit protocol command:
 
 .. code-block:: python
 
-   executor = AgentBackendProxy(
+   executor = AgentRunEndpoint(
        SshTransport("user@cluster"),
        command=("/opt/kkrunner/bin/kkrunner-agent"),
        filesystem_id="cluster-home",
@@ -63,14 +63,14 @@ It is useful for development and does not require a second machine:
    from kkrunner import ExecutionSpec
    from kkrunner.runs import LaunchSpec
    from kkrunner import Run
-   from kkrunner.client import AgentBackendProxy, LocalTransport
+   from kkrunner.client import AgentRunEndpoint, LocalTransport
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
    local, remote = directory / "local", directory / "remote"
    local.mkdir()
    remote.mkdir()
-   executor = AgentBackendProxy(
+   executor = AgentRunEndpoint(
        LocalTransport(), command=(sys.executable, "-m", "kkrunner_cli"),
    )
    outcome = Run.direct(executor, ExecutionSpec(

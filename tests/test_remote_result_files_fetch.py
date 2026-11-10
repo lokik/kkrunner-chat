@@ -4,7 +4,7 @@ from kkrunner import RunState
 from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 from kkrunner.files.manifest import FileMapping
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 
@@ -30,7 +30,7 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
     remote_later.write_text("not part of the historical snapshot")
     local_first = local_directory / "result-1.dat"
     local_first.write_text("keep-local")
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     run = RunRecord(
         id="historical",
         state=RunState.FINISHED,
@@ -90,7 +90,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
     existing = local_root / "calc" / "part-a.dat"
     existing.write_text("keep")
     transport = SpyTransport()
-    executor = AgentBackendProxy(transport)
+    executor = AgentRunEndpoint(transport)
     run = RunRecord(
         id="wildcard-fetch",
         state=RunState.FINISHED,
@@ -126,7 +126,7 @@ def test_remote_staged_result_keeps_canonical_file_absent(tmp_path):
     captured = FileVersion.capture(local, require_digest=True)
     local.unlink()
     (remote_dir / "run.out").write_bytes(b"original result")
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     run = RunRecord(
         id="staged-result",
         state=RunState.FINISHED,
@@ -167,7 +167,7 @@ def test_fetch_rejects_local_symlink_escape(tmp_path, wildcard):
     name = "*.dat" if wildcard else "result.dat"
     local_path = local_root / "alias" / name
     remote_path = remote_dir / name
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     run = RunRecord(
         id="escaped-result",
         state=RunState.FINISHED,
@@ -202,7 +202,7 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     (remote / "bad" / "output.dat").write_bytes(b"remote")
     canonical = local / "bad" / "output.dat"
     staged = local / "staged-output.dat"
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     run = RunRecord(
         id="escaped-staged",
         state=RunState.FINISHED,

@@ -8,8 +8,7 @@ from threading import Event
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
-from kkrunner.backends.contracts import UnsupportedCapability
-from kkrunner.client import LocalTransport, SshDirectBackend
+from kkrunner.client import LocalTransport, SshDirectRunEndpoint
 from kkrunner.client.ssh_direct.transport import _FINALIZE_SOURCE, _QUERY_SOURCE
 from kkrunner.client.ssh_direct.worker import WORKER_SOURCE
 from kkrunner.runs import LaunchSpec
@@ -40,7 +39,7 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
         output_files=(str(directory / "answer.dat"),),
         launch=LaunchSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.direct(SshDirectBackend(LocalTransport()), spec)
+    run = Run.direct(SshDirectRunEndpoint(LocalTransport()), spec)
     assert run.spec is spec
     observed = []
     run.add_output_listener(lambda data, kind: observed.append((kind, data)))
@@ -61,13 +60,13 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
 
 def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
-    backend = SshDirectBackend(LocalTransport())
+    backend = SshDirectRunEndpoint(LocalTransport())
     parts = backend.create_run_parts(spec, submission_key="client-submission-key")
     from kkrunner.backends.process.direct.job import ProcessJob
     assert isinstance(parts.job, ProcessJob)
-    with pytest.raises(UnsupportedCapability):
-        backend.open_run_parts(object())
-    assert backend.recover_submission("key", object()).disposition.value == "unsupported"
+    from kkrunner.client.contracts import ReopenableRunEndpoint
+    assert not isinstance(backend, ReopenableRunEndpoint)
+    assert not hasattr(backend, "recover_submission")
 
 
 def test_direct_ssh_cancellation_stops_remote_process(tmp_path):
@@ -81,7 +80,7 @@ def test_direct_ssh_cancellation_stops_remote_process(tmp_path):
         output_file=str(local / "stdout.txt"),
         launch=LaunchSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.direct(SshDirectBackend(LocalTransport()), spec)
+    run = Run.direct(SshDirectRunEndpoint(LocalTransport()), spec)
     ready = Event()
     run.add_output_listener(lambda data, kind: ready.set() if "ready" in data else None)
     run.submit()
@@ -106,7 +105,7 @@ def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
     from kkrunner.backends.process.backend import ProcessBackend
     from kkrunner.backends.process.direct.job import ProcessJob
     local = ProcessBackend().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
-    remote = SshDirectBackend(LocalTransport()).create_run_parts(
+    remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(
         ExecutionSpec(argv=("true",), directory=str(tmp_path))
     ).job
     assert type(local) is ProcessJob
@@ -124,7 +123,7 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
         error_file=str(root / "combined.log"),
         launch=LaunchSpec(local_root=str(root), remote_root=str(tmp_path / "remote")),
     )
-    run = Run.direct(SshDirectBackend(LocalTransport()), spec)
+    run = Run.direct(SshDirectRunEndpoint(LocalTransport()), spec)
     with pytest.raises(Exception, match="distinct output files"):
         run.submit()
     assert not (root / "combined.log").exists()
@@ -135,13 +134,13 @@ def test_direct_endpoint_round_trip_and_normalized_identity():
     from kkrunner.client.ssh_direct import SshDirectTransport
 
     endpoint = endpoint_for_backend(
-        SshDirectBackend(SshDirectTransport("user@example.net", options=("-p", "2200")))
+        SshDirectRunEndpoint(SshDirectTransport("user@example.net", options=("-p", "2200")))
     )
     assert endpoint.executor == "ssh-direct"
     restored = create_backend_from_endpoint(endpoint)
-    assert isinstance(restored, SshDirectBackend)
+    assert isinstance(restored, SshDirectRunEndpoint)
     assert endpoint_for_backend(restored) == endpoint
-    configured = SshDirectBackend(
+    configured = SshDirectRunEndpoint(
         SshDirectTransport("user@example.net", python_command=("python3.12",))
     )
     normalized_python = endpoint_for_backend(configured)
@@ -211,7 +210,7 @@ def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
     from kkrunner.client.remote_paths import RemotePathContext
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)
-    backend = SshDirectBackend(LocalTransport())
+    backend = SshDirectRunEndpoint(LocalTransport())
     adapter = SshProcessAdapter(RemotePathContext(backend, spec.launch))
     with pytest.raises(ValueError, match="staged request"):
         adapter.prepare(spec)

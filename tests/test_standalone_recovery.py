@@ -227,7 +227,7 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
 
 def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase, LaunchSpec
-    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.transport import LocalTransport
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -244,7 +244,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             return await super().get_file(source, destination)
 
     transport = Transport()
-    executor = AgentBackendProxy(transport, command=(sys.executable, "-m", "kkrunner"))
+    executor = AgentRunEndpoint(transport, command=(sys.executable, "-m", "kkrunner"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
         executor,

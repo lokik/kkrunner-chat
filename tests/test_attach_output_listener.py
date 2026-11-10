@@ -2,10 +2,10 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from kkrunner.backends import ProcessBackend, PsijBackend
-from kkrunner.backends.contracts import JobAttachment
+from kkrunner.client.contracts import JobAttachment
 from kkrunner.backends.psij.job import PsijJob
 from kkrunner.client.endpoint import ExecutionEndpoint
-from kkrunner.client.run_parts import RunParts
+from kkrunner.client.run_parts import RunParts, backend_job_context
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
 from kkrunner.client.agent import _AgentRunContext
 from kkrunner.client.remote_job import RemoteJob
@@ -210,8 +210,8 @@ def test_psij_attach_installs_listener_before_monitor(monkeypatch, tmp_path):
         self._done.set()
 
     monkeypatch.setattr(PsijJob, "_thread_main", immediate_monitor)
-    runner = _psij_executor().open_job(
-        JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files),
+    runner = _psij_executor().attach_job(
+        backend_job_context(JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), "psij"),
         callback=lambda result: events.append(("finished", None)),
         output_listener=lambda text, kind: events.append((text, kind)),
     )
@@ -227,8 +227,8 @@ def test_psij_attach_can_defer_monitor_start(monkeypatch, tmp_path):
         self._done.set()
 
     monkeypatch.setattr(PsijJob, "_thread_main", immediate_monitor)
-    runner = _psij_executor().open_job(
-        JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files),
+    runner = _psij_executor().attach_job(
+        backend_job_context(JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), "psij"),
         output_listener=lambda text, kind: events.append((text, kind)), start=False,
     )
     assert runner._thread is None

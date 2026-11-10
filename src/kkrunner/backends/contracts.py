@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 from kkrunner.runs.states import RunState
 
 if TYPE_CHECKING:
-    from kkrunner.files.manifest import FileManifest
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
-    from kkrunner.runs.model import Execution
+    from kkrunner.runs.model import Execution, WorkingDirectory
+    from kkrunner.client.endpoint import ExecutionEndpoint
 
 
 class JobFailurePhase(str, Enum):
@@ -41,16 +41,32 @@ class JobRef:
 
 
 @dataclass(frozen=True)
-class JobAttachment:
-    """Reattach context without passing a persisted RunRecord to a backend.
+class BackendJobContext:
+    """Backend-only reattachment context for an already identified Job.
 
-    The backend needs the execution endpoint, working directory and declared
-    files to reconstruct its observation; client lifecycle state, processing
-    attempts and project metadata are deliberately excluded.
+    No FileManifest, FileSession, client Run state or processing metadata.
+    Stream paths are observation hints; they do not own output files.
     """
 
+    ref: JobRef
+    endpoint: ExecutionEndpoint
+    directory: WorkingDirectory
+    input_file: Optional[str] = None
+    output_file: Optional[str] = None
+    error_file: Optional[str] = None
+
+    @property
+    def execution(self):
+        """Execution identity for native status queries, without file data."""
+        from kkrunner.runs.model import Execution
+        return Execution(self.endpoint, self.directory, self.ref.token)
+
+
+@dataclass(frozen=True)
+class SubmissionContext:
+    """Original submitted execution context, before its JobRef was known."""
+
     execution: Execution
-    files: FileManifest
 
 
 @dataclass(frozen=True)
@@ -211,18 +227,20 @@ class Backend(Protocol):
 
 
 class ReopenableBackend(Backend, Protocol):
-    def open_job(self, attachment: JobAttachment, *, callback=None, output_listener=None, start=False) -> Job: ...
+    def attach_job(
+        self, context: BackendJobContext, *, callback=None, output_listener=None, start=False,
+    ) -> Job: ...
 
 
 class RecoverableBackend(ReopenableBackend, Protocol):
     def recover_submission(
-        self, submission_key: str, submission: JobAttachment, *, submitted_at=None,
+        self, submission_key: str, submission: SubmissionContext, *, submitted_at=None,
     ) -> RecoveryResult: ...
 
 
 __all__ = [
-    "Backend", "Job", "JobAttachment", "JobFailurePhase", "JobRef", "JobStatus",
+    "Backend", "BackendJobContext", "Job", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoverableBackend", "RecoveryDisposition",
-    "RecoveryResult", "ReopenableBackend", "UnsupportedCapability",
+    "RecoveryResult", "ReopenableBackend", "SubmissionContext", "UnsupportedCapability",
     "job_status_from_facts",
 ]

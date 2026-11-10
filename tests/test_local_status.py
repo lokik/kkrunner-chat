@@ -6,7 +6,8 @@ import pytest
 
 from kkrunner import RunState
 from kkrunner.backends import SupervisedProcessBackend
-from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
+from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
+from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
 from kkrunner.backends.process.supervised import local as local_project
 from kkrunner.backends.process.supervised import operations as process_operations
@@ -35,7 +36,8 @@ def test_disappeared_local_process_is_unknown(monkeypatch):
     )
     monkeypatch.setattr(process_operations, "_process_outcome", lambda receipt_id: None)
     monkeypatch.setattr(process_operations.ProcessIdentity, "read", classmethod(lambda cls, pid: None))
-    (status,) = executor.status(JobAttachment(record.execution, record.files))
+    from kkrunner.client.run_parts import backend_job_context
+    (status,) = executor.status(backend_job_context(JobAttachment(record.execution, record.files), "process"))
     assert status.state == RunState.UNKNOWN
 
 
@@ -89,7 +91,9 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         Execution(ExecutionEndpoint(executor="local-supervised"), WorkingDirectory(str(tmp_path))),
         files,
     )
-    recovered = SupervisedProcessBackend().recover_submission("test-run", submission)
+    recovered = SupervisedProcessBackend().recover_submission(
+        "test-run", SubmissionContext(submission.execution),
+    )
     assert recovered.disposition is RecoveryDisposition.FOUND
     assert recovered.ref.backend == "process"
     assert recovered.ref.token == backend_id

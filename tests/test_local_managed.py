@@ -9,7 +9,9 @@ import pytest
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import SupervisedProcessBackend
-from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
+from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
+from kkrunner.client.contracts import JobAttachment
+from kkrunner.client.run_parts import backend_job_context
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
@@ -58,7 +60,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
 
 
 def _attachment(record):
-    return JobAttachment(record.execution, record.files)
+    return backend_job_context(JobAttachment(record.execution, record.files), "process")
 
 
 def test_project_launch_reconnect_and_shared_ticket(tmp_path):
@@ -75,12 +77,12 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     )
     assert (tmp_path / "out.txt").read_text() == "output\n"
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
-    assert executor.recover_submission(RUN_ID, _attachment(_record(tmp_path, None))).ref.token == handle
+    assert executor.recover_submission(RUN_ID, SubmissionContext(_record(tmp_path, None).execution)).ref.token == handle
     executor.acknowledge_submission(_record(tmp_path, handle))
     assert recover_submission(RUN_ID) is None
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     seen = []
-    attached = executor.open_job(
+    attached = executor.attach_job(
         _attachment(_record(tmp_path, handle)),
         output_listener=lambda text, kind: seen.append((text, kind)),
     )
@@ -128,7 +130,7 @@ def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
 
 def test_missing_ticket_keeps_submission_uncertain(tmp_path):
     assert SupervisedProcessBackend().recover_submission(
-        RUN_ID, _attachment(_record(tmp_path, None))
+        RUN_ID, SubmissionContext(_record(tmp_path, None).execution)
     ).disposition is RecoveryDisposition.INDETERMINATE
 
 
@@ -174,7 +176,7 @@ def test_none_stream_paths_are_live_only(tmp_path):
     assert runner.wait().return_code == 0
     assert not (tmp_path / "out.txt").exists()
     assert not (tmp_path / "err.txt").exists()
-    attached = SupervisedProcessBackend().open_job(
+    attached = SupervisedProcessBackend().attach_job(
         _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False,
     )
     assert attached.backend_id == runner.backend_id

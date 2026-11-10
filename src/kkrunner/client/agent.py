@@ -92,7 +92,7 @@ class _AgentRunContext(RemotePathContext):
             raise
 
 
-class AgentBackendProxy:
+class AgentRunEndpoint:
     default_persistent = True
     default_detached = True
 

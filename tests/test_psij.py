@@ -9,7 +9,9 @@ import pytest
 
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 from kkrunner.client.endpoint import ExecutionEndpoint
-from kkrunner.backends.contracts import JobAttachment
+from kkrunner.client.contracts import JobAttachment
+from kkrunner.backends.contracts import SubmissionContext
+from kkrunner.client.run_parts import backend_job_context
 from kkrunner.files import FileEntry, FileManifest
 import kkrunner.backends.psij.backend as psij_backend
 from kkrunner.backends.psij import slurm as psij_slurm
@@ -175,6 +177,10 @@ def _psij_run(directory, backend_id=None):
         metadata={"test": {"task": "DOS"}},
         processing_required=True,
     )
+
+
+def _native_attachment(execution, files):
+    return backend_job_context(JobAttachment(execution, files), "psij")
 
 
 def test_psij_runner_submits_and_streams_output(monkeypatch, tmp_path):
@@ -526,9 +532,9 @@ def test_psij_status_and_attach_check_complete_endpoint(monkeypatch, tmp_path):
         ),
     )
     with pytest.raises(ValueError, match="PSI/J endpoint"):
-        executor.status(JobAttachment(foreign.execution, foreign.files))
+        executor.status(_native_attachment(foreign.execution, foreign.files))
     with pytest.raises(ValueError, match="PSI/J endpoint"):
-        executor.open_job(JobAttachment(foreign.execution, foreign.files), start=False)
+        executor.attach_job(_native_attachment(foreign.execution, foreign.files), start=False)
     matching = replace(
         run,
         execution=replace(
@@ -543,12 +549,12 @@ def test_psij_status_and_attach_check_complete_endpoint(monkeypatch, tmp_path):
         return state
 
     monkeypatch.setattr(executor, "status_native", status_native)
-    assert executor.status(JobAttachment(matching.execution, matching.files)) == (state,)
-    attached = executor.open_job(JobAttachment(matching.execution, matching.files), start=False)
+    assert executor.status(_native_attachment(matching.execution, matching.files)) == (state,)
+    attached = executor.attach_job(_native_attachment(matching.execution, matching.files), start=False)
     assert attached.backend_id == "456"
     assert seen == ["456"]
     state = psij_backend.RunStatus(RunState.FINISHED, backend_id="456", return_code=0)
-    assert executor.status(JobAttachment(matching.execution, matching.files)) == (state,)
+    assert executor.status(_native_attachment(matching.execution, matching.files)) == (state,)
     assert seen == ["456", "456"]
 
 
@@ -625,7 +631,7 @@ def test_psij_executor_attaches_to_native_job(monkeypatch, tmp_path):
     output.write_bytes(b"old output\n")
     error.write_bytes(b"")
     run = _psij_run(tmp_path, "456")
-    runner = executor.open_job(JobAttachment(run.execution, run.files))
+    runner = executor.attach_job(_native_attachment(run.execution, run.files))
     runner.wait()
     assert backend.attached == "456"
     assert runner.backend_id == "456"
@@ -640,7 +646,7 @@ def test_psij_attach_to_stderr_only(monkeypatch, tmp_path):
     run = _psij_run(tmp_path, "456")
     run = replace(run, files=replace(run.files, stdout=None))
     (tmp_path / "run.err").write_bytes(b"existing error\n")
-    runner = executor.open_job(JobAttachment(run.execution, run.files))
+    runner = executor.attach_job(_native_attachment(run.execution, run.files))
     assert runner.wait().output_file is None
     assert runner.result.error_file == str(tmp_path / "run.err")
 
@@ -651,7 +657,7 @@ def test_psij_attach_without_recorded_streams(monkeypatch, tmp_path):
 
     run = _psij_run(tmp_path, "456")
     run = replace(run, files=replace(run.files, stdout=None, stderr=None))
-    attached = executor.open_job(JobAttachment(run.execution, run.files), start=False)
+    attached = executor.attach_job(_native_attachment(run.execution, run.files), start=False)
     assert attached.spec.is_partial
     assert attached.spec.argv is None
     assert attached.spec.output_file is None
@@ -674,7 +680,7 @@ def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
-    status = executor.recover_submission("run-1", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files))
+    status = executor.recover_submission("run-1", SubmissionContext(_psij_run(tmp_path).execution))
     assert status.ref.backend == "psij"
     assert status.ref.token == "123"
     assert status.directory == str(tmp_path)
@@ -707,7 +713,7 @@ def test_psij_recovers_completed_slurm_submission_from_accounting(
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
-    status = executor.recover_submission("run-2", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), submitted_at="2026-10-13T08:00:00+02:00")
+    status = executor.recover_submission("run-2", SubmissionContext(_psij_run(tmp_path).execution), submitted_at="2026-10-13T08:00:00+02:00")
     assert status.ref.token == "456"
     assert status.directory == (str(tmp_path) if use_workdir_paths else "/tmp")
     facts = executor.recover_native(
@@ -739,7 +745,7 @@ def test_psij_unavailable_accounting_keeps_submission_uncertain(
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     with pytest.raises(NotImplementedError, match=expected_error):
-        executor.recover_submission(run_id, JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), submitted_at="2026-10-13T08:00:00+02:00")
+        executor.recover_submission(run_id, SubmissionContext(_psij_run(tmp_path).execution), submitted_at="2026-10-13T08:00:00+02:00")
 
 
 def test_psij_remote_url_does_not_search_local_scheduler(monkeypatch, tmp_path):
@@ -782,7 +788,7 @@ def test_psij_recovery_rejects_ambiguous_live_jobs(monkeypatch, tmp_path):
         ),
     )
     with pytest.raises(RuntimeError, match="Multiple live Slurm jobs"):
-        executor.recover_submission("duplicate", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files))
+        executor.recover_submission("duplicate", SubmissionContext(_psij_run(tmp_path).execution))
 
 
 def test_psij_submit_is_serialized_across_threads(monkeypatch, tmp_path):
@@ -1062,8 +1068,8 @@ def test_psij_simultaneous_attaches_share_callback_and_finish(monkeypatch, tmp_p
     (tmp_path / "run.out").write_text("result")
     (tmp_path / "run.err").write_text("")
     run = _psij_run(tmp_path, "shared")
-    first = executor.open_job(JobAttachment(run.execution, run.files), start=False)
-    second = executor.open_job(JobAttachment(run.execution, run.files), start=False)
+    first = executor.attach_job(_native_attachment(run.execution, run.files), start=False)
+    second = executor.attach_job(_native_attachment(run.execution, run.files), start=False)
     assert first._job is second._job is job
     assert len(executor._jobs) == 1
 

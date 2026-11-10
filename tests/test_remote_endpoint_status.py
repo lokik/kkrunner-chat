@@ -3,8 +3,9 @@
 import pytest
 
 from kkrunner import RunState
-from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.backends.contracts import RecoveryDisposition
+from kkrunner.client.contracts import JobAttachment
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files import FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
@@ -15,7 +16,7 @@ class _Transport:
 
 
 def _run(native_id, *, backend="psij"):
-    endpoint = endpoint_for_backend(AgentBackendProxy(_Transport(), backend=backend))
+    endpoint = endpoint_for_backend(AgentRunEndpoint(_Transport(), backend=backend))
     return RunRecord(
         id=native_id or "unconfirmed",
         state=RunState.RUNNING,
@@ -33,7 +34,7 @@ def _attachment(record):
 
 
 def test_remote_endpoint_status_queries_opaque_handles_individually():
-    executor = AgentBackendProxy(_Transport(), backend="psij")
+    executor = AgentRunEndpoint(_Transport(), backend="psij")
     calls = []
     replies = {
         "job-1": {"state": "running", "return_code": None},
@@ -58,7 +59,7 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
 
 
 def test_remote_terminal_status_does_not_claim_client_completion():
-    executor = AgentBackendProxy(_Transport(), backend="process")
+    executor = AgentRunEndpoint(_Transport(), backend="process")
     calls = []
 
     async def request(action, *args, payload=None):
@@ -72,13 +73,13 @@ def test_remote_terminal_status_does_not_claim_client_completion():
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
-    executor = AgentBackendProxy(_Transport(), backend="process")
+    executor = AgentRunEndpoint(_Transport(), backend="process")
     with pytest.raises(ValueError, match="different remote endpoint"):
         executor.status(_attachment(_run("job", backend="psij")))
 
 
 def test_recovery_proves_identity_without_claiming_execution_status():
-    executor = AgentBackendProxy(_Transport(), backend="process")
+    executor = AgentRunEndpoint(_Transport(), backend="process")
     calls = []
 
     async def request(action, *args, payload=None):
@@ -114,7 +115,7 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     ],
 )
 def test_remote_recovery_does_not_guess_non_submission(reply, expected):
-    executor = AgentBackendProxy(_Transport(), backend="process")
+    executor = AgentRunEndpoint(_Transport(), backend="process")
 
     async def request(action, *args, payload=None):
         assert action == "recover"
@@ -139,7 +140,7 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     ],
 )
 def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
-    executor = AgentBackendProxy(_Transport(), backend="process")
+    executor = AgentRunEndpoint(_Transport(), backend="process")
 
     async def request(action, *args, payload=None):
         assert action == "status"

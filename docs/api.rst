@@ -76,7 +76,8 @@ Backends and their execution contracts
    Job
    JobRef
    JobStatus
-   JobAttachment
+   BackendJobContext
+   SubmissionContext
 
 .. currentmodule:: kkrunner.backends.contracts
 
@@ -98,7 +99,11 @@ Client endpoints, transport and pooling
 .. autosummary::
    :toctree: _generated
 
-   AgentBackendProxy
+   AgentRunEndpoint
+   SshDirectRunEndpoint
+   RunEndpoint
+   ReopenableRunEndpoint
+   JobAttachment
    ExecutionEndpoint
    BackendPool
    default_backend_pool
