@@ -178,3 +178,40 @@ def test_local_managed_cleanup_does_not_reclassify_backend_execution(tmp_path, m
     assert runner.failure_phase is None
     assert runner.return_code == 0
     assert isinstance(runner.output_error, OSError)
+
+
+def test_confirmed_job_output_cleanup_error_is_reported_by_run(tmp_path, monkeypatch):
+    """The managed Job stays successful; the local Run reports failed delivery."""
+    from kkrunner import Run
+    from kkrunner.runs.base import FailurePhase
+
+    class BrokenOutput(_TrackedOutput):
+        def close(self):
+            self.close_calls += 1
+            raise OSError("cannot close output")
+
+    output = BrokenOutput(str(tmp_path / "run.out"))
+    job = local_managed_job(ExecutionSpec(
+        argv=("true",), directory=str(tmp_path), output_file=output,
+    ))
+
+    async def complete_without_follow():
+        job._state = RunState.FINISHED
+        job._return_code = 0
+        job.result.return_code = 0
+
+    monkeypatch.setattr(job, "_monitor", complete_without_follow)
+    run = Run(job)
+    # Exercise the normal asynchronous completion path without submitting a
+    # real target calculation, which the test does not need.
+    job.start = lambda: None
+    run.start()
+    result = run.wait()
+    assert result.return_code == 0
+    assert job.state is RunState.FINISHED
+    assert job.exception is None
+    assert job.failure_phase is None
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.ARTIFACTS
+    assert isinstance(run.exception, OSError)
+    assert output.close_calls == 1

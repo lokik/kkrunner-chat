@@ -394,15 +394,16 @@ class Job:
                 try:
                     cleanup()
                 except BaseException as exc:
-                    if self._exception is None:
-                        self._exception = exc
-                        self._failure_message = str(exc)
                     if self._output_error is None:
                         self._output_error = exc
-                    # Closing client-side output handles is not a backend
-                    # execution failure. Keep terminal backend facts intact;
-                    # Run owns the final delivery/artifact decision.
+                    # A confirmed terminal backend result is independent of
+                    # client output decoding and cleanup. Let Run classify
+                    # delivery failures; do not make Job.wait() raise an
+                    # execution error after the backend has succeeded.
                     if not self._state.is_terminal:
+                        if self._exception is None:
+                            self._exception = exc
+                            self._failure_message = str(exc)
                         self._state = RunState.UNKNOWN
                         self._failure_phase = None
             finish_monitor(self)
