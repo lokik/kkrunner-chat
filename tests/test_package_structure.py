@@ -102,14 +102,14 @@ from kkrunner import backends
 assert 'ProcessBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
     'kkrunner.backends.process.engine',
-    'kkrunner.backends.scheduler.engine',
+    'kkrunner.backends.psij.backend',
     'kkrunner.client.agent', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import ProcessBackend
 from kkrunner.backends.process.engine import ProcessBackend as implementation
 assert ProcessBackend is implementation
 assert backends.ProcessBackend is ProcessBackend
-assert 'kkrunner.backends.scheduler.engine' not in sys.modules
+assert 'kkrunner.backends.psij.backend' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 

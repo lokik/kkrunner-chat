@@ -11,7 +11,8 @@ from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.backends.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest
-import kkrunner.backends.scheduler.engine as psij_backend
+import kkrunner.backends.psij.backend as psij_backend
+from kkrunner.backends.psij import slurm as psij_slurm
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
 
 
@@ -337,8 +338,8 @@ def test_psij_nonzero_completed_job_is_failed(monkeypatch, tmp_path):
 
 def test_psij_slurm_nonzero_accounted_job_is_failed(monkeypatch):
     executor = _executor(monkeypatch, _Backend())
-    monkeypatch.setattr(psij_backend, "_slurm_details", lambda native_id: {})
-    monkeypatch.setattr(psij_backend, "_scheduler_output", lambda argv: "123|COMPLETED|7:0|\\n".replace("\\n", "\n"))
+    monkeypatch.setattr(psij_slurm, "_slurm_details", lambda native_id: {})
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", lambda argv: "123|COMPLETED|7:0|\\n".replace("\\n", "\n"))
     status = executor.status_native("123")
     assert status.state == RunState.FAILED
     assert status.return_code == 7
@@ -611,7 +612,7 @@ def test_psij_native_attachment_and_status_share_one_job(monkeypatch):
     second = executor.attach_native_job("native-42")
     assert first is second
     assert executor.status_native("native-42").state == RunState.RUNNING
-    assert executor._status_job("native-42") is first
+    assert executor.attach_native_job("native-42") is first
     assert backend.attaches == [(first, "native-42")]
 
 
@@ -662,12 +663,12 @@ def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):
     def scheduler_output(argv):
         calls.append(tuple(argv))
         if argv[0] == "squeue":
-            return f"123|{psij_backend._submission_marker('run-1')}|RUNNING|{tmp_path}\n"
+            return f"123|{psij_slurm._submission_marker('run-1')}|RUNNING|{tmp_path}\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             return f"JobId=123 WorkDir={tmp_path} StdOut={tmp_path / 'run.out'} StdErr={tmp_path / 'run.err'}\n"
         raise AssertionError(argv)
 
-    monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     status = executor.recover_submission("run-1", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files))
     assert status.ref.backend == "psij"
     assert status.ref.token == "123"
@@ -697,10 +698,10 @@ def test_psij_recovers_completed_slurm_submission_from_accounting(
                 if use_workdir_paths
                 else ("/tmp", "out", "err")
             )
-            return f"456|{psij_backend._submission_marker('run-2')}|COMPLETED|{directory}|{stdout}|{stderr}|{exit_code}:0|\n"
+            return f"456|{psij_slurm._submission_marker('run-2')}|COMPLETED|{directory}|{stdout}|{stderr}|{exit_code}:0|\n"
         raise AssertionError(argv)
 
-    monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     status = executor.recover_submission("run-2", JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), submitted_at="2026-10-13T08:00:00+02:00")
     assert status.ref.token == "456"
     assert status.directory == (str(tmp_path) if use_workdir_paths else "/tmp")
@@ -731,7 +732,7 @@ def test_psij_unavailable_accounting_keeps_submission_uncertain(
             return ""
         raise AssertionError(argv)
 
-    monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     with pytest.raises(NotImplementedError, match=expected_error):
         executor.recover_submission(run_id, JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), submitted_at="2026-10-13T08:00:00+02:00")
 
@@ -739,7 +740,7 @@ def test_psij_unavailable_accounting_keeps_submission_uncertain(
 def test_psij_remote_url_does_not_search_local_scheduler(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
     executor.url = "ssh://other-cluster"
-    monkeypatch.setattr(psij_backend, "_scheduler_output", lambda argv: pytest.fail("must not search local Slurm"))
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", lambda argv: pytest.fail("must not search local Slurm"))
     with pytest.raises(NotImplementedError, match="local Slurm"):
         executor.recover_native("run-remote", str(tmp_path))
 
@@ -749,16 +750,16 @@ def test_psij_recovery_handles_job_disappearing_between_queries(monkeypatch, tmp
 
     def scheduler_output(argv):
         if argv[0] == "squeue":
-            return f"123|{psij_backend._submission_marker('run-race')}|RUNNING|{tmp_path}\n"
+            return f"123|{psij_slurm._submission_marker('run-race')}|RUNNING|{tmp_path}\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             raise subprocess.CalledProcessError(1, argv)
         if argv[:3] == ("scontrol", "show", "config"):
             return "AccountingStoreFlags = job_comment\n"
         if argv[0] == "sacct":
-            return f"123|{psij_backend._submission_marker('run-race')}|COMPLETED|{tmp_path}|{tmp_path / 'run.out'}|{tmp_path / 'run.err'}|0:0|\n"
+            return f"123|{psij_slurm._submission_marker('run-race')}|COMPLETED|{tmp_path}|{tmp_path / 'run.out'}|{tmp_path / 'run.err'}|0:0|\n"
         raise AssertionError(argv)
 
-    monkeypatch.setattr(psij_backend, "_scheduler_output", scheduler_output)
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     facts = executor.recover_native("run-race", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00")
     assert facts["native_id"] == "123"
     assert facts["state"] == RunState.FINISHED
@@ -768,11 +769,11 @@ def test_psij_recovery_handles_job_disappearing_between_queries(monkeypatch, tmp
 def test_psij_recovery_rejects_ambiguous_live_jobs(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
     monkeypatch.setattr(
-        psij_backend,
+        psij_slurm,
         "_scheduler_output",
         lambda argv: (
-            f"123|{psij_backend._submission_marker('duplicate')}|RUNNING|/one\n"
-            f"124|{psij_backend._submission_marker('duplicate')}|PENDING|/two\n"
+            f"123|{psij_slurm._submission_marker('duplicate')}|RUNNING|/one\n"
+            f"124|{psij_slurm._submission_marker('duplicate')}|PENDING|/two\n"
         ),
     )
     with pytest.raises(RuntimeError, match="Multiple live Slurm jobs"):

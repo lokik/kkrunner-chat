@@ -1,16 +1,14 @@
-"""PSI/J execution backend."""
+"""PSI/J execution job and backend; native Slurm queries live in slurm."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
-import shlex
 import subprocess
 from collections import OrderedDict
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from threading import Event, Lock, RLock
 
@@ -33,6 +31,8 @@ from kkrunner.runs.base import (
 )
 from kkrunner.support.growing_file_tail import follow_growing_files
 
+from . import slurm
+
 _log = logging.getLogger(__name__)
 
 _OBSERVATION_STOPPED = object()
@@ -54,25 +54,7 @@ _STATE_MAP = {
     "CANCELED": RunState.CANCELLED,
 }
 
-_SLURM_STATE_MAP = {
-    "PENDING": RunState.QUEUED,
-    "CONFIGURING": RunState.QUEUED,
-    "SUSPENDED": RunState.QUEUED,
-    "RUNNING": RunState.RUNNING,
-    "COMPLETING": RunState.RUNNING,
-    "RESIZING": RunState.RUNNING,
-    "COMPLETED": RunState.FINISHED,
-    "CANCELLED": RunState.CANCELLED,
-    "CANCELED": RunState.CANCELLED,
-    "BOOT_FAIL": RunState.FAILED,
-    "DEADLINE": RunState.FAILED,
-    "FAILED": RunState.FAILED,
-    "NODE_FAIL": RunState.FAILED,
-    "OUT_OF_MEMORY": RunState.FAILED,
-    "PREEMPTED": RunState.FAILED,
-    "REVOKED": RunState.FAILED,
-    "TIMEOUT": RunState.FAILED,
-}
+
 
 
 def _psij_state(status, *, attached=False, return_code=None):
@@ -113,159 +95,6 @@ def _path(value, directory=None):
         raise ValueError("PSI/J execution requires named input/output files") from exc
 
 
-def _scheduler_output(argv):
-    return subprocess.run(
-        tuple(argv),
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    ).stdout
-
-
-def _slurm_state(value):
-    value = (value or "").strip().upper().split("+", 1)[0]
-    return _SLURM_STATE_MAP.get(value, RunState.UNKNOWN)
-
-
-def _slurm_exit_code(value):
-    if not value:
-        return None
-    code = value.split(":", 1)[0]
-    try:
-        return int(code)
-    except ValueError:
-        return None
-
-
-def _slurm_details(native_id):
-    output = _scheduler_output(("scontrol", "--oneliner", "show", "job", str(native_id)))
-    fields = {}
-    for token in shlex.split(output):
-        name, separator, value = token.partition("=")
-        if separator:
-            fields[name] = value
-    return fields
-
-
-def _submission_marker(run_id):
-    """Short, scheduler-safe lookup marker for an arbitrary valid Run ID."""
-    return "kkrunner:" + hashlib.blake2s(run_id.encode("utf8"), digest_size=16).hexdigest()
-
-
-def _slurm_current_matches(run_id):
-    marker = _submission_marker(run_id)
-    output = _scheduler_output(("squeue", "--noheader", "--me", "--format=%i|%k|%T|%Z"))
-    matches = []
-    for line in output.splitlines():
-        fields = line.split("|", 3)
-        if len(fields) != 4:
-            continue
-        native_id, comment, state, directory = (field.strip() for field in fields)
-        if comment == marker:
-            matches.append((native_id, state, directory))
-    return tuple(matches)
-
-
-def _slurm_accounting_stores_comments():
-    output = _scheduler_output(("scontrol", "show", "config"))
-    for line in output.splitlines():
-        name, separator, value = line.partition("=")
-        if separator and name.strip() == "AccountingStoreFlags":
-            flags = {flag.strip().lower() for flag in value.split(",")}
-            return "job_comment" in flags
-    return False
-
-
-def _slurm_time(value):
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone()
-    return parsed.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _slurm_accounting_matches(run_id, submitted_at):
-    marker = _submission_marker(run_id)
-    output = _scheduler_output(
-        (
-            "sacct",
-            "-X",
-            "-n",
-            "-P",
-            f"--starttime={_slurm_time(submitted_at)}",
-            "--format=JobIDRaw,Comment,State,WorkDir,StdOut,StdErr,ExitCode",
-        )
-    )
-    matches = []
-    for line in output.splitlines():
-        fields = line.rstrip("|").split("|")
-        if len(fields) != 7:
-            continue
-        native_id, comment, state, directory, stdout, stderr, exit_code = fields
-        if comment.strip() == marker:
-            matches.append(
-                (
-                    native_id.strip(),
-                    state.strip(),
-                    directory.strip(),
-                    stdout.strip() or None,
-                    stderr.strip() or None,
-                    _slurm_exit_code(exit_code.strip()),
-                )
-            )
-    return tuple(matches)
-
-
-def _slurm_status_native(native_id):
-    """Read scheduler facts for a local Slurm job without initializing PSI/J."""
-    native_id = str(native_id)
-    # A PSI/J attach initially reports NEW; short-lived remote commands
-    # cannot wait for an asynchronous update or retain the Job cache.
-    # Query the same scheduler facts for local and SSH PSI/J runs.
-    try:
-        details = _slurm_details(native_id)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        details = {}
-
-    if details:
-        state = _slurm_state(details.get("JobState"))
-        return_code = _slurm_exit_code(details.get("ExitCode"))
-    else:
-        try:
-            output = _scheduler_output(
-                (
-                    "sacct",
-                    "-X",
-                    "-n",
-                    "-P",
-                    "-j",
-                    native_id,
-                    "--format=JobIDRaw,State,ExitCode",
-                )
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            output = ""
-        state = RunState.UNKNOWN
-        return_code = None
-        for line in output.splitlines():
-            fields = line.rstrip("|").split("|")
-            if len(fields) == 3 and fields[0].strip() == native_id:
-                state = _slurm_state(fields[1])
-                return_code = _slurm_exit_code(fields[2].strip())
-                break
-
-    if not state.is_terminal:
-        return_code = None
-    elif state == RunState.FINISHED and return_code is None:
-        return_code = 0
-    elif state == RunState.FINISHED and return_code != 0:
-        state = RunState.FAILED
-    return RunStatus(
-        state=state,
-        backend_id=native_id,
-        return_code=return_code,
-        failure_phase=FailurePhase.EXECUTION if state == RunState.FAILED else None,
-    )
 
 
 class PsijJob:
@@ -343,7 +172,7 @@ class PsijJob:
         environment = {"KKRunner_RUN_ID": self._run_id}
         attributes = None
         if self.executor.backend.lower() == "slurm":
-            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": _submission_marker(self._run_id)})
+            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": slurm._submission_marker(self._run_id)})
         return environment, attributes
 
     def _create_job(self):
@@ -803,16 +632,13 @@ class PsijBackend:
         for observer in observers:
             observer(status)
 
-    def _status_job(self, native_id):
-        return self.attach_native_job(native_id)
-
     def status_native(self, native_id):
         """Return the currently known native job status without waiting."""
         native_id = str(native_id)
         if self.backend.lower() == "slurm" and self.url is None:
-            return _slurm_status_native(native_id)
+            return slurm._slurm_status_native(native_id)
 
-        job = self._status_job(native_id)
+        job = self.attach_native_job(native_id)
         status = getattr(job, "status", None)
         state = _psij_state(status, attached=True)
         return_code = getattr(status, "exit_code", None)
@@ -841,7 +667,7 @@ class PsijBackend:
         if status.state != RunState.UNKNOWN or timeout == 0:
             return status
 
-        job = self._status_job(native_id)
+        job = self.attach_native_job(native_id)
         # The PSI/J Job object waits for notifications from its executor.
         # There is no repeated scheduler status query or sleep loop.
         job.wait(
@@ -857,13 +683,13 @@ class PsijBackend:
                 f"PSI/J backend {self.backend!r} at {self.url!r} cannot "
                 "recover uncertain submissions using local Slurm commands"
             )
-        matches = _slurm_current_matches(run_id)
+        matches = slurm._slurm_current_matches(run_id)
         if len(matches) > 1:
             raise RuntimeError(f"Multiple live Slurm jobs carry KKRunner run id {run_id!r}")
         if matches:
             native_id, state, workdir = matches[0]
             try:
-                details = _slurm_details(native_id)
+                details = slurm._slurm_details(native_id)
             except (FileNotFoundError, subprocess.CalledProcessError):
                 # The job may have finished between squeue and scontrol.
                 # Recover its terminal facts from accounting instead.
@@ -871,19 +697,19 @@ class PsijBackend:
             if details:
                 return {
                     "native_id": str(native_id),
-                    "state": _slurm_state(state),
+                    "state": slurm._slurm_state(state),
                     "directory": details.get("WorkDir") or workdir or directory,
                     "stdout": details.get("StdOut"),
                     "stderr": details.get("StdErr"),
                     "return_code": None,
                 }
 
-        if submitted_at is None or not _slurm_accounting_stores_comments():
+        if submitted_at is None or not slurm._slurm_accounting_stores_comments():
             raise NotImplementedError(
                 "Slurm cannot safely determine whether this submission already "
                 "finished because job comments are unavailable in accounting"
             )
-        accounting = _slurm_accounting_matches(run_id, submitted_at)
+        accounting = slurm._slurm_accounting_matches(run_id, submitted_at)
         if len(accounting) > 1:
             raise RuntimeError(f"Multiple Slurm accounting records carry KKRunner run id {run_id!r}")
         if not accounting:
@@ -894,7 +720,7 @@ class PsijBackend:
                 "Slurm has no matching job in squeue or accounting yet; submission acceptance is still uncertain"
             )
         native_id, state, workdir, stdout, stderr, return_code = accounting[0]
-        recovered_state = _slurm_state(state)
+        recovered_state = slurm._slurm_state(state)
         if recovered_state == RunState.FINISHED and return_code not in (None, 0):
             recovered_state = RunState.FAILED
         return {

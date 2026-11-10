@@ -10,8 +10,8 @@ from kkrunner.backends.process import mailbox as remote_mailbox
 from kkrunner.backends.process import operations as process_operations
 from kkrunner.backends.process import supervisor
 from kkrunner.backends.process import worker as remote_process_worker
-from kkrunner.backends.scheduler import engine as psij
-from kkrunner.backends.scheduler import operations as scheduler_operations
+from kkrunner.backends.psij import slurm as psij_slurm
+from kkrunner.backends.psij import agent as scheduler_operations
 from kkrunner.backends import replies
 from kkrunner.remote import service as remote_service
 
@@ -67,7 +67,7 @@ def test_remote_status_wire_reply_is_shared_between_process_and_psij(
     _, psij_id = _psij_handle(tmp_path)
     monkeypatch.setattr(process_operations, "_process_outcome", lambda receipt_id: (state, return_code, phase, error))
     monkeypatch.setattr(
-        psij,
+        psij_slurm,
         "_slurm_status_native",
         lambda native_id: RunStatus(
             state, backend_id=native_id, return_code=return_code, failure_phase=phase, message=error
@@ -156,7 +156,7 @@ def test_slurm_status_is_native_and_does_not_use_psij_job_cache(tmp_path, monkey
     monkeypatch.setattr(
         scheduler_operations, "_psij_executor", lambda opts: pytest.fail("local Slurm status must not initialize PSI/J")
     )
-    monkeypatch.setattr(psij, "_slurm_details", lambda native_id: {"JobState": "RUNNING", "ExitCode": "0:0"})
+    monkeypatch.setattr(psij_slurm, "_slurm_details", lambda native_id: {"JobState": "RUNNING", "ExitCode": "0:0"})
     status = remote_service.status_remote(remote_id)
     assert status["state"] == RunState.RUNNING.value
     assert status["return_code"] is None
@@ -175,8 +175,8 @@ def test_slurm_accounting_status_maps_state_and_exit_code(
     tmp_path, monkeypatch, accounting_state, code, expected_state, expected_phase
 ):
     _, remote_id = _psij_handle(tmp_path)
-    monkeypatch.setattr(psij, "_slurm_details", lambda _native_id: {})
-    monkeypatch.setattr(psij, "_scheduler_output", lambda argv: f"42|{accounting_state}|{code}:0|\n")
+    monkeypatch.setattr(psij_slurm, "_slurm_details", lambda _native_id: {})
+    monkeypatch.setattr(psij_slurm, "_scheduler_output", lambda argv: f"42|{accounting_state}|{code}:0|\n")
     status = remote_service.status_remote(remote_id)
     assert status["state"] == expected_state.value
     assert status["return_code"] == code
@@ -452,8 +452,8 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
     kept = tmp_path / "cache.pot"
     output.write_bytes(b"stale")
     kept.write_bytes(b"restart")
-    from kkrunner.backends.scheduler.engine import PsijJob
-    from kkrunner.backends.scheduler import operations as scheduler_operations
+    from kkrunner.backends.psij.backend import PsijJob
+    from kkrunner.backends.psij import agent as scheduler_operations
 
     class Runner(PsijJob):
         def __init__(self, spec):
