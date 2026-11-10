@@ -452,7 +452,7 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
     kept = tmp_path / "cache.pot"
     output.write_bytes(b"stale")
     kept.write_bytes(b"restart")
-    from kkrunner.backends.psij.backend import PsijJob
+    from kkrunner.backends.psij.job import PsijJob
     from kkrunner.backends.psij import agent as scheduler_operations
 
     class Runner(PsijJob):

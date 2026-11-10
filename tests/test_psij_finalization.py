@@ -2,7 +2,7 @@ from threading import Event
 from types import SimpleNamespace
 
 from kkrunner import RunState
-from kkrunner.backends.psij.backend import PsijJob
+from kkrunner.backends.psij.job import PsijJob
 from kkrunner.runs.base import OutputObservers
 
 

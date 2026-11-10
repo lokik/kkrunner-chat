@@ -135,7 +135,7 @@ helpers. They are not re-exported by the public facades.
 
    backends.process.engine.ProcessJob
    backends.process.managed.SupervisedProcessJob
-   backends.psij.backend.PsijJob
+   backends.psij.job.PsijJob
    client.remote_job.RemoteJob
    client.remote_files.RemoteFileSession
    runs.base.ExecutionResources
