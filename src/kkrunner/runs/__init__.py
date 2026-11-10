@@ -7,50 +7,43 @@ when only the execution contracts are required.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.runs.base import BackendRunner, ExecutionOutcome, ExecutionSpec, Executor, FailurePhase, LaunchSpec, ManagedRunner, MpiNotFoundWarning, MpiSpec, Runner, RunState, RunStatus
-    from kkrunner.runs.manager import DuplicateSubmissionError, HistoricalFileMismatchError, PersistentRunner, RunManager
+    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, FailurePhase, LaunchSpec, MpiNotFoundWarning, MpiSpec, RunState, RunStatus
+    from kkrunner.runs.manager import DuplicateSubmissionError, HistoricalFileMismatchError, RunManager
+    from kkrunner.runs.run import Run
     from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.processing import ProcessingPending
     from kkrunner.runs.records import CorruptRunRecord, RunRecord, RunStore
 
 __all__ = [
-    "BackendRunner",
     "CorruptRunRecord",
     "DuplicateSubmissionError",
     "Execution",
     "ExecutionOutcome",
     "ExecutionSpec",
-    "Executor",
     "FailurePhase",
     "HistoricalFileMismatchError",
     "LaunchSpec",
-    "ManagedRunner",
     "MpiNotFoundWarning",
     "MpiSpec",
-    "PersistentRunner",
+    "Run",
     "ProcessingPending",
     "RunManager",
     "RunRecord",
     "RunState",
     "RunStatus",
     "RunStore",
-    "Runner",
     "WorkingDirectory",
 ]
 
 
 def __getattr__(name):
     if name in (
-        "BackendRunner",
         "ExecutionOutcome",
         "ExecutionSpec",
-        "Executor",
         "FailurePhase",
         "LaunchSpec",
-        "ManagedRunner",
         "MpiNotFoundWarning",
         "MpiSpec",
-        "Runner",
         "RunState",
         "RunStatus",
     ):
@@ -59,7 +52,6 @@ def __getattr__(name):
     elif name in (
         "DuplicateSubmissionError",
         "HistoricalFileMismatchError",
-        "PersistentRunner",
         "RunManager",
     ):
         from . import manager
@@ -70,6 +62,8 @@ def __getattr__(name):
     ):
         from . import model
         value = getattr(model, name)
+    elif name == "Run":
+        from .run import Run as value
     elif name == "ProcessingPending":
         from .processing import ProcessingPending as value
     elif name in (

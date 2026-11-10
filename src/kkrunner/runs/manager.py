@@ -10,15 +10,16 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
-from kkrunner.backends.endpoint import ExecutorEndpoint, endpoint_for_executor
-from kkrunner.backends.pool import default_executor_pool
+from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
+from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
+from kkrunner.client.pool import default_backend_pool
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileManifest
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import FileState, FileVersion, file_digest
-from kkrunner.runs.base import Executor, FailurePhase, RunState, RunStatus, SubmissionNotStarted
+from kkrunner.runs.base import FailurePhase, RunState, RunStatus, SubmissionNotStarted
 from kkrunner.runs.conflicts import submission_conflicts
 from kkrunner.runs.model import Execution, WorkingDirectory
-from kkrunner.runs.processing import PostprocessingRunner, ProcessingPending
+from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
 from kkrunner.support.durability import sync_file
 
@@ -82,22 +83,22 @@ class DuplicateSubmissionError(RuntimeError):
 class RunManager:
     """Persist public run lifecycle without task-specific knowledge."""
 
-    def __init__(self, store=None, *, executor_pool=None, submitting_grace=60.0):
+    def __init__(self, store=None, *, backend_pool=None, submitting_grace=60.0):
         if submitting_grace < 0:
             raise ValueError("submitting_grace must be non-negative")
         self.store = store
-        self.executor_pool = executor_pool if executor_pool is not None else default_executor_pool()
+        self.backend_pool = backend_pool if backend_pool is not None else default_backend_pool()
         self._ack_lock = Lock()
         self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
 
-    def register_executor(self, executor: Executor, endpoint=None):
-        endpoint = endpoint or endpoint_for_executor(executor)
-        self.executor_pool.get(endpoint, lambda: executor)
+    def register_backend(self, backend, endpoint=None):
+        endpoint = endpoint or endpoint_for_backend(backend)
+        self.backend_pool.get(endpoint, lambda: backend)
         return endpoint
 
-    def executor_for(self, record):
-        return self.executor_pool.for_endpoint(record.execution.endpoint)
+    def backend_for(self, record):
+        return self.backend_pool.for_endpoint(record.execution.endpoint)
 
     @staticmethod
     def _concrete_result_files(manifests):
@@ -208,7 +209,7 @@ class RunManager:
             updated_at=now,
             metadata={} if metadata is None else metadata,
             processing_required=processing_required,
-            execution=Execution(endpoint or ExecutorEndpoint(), WorkingDirectory(local, remote_directory)),
+            execution=Execution(endpoint or ExecutionEndpoint(), WorkingDirectory(local, remote_directory)),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
         )
@@ -261,6 +262,12 @@ class RunManager:
         expected_processing_attempt=None,
     ):
         def merge(latest):
+            if latest.state == RunState.POSTPROCESSING and expected_processing_attempt is None:
+                # An external observation cannot complete or fail a run after
+                # its processor has claimed ownership. This check must live
+                # inside the RunStore update lock; checking before transition
+                # leaves a race between refresh and the processing claim.
+                return latest
             if expected_processing_attempt is not None and (
                 latest.processing_attempt != expected_processing_attempt or latest.state != RunState.POSTPROCESSING
             ):
@@ -332,17 +339,44 @@ class RunManager:
         record = self.store.get(record.id)
         if not self._is_stale_submitting(record):
             return record
-        executor = self.executor_for(record)
+        executor = self.backend_for(record)
+        from kkrunner.runs.model import WorkingDirectory
         try:
-            status = executor.recover_submission(
-                record.id,
-                record,
+            recovery = executor.recover_submission(
+                record.id, JobAttachment(record.execution, record.files),
                 submitted_at=record.updated_at,
             )
         except NotImplementedError:
             return record
-        if status is not None:
-            return self.update(record, status)
+        if recovery.disposition is RecoveryDisposition.FOUND:
+            endpoint = record.execution.endpoint
+            expected_kind = (
+                "psij" if endpoint.executor == "psij" or (
+                    endpoint.executor == "ssh" and endpoint.psij_backend is not None
+                ) else "process" if endpoint.executor in ("local", "ssh") else None
+            )
+            if expected_kind is not None and recovery.ref.backend != expected_kind:
+                raise ValueError("Recovered job belongs to a different backend")
+            execution = record.execution.submitted(recovery.ref.token)
+            if recovery.directory is not None and recovery.directory != execution.directory.target:
+                execution = replace(
+                    execution,
+                    directory=WorkingDirectory(execution.directory.local, recovery.directory),
+                )
+            files = record.files
+            if endpoint.executor in ("psij", "ssh"):
+                files = files.with_remote_stream_paths(
+                    stdout=recovery.output_file, stderr=recovery.error_file,
+                )
+            # Persist identity and stream paths before asking the backend for
+            # status. A failed observation must not lose the recovered identity.
+            attached = self.transition(record, execution=execution, files=files)
+            return self.update(
+                attached,
+                executor.status(JobAttachment(attached.execution, attached.files))[0],
+            )
+        if recovery.disposition is not RecoveryDisposition.ABSENT:
+            return record
 
         def mark_absent(latest):
             if latest.state != RunState.SUBMITTING or latest.execution.backend_id is not None:
@@ -399,6 +433,12 @@ class RunManager:
                 raise DuplicateSubmissionError(record, conflicts)
 
     def update(self, record, status: RunStatus):
+        # Backend refresh is observational. It cannot retract local processing
+        # or a terminal result, including when a scheduler returns stale data.
+        latest = self.store.get(record.id)
+        if latest.state.is_terminal or latest.state == RunState.POSTPROCESSING:
+            return latest
+        record = latest
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
         state = (
@@ -430,7 +470,7 @@ class RunManager:
                 message=status.message,
                 failure_phase=phase,
             )
-        self._acknowledge_submission(self.executor_for(updated), updated)
+        self._acknowledge_submission(self.backend_for(updated), updated)
         self._acknowledge_result(updated)
         return updated
 
@@ -673,7 +713,10 @@ class RunManager:
             raise ValueError(f"File is not a declared output or cache: {path}")
         if destination is not None:
             destination = check_destination(record.files, path, destination)
-        return self.executor_for(record).snapshot_file(record, path, destination=destination)
+        if record.execution.directory.remote is None:
+            from kkrunner.files.snapshots import local_snapshot
+            return local_snapshot(path, destination=destination)
+        return self.backend_for(record).snapshot_file(record, path, destination=destination)
 
     def retrieve_result_files(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
@@ -684,7 +727,7 @@ class RunManager:
         if not missing or record.execution.backend_id is None:
             return record
 
-        executor = self.executor_for(record)
+        executor = self.backend_for(record)
         if not executor.supports_result_file_retrieval:
             return record
 
@@ -754,7 +797,7 @@ class RunManager:
             if key in self._acknowledged_results:
                 return True
             try:
-                executor = self.executor_for(record)
+                executor = self.backend_for(record)
                 acknowledge = getattr(executor, "acknowledge", None)
                 if acknowledge is not None:
                     acknowledge(record)
@@ -780,71 +823,34 @@ class RunManager:
                 # The receipt remains recoverable until a subsequent refresh.
                 pass
 
-    @staticmethod
-    def _complete(persistent_run, result, callback):
-        persistent_run._sync_completion(result)
-        if (
-            persistent_run.record.state == RunState.FINISHED
-            and persistent_run.record.processing_required
-            and persistent_run._runner.state != RunState.FINISHED
-        ):
-            # Another observer finished while this one lost backend observation.
-            # Completion notification must not substitute a raw application result.
-            result = None
-            persistent_run._runner.result = None
-        if callback is not None:
-            # Completion of observation, including UNKNOWN, is notification.
-            # It is not proof that the backend calculation finished.
-            callback(result)
-
     def create_run(
-        self,
-        executor,
-        spec,
-        *,
-        process_result=None,
-        metadata=None,
-        processing_required=None,
-        callback=None,
-        run_id=None,
+        self, backend, spec, *, process_result=None, metadata=None,
+        processing_required=None, callback=None, run_id=None,
     ):
-        """Create a persistent run from raw execution plus generic processing."""
+        """Create one tracked Run; backend owns raw execution only."""
+        from kkrunner.runs.run import Run
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
-        endpoint = endpoint_for_executor(executor)
+        endpoint = endpoint_for_backend(backend)
         record = self.new_record(
             metadata=metadata,
             processing_required=(process_result is not None if processing_required is None else processing_required),
             directory=spec.directory,
             endpoint=endpoint,
-            remote_directory=(executor.submission_directory(spec) if endpoint.executor == "ssh" else None),
+            remote_directory=(backend.submission_directory(spec) if endpoint.executor == "ssh" else None),
             files=FileManifest.from_spec(spec),
             run_id=run_id,
         )
-        self.register_executor(executor, endpoint)
-
-        raw = executor.create_managed_run(spec, run_id=record.id)
-        # The manifest is owned by RunRecord. Local execution observes its
-        # publication outcomes, without persisting an independent file list.
-        set_manifest = getattr(raw, "set_manifest", None)
-        if set_manifest is not None:
-            set_manifest(record.files)
-        processor = None
-        if record.processing_required:
-
-            def processor(outcome):
-                return self._process_outcome(
-                    record,
-                    outcome,
-                    process_result,
-                    files=getattr(raw, "files", None),
-                    execution=(getattr(raw, "execution", None) or record.execution.submitted(raw.backend_id)),
-                )
-
-        processed = PostprocessingRunner(raw, processor)
-        persistent_run = PersistentRunner(self, executor, processed, record)
-        processed.callback = lambda result: self._complete(persistent_run, result, callback)
-        return persistent_run
+        self.register_backend(backend, endpoint)
+        parts = backend.create_run_parts(spec, submission_key=record.id)
+        if parts.files is None:
+            set_manifest = getattr(parts.job, "set_manifest", None)
+            if set_manifest is not None:
+                set_manifest(record.files)
+        return Run(
+            parts.job, backend=backend, manager=self, record=record,
+            process_result=process_result, callback=callback, file_session=parts.files,
+        )
 
     def refresh(self, records=None):
         self.reconcile_acknowledgements()
@@ -852,13 +858,25 @@ class RunManager:
         current = {record.id: record for record in records}
         groups = {}
         for record in records:
-            if record.execution.backend_id is None:
+            if record.execution.backend_id is None and self._is_stale_submitting(record):
+                record = self.recover_submitting(record)
+                current[record.id] = record
+            if record.execution.backend_id is None or record.state.is_terminal:
+                # Recovery may have completed this record and acknowledged
+                # its backend receipt. Do not immediately observe it again.
                 continue
-            executor = self.executor_for(record)
+            if record.state == RunState.POSTPROCESSING:
+                # Execution has already completed and the client owns the
+                # processing attempt. Re-querying backend status could
+                # overwrite local processing state with a stale failure.
+                continue
+            executor = self.backend_for(record)
             groups.setdefault(executor, []).append(record)
 
         for executor, group in groups.items():
-            statuses = executor.status(*group)
+            statuses = executor.status(
+                *(JobAttachment(record.execution, record.files) for record in group)
+            )
             if len(statuses) != len(group):
                 raise RuntimeError("Executor returned wrong number of run statuses")
             for record, status in zip(group, statuses):
@@ -866,295 +884,38 @@ class RunManager:
         return tuple(current[record.id] for record in records)
 
     def attach(
-        self,
-        run,
-        *,
-        process_result=None,
-        executor=None,
-        callback=None,
-        output_listener=None,
+        self, run, *, process_result=None, backend=None,
+        callback=None, output_listener=None,
     ):
-        """Attach raw execution, then resume client-side postprocessing."""
+        """Open a tracked Run without resubmitting its backend job."""
+        from kkrunner.runs.run import Run
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
         if record.state.is_terminal:
-            raise RuntimeError("Run is already terminal; load its historical result or use an explicit retry")
+            raise RuntimeError("Run is already terminal; use explicit retry")
         if process_result is not None and not record.processing_required:
-            raise ValueError("This run did not request postprocessing")
+            raise ValueError("This Run did not request postprocessing")
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has no backend reference")
-        if executor is None:
-            executor = self.executor_for(record)
-        else:
-            endpoint = record.execution.endpoint
-            self.register_executor(executor, endpoint)
-
-        raw = executor.attach(
-            record,
+        backend = self.backend_for(record) if backend is None else backend
+        self.register_backend(backend, record.execution.endpoint)
+        parts = backend.open_run_parts(
+            JobAttachment(record.execution, record.files),
             output_listener=output_listener,
-            start=False,
         )
-        processor = None
-        if record.processing_required:
-
-            def processor(outcome):
-                return self._process_outcome(
-                    record,
-                    outcome,
-                    process_result,
-                    files=getattr(raw, "files", None),
-                    execution=(getattr(raw, "execution", None) or record.execution.submitted(raw.backend_id)),
-                )
-
-        processed = PostprocessingRunner(raw, processor)
-        persistent_run = PersistentRunner(self, executor, processed, record)
-        processed.callback = lambda result: self._complete(persistent_run, result, callback)
-        persistent_run.start()
-        return persistent_run
-
-
-class PersistentRunner:
-    """Caller-owned runner that persists the public lifecycle directly."""
-
-    def __init__(self, manager, executor, runner, record):
-        self.manager = manager
-        self.executor = executor
-        self._runner = runner
-        self._record = record
-        self._completion_lock = Lock()
-        self._completion_persisted = False
-        self._monitor_record_version = record.updated_at
-
-    @property
-    def id(self):
-        return self._record.id
-
-    @property
-    def record(self):
-        return self._record
-
-    @property
-    def result(self):
-        return self._runner.result
-
-    @property
-    def backend_id(self):
-        return self._runner.backend_id
-
-    @property
-    def execution(self):
-        proposed = getattr(self._runner, "execution", None)
-        if proposed is not None:
-            return proposed
-        if self.backend_id is None:
-            return None
-        return self._record.execution.submitted(self.backend_id)
-
-    @property
-    def files(self):
-        return getattr(self._runner, "files", None)
-
-    @property
-    def exception(self):
-        return self._runner.exception
-
-    @property
-    def failure_phase(self):
-        return _failure_phase(getattr(self._runner, "failure_phase", None))
-
-    @property
-    def state(self):
-        """Observe runner state without persisting a transition."""
-        state = self._runner.state
-        if state == RunState.NEW and self._record.state != RunState.NEW:
-            return self._record.state
-        if state == RunState.UNKNOWN and self._record.state != RunState.NEW:
-            # The completed observer cannot overwrite a newer refresh.
-            return self._record.state
-        return self._record.state if self._record.state.is_terminal else state
-
-    def snapshot_file(self, file, *, destination=None):
-        """Obtain currently readable bytes or a separate local copy."""
-        return self.manager.snapshot_file(self.id, file, destination=destination)
-
-    def add_output_listener(self, callback):
-        return self._runner.add_output_listener(callback)
-
-    def add_output_error_listener(self, callback):
-        return self._runner.add_output_error_listener(callback)
-
-    def submit(self):
-        if self._record.state != RunState.NEW:
-            raise RuntimeError(f"Run is already {self._record.state.value}")
-        resolve = getattr(self.executor, "resolve_submission", None)
-        if resolve is not None:
-            self._record = resolve(self._record, self._runner.spec)
-        self._record = self.manager.reserve(self._record)
-        self._monitor_record_version = self._record.updated_at
         try:
-            prepare = getattr(self._runner, "prepare_submission", None)
-            if prepare is not None and prepare():
-                # Persist the exact staged file map and target directory before
-                # calling the backend. A lost submit reply can then be recovered
-                # without depending on live runner state.
-                self._record = self.manager.transition(
-                    self._record,
-                    execution=self.execution,
-                    files=self.files if self.files is not None else _UNCHANGED,
-                )
-                self._monitor_record_version = self._record.updated_at
-            result = self._runner.submit()
-        except SubmissionNotStarted as exc:
-            phase = self.failure_phase or FailurePhase.SUBMISSION
-            message = getattr(self._runner, "failure_message", None) or str(exc)
-            self._record = self.manager.complete(
-                self._record,
-                state=RunState.FAILED,
-                message=message,
-                failure_phase=phase,
-                artifacts_available=False,
+            attached = Run(
+                parts.job, backend=backend, manager=self, record=record,
+                process_result=process_result, callback=callback, file_session=parts.files,
             )
-            raise
+            attached.start()
         except BaseException:
-            # No backend ID means submission may be uncertain. Keep SUBMITTING so
-            # recover_submitting() can resolve it instead of inventing failure.
-            backend_id = self.backend_id
-            if backend_id is not None:
-                self._record = self.manager.transition(
-                    self._record,
-                    state=self._runner.state,
-                    execution=self.execution,
-                    failure_phase=self.failure_phase,
-                )
+            # Opening an attachment transfers stream ownership to Run only
+            # once its observer has started. Do not leak file descriptors when
+            # constructing or starting the attached observer fails.
+            if parts.files is not None and not parts.job.observing:
+                # A running monitor still needs these streams; its Run
+                # completion owns the eventual close.
+                parts.files.close()
             raise
+        return attached
 
-        backend_id = self.backend_id
-        if backend_id is None:
-            raise RuntimeError("Executor submit returned without a backend ID")
-        self.manager.register_executor(self.executor, self._record.execution.endpoint)
-        with self._completion_lock:
-            # A fast monitor may have already persisted an UNKNOWN or
-            # terminal result. Do not overwrite that result with an older
-            # status observed during submission.
-            if not self._completion_persisted:
-                self._record = self.manager.transition(
-                    self._record,
-                    state=self._runner.state,
-                    execution=self.execution,
-                    failure_phase=self.failure_phase,
-                    files=self.files if self.files is not None else _UNCHANGED,
-                )
-                self._monitor_record_version = self._record.updated_at
-        self.manager._acknowledge_submission(self.executor, self._record)
-        return result
-
-    def start(self):
-        self._runner.start()
-        with self._completion_lock:
-            # An attached PSI/J job can initially report NEW before the
-            # scheduler provides its actual state.
-            state = self._runner.state
-            if not self._completion_persisted and self.backend_id is not None and state != RunState.NEW:
-                self._record = self.manager.transition(
-                    self._record,
-                    state=state,
-                    execution=self.execution,
-                    failure_phase=self.failure_phase,
-                )
-                self._monitor_record_version = self._record.updated_at
-
-    def _sync_completion(self, result):
-        # Callback and wait() can reach this path concurrently. Only the
-        # first successful durable completion may publish and acknowledge it.
-        with self._completion_lock:
-            if self._completion_persisted:
-                return
-            latest = self.manager.store.get(self.id)
-            if latest.state.is_terminal:
-                self._record = latest
-                self._completion_persisted = True
-                self.manager._acknowledge_result(latest)
-                return
-            state = self._runner.state
-            phase = self.failure_phase
-            message = getattr(self._runner, "failure_message", None)
-            error = self._runner.exception
-            if message is None and error is not None:
-                message = str(error)
-            if state == RunState.UNKNOWN:
-                # The observer ended, not necessarily the calculation.
-                # No final artifact publication or completion timestamp.
-                self._record = self.manager.transition(
-                    self._record,
-                    state=state,
-                    execution=self.execution,
-                    message=message,
-                    expected_updated_at=self._monitor_record_version,
-                )
-                self._completion_persisted = True
-                return
-            if not state.is_terminal:
-                return
-            if state == RunState.FAILED and phase is None:
-                phase = FailurePhase.EXECUTION
-
-            artifacts_available = phase not in _NO_ARTIFACTS_FAILURES
-            self._record = self.manager.complete(
-                self._record,
-                state=state,
-                execution=self.execution,
-                return_code=getattr(self._runner, "return_code", None),
-                message=message,
-                failure_phase=phase,
-                artifacts_available=artifacts_available,
-                files=self.files,
-            )
-            if self._record.state.is_terminal:
-                self._completion_persisted = True
-
-    def wait(self):
-        try:
-            result = self._runner.wait()
-        finally:
-            if self._record.state != RunState.NEW:
-                self._sync_completion(self.result)
-        if (
-            self._record.state == RunState.FINISHED
-            and self._record.processing_required
-            and self._runner.state != RunState.FINISHED
-        ):
-            raise ProcessingPending("Result was processed by another observer; load its historical result")
-        return result
-
-    def run(self):
-        if self._record.state == RunState.NEW:
-            self.submit()
-        return self.wait()
-
-    async def run_async(self):
-        return await asyncio.to_thread(self.run)
-
-    def refresh(self):
-        with self._completion_lock:
-            self._record = self.manager.refresh((self._record,))[0]
-            return self._record
-
-    def stop_observation(self):
-        """Detach this client without cancelling its still-running job.
-
-        The completion callback persists a recoverable UNKNOWN observation.
-        Call wait() to ensure the monitor has finished and been detached.
-        """
-        return self._runner.stop_observation()
-
-    def cancel(self):
-        try:
-            return self._runner.cancel()
-        finally:
-            with self._completion_lock:
-                if self._record.state != RunState.NEW and not self._completion_persisted:
-                    self._record = self.manager.transition(
-                        self._record,
-                        state=self._runner.state,
-                        execution=self.execution,
-                        failure_phase=self.failure_phase,
-                    )

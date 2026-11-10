@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionSpec
-from kkrunner.backends import psij as psij_backend
+import kkrunner.backends.psij.backend as psij_backend
+from kkrunner.backends.psij import slurm as psij_slurm
 
 
 class _JobSpec:
@@ -34,7 +35,7 @@ _FAKE_PSIJ = SimpleNamespace(Job=_Job, JobSpec=_JobSpec, JobAttributes=_JobAttri
 
 def _executor(monkeypatch, backend="slurm"):
     monkeypatch.setattr(psij_backend, "_load_psij", lambda: _FAKE_PSIJ)
-    return psij_backend.PsijExecutor(backend, job_executor=object())
+    return psij_backend.PsijBackend(backend, job_executor=object())
 
 
 def _spec(tmp_path):
@@ -45,18 +46,20 @@ def _spec(tmp_path):
 @pytest.mark.parametrize("backend", ("slurm", "pbs"))
 def test_project_job_carries_kkrunner_identity(monkeypatch, tmp_path, backend):
     executor = _executor(monkeypatch, backend)
-    runner = executor.create_managed_run(_spec(tmp_path), run_id="run-123")
+    runner = executor.create_job(_spec(tmp_path), submission_key="run-123")
     job_spec = runner._job.spec
     assert job_spec.environment == {"KKRunner_RUN_ID": "run-123"}
     if backend == "slurm":
-        assert job_spec.attributes.custom_attributes == {"slurm.comment": "kkrunner:run-123"}
+        assert job_spec.attributes.custom_attributes == {
+            "slurm.comment": psij_slurm._submission_marker("run-123")
+        }
     else:
         assert job_spec.attributes is None
 
 
 def test_nonpersistent_psij_job_has_no_recovery_metadata(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, "slurm")
-    runner = executor.create_run(_spec(tmp_path))
+    runner = executor.create_job(_spec(tmp_path))
     job_spec = runner._job.spec
     assert job_spec.environment is None
     assert job_spec.attributes is None

@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files import queries
-from kkrunner.remote.transport import LocalTransport
+from kkrunner.client.transport import LocalTransport
 
 from .test_transport import _LoopbackSshTransport
 
@@ -137,15 +137,15 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
 
 
 def test_remote_endpoint_reuses_configured_file_service_command():
-    from kkrunner.backends.endpoint import create_executor_from_endpoint, endpoint_for_executor
-    from kkrunner.remote.executor import RemoteEndpointExecutor
-    from kkrunner.remote.transport import SshTransport
+    from kkrunner.client.endpoint import create_backend_from_endpoint, endpoint_for_backend
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.transport import SshTransport
 
     command = (sys.executable, "-m", "kkrunner")
     transport = SshTransport("host")
-    executor = RemoteEndpointExecutor(transport, command=command)
+    executor = AgentBackendProxy(transport, command=command)
     assert transport.command == executor.command == command
-    restored = create_executor_from_endpoint(endpoint_for_executor(executor))
+    restored = create_backend_from_endpoint(endpoint_for_backend(executor))
     assert restored.transport.command == restored.command == command
 
 
@@ -198,9 +198,9 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
         Observed(),
         declared_cache_files=tuple(workdir / name for name in ("*.pot", "*.cache", "exact", "missing")),
     )
-    runner = executor.create_run(spec)
+    files = executor.create_run_parts(spec).files
     try:
-        asyncio.run(runner._prepare_cache_files({}, FileManifest.from_spec(spec)))
+        asyncio.run(files._prepare_cache_files({}, FileManifest.from_spec(spec)))
         remote = remote_root / "calculation"
         assert calls == [
             (
@@ -208,9 +208,9 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
                 str(remote_root),
             ),
         ]
-        assert len(runner._cache_before) == 3
-        assert runner._cache_targets[str(workdir / "exact")][1] == queries.local_file_signature(remote / "exact")
-        assert runner._cache_targets[str(workdir / "missing")][1] is None
+        assert len(files._cache_before) == 3
+        assert files._cache_targets[str(workdir / "exact")][1] == queries.local_file_signature(remote / "exact")
+        assert files._cache_targets[str(workdir / "missing")][1] is None
     finally:
         spec.input_file.close()
         spec.output_file.close()

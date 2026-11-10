@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.remote.executor import RemoteEndpointExecutor
-from kkrunner.remote.transport import LocalTransport
+from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, LaunchSpec, RunState, SubmissionNotStarted
-from kkrunner.runs.processing import PostprocessingRunner
+from kkrunner.runs.run import Run
 
 
 class _SpyTransport(LocalTransport):
@@ -34,11 +34,11 @@ def _processed_run(executor, spec):
         error = b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes()
         return SimpleNamespace(return_code=outcome.return_code, output=output, error=error)
 
-    return PostprocessingRunner(executor.create_run(spec), process)
+    return Run.direct(executor, spec, process_result=process)
 
 
 def _executor(transport=None, **kwargs):
-    return RemoteEndpointExecutor(
+    return AgentBackendProxy(
         transport or LocalTransport(), command=(sys.executable, "-m", "kkrunner"), **kwargs
     )
 
@@ -125,13 +125,13 @@ def test_remote_executor_local_transport_streams_output(tmp_path):
 def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
     transport = _SpyTransport()
     executor, spec, _, remote_root = _text_run(tmp_path, transport)
-    runner = executor.create_run(spec)
+    runner = Run.direct(executor, spec)
 
     async def prepare():
-        directory = await runner.executor.map_directory(spec.directory)
+        directory = await runner._file_session.context.map_directory(spec.directory)
         from kkrunner.files.manifest import FileManifest
 
-        return await runner._prepare_request("one-run", directory, FileManifest.from_spec(spec))
+        return await runner._file_session._prepare_request("one-run", directory, FileManifest.from_spec(spec))
 
     try:
         request = asyncio.run(prepare())
@@ -423,7 +423,7 @@ def test_remote_none_stream_files_are_live_only(tmp_path):
         launch=_launch(tmp_path, tmp_path / "remote"),
     )
     observed = []
-    runner = executor.create_run(spec)
+    runner = Run.direct(executor, spec)
     runner.add_output_listener(lambda text, kind: observed.append((kind, text)))
     outcome = runner.run()
     assert runner.state == RunState.FINISHED
@@ -458,11 +458,11 @@ def test_file_sync_transfer_decision_is_direction_independent(policy, source, de
 
 def test_remote_argv_reuses_staged_path_identity(tmp_path):
     """Relative, absolute and Path arguments share the staging resolver."""
-    from kkrunner.remote.runner import RemoteRunner
+    from kkrunner.client.remote_files import RemoteFileSession
 
     work = tmp_path / "work"
     source = work / "input.dat"
-    runner = object.__new__(RemoteRunner)
+    runner = object.__new__(RemoteFileSession)
     runner.spec = SimpleNamespace(directory=str(work))
     arguments = ("program", "input.dat", source, "--verbose", "./missing.dat")
     staged = {str(source): "/remote/work/input.dat"}
@@ -487,16 +487,24 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote"), input_sync="always"),
     )
-    runner = RemoteEndpointExecutor(LocalTransport()).create_run(spec)
+    runner = Run.direct(AgentBackendProxy(LocalTransport()), spec)
+    if preflight:
+        with pytest.raises(SubmissionNotStarted, match="Local input file"):
+            runner._file_session.prepare_submission()
+        # File preparation alone does not submit or mutate Run state.
+        assert runner.state == RunState.NEW
+        assert runner.failure_phase is None
+
     with pytest.raises(SubmissionNotStarted, match="Local input file"):
-        if preflight:
-            runner.prepare_submission()
-        else:
-            runner.submit()
+        runner.submit()
     assert runner.failure_phase == FailurePhase.SUBMISSION
     assert "Local input file" in runner.failure_message
     assert runner.backend_id is None
-    assert runner.state == RunState.NEW
+    assert runner.state == RunState.FAILED
+    with pytest.raises(RuntimeError, match="already submitted"):
+        runner.submit()
+    with pytest.raises(RuntimeError, match="cannot be restarted"):
+        runner.start()
 
 
 @pytest.mark.parametrize("preflight", (False, True))
@@ -510,16 +518,22 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    executor = RemoteEndpointExecutor(LocalTransport())
-    runner = executor.create_run(spec)
+    executor = AgentBackendProxy(LocalTransport())
+    runner = Run.direct(executor, spec)
 
     async def fail_after_preparation(_request):
         raise OSError("backend submission uncertain")
 
     monkeypatch.setattr(executor, "_submit", fail_after_preparation)
     if preflight:
-        runner.prepare_submission()
+        runner._file_session.prepare_submission()
     with pytest.raises(OSError, match="backend submission uncertain"):
         runner.submit()
     assert runner.failure_phase is None
     assert runner.backend_id is None
+    assert runner.state == RunState.UNKNOWN
+    assert "backend submission uncertain" in runner.failure_message
+    with pytest.raises(RuntimeError, match="already submitted"):
+        runner.submit()
+    with pytest.raises(RuntimeError, match="cannot be restarted"):
+        runner.start()

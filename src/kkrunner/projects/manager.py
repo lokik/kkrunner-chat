@@ -19,7 +19,7 @@ class ProjectExecutionManager(RunManager):
         self,
         store=None,
         *,
-        executor_pool=None,
+        backend_pool=None,
         submitting_grace=60.0,
         project_repository=None,
         project=None,
@@ -34,7 +34,7 @@ class ProjectExecutionManager(RunManager):
             store = RunStore(self.projects.directory.parent / "projects_runs")
         super().__init__(
             store,
-            executor_pool=executor_pool,
+            backend_pool=backend_pool,
             submitting_grace=submitting_grace,
         )
 
@@ -56,7 +56,7 @@ class ProjectExecutionManager(RunManager):
             return self
         return type(self)(
             store=self.store,
-            executor_pool=self.executor_pool,
+            backend_pool=self.backend_pool,
             submitting_grace=self.submitting_grace,
             project_repository=self.projects,
             project=current,

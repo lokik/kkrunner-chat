@@ -1,24 +1,17 @@
-"""Regression tests for authoritative stdout/stderr verification after FOLLOW."""
+"""Authoritative stdout/stderr verification belongs to the client file session."""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
 
+from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.client.transport import LocalTransport
 from kkrunner.files.manifest import FileEntry, FileManifest
-from kkrunner.remote.executor import _RemoteRun
-from kkrunner.remote.runner import RemoteRunner
-from kkrunner.remote.transport import LocalTransport
-from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState
+from kkrunner.runs.base import ExecutionSpec
 
 
-async def _completed(self):
-    self._state = RunState.FINISHED
-    return self.result
-
-
-def _make_runner(tmp_path, monkeypatch, *, stdout=b"same", stderr=b"error"):
-    monkeypatch.setattr(RemoteRunner, "_monitor", _completed)
+def _session(tmp_path, *, stdout=b"same", stderr=b"error"):
     local_out = tmp_path / "local.out"
     local_err = tmp_path / "local.err"
     remote_out = tmp_path / "remote.out"
@@ -27,50 +20,43 @@ def _make_runner(tmp_path, monkeypatch, *, stdout=b"same", stderr=b"error"):
     local_err.write_bytes(stderr)
     remote_out.write_bytes(b"same")
     remote_err.write_bytes(b"error")
-    runner = _RemoteRun(
+    manifest = FileManifest(
+        stdout=FileEntry(str(local_out), str(remote_out)),
+        stderr=FileEntry(str(local_err), str(remote_err)),
+    ).initialize_availability()
+    session = RemoteFileSession(
         SimpleNamespace(transport=LocalTransport()),
-        ExecutionSpec(
-            argv=(), input_file=None, output_file=str(local_out), error_file=str(local_err), directory=str(tmp_path)
-        ),
-        backend_id="backend",
-        remote_directory=str(tmp_path),
-        files=FileManifest(
-            stdout=FileEntry(str(local_out), str(remote_out)), stderr=FileEntry(str(local_err), str(remote_err))
-        ).initialize_availability(),
-        state=RunState.FINISHED,
+        ExecutionSpec(argv=(), directory=tmp_path),
+        files=manifest,
     )
-    return (runner, local_out, local_err, remote_out, remote_err)
+    return session, local_out, local_err, remote_out, remote_err
 
 
 @pytest.mark.parametrize("channel", ("stdout", "stderr"))
-def test_equal_size_corruption_fails_even_if_length_matches(tmp_path, monkeypatch, channel):
-    runner, local_out, local_err, _, _ = _make_runner(
+def test_equal_size_corruption_is_rejected(tmp_path, channel):
+    session, local_out, local_err, _, _ = _session(
         tmp_path,
-        monkeypatch,
         stdout=b"bad!" if channel == "stdout" else b"same",
         stderr=b"wrong" if channel == "stderr" else b"error",
     )
-    with pytest.raises(RuntimeError, match=f"{channel} contents differ"):
-        asyncio.run(runner._monitor())
-    assert runner.state == RunState.FAILED
-    assert runner.failure_phase == FailurePhase.DOWNLOAD
-    assert getattr(runner.files, channel).availability_state == "failed"
+    with pytest.raises(RuntimeError, match=f"{channel} differs from remote"):
+        asyncio.run(session._verify_streams())
+    assert getattr(session.files, channel).availability_state == "failed"
     assert (local_out if channel == "stdout" else local_err).exists()
 
 
 @pytest.mark.parametrize("channel", ("stdout", "stderr"))
-def test_missing_authoritative_stream_is_not_success(tmp_path, monkeypatch, channel):
-    runner, _, _, remote_out, remote_err = _make_runner(tmp_path, monkeypatch)
+def test_missing_authoritative_stream_is_not_accepted(tmp_path, channel):
+    session, _, _, remote_out, remote_err = _session(tmp_path)
     (remote_out if channel == "stdout" else remote_err).unlink()
     with pytest.raises(FileNotFoundError, match=f"Remote {channel} output is missing"):
-        asyncio.run(runner._monitor())
-    assert runner.state == RunState.FAILED
-    assert getattr(runner.files, channel).availability_state == "failed"
+        asyncio.run(session._verify_streams())
+    assert getattr(session.files, channel).availability_state == "failed"
 
 
-def test_successful_integrity_check_preserves_timestamps(tmp_path, monkeypatch):
-    runner, local_out, local_err, remote_out, remote_err = _make_runner(tmp_path, monkeypatch)
-    asyncio.run(runner._monitor())
-    assert runner.state == RunState.FINISHED
+def test_successful_stream_integrity_verification_restores_timestamps(tmp_path):
+    session, local_out, local_err, remote_out, remote_err = _session(tmp_path)
+    asyncio.run(session._verify_streams())
     assert local_out.stat().st_mtime_ns == remote_out.stat().st_mtime_ns
     assert local_err.stat().st_mtime_ns == remote_err.stat().st_mtime_ns
+    assert session.files.failed_artifacts == ()
