@@ -1,10 +1,10 @@
-"""Convert agent protocol submission requests to backend specifications."""
+"""Agent wire-message conversion, separate from backend execution contracts."""
 
 import os
 
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec
 
-def _request_spec(request):
+def request_to_spec(request):
     mpi_argv = request.get("mpi_argv")
     sync = request.get("client_sync") or {}
     input_files = tuple(request.get("input_files", ()))
@@ -40,4 +40,14 @@ def _request_spec(request):
         launch=LaunchSpec(**(request.get("launch") or {})),
         mpi_uses_stdin=request.get("mpi_uses_stdin", True),
     )
+
+
+def status_reply(state, return_code=None, *, failure_phase=None, error=None):
+    """Encode backend status facts for the common remote-service wire contract."""
+    return {
+        "state": state.value,
+        "return_code": return_code,
+        "error": error,
+        "failure_phase": None if failure_phase is None else failure_phase.value,
+    }
 

@@ -19,9 +19,8 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from kkrunner.backends.handles import _decode_handle, _encode_handle
-from kkrunner.backends.replies import _status_reply
-from kkrunner.backends.specs import _request_spec
+from kkrunner.remote.handles import decode_handle, encode_handle
+from kkrunner.remote.messages import request_to_spec, status_reply
 from kkrunner.backends.process.mailbox import _state_root, acknowledge_outcome, read_outcome
 from kkrunner.backends.process.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.files.availability import clear_declared_outputs, validate_output_collisions
@@ -96,7 +95,7 @@ def _local_submit(request):
     try:
         directory = Path(request["directory"]).expanduser().resolve()
         directory.mkdir(parents=True, exist_ok=True)
-        original_spec = _request_spec(dict(request, directory=os.fspath(directory)))
+        original_spec = request_to_spec(dict(request, directory=os.fspath(directory)))
         spec = materialize_local_spec(original_spec)
 
         output_path = _absolute(directory, spec.output_file)
@@ -161,7 +160,7 @@ def _local_submit(request):
         identity = ProcessIdentity.read(process.pid)
         if identity is None:
             raise SubmissionNotStarted("Unable to verify the started remote process identity")
-        remote_id = _encode_handle(
+        remote_id = encode_handle(
             {
                 "kind": "process",
                 "identity": identity.to_dict(),
@@ -234,7 +233,7 @@ def submit_remote(request):
 
 
 def status_remote(remote_id):
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
     outcome = _process_outcome(handle["receipt_id"])
@@ -245,11 +244,11 @@ def status_remote(remote_id):
         return_code = None
         failure_phase = None
         error = None
-    return _status_reply(state, return_code, failure_phase=failure_phase, error=error)
+    return status_reply(state, return_code, failure_phase=failure_phase, error=error)
 
 
 def cancel_remote(remote_id, timeout=1.0):
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
     outcome = _process_outcome(handle["receipt_id"])
@@ -269,7 +268,7 @@ def cancel_remote(remote_id, timeout=1.0):
 
 
 def acknowledge_remote(remote_id):
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
     return {"acknowledged": acknowledge_outcome(handle["receipt_id"])}
@@ -295,7 +294,7 @@ def follow_remote(
     observation_started=None,
 ):
     """Follow direct supervisors or scheduler-owned streams until terminal state."""
-    handle = _decode_handle(remote_id)
+    handle = decode_handle(remote_id)
     offsets = {"out": stdout_offset, "err": stderr_offset}
     streams = {"out": stdout, "err": stderr}
     paths = {

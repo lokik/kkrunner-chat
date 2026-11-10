@@ -3,7 +3,7 @@ import pytest
 
 from kkrunner import RunState
 from kkrunner.remote import service as remote_service
-from kkrunner.backends.handles import _decode_handle
+from kkrunner.remote.handles import decode_handle
 from kkrunner.backends.process import operations as process_operations
 from kkrunner.backends.psij import agent as scheduler_operations
 
@@ -41,7 +41,7 @@ def test_psij_recovery_uses_backend_native_identity(monkeypatch):
     assert recovered["state"] == RunState.RUNNING.value
     assert recovered["directory"] == "/scratch/case"
     assert recovered["output_file"] == "/scratch/case/run.out"
-    handle = _decode_handle(recovered["remote_id"])
+    handle = decode_handle(recovered["remote_id"])
     assert handle == {"kind": "psij", "backend": "slurm", "url": None, "native_id": "scheduler-42"}
 
 
