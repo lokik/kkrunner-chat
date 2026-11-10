@@ -244,7 +244,7 @@ def test_known_backend_identity_survives_failed_client_submission(tmp_path):
     assert not saved.state.is_terminal
 
 
-def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persistence(tmp_path):
+def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persistence(tmp_path, caplog):
     from kkrunner import ExecutionSpec, Run
     from kkrunner.files import FileManifest
     from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
@@ -296,9 +296,9 @@ def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persist
     files = Files()
     run = Run(Job(), backend=backend, manager=manager, record=record, file_session=files)
 
-    with pytest.warns(RuntimeWarning, match="cleanup also failed"):
-        with pytest.raises(SubmissionNotStarted) as caught:
-            run.submit()
+    with pytest.raises(SubmissionNotStarted) as caught:
+        run.submit()
+    assert "cleanup also failed" in caplog.text
     assert caught.value is original
     assert files.close_calls == 1
     saved = manager.store.get(run.id)
