@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.client.run_parts import RunParts
-from kkrunner.projects import ProjectExecutionManager, ProjectRepository
+from kkrunner.projects import ProjectRunManager, ProjectRepository
 from kkrunner import RunState
 
 
@@ -53,7 +53,7 @@ class _Executor:
 def _fixture(tmp_path):
     projects = ProjectRepository(tmp_path / "projects")
     project = projects.create("Project")
-    manager = ProjectExecutionManager(project_repository=projects).for_project(project)
+    manager = ProjectRunManager(project_repository=projects).for_project(project)
     return (manager, projects, project)
 
 
@@ -81,7 +81,7 @@ def test_run_is_durable_in_project_namespace_before_backend_submit(tmp_path):
 @pytest.mark.parametrize("explicit", (False, True), ids=("missing", "invalid"))
 def test_project_must_exist_before_backend_is_created(tmp_path, explicit):
     projects = ProjectRepository(tmp_path / "projects")
-    manager = ProjectExecutionManager(project_repository=projects)
+    manager = ProjectRunManager(project_repository=projects)
     executor = _Executor()
     options = {"project": "missing"} if explicit else {}
     errors = (KeyError, ValueError) if explicit else ValueError

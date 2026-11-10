@@ -10,12 +10,12 @@ import time
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunManager, RunState, RunStore
-from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
+from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
 from kkrunner.client.ssh_direct.worker import WORKER_SOURCE
 
 
 def test_explicit_and_contextual_persistence(tmp_path):
-    direct = ProcessBackend()
+    direct = DirectProcessBackend()
     spec = ExecutionSpec((sys.executable, "-c", "print(42)"), directory=str(tmp_path))
     assert Run.create(direct, spec).record is None
 
@@ -41,7 +41,7 @@ def test_tracked_direct_completes_without_recoverable_handle(tmp_path):
         directory=str(tmp_path), output_file="out.txt",
     )
     manager = RunManager(RunStore(tmp_path / "records"))
-    run = Run.create(ProcessBackend(), spec, persistent=manager)
+    run = Run.create(DirectProcessBackend(), spec, persistent=manager)
     assert run.run().return_code == 0
     assert run.state == RunState.FINISHED
     assert manager.store.get(run.id).state == RunState.FINISHED
@@ -63,14 +63,14 @@ def test_direct_local_detached_outlives_creating_python_process(tmp_path):
 from pathlib import Path
 import sys
 from kkrunner import ExecutionSpec, Run
-from kkrunner.backends import ProcessBackend
+from kkrunner.backends import DirectProcessBackend
 root, marker = sys.argv[1:]
 spec = ExecutionSpec(
     (sys.executable, "-c",
      "import pathlib,time; time.sleep(.6); pathlib.Path(%r).write_text('survived')" % marker),
     directory=root, output_file=str(Path(root) / "stdout.txt"),
 )
-Run.create(ProcessBackend(), spec, detached=True).submit()
+Run.create(DirectProcessBackend(), spec, detached=True).submit()
 """
     child = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path), str(marker)],
@@ -158,7 +158,7 @@ def test_single_submission_path_with_and_without_store(tmp_path, persistent):
         output_file=str(tmp_path / "out.txt"),
         directory=str(tmp_path),
     )
-    run = Run.create(ProcessBackend(), spec, persistent=manager if persistent else False)
+    run = Run.create(DirectProcessBackend(), spec, persistent=manager if persistent else False)
     result = run.run()
     assert result.return_code == 0
     assert run.state == RunState.FINISHED
@@ -177,7 +177,7 @@ def test_detached_local_uses_shared_file_tail_for_live_observation(tmp_path):
         output_file=str(tmp_path / "out.txt"),
         error_file=str(tmp_path / "err.txt"),
     )
-    run = Run.create(ProcessBackend(), spec, detached=True)
+    run = Run.create(DirectProcessBackend(), spec, detached=True)
     received = []
     run.add_output_listener(lambda data, kind: received.append((kind, data)))
     assert run.run().return_code == 0

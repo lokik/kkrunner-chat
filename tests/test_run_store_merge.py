@@ -1,11 +1,11 @@
-from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
 
 def _record(manager, tmp_path):
     return manager.new_record(
-        directory=tmp_path, endpoint=ExecutionEndpoint(), metadata={"test": {"task": "DOS"}}, processing_required=True
+        directory=tmp_path, endpoint=ExecutionEndpointConfig(), metadata={"test": {"task": "DOS"}}, processing_required=True
     )
 
 

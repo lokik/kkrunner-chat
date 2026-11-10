@@ -10,24 +10,15 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
-from typing import Optional, Protocol
+from typing import Optional
+
+from kkrunner.client.contracts import RunningCommand
 from uuid import uuid4
 
 from kkrunner.files.queries import _sources, checked_files, expand_local_files, local_file_signature, query_files, finalize_upload
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
 
-
-class RunningCommand(Protocol):
-    """A running command with independently readable output streams."""
-
-    stdout: asyncio.StreamReader
-    stderr: asyncio.StreamReader
-    returncode: Optional[int]
-
-    async def wait(self) -> int: ...
-
-    def terminate(self) -> None: ...
 
 
 def _local_temporary_path(destination):

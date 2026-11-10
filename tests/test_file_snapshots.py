@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from kkrunner import RunState, RunStore
-from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
-from kkrunner.client.endpoint import endpoint_for_backend
+from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
+from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
 from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.transport import LocalTransport
@@ -25,10 +25,10 @@ def running_run(tmp_path, remote=False, output="result.dat"):
         executor = AgentRunEndpoint(LocalTransport())
         mapping = FileMapping(str(local.parent), str(target.parent))
     else:
-        executor = ProcessBackend()
+        executor = DirectProcessBackend()
         mapping = None
     manager = RunManager(RunStore(tmp_path / "history"))
-    manager.register_backend(executor)
+    manager.register_executor(executor)
     files = FileManifest(
         outputs=(FileEntry(str(local / output), str(target / output) if remote else None),),
         caches=(CacheEntry(FileEntry(str(local / "cache.bin"), str(target / "cache.bin") if remote else None)),),
@@ -37,7 +37,7 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     )
     record = manager.new_record(
         directory=local, remote_directory=str(target) if remote else None,
-        endpoint=endpoint_for_backend(executor), files=files,
+        endpoint=endpoint_config_for_executor(executor), files=files,
     )
     record = replace(record, state=RunState.RUNNING, execution=record.execution.submitted("job-123"))
     manager.store.save(record)

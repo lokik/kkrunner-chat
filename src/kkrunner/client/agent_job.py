@@ -17,7 +17,7 @@ from kkrunner.runs.base import (
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
-class RemoteJob:
+class AgentJob:
     """One execution on a remote process or scheduler backend."""
 
     def __init__(

@@ -1,13 +1,13 @@
 # Execution boundary and public contract
 
-KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, ExecutionEndpoint,
+KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, ExecutionEndpointConfig,
 RunState/FailurePhase, Execution/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
 ExecutionResources and ResourceOwnedRunner. The root `kkrunner` package exports
 the small, backend-independent API; specialized types live in `kkrunner.runs`,
 `kkrunner.backends`, `kkrunner.client` and `kkrunner.files`.
 `RunManager` tracks runs in an explicit RunStore without requiring a project.
-`ProjectExecutionManager` and ProjectRepository organize runs in projects.
+`ProjectRunManager` and ProjectRepository organize runs in projects.
 Both managers use the same lifecycle. Each public class has one name that
 describes its role.
 
@@ -61,7 +61,7 @@ A backend `Job` owns only execution submission, observation and cancellation.
 `JobAttachment` supplies the execution context needed for reattachment
 without exposing a durable record to a backend. An untracked or managed
 client `Run` owns execution completion, transfers and optional result processing.
-An SSH `RemoteJob` owns FOLLOW observation, while its separate
+An SSH `AgentJob` owns FOLLOW observation, while its separate
 `RemoteFileSession` owns staging, output persistence, synchronization and
 verification. An endpoint creates these parts through `RunParts`; only
 `RunManager` mutates persistent records. A terminal backend fact must never
@@ -111,7 +111,7 @@ therefore share the local filesystem namespace. SSH connections to the same
 host share a target namespace regardless of SSH flags, remote command or backend.
 
 For host aliases or shared mounts, pass filesystem_id to AgentRunEndpoint
-or ExecutionEndpoint. Matching IDs declare one shared target filesystem; distinct
+or ExecutionEndpointConfig. Matching IDs declare one shared target filesystem; distinct
 IDs declare distinct ones. A client must use the same identity consistently.
 The API does not infer that different host aliases refer to the same mount.
 
@@ -165,7 +165,7 @@ clock change that reverses entirely between sampled reads can evade detection.
 
 The root package exports eight backend-independent entry points:
 `ExecutionSpec`, `ExecutionOutcome`, `Run`, `RunManager`, `RunStore`,
-`RunState`, `TaskFile` and `ProcessingPending`. Select a local `ProcessBackend`
+`RunState`, `TaskFile` and `ProcessingPending`. Select a local `DirectProcessBackend`
 or scheduler `PsijBackend` from `kkrunner.backends`; use
 `kkrunner.client.AgentRunEndpoint` with a transport for a remote target.
 Projects and advanced file/run types live in their respective subpackages.
@@ -293,18 +293,18 @@ The client `AgentRunEndpoint` and `SshDirectRunEndpoint` assemble `RunParts`
 and implement transport-specific staging. They are not native `Backend`
 implementations. There are no parallel `*Backend` aliases for these endpoint
 classes.
-`DirectProcessAdapter` remains an internal mechanism of `ProcessJob`, not
+`DirectProcessAdapter` remains an internal mechanism of `DirectProcessJob`, not
 a universal layer across PSI/J and supervised execution.
 
 **Contract placement.** The only public `Backend` protocol lives in
 `kkrunner.backends.contracts`. It is implemented by native execution
-mechanisms (`ProcessBackend`, `SupervisedProcessBackend`, `PsijBackend`).
+mechanisms (`DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend`).
 The `RunEndpoint` protocol and the client-only `JobAttachment` live in
 `kkrunner.client.contracts`, not in a concrete endpoint implementation.
 `DirectProcessAdapter` is private to the direct Job implementation and its
 protocol is isolated in `kkrunner.backends.process.direct.contracts`.
 
-Local direct and SSH direct use the same `ProcessBackend.create_job()`
+Local direct and SSH direct use the same `DirectProcessBackend.create_job()`
 factory. A transport-specific, private `DirectProcessAdapter` factory supplies
 the mechanics; `SshDirectRunEndpoint` owns only session composition and file
 transfer. No second SSH-specific public Backend exists.
@@ -312,3 +312,27 @@ transfer. No second SSH-specific public Backend exists.
 Direct SSH intentionally has no `open_run_parts()` or
 `recover_submission()` method: unsupported capabilities are absent from its
 structural protocol rather than advertised as methods that always fail.
+
+
+### Class responsibilities and naming
+
+| Role | Protocol / type | Implementations |
+| --- | --- | --- |
+| Native execution | `Backend`, `ReopenableBackend`, `RecoverableBackend` | `DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend` |
+| Per-client execution handle | `Job` (structural protocol) | `DirectProcessJob`, `SupervisedProcessJob`, `PsijJob`, `AgentJob` |
+| Client session assembly | `RunEndpoint`, `ReopenableRunEndpoint` | `BackendRunEndpoint`, `ReopenableBackendRunEndpoint`, `AgentRunEndpoint`, `SshDirectRunEndpoint` |
+| Internal process mechanics | `DirectProcessAdapter` | `LocalProcessAdapter`, `SshProcessAdapter` |
+| Command and file transport | `Transport`, `RunningCommand` | `LocalTransport`, `SshTransport`, `SshDirectTransport` |
+| Durable execution coordination | `RunManager` | `ProjectRunManager` for project-scoped runs |
+| Serializable endpoint descriptor | `ExecutionEndpointConfig` | Distinct from `RunEndpoint`, which constructs sessions |
+| Provider instance reuse | `ExecutorPool` | Caches native Backends **or** client RunEndpoints by endpoint descriptor |
+
+All three concrete native Backends explicitly inherit the appropriate protocol.
+The supervised process backend is **not** a subclass of the direct process
+backend; both can produce a process Job but follow separate execution models.
+There is one canonical public name per class, with no `ProcessBackend`,
+`RemoteJob` or `BackendPool` aliases.
+
+The `RunningCommand` protocol lives alongside the client-side contracts,
+not in `transport.py` next to one of its implementations. The transport base
+class remains a shared implementation class, not a second `Backend` protocol.

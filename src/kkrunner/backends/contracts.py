@@ -16,7 +16,7 @@ from kkrunner.runs.states import RunState
 if TYPE_CHECKING:
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.runs.model import Execution, WorkingDirectory
-    from kkrunner.client.endpoint import ExecutionEndpoint
+    from kkrunner.client.endpoint import ExecutionEndpointConfig
 
 
 class JobFailurePhase(str, Enum):
@@ -49,7 +49,7 @@ class BackendJobContext:
     """
 
     ref: JobRef
-    endpoint: ExecutionEndpoint
+    endpoint: ExecutionEndpointConfig
     directory: WorkingDirectory
     input_file: Optional[str] = None
     output_file: Optional[str] = None

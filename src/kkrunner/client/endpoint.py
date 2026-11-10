@@ -7,7 +7,7 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class ExecutionEndpoint:
+class ExecutionEndpointConfig:
     """Identity of a reusable execution backend.
 
     The endpoint contains only connection/backend properties. Launch and
@@ -44,14 +44,14 @@ class ExecutionEndpoint:
         for name in ("host", "psij_backend", "psij_url"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, str):
-                raise TypeError(f"ExecutionEndpoint.{name} must be a string or None")
+                raise TypeError(f"ExecutionEndpointConfig.{name} must be a string or None")
         for name in ("ssh_options", "remote_command", "python_command"):
             if any(not isinstance(item, str) for item in getattr(self, name)):
-                raise TypeError(f"ExecutionEndpoint.{name} must contain strings")
+                raise TypeError(f"ExecutionEndpointConfig.{name} must contain strings")
         if type(self.ssh_zstd) is not bool:
-            raise TypeError("ExecutionEndpoint.ssh_zstd must be a bool")
+            raise TypeError("ExecutionEndpointConfig.ssh_zstd must be a bool")
         if not self.python_command:
-            raise ValueError("ExecutionEndpoint.python_command must not be empty")
+            raise ValueError("ExecutionEndpointConfig.python_command must not be empty")
 
         # Identity describes the backend actually constructed below. Irrelevant
         # profile fields must not split its pool key or collision namespace.
@@ -82,20 +82,20 @@ class ExecutionEndpoint:
                 object.__setattr__(self, "psij_backend", self.psij_backend or "slurm")
 
 
-def endpoint_for_backend(executor) -> ExecutionEndpoint:
+def endpoint_config_for_executor(executor) -> ExecutionEndpointConfig:
     """Describe a live executor without persisting launch/staging policy."""
-    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
+    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
     if isinstance(executor, SupervisedProcessBackend):
-        return ExecutionEndpoint(executor="local-supervised")
-    if isinstance(executor, ProcessBackend):
-        return ExecutionEndpoint()
+        return ExecutionEndpointConfig(executor="local-supervised")
+    if isinstance(executor, DirectProcessBackend):
+        return ExecutionEndpointConfig()
     if isinstance(executor, PsijBackend):
-        return ExecutionEndpoint(
+        return ExecutionEndpointConfig(
             executor="psij",
             psij_backend=executor.backend,
             psij_url=executor.url,
@@ -103,10 +103,10 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
     if isinstance(executor, SshDirectRunEndpoint):
         transport = executor.transport
         if not isinstance(transport, SshDirectTransport):
-            return ExecutionEndpoint(executor="custom:{}.{}".format(
+            return ExecutionEndpointConfig(executor="custom:{}.{}".format(
                 type(executor).__module__, type(executor).__qualname__,
             ))
-        return ExecutionEndpoint(
+        return ExecutionEndpointConfig(
             executor="ssh-direct", host=transport.host, ssh_options=transport.options,
             ssh_zstd=transport.zstd, filesystem_id=executor.filesystem_id,
             python_command=transport.python_command,
@@ -126,7 +126,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
             psij_url = options.get("url")
 
         if not isinstance(transport, SshTransport):
-            return ExecutionEndpoint(
+            return ExecutionEndpointConfig(
                 executor=(
                     "custom:{}.{}:{}".format(
                         type(executor).__module__,
@@ -140,7 +140,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
                 psij_backend=psij_backend,
                 psij_url=psij_url,
             )
-        return ExecutionEndpoint(
+        return ExecutionEndpointConfig(
             executor="ssh",
             host=transport.host,
             ssh_options=transport.options,
@@ -154,7 +154,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
 
     # Custom executors can participate in duplicate-submit protection in this
     # process. Reconstruction is intentionally limited to known endpoint types.
-    return ExecutionEndpoint(
+    return ExecutionEndpointConfig(
         executor="custom:{}.{}:{}".format(
             type(executor).__module__,
             type(executor).__qualname__,
@@ -163,19 +163,19 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
     )
 
 
-def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
+def executor_from_endpoint(endpoint: ExecutionEndpointConfig):
     """Reconstruct a standard executor from persisted endpoint identity."""
-    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
+    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
     if isinstance(endpoint, dict):
-        endpoint = ExecutionEndpoint(**endpoint)
+        endpoint = ExecutionEndpointConfig(**endpoint)
 
     if endpoint.executor == "local":
-        return ProcessBackend()
+        return DirectProcessBackend()
     if endpoint.executor == "local-supervised":
         return SupervisedProcessBackend()
     if endpoint.executor == "psij":

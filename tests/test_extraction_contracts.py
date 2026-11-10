@@ -9,7 +9,7 @@ import pytest
 from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
 from kkrunner.runs.base import ExecutionResources, ResourceOwnedRunner
-from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.client.run_parts import RunParts
 from kkrunner.runs.run import Run
 from kkrunner.files import FileEntry, FileManifest
@@ -139,8 +139,8 @@ def test_cancel_and_failed_submit_do_not_deadlock(tmp_path):
 @pytest.mark.parametrize(
     "other_endpoint",
     [
-        ExecutionEndpoint(executor="psij"),
-        ExecutionEndpoint(executor="ssh", host="other-host"),
+        ExecutionEndpointConfig(executor="psij"),
+        ExecutionEndpointConfig(executor="ssh", host="other-host"),
     ],
 )
 def test_local_publication_conflict_is_independent_of_backend(tmp_path, other_endpoint):

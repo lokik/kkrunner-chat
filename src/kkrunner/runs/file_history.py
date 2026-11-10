@@ -160,7 +160,7 @@ class RunFileHistory:
         if record.execution.directory.remote is None:
             from kkrunner.files.snapshots import local_snapshot
             return local_snapshot(path, destination=destination)
-        return self.backend_for(record).snapshot_file(record, path, destination=destination)
+        return self.executor_for(record).snapshot_file(record, path, destination=destination)
 
     def retrieve_result_files(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
@@ -171,7 +171,7 @@ class RunFileHistory:
         if not missing or record.execution.backend_id is None:
             return record
 
-        executor = self.backend_for(record)
+        executor = self.executor_for(record)
         if not executor.supports_result_file_retrieval:
             return record
 

@@ -16,7 +16,7 @@ import kkrunner.remote
 
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
-    assert kkrunner.projects.ProjectExecutionManager.__module__ == "kkrunner.projects.manager"
+    assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.runs.run import Run
 
@@ -29,24 +29,24 @@ def test_public_managers_have_one_unambiguous_name():
 
 
 def test_run_and_job_ownership_boundaries_are_explicit():
-    from kkrunner.backends import ProcessBackend, PsijBackend
+    from kkrunner.backends import DirectProcessBackend, PsijBackend
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.remote_files import RemoteFileSession
-    from kkrunner.client.remote_job import RemoteJob
+    from kkrunner.client.agent_job import AgentJob
     from kkrunner.client.run_parts import RunParts
     from kkrunner.runs.run import Run
 
     assert Run.__module__ == "kkrunner.runs.run"
-    assert RemoteJob.__module__ == "kkrunner.client.remote_job"
+    assert AgentJob.__module__ == "kkrunner.client.agent_job"
     assert RemoteFileSession.__module__ == "kkrunner.client.remote_files"
     from kkrunner.backends import SupervisedProcessBackend
-    from kkrunner.client.run_parts import NativeRunEndpoint, run_endpoint_for_backend
-    for backend in (ProcessBackend, SupervisedProcessBackend, PsijBackend):
+    from kkrunner.client.run_parts import BackendRunEndpoint, run_endpoint_for_executor
+    for backend in (DirectProcessBackend, SupervisedProcessBackend, PsijBackend):
         assert callable(backend.create_job)
         assert not hasattr(backend, "create_managed_run")
-    assert isinstance(run_endpoint_for_backend(ProcessBackend()), NativeRunEndpoint)
-    assert not hasattr(run_endpoint_for_backend(ProcessBackend()), "open_run_parts")
-    assert callable(run_endpoint_for_backend(SupervisedProcessBackend()).open_run_parts)
+    assert isinstance(run_endpoint_for_executor(DirectProcessBackend()), BackendRunEndpoint)
+    assert not hasattr(run_endpoint_for_executor(DirectProcessBackend()), "open_run_parts")
+    assert callable(run_endpoint_for_executor(SupervisedProcessBackend()).open_run_parts)
     assert callable(AgentRunEndpoint.create_run_parts)
     assert callable(AgentRunEndpoint.open_run_parts)
     assert {"job", "files"} <= set(RunParts.__dataclass_fields__)
@@ -105,16 +105,16 @@ import sys
 from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore
 from kkrunner import backends
-assert 'ProcessBackend' in dir(backends)
+assert 'DirectProcessBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
     'kkrunner.backends.process.backend',
     'kkrunner.backends.psij.backend',
     'kkrunner.client.agent', 'kkrunner.projects', 'psij',
 ))
-from kkrunner.backends import ProcessBackend
-from kkrunner.backends.process.backend import ProcessBackend as implementation
-assert ProcessBackend is implementation
-assert backends.ProcessBackend is ProcessBackend
+from kkrunner.backends import DirectProcessBackend
+from kkrunner.backends.process.backend import DirectProcessBackend as implementation
+assert DirectProcessBackend is implementation
+assert backends.DirectProcessBackend is DirectProcessBackend
 assert 'kkrunner.backends.psij.backend' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
@@ -122,24 +122,24 @@ assert 'kkrunner.backends.psij.backend' not in sys.modules
 
 
 def test_process_strategies_have_distinct_implementations():
-    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
-    from kkrunner.backends.process.direct.job import ProcessJob
+    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
+    from kkrunner.backends.process.direct.job import DirectProcessJob
     from kkrunner.backends.process.supervised.job import SupervisedProcessJob
-    assert ProcessBackend.__module__ == "kkrunner.backends.process.backend"
+    assert DirectProcessBackend.__module__ == "kkrunner.backends.process.backend"
     assert SupervisedProcessBackend.__module__ == "kkrunner.backends.process.backend"
-    assert ProcessJob.__module__ == "kkrunner.backends.process.direct.job"
+    assert DirectProcessJob.__module__ == "kkrunner.backends.process.direct.job"
     assert SupervisedProcessJob.__module__ == "kkrunner.backends.process.supervised.job"
 
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
-    from kkrunner.backends.process.direct.job import ProcessJob
+    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
+    from kkrunner.backends.process.direct.job import DirectProcessJob
     from kkrunner.backends.process.supervised.job import SupervisedProcessJob
 
-    backend = ProcessBackend()
+    backend = DirectProcessBackend()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
-    assert isinstance(backend.create_job(spec), ProcessJob)
+    assert isinstance(backend.create_job(spec), DirectProcessJob)
     with pytest.raises(NotImplementedError, match="SupervisedProcessBackend"):
         backend.create_job(spec, submission_key="run-1")
     assert isinstance(SupervisedProcessBackend().create_job(spec, submission_key="run-1"), SupervisedProcessJob)
@@ -157,7 +157,7 @@ def test_remote_process_service_reuses_supervised_backend_operations():
 def test_direct_process_import_does_not_load_supervisor():
     code = """
 import sys
-from kkrunner.backends.process.direct.job import ProcessJob
+from kkrunner.backends.process.direct.job import DirectProcessJob
 assert 'kkrunner.backends.process.supervised.operations' not in sys.modules
 assert 'kkrunner.backends.process.supervised.worker' not in sys.modules
 """

@@ -1,4 +1,4 @@
-"""Reusable execution backend pooling independent of run persistence."""
+"""Reusable execution-provider pooling independent of run persistence."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from threading import RLock
 from kkrunner.runs.base import _close_distinct
 
 
-class BackendPool:
-    """Process-local cache of reusable execution backends."""
+class ExecutorPool:
+    """Process-local cache of native Backends and client RunEndpoints."""
 
     def __init__(self):
         self._executors = {}
@@ -28,19 +28,19 @@ class BackendPool:
             return executor
 
     def for_endpoint(self, endpoint):
-        """Return the shared backend reconstructed from *endpoint*."""
-        from kkrunner.client.endpoint import ExecutionEndpoint, create_backend_from_endpoint
+        """Return the shared provider reconstructed from *endpoint*."""
+        from kkrunner.client.endpoint import ExecutionEndpointConfig, executor_from_endpoint
 
         if isinstance(endpoint, dict):
-            endpoint = ExecutionEndpoint(**endpoint)
-        return self.get(endpoint, lambda: create_backend_from_endpoint(endpoint))
+            endpoint = ExecutionEndpointConfig(**endpoint)
+        return self.get(endpoint, lambda: executor_from_endpoint(endpoint))
 
     def for_profile(self, profile):
-        """Return the shared backend suitable for *profile*."""
+        """Return the shared provider suitable for *profile*."""
         return self.for_endpoint(self.key_for_profile(profile))
 
     def discard(self, key):
-        """Forget one pooled backend and close it when supported."""
+        """Forget one pooled provider and close it when supported."""
         with self._lock:
             executor = self._executors.pop(key, None)
         if executor is not None:
@@ -60,9 +60,9 @@ class BackendPool:
         _close_distinct(executors)
 
 
-_DEFAULT_EXECUTOR_POOL = BackendPool()
+_DEFAULT_EXECUTOR_POOL = ExecutorPool()
 
 
-def default_backend_pool():
+def default_executor_pool():
     """Return the process-wide pool used by ordinary calculations."""
     return _DEFAULT_EXECUTOR_POOL

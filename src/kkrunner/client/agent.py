@@ -10,12 +10,13 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
-from kkrunner.client.endpoint import endpoint_for_backend
+from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files.manifest import FileMapping, FileSyncPolicy
 from kkrunner.remote.protocol import control_command, json_request
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.remote_job import RemoteJob
+from kkrunner.client.agent_job import AgentJob
 from kkrunner.client.run_parts import RunParts
+from kkrunner.client.contracts import ReopenableRunEndpoint
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.remote.stream import FramedRunningCommand
 from kkrunner.runs.base import (
@@ -64,7 +65,7 @@ class _AgentRunContext(RemotePathContext):
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         files = RemoteFileSession(self, spec)
-        job = RemoteJob(self, spec, callback=callback)
+        job = AgentJob(self, spec, callback=callback)
         return RunParts(
             job, files,
             submission_builder=lambda prepared: self.endpoint.submission_request(
@@ -79,7 +80,7 @@ class _AgentRunContext(RemotePathContext):
         status = await self._status(execution.directory.remote, execution.backend_id)
         files = await RemoteFileSession.from_attachment(self, attachment)
         try:
-            job = RemoteJob(
+            job = AgentJob(
                 self, files.spec, callback=callback,
                 output_listener=output_listener,
                 backend_id=execution.backend_id,
@@ -92,7 +93,7 @@ class _AgentRunContext(RemotePathContext):
             raise
 
 
-class AgentRunEndpoint:
+class AgentRunEndpoint(ReopenableRunEndpoint):
     default_persistent = True
     default_detached = True
 
@@ -150,7 +151,7 @@ class AgentRunEndpoint:
         return _AgentRunContext(endpoint, launch)
 
     def _validate_run(self, run):
-        if run.execution.endpoint != endpoint_for_backend(self):
+        if run.execution.endpoint != endpoint_config_for_executor(self):
             raise ValueError("Run belongs to a different remote endpoint")
         if not run.execution.backend_id or not run.execution.directory.remote:
             raise ValueError("Remote run lacks backend identity or working directory")

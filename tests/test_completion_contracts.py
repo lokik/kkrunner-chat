@@ -27,7 +27,7 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
             assert manager.store.get(record.id).state == terminal_state
             calls.append(record.id)
 
-    monkeypatch.setattr(manager, "backend_for", lambda record: Backend())
+    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
     record = manager.new_record(directory=tmp_path)
     manager.store.save(record)
     finished = manager.update(record, RunStatus(terminal_state, backend_id="receipt", return_code=0))
@@ -39,7 +39,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
     from threading import Event
 
     from kkrunner import ExecutionSpec, Run
-    from kkrunner.backends import ProcessBackend
+    from kkrunner.backends import DirectProcessBackend
 
     ended, results = Event(), []
     run = None
@@ -48,7 +48,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         results.append(run.wait())
         ended.set()
 
-    run = Run.direct(ProcessBackend(), ExecutionSpec(["true"], directory=tmp_path), callback=completed)
+    run = Run.direct(DirectProcessBackend(), ExecutionSpec(["true"], directory=tmp_path), callback=completed)
     run.submit()
     assert ended.wait(3), "completion callback deadlocked waiting for its own completion event"
     assert results == [run.result]
@@ -64,7 +64,7 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
             if len(calls) == 1:
                 raise OSError("temporarily disconnected")
 
-    monkeypatch.setattr(manager, "backend_for", lambda record: Backend())
+    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
     record = manager.new_record(directory=tmp_path)
     record = manager.complete(
         record, state=RunState.FINISHED, return_code=0, execution=record.execution.submitted("receipt")
@@ -102,7 +102,7 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
     manager = RunManager(RunStore(tmp_path / "runs"))
     acknowledgements = []
     backend = type("Backend", (), {"acknowledge": lambda self, record: acknowledgements.append(record.id)})()
-    monkeypatch.setattr(manager, "backend_for", lambda record: backend)
+    monkeypatch.setattr(manager, "executor_for", lambda record: backend)
     path = tmp_path / "out"
     record = manager.new_record(
         directory=tmp_path,
@@ -199,7 +199,7 @@ def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, mon
             record, state=RunState.RUNNING,
             execution=record.execution.submitted(job.backend_id),
         )
-    manager.register_backend(backend, record.execution.endpoint)
+    manager.register_executor(backend, record.execution.endpoint)
     run = Run(
         job, backend=backend, manager=manager, record=record,
         process_result=lambda outcome: outcome,
@@ -223,7 +223,7 @@ def test_confirmed_identity_is_durable_before_client_monitor_starts(tmp_path, mo
     backend = Backend()
     job = _ImmediatelyFinishedJob()
     record = manager.new_record(directory=tmp_path)
-    manager.register_backend(backend, record.execution.endpoint)
+    manager.register_executor(backend, record.execution.endpoint)
     run = Run(job, backend=backend, manager=manager, record=record)
     seen = []
 
@@ -258,7 +258,7 @@ def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
     record = manager.new_record(directory=tmp_path)
-    manager.register_backend(backend, record.execution.endpoint)
+    manager.register_executor(backend, record.execution.endpoint)
     run = Run(Job(), backend=backend, manager=manager, record=record)
     monkeypatch.setattr(
         run, "_start_completion",
@@ -288,7 +288,7 @@ def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypa
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
     record = manager.new_record(directory=tmp_path)
-    manager.register_backend(backend, record.execution.endpoint)
+    manager.register_executor(backend, record.execution.endpoint)
     run = Run(_ImmediatelyFinishedJob(), backend=backend, manager=manager, record=record)
 
     monkeypatch.setattr("kkrunner.runs.run.Thread", FailingThread)
@@ -321,7 +321,7 @@ def test_known_backend_identity_survives_failed_client_submission(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
-    manager.register_backend(backend)
+    manager.register_executor(backend)
     record = manager.new_record(directory=tmp_path)
     run = Run(Job(), backend=backend, manager=manager, record=record)
     with pytest.raises(ConnectionError, match="could not start observer"):
@@ -379,7 +379,7 @@ def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persist
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
-    manager.register_backend(backend)
+    manager.register_executor(backend)
     record = manager.new_record(directory=tmp_path)
     files = Files()
     run = Run(Job(), backend=backend, manager=manager, record=record, file_session=files)

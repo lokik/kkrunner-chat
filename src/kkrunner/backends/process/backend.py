@@ -7,12 +7,13 @@ presence of a client persistence/submission identifier.
 from __future__ import annotations
 
 from kkrunner.runs.base import ExecutionSpec
+from kkrunner.backends.contracts import Backend, RecoverableBackend
 
 
-class ProcessBackend:
-    """Direct local process backend; not durable or reopenable."""
+class DirectProcessBackend(Backend):
+    """Create direct process Jobs, locally or using an internal transport adapter."""
 
-    name = "process"
+    name = "direct-process"
     supports_result_file_retrieval = False
     supports_tracked_runs = True
     requires_backend_identity = False
@@ -20,20 +21,22 @@ class ProcessBackend:
     default_detached = False
 
     def __init__(self, *, adapter_factory=None):
-        # The adapter is a private implementation detail of ProcessJob.
+        # The adapter is a private implementation detail of DirectProcessJob.
         # Local and raw SSH direct both go through this backend factory.
         self._adapter_factory = adapter_factory
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
-        from kkrunner.backends.process.direct.job import ProcessJob
+        from kkrunner.backends.process.direct.job import DirectProcessJob
         adapter = self._adapter_factory() if self._adapter_factory is not None else None
-        return ProcessJob(spec, callback=callback, adapter=adapter)
+        return DirectProcessJob(spec, callback=callback, adapter=adapter)
 
 
-class SupervisedProcessBackend(ProcessBackend):
-    """Reconnectable local execution using the durable process supervisor."""
+class SupervisedProcessBackend(RecoverableBackend):
+    """Create recoverable supervisor-owned Jobs; not a direct-process subclass."""
 
+    name = "process"
+    supports_result_file_retrieval = False
     supports_tracked_runs = True
     requires_backend_identity = True
     default_persistent = True

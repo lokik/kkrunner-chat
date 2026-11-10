@@ -12,7 +12,7 @@ from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import backend_job_context
-from kkrunner.client.endpoint import ExecutionEndpoint
+from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
 from kkrunner.backends.process.supervised.mailbox import recover_submission
@@ -49,7 +49,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutionEndpoint(executor="local-supervised"), WorkingDirectory(str(tmp_path)), backend_id),
+        execution=Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory(str(tmp_path)), backend_id),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "out.txt")) if stdout else None,
             stderr=FileEntry(local_path=str(tmp_path / "err.txt")) if stderr else None,

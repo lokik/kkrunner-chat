@@ -5,8 +5,9 @@ from __future__ import annotations
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.remote_paths import RemotePathContext, query_remote_home
 from kkrunner.client.run_parts import RunParts
+from kkrunner.client.contracts import RunEndpoint
 
-class SshDirectRunEndpoint:
+class SshDirectRunEndpoint(RunEndpoint):
     """One SSH connection per Job, without a target kkrunner-agent.
 
     The target needs Python 3 and a working SSH connection. A direct Job has no
@@ -35,10 +36,10 @@ class SshDirectRunEndpoint:
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         spec.require_complete()
-        from kkrunner.backends.process.backend import ProcessBackend
+        from kkrunner.backends.process.backend import DirectProcessBackend
         from .runtime import SshProcessAdapter
         context = RemotePathContext(self, spec.launch)
-        backend = ProcessBackend(adapter_factory=lambda: SshProcessAdapter(context))
+        backend = DirectProcessBackend(adapter_factory=lambda: SshProcessAdapter(context))
         return RunParts(
             backend.create_job(spec, submission_key=submission_key, callback=callback),
             RemoteFileSession(context, spec),

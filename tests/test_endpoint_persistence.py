@@ -3,8 +3,8 @@
 from threading import Event
 
 from kkrunner import RunState, RunStore
-from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
-from kkrunner.client.pool import BackendPool
+from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_config_for_executor
+from kkrunner.client.pool import ExecutorPool
 from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
@@ -14,8 +14,8 @@ from kkrunner.runs.manager import RunManager
 
 def test_run_store_roundtrips_endpoint(tmp_path):
     store = RunStore(tmp_path / "runs")
-    manager = RunManager(store, backend_pool=BackendPool())
-    endpoint = ExecutionEndpoint(executor="ssh", host="cluster", ssh_options=("-v",), ssh_zstd=True)
+    manager = RunManager(store, executor_pool=ExecutorPool())
+    endpoint = ExecutionEndpointConfig(executor="ssh", host="cluster", ssh_options=("-v",), ssh_zstd=True)
     record = manager.new_record(
         directory=tmp_path,
         endpoint=endpoint,
@@ -25,13 +25,13 @@ def test_run_store_roundtrips_endpoint(tmp_path):
     stored = store.save(record)
     loaded = store.get(stored.id)
     assert loaded.execution.endpoint == endpoint
-    assert isinstance(loaded.execution.endpoint, ExecutionEndpoint)
+    assert isinstance(loaded.execution.endpoint, ExecutionEndpointConfig)
 
 
 def test_manager_reconstructs_local_executor_after_restart(tmp_path):
     store = RunStore(tmp_path / "runs")
-    endpoint = ExecutionEndpoint(executor="local-supervised")
-    first = RunManager(store, backend_pool=BackendPool())
+    endpoint = ExecutionEndpointConfig(executor="local-supervised")
+    first = RunManager(store, executor_pool=ExecutorPool())
     record = first.new_record(
         directory=tmp_path,
         endpoint=endpoint,
@@ -39,8 +39,8 @@ def test_manager_reconstructs_local_executor_after_restart(tmp_path):
         processing_required=True,
     )
     store.save(record)
-    restarted = RunManager(store, backend_pool=BackendPool())
-    executor = restarted.backend_for(store.get(record.id))
+    restarted = RunManager(store, executor_pool=ExecutorPool())
+    executor = restarted.executor_for(store.get(record.id))
     assert isinstance(executor, SupervisedProcessBackend)
 
 
@@ -93,8 +93,8 @@ def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):
             return self.executor
 
     store = RunStore(tmp_path / "runs")
-    endpoint = ExecutionEndpoint(executor="ssh", host="cluster")
-    first = RunManager(store, backend_pool=BackendPool())
+    endpoint = ExecutionEndpointConfig(executor="ssh", host="cluster")
+    first = RunManager(store, executor_pool=ExecutorPool())
     record = first.new_record(
         directory=tmp_path,
         endpoint=endpoint,
@@ -105,7 +105,7 @@ def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):
     record = first.transition(record, state=RunState.RUNNING, execution=record.execution.submitted("42"))
     executor = ReconstructedExecutor()
     pool = RecordingPool(executor)
-    restarted = RunManager(store, backend_pool=pool)
+    restarted = RunManager(store, executor_pool=pool)
     attached = restarted.attach(record.id, process_result=lambda outcome: outcome)
     assert pool.endpoints == [endpoint]
     assert attached.backend is executor
@@ -114,7 +114,7 @@ def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):
 
 
 def test_pool_reconstructs_and_reuses_ssh_endpoint():
-    endpoint = ExecutionEndpoint(
+    endpoint = ExecutionEndpointConfig(
         executor="ssh",
         host="cluster",
         ssh_options=("-p", "2222"),
@@ -123,7 +123,7 @@ def test_pool_reconstructs_and_reuses_ssh_endpoint():
         psij_backend="slurm",
         psij_url="local://slurm",
     )
-    pool = BackendPool()
+    pool = ExecutorPool()
     first = pool.for_endpoint(endpoint)
     second = pool.for_endpoint(endpoint)
     assert first is second
@@ -138,8 +138,8 @@ def test_pool_reconstructs_and_reuses_ssh_endpoint():
 
 def test_default_remote_psij_endpoint_survives_restart():
     live = AgentRunEndpoint(SshTransport("cluster"), backend="psij")
-    endpoint = endpoint_for_backend(live)
-    restored = BackendPool().for_endpoint(endpoint)
+    endpoint = endpoint_config_for_executor(live)
+    restored = ExecutorPool().for_endpoint(endpoint)
     assert endpoint.psij_backend == "slurm"
     assert isinstance(restored, AgentRunEndpoint)
     assert restored.backend == "psij"

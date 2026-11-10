@@ -11,9 +11,9 @@ from pathlib import Path
 import kkrunner
 from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.runs import LaunchSpec
-from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
+from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
 from kkrunner.client import LocalTransport, AgentRunEndpoint
-from kkrunner.projects import ProjectExecutionManager, ProjectRepository
+from kkrunner.projects import ProjectRunManager, ProjectRepository
 
 assert not os.environ.get("PYTHONPATH")
 assert importlib.util.find_spec("ase") is None
@@ -25,7 +25,7 @@ assert md.version("kkrunner") == kkrunner.__version__
 
 root = Path(tempfile.mkdtemp(prefix="kkrunner-distribution-"))
 raw = Run.direct(
-    ProcessBackend(),
+    DirectProcessBackend(),
     ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=root,
@@ -37,7 +37,7 @@ assert (root / "raw.out").read_text() == "42\n"
 
 projects = ProjectRepository(root / "projects")
 project = projects.create("Wheel review", directory=root)
-manager = ProjectExecutionManager(project_repository=projects, project=project)
+manager = ProjectRunManager(project_repository=projects, project=project)
 run = manager.create_run(
     SupervisedProcessBackend(),
     ExecutionSpec(
@@ -52,7 +52,7 @@ try:
 except ProcessingPending:
     pass
 assert manager.store.get(run.id).state == RunState.POSTPROCESSING
-restarted = ProjectExecutionManager(project_repository=projects, project=project)
+restarted = ProjectRunManager(project_repository=projects, project=project)
 attached = restarted.attach(run.id, process_result=lambda outcome: int(Path(outcome.output_file).read_text()))
 assert attached.wait() == 43
 assert restarted.store.get(run.id).state == RunState.FINISHED
