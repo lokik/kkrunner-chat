@@ -1,9 +1,11 @@
 # Execution boundary and public contract
 
-KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, ExecutorEndpoint,
+KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, ExecutionEndpoint,
 RunState/FailurePhase, Execution/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
-ExecutionResources and ResourceOwnedRunner. Public exports live in `kkrunner`.
+ExecutionResources and ResourceOwnedRunner. The root `kkrunner` package exports
+the small, backend-independent API; specialized types live in `kkrunner.runs`,
+`kkrunner.backends`, `kkrunner.client` and `kkrunner.files`.
 `RunManager` tracks runs in an explicit RunStore without requiring a project.
 `ProjectExecutionManager` and ProjectRepository organize runs in projects.
 Both managers use the same lifecycle. Each public class has one name that
@@ -53,6 +55,18 @@ a store must share the same reliable file-locking namespace. Callbacks may be
 repeated after a crash and must tolerate that (idempotence or transactional side
 effects); exactly-once side effects are not promised.
 
+A backend `Job` owns only execution submission, observation and cancellation.
+`JobStatus` describes backend facts, with no downloading or postprocessing.
+`JobRef` is an opaque backend-scoped identity rather than a client `run_id`.
+`JobAttachment` supplies the execution context needed for reattachment
+without exposing a durable record to a backend. An untracked or managed
+client `Run` owns execution completion, transfers and optional result processing.
+An SSH `RemoteJob` owns FOLLOW observation, while its separate
+`RemoteFileSession` owns staging, output persistence, synchronization and
+verification. An endpoint creates these parts through `RunParts`; only
+`RunManager` mutates persistent records. A terminal backend fact must never
+be published directly as a terminal client Run before these phases settle.
+
 Backend facts and durable submission/outcome receipts are not a second run
 record. RunRecord remains the authority for end-to-end completion. All completion paths share the same durable commit and result ACK.
 RunManager.refresh also reconciles terminal receipts; the explicit
@@ -86,7 +100,7 @@ them. See the application guide for its storage policy and temporary-file rules.
 
 For runs managed through the same RunStore, submission reserves declared file
 paths until the run reaches a terminal state. This applies with or without
-projects; raw executor runs do not take these reservations.
+projects; untracked `Run.direct()` executions do not take these reservations.
 
 Before reservation the remote executor resolves absolute target paths without
 staging or opening outputs. Only after the complete footprint has been durably
@@ -96,8 +110,8 @@ backend, and check the target filesystem as well. Local process and local PSI/J
 therefore share the local filesystem namespace. SSH connections to the same
 host share a target namespace regardless of SSH flags, remote command or backend.
 
-For host aliases or shared mounts, pass filesystem_id to RemoteEndpointExecutor
-or ExecutorEndpoint. Matching IDs declare one shared target filesystem; distinct
+For host aliases or shared mounts, pass filesystem_id to AgentBackendProxy
+or ExecutionEndpoint. Matching IDs declare one shared target filesystem; distinct
 IDs declare distinct ones. A client must use the same identity consistently.
 The API does not infer that different host aliases refer to the same mount.
 
@@ -142,26 +156,27 @@ clock change that reverses entirely between sampled reads can evade detection.
 | Package | Responsibility |
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
-| `kkrunner.backends` | Local and PSI/J implementations, endpoint identity, MPI launch and reusable executor pools. |
-| `kkrunner.remote` | Remote runner and executor, transports, wire framing, target service, receipts and worker supervision. |
+| `kkrunner.backends` | Process and PSI/J Job implementations, submission/recovery contracts, MPI launch, supervisor and scheduler operations. |
+| `kkrunner.client` | AgentBackendProxy, connection/endpoint identity, backend pools, transport, remote Job and remote file sessions. |
+| `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
 | `kkrunner.files` | TaskFile, manifests, transfer policy, pathname declarations, captured versions and artifact availability. |
 | `kkrunner.support` | Shared durability, locking, asynchronous and growing-stream utilities. |
 
-The root package exports seven backend-independent entry points:
-`ExecutionSpec`, `ExecutionOutcome`, `RunManager`, `RunStore`, `RunState`,
-`TaskFile` and `ProcessingPending`. Select concrete executors from
-`kkrunner.backends` or `kkrunner.remote`; projects and advanced file/run types
-are exported by their respective subpackages. Runner implementations and
-resource ownership helpers stay in their defining modules for backend authors.
+The root package exports eight backend-independent entry points:
+`ExecutionSpec`, `ExecutionOutcome`, `Run`, `RunManager`, `RunStore`,
+`RunState`, `TaskFile` and `ProcessingPending`. Select a local `ProcessBackend`
+or scheduler `PsijBackend` from `kkrunner.backends`; use
+`kkrunner.client.AgentBackendProxy` with a transport for a remote target.
+Projects and advanced file/run types live in their respective subpackages.
 
-The public facades re-export the original objects without compatibility classes
-or alternate names. Internal imports use defining modules. Backend implementations
+The public facades expose the new contracts without deprecated compatibility
+classes or parallel names. Internal imports use defining modules. Backend implementations
 are loaded only when requested from `kkrunner.backends`: run contracts depend on
 endpoint metadata, so loading implementations while initializing that package
 would reverse the dependency and create an import cycle. The root import does
 not load local/PSI/J implementations, projects or the remote client/service.
-The remote worker starts as `kkrunner.remote.worker`.
+The supervised process worker lives in `kkrunner.backends.process.worker`.
 
 `files` and `support` do not import the run lifecycle, projects, backends or
 remote service. File reservations use generic local path expansion without
@@ -195,7 +210,7 @@ transport, backend, or application code. Local and SSH transports share this
 implementation. Discovery returns metadata in the same response; cache baselines
 query all patterns and exact paths together in one request instead of probing
 each match. File queries and execution share the command configured on the SSH
-transport or its `RemoteEndpointExecutor`, including custom Python environments.
+transport or its `AgentBackendProxy`, including custom Python environments.
 
 Single-file uploads retain temporary-file staging and atomic replacement. The
 `finalize-upload` operation uses `os.utime(ns=...)` and `os.replace()` to publish

@@ -47,6 +47,7 @@ def parser(parser, *, user=False):
         recover.add_argument("run_id")
 
         ack_submit = actions.add_parser("ack-submit")
+        ack_submit.add_argument("backend")
         ack_submit.add_argument("run_id")
 
         ack = actions.add_parser("ack")
@@ -161,7 +162,7 @@ def run(args, global_args=None):
             result = {"unsupported": True, "error": str(exc)}
         _print_json(result)
     elif args.remote_action == "ack-submit":
-        _print_json(acknowledge_submission(args.run_id))
+        _print_json(acknowledge_submission(args.backend, args.run_id))
     elif args.remote_action == "ack":
         _print_json(acknowledge_remote(args.remote_id))
     elif args.remote_action == "resolve-mpi":

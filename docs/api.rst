@@ -1,15 +1,13 @@
 API reference
-===============
+=============
 
-The root package provides backend-independent entry points for ordinary runs.
-Choose executors from :mod:`kkrunner.backends` or :mod:`kkrunner.remote`; projects,
-file manifests and advanced run contracts have their own public subpackages.
-These import paths are independent of the modules implementing each type.
+The root package provides backend-independent Run entry points. Execution
+technology lives in :mod:`kkrunner.backends`; SSH transport, endpoint pooling
+and remote file synchronization belong to :mod:`kkrunner.client`. The remote
+service protocol does not expose a client execution facade.
 
 Common entry points
-----------------------
-
-.. py:module:: kkrunner
+-------------------
 
 .. currentmodule:: kkrunner
 
@@ -18,16 +16,15 @@ Common entry points
 
    ExecutionSpec
    ExecutionOutcome
+   Run
    RunManager
    RunStore
    RunState
    TaskFile
    ProcessingPending
 
-Execution contracts and durable records
------------------------------------------
-
-.. py:module:: kkrunner.runs
+Execution and durable records
+-----------------------------
 
 .. currentmodule:: kkrunner.runs
 
@@ -39,11 +36,7 @@ Execution contracts and durable records
    MpiNotFoundWarning
    RunStatus
    FailurePhase
-   Runner
-   BackendRunner
-   ManagedRunner
-   Executor
-   PersistentRunner
+   Run
    RunRecord
    CorruptRunRecord
    DuplicateSubmissionError
@@ -51,10 +44,8 @@ Execution contracts and durable records
    Execution
    WorkingDirectory
 
-Declared files and identity
------------------------------
-
-.. py:module:: kkrunner.files
+Declared files
+--------------
 
 .. currentmodule:: kkrunner.files
 
@@ -72,42 +63,51 @@ Declared files and identity
    FileVersion
    FileVersionCaptureError
 
-Execution backends
----------------------
-
-.. py:module:: kkrunner.backends
+Backends and their execution contracts
+--------------------------------------
 
 .. currentmodule:: kkrunner.backends
 
 .. autosummary::
    :toctree: _generated
 
-   LocalExecutor
-   PsijExecutor
-   ExecutorEndpoint
-   ExecutorPool
-   default_executor_pool
+   ProcessBackend
+   PsijBackend
+   Job
+   JobRef
+   JobStatus
+   JobAttachment
 
-Remote execution and transport
---------------------------------
-
-.. py:module:: kkrunner.remote
-
-.. currentmodule:: kkrunner.remote
+.. currentmodule:: kkrunner.backends.contracts
 
 .. autosummary::
    :toctree: _generated
 
-   RemoteEndpointExecutor
+   JobState
+   JobFailurePhase
+   RecoveryDisposition
+   RecoveryResult
+   ObservationUnavailable
+   UnsupportedCapability
+
+Client endpoints, transport and pooling
+---------------------------------------
+
+.. currentmodule:: kkrunner.client
+
+.. autosummary::
+   :toctree: _generated
+
+   AgentBackendProxy
+   ExecutionEndpoint
+   BackendPool
+   default_backend_pool
    Transport
-   RunningCommand
    LocalTransport
    SshTransport
 
 Projects
-----------
-
-.. py:module:: kkrunner.projects
+--------
 
 .. currentmodule:: kkrunner.projects
 
@@ -122,20 +122,21 @@ Projects
    ProjectExecutionManager
    default_projects_directory
 
-Backend implementation interfaces
-------------------------------------
+Implementation interfaces
+-------------------------
 
-These modules expose lower-level runner implementations and resource ownership
-helpers for backend authors. They are not re-exported by the public facades.
+These modules expose concrete job implementations and resource-ownership
+helpers. They are not re-exported by the public facades.
 
 .. currentmodule:: kkrunner
 
 .. autosummary::
    :toctree: _generated
 
-   backends.local.LocalRunner
-   backends.psij.PsijRunner
-   remote.runner.RemoteRunner
-   runs.processing.PostprocessingRunner
+   backends.process.engine.ProcessJob
+   backends.process.managed.SupervisedProcessJob
+   backends.scheduler.engine.PsijJob
+   client.remote_job.RemoteJob
+   client.remote_files.RemoteFileSession
    runs.base.ExecutionResources
    runs.base.ResourceOwnedRunner

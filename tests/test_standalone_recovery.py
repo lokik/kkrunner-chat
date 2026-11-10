@@ -12,7 +12,7 @@ import pytest
 from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.backends import LocalExecutor
+from kkrunner.backends import ProcessBackend
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.processing import ProcessingPending
 
@@ -128,7 +128,7 @@ def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        LocalExecutor(),
+        ProcessBackend(),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -145,7 +145,7 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        LocalExecutor(),
+        ProcessBackend(),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -166,7 +166,7 @@ def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypat
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        LocalExecutor(),
+        ProcessBackend(),
         ExecutionSpec(
             [sys.executable, "-c", "import time; time.sleep(.4); print(42)"],
             directory=tmp_path,
@@ -227,7 +227,8 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
 
 def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase, LaunchSpec
-    from kkrunner.remote import LocalTransport, RemoteEndpointExecutor
+    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.transport import LocalTransport
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     local, remote = tmp_path / "local", tmp_path / "remote"
@@ -243,7 +244,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             return await super().get_file(source, destination)
 
     transport = Transport()
-    executor = RemoteEndpointExecutor(transport, command=(sys.executable, "-m", "kkrunner"))
+    executor = AgentBackendProxy(transport, command=(sys.executable, "-m", "kkrunner"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
         executor,
@@ -262,7 +263,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     assert failed.return_code == 0
     transport.fail = False
     manager.resume_download(failed)
-    attached = manager.attach(run.id, executor=executor)
+    attached = manager.attach(run.id, backend=executor)
     assert attached.wait().return_code == 0
     assert manager.store.get(run.id).state == RunState.FINISHED
     assert (local / "answer.txt").read_text() == "42"

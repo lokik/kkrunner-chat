@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shlex
@@ -19,7 +20,6 @@ from kkrunner.files.paths import file_path
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionSpec,
-    Executor,
     FailurePhase,
     OutputObservers,
     RunState,
@@ -148,8 +148,13 @@ def _slurm_details(native_id):
     return fields
 
 
+def _submission_marker(run_id):
+    """Short, scheduler-safe lookup marker for an arbitrary valid Run ID."""
+    return "kkrunner:" + hashlib.blake2s(run_id.encode("utf8"), digest_size=16).hexdigest()
+
+
 def _slurm_current_matches(run_id):
-    marker = f"kkrunner:{run_id}"
+    marker = _submission_marker(run_id)
     output = _scheduler_output(("squeue", "--noheader", "--me", "--format=%i|%k|%T|%Z"))
     matches = []
     for line in output.splitlines():
@@ -180,7 +185,7 @@ def _slurm_time(value):
 
 
 def _slurm_accounting_matches(run_id, submitted_at):
-    marker = f"kkrunner:{run_id}"
+    marker = _submission_marker(run_id)
     output = _scheduler_output(
         (
             "sacct",
@@ -263,7 +268,7 @@ def _slurm_status_native(native_id):
     )
 
 
-class PsijRunner:
+class PsijJob:
     """One raw job managed by a PSI/J executor."""
 
     def __init__(
@@ -303,6 +308,7 @@ class PsijRunner:
         self._failure_message = None
         self._thread = None
         self._attached = attached
+        self._submission_attempted = False
         self._files = None
         self._cancel_future = None
         self._observed_state = None
@@ -337,7 +343,7 @@ class PsijRunner:
         environment = {"KKRunner_RUN_ID": self._run_id}
         attributes = None
         if self.executor.backend.lower() == "slurm":
-            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": f"kkrunner:{self._run_id}"})
+            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": _submission_marker(self._run_id)})
         return environment, attributes
 
     def _create_job(self):
@@ -365,10 +371,15 @@ class PsijRunner:
 
     @property
     def state(self):
-        if self._exception is not None:
-            return RunState.FAILED
         if self._observed_state is not None:
             return self._observed_state
+        if self._exception is not None:
+            # Monitor exceptions are not evidence of scheduler failure.
+            return RunState.UNKNOWN
+        if self._submission_attempted and self.backend_id is None and self._thread is None:
+            # A submission error may have occurred after scheduler acceptance.
+            # PSI/J's still-NEW native status is not proof of non-submission.
+            return RunState.UNKNOWN
         return _psij_state(self._job.status, attached=self._attached, return_code=self.return_code)
 
     @property
@@ -415,6 +426,18 @@ class PsijRunner:
     def backend_id(self):
         native_id = getattr(self._job, "native_id", None)
         return None if native_id is None else str(native_id)
+
+    @property
+    def ref(self):
+        from kkrunner.backends.contracts import JobRef
+        return None if self.backend_id is None else JobRef("psij", self.backend_id)
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        return job_status_from_facts(
+            self.state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
 
     def add_output_listener(self, callback):
         self._output_observers.add(callback)
@@ -563,16 +586,28 @@ class PsijRunner:
                 self._failure_message = str(exc)
         return self.result
 
+    def _record_observation_error(self, exc):
+        if self._exception is None:
+            self._exception = exc
+        if self._observed_state not in (RunState.FAILED, RunState.CANCELLED):
+            # Neither monitor failure nor output observer cleanup proves that
+            # the scheduler job failed; result delivery remains inconclusive.
+            self._observed_state = RunState.UNKNOWN
+            self._failure_phase = None
+        self._failure_message = self._failure_message or str(exc)
+
     def _thread_main(self):
         try:
             asyncio.run(self._monitor())
         except BaseException as exc:
-            self._exception = exc
-            self._failure_phase = self._failure_phase or FailurePhase.EXECUTION
-            self._failure_message = self._failure_message or str(exc)
+            self._record_observation_error(exc)
         finally:
-            self._output_observers.finish_bytes()
-            finish_monitor(self)
+            try:
+                self._output_observers.finish_bytes()
+            except BaseException as exc:
+                self._record_observation_error(exc)
+            finally:
+                finish_monitor(self)
 
     def start(self):
         if self._attached:
@@ -583,8 +618,8 @@ class PsijRunner:
         with self._submit_lock:
             if self._attached:
                 raise RuntimeError("Cannot submit an attached PSI/J job")
-            if self._thread is not None or self.state != RunState.NEW:
-                raise RuntimeError(f"Run is already {self.state.value}")
+            if self._submission_attempted or self._thread is not None or self.state != RunState.NEW:
+                raise RuntimeError("PSI/J job has already been submitted or submission is uncertain")
             try:
                 self._prepare_io()
             except Exception as exc:
@@ -592,9 +627,9 @@ class PsijRunner:
                 self._failure_phase = FailurePhase.SUBMISSION
                 self._failure_message = str(exc)
                 raise SubmissionNotStarted(str(exc)) from exc
-            # An exception from PSI/J submit does not prove that the scheduler
-            # rejected the job. Leave project submission recoverable even when
-            # the native ID has not reached this process.
+            # Mark the boundary before calling PSI/J: a raised exception may
+            # follow scheduler acceptance, so never submit this Job twice.
+            self._submission_attempted = True
             self.executor._job_executor.submit(self._job)
             self.executor._cache_submitted_job(self._job)
             start_monitor(self)
@@ -628,10 +663,11 @@ class PsijRunner:
         return request_cancellation(self, self._job.cancel)
 
 
-class PsijExecutor(Executor):
+class PsijBackend:
     """Execute calculations through a PSI/J backend such as Slurm or PBS."""
 
     name = "psij"
+    supports_result_file_retrieval = False
 
     def __init__(
         self,
@@ -656,23 +692,25 @@ class PsijExecutor(Executor):
         self._jobs_lock = RLock()
         self._max_idle_jobs = 64
 
-    def create_run(self, spec: ExecutionSpec, callback=None):
-        runner = PsijRunner(self, spec, callback=callback)
-        runner.set_manifest(FileManifest.from_spec(spec))
-        return runner
+    def create_run_parts(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        from kkrunner.client.run_parts import RunParts
+        return RunParts(self.create_job(spec, submission_key=submission_key, callback=callback))
 
-    def create_managed_run(self, spec: ExecutionSpec, *, run_id, callback=None):
-        return PsijRunner(
-            self,
-            spec,
-            callback=callback,
-            run_id=run_id,
-        )
+    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
+        from kkrunner.client.run_parts import RunParts
+        return RunParts(self.open_job(
+            attachment, callback=callback, output_listener=output_listener, start=False,
+        ))
+
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        job = PsijJob(self, spec, callback=callback, run_id=submission_key)
+        job.set_manifest(FileManifest.from_spec(spec))
+        return job
 
     def status(self, *runs):
-        from kkrunner.backends.endpoint import endpoint_for_executor
+        from kkrunner.client.endpoint import endpoint_for_backend
 
-        expected = endpoint_for_executor(self)
+        expected = endpoint_for_backend(self)
         statuses = []
         for run in runs:
             if run.execution.endpoint != expected:
@@ -875,34 +913,20 @@ class PsijExecutor(Executor):
             submitted_at=submitted_at,
         )
         if facts is None:
-            return None
-        execution = submission.execution.submitted(facts["native_id"])
-        directory = facts["directory"]
-        if directory != execution.directory.target:
-            from kkrunner.runs.model import WorkingDirectory
-
-            execution = replace(
-                execution,
-                directory=WorkingDirectory(execution.directory.local, directory),
-            )
-        files = submission.files.with_remote_stream_paths(
-            stdout=facts["stdout"],
-            stderr=facts["stderr"],
-        )
-        state = facts["state"]
-        return RunStatus(
-            state=state,
-            backend_id=facts["native_id"],
-            execution=execution,
-            files=files,
-            return_code=facts["return_code"],
-            failure_phase=FailurePhase.EXECUTION if state == RunState.FAILED else None,
+            from kkrunner.backends.contracts import RecoveryResult
+            return RecoveryResult.indeterminate("Scheduler cannot prove submission absence")
+        from kkrunner.backends.contracts import JobRef, RecoveryResult
+        return RecoveryResult.found(
+            JobRef("psij", facts["native_id"]),
+            directory=facts.get("directory"),
+            output_file=facts.get("stdout"),
+            error_file=facts.get("stderr"),
         )
 
-    def attach(self, run, callback=None, output_listener=None, start=True):
-        from kkrunner.backends.endpoint import endpoint_for_executor
+    def open_job(self, run, callback=None, output_listener=None, start=True):
+        from kkrunner.client.endpoint import endpoint_for_backend
 
-        if run.execution.endpoint != endpoint_for_executor(self):
+        if run.execution.endpoint != endpoint_for_backend(self):
             raise ValueError("Run does not belong to this PSI/J endpoint")
         backend_id = run.execution.backend_id
         if not backend_id:
@@ -915,7 +939,7 @@ class PsijExecutor(Executor):
             error_file=None if run.files.stderr is None else run.files.stderr.local_path,
             directory=run.execution.directory.local,
         )
-        runner = PsijRunner(
+        runner = PsijJob(
             self,
             spec,
             callback=callback,

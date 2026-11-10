@@ -9,9 +9,9 @@ import signal
 import subprocess
 import sys
 
-from kkrunner.backends.local_process import pump_stream, stop_local_process
-from kkrunner.remote.mailbox import publish_outcome
-from kkrunner.remote.supervisor import SupervisorStreams
+from kkrunner.backends.process.primitives import pump_stream, stop_local_process
+from kkrunner.backends.process.mailbox import publish_outcome
+from kkrunner.backends.process.supervisor import SupervisorStreams
 from kkrunner.runs.base import FailurePhase, RunState
 
 _SPEC_ENV = "KKRunner_REMOTE_PROCESS_SPEC"

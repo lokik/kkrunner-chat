@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Optional
 
-from kkrunner.backends.endpoint import ExecutorEndpoint
+from kkrunner.client.endpoint import ExecutionEndpoint
 
 
 @dataclass(frozen=True)
@@ -31,17 +31,17 @@ class WorkingDirectory:
 class Execution:
     """Backend identity plus the directory in which the job executes."""
 
-    endpoint: ExecutorEndpoint
+    endpoint: ExecutionEndpoint
     directory: WorkingDirectory
     backend_id: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.endpoint, dict):
-            object.__setattr__(self, "endpoint", ExecutorEndpoint(**self.endpoint))
+            object.__setattr__(self, "endpoint", ExecutionEndpoint(**self.endpoint))
         if isinstance(self.directory, dict):
             object.__setattr__(self, "directory", WorkingDirectory(**self.directory))
-        if not isinstance(self.endpoint, ExecutorEndpoint):
-            raise TypeError("Execution.endpoint must be an ExecutorEndpoint")
+        if not isinstance(self.endpoint, ExecutionEndpoint):
+            raise TypeError("Execution.endpoint must be an ExecutionEndpoint")
         if not isinstance(self.directory, WorkingDirectory):
             raise TypeError("Execution.directory must be a WorkingDirectory")
         if self.backend_id is not None:

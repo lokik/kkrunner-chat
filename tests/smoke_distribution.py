@@ -9,10 +9,10 @@ import tempfile
 from pathlib import Path
 
 import kkrunner
-from kkrunner import ExecutionSpec, ProcessingPending, RunState
+from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.runs import LaunchSpec
-from kkrunner.backends import LocalExecutor
-from kkrunner.remote import LocalTransport, RemoteEndpointExecutor
+from kkrunner.backends import ProcessBackend
+from kkrunner.client import LocalTransport, AgentBackendProxy
 from kkrunner.projects import ProjectExecutionManager, ProjectRepository
 
 assert not os.environ.get("PYTHONPATH")
@@ -24,7 +24,8 @@ for module in pkgutil.walk_packages(kkrunner.__path__, kkrunner.__name__ + "."):
 assert md.version("kkrunner") == kkrunner.__version__
 
 root = Path(tempfile.mkdtemp(prefix="kkrunner-distribution-"))
-raw = LocalExecutor().create_run(
+raw = Run.direct(
+    ProcessBackend(),
     ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=root,
@@ -38,7 +39,7 @@ projects = ProjectRepository(root / "projects")
 project = projects.create("Wheel review", directory=root)
 manager = ProjectExecutionManager(project_repository=projects, project=project)
 run = manager.create_run(
-    LocalExecutor(),
+    ProcessBackend(),
     ExecutionSpec(
         [sys.executable, "-c", "print(43)"],
         directory=root,
@@ -59,8 +60,8 @@ assert restarted.store.get(run.id).state == RunState.FINISHED
 local, remote = root / "local", root / "remote"
 local.mkdir()
 remote.mkdir()
-executor = RemoteEndpointExecutor(LocalTransport(), command=(str(Path(sys.executable).parent / "kkrunner"),))
-run = executor.create_run(
+executor = AgentBackendProxy(LocalTransport(), command=(str(Path(sys.executable).parent / "kkrunner"),))
+run = Run.direct(executor,
     ExecutionSpec(
         [sys.executable, "-c", "print(44)"],
         directory=local,

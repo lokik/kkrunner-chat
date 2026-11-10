@@ -13,7 +13,7 @@ records have separate stores.
    import tempfile
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunStore
-   from kkrunner.backends import LocalExecutor
+   from kkrunner.backends import ProcessBackend
    from kkrunner.projects import ProjectExecutionManager, ProjectRepository
 
    workspace = tempfile.TemporaryDirectory()
@@ -26,7 +26,7 @@ records have separate stores.
        project=project,
    )
    run = manager.create_run(
-       LocalExecutor(),
+       ProcessBackend(),
        ExecutionSpec([sys.executable, "-c", "pass"], directory=directory),
    )
    print(run.run().return_code)

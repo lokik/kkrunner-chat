@@ -7,7 +7,7 @@ import pytest
 import kkrunner.runs.manager as manager_module
 import kkrunner.runs.records as records_module
 import kkrunner.support.durability as durability
-from kkrunner.backends.endpoint import ExecutorEndpoint
+from kkrunner.client.endpoint import ExecutionEndpoint
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.runs.base import RunState
 from kkrunner.runs.manager import RunManager
@@ -97,7 +97,7 @@ def test_reserve_syncs_inputs_before_submitting_record(tmp_path, monkeypatch):
     manager = RunManager(store)
     record = manager.new_record(
         directory=tmp_path,
-        endpoint=ExecutorEndpoint(),
+        endpoint=ExecutionEndpoint(),
         files=FileManifest(inputs=(FileEntry(local_path=str(input_file)),)),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -129,7 +129,7 @@ def test_artifact_publication_syncs_outputs_before_terminal_record(tmp_path, mon
         processing_required=True,
     )
     store.save(record)
-    record = manager.transition(record, state=RunState.POSTPROCESSING)
+    record = manager.transition(record, state=RunState.RUNNING)
     events = []
     monkeypatch.setattr(manager_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
     real_transition = manager.transition

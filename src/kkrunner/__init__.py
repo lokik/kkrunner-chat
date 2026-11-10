@@ -7,12 +7,13 @@ if TYPE_CHECKING:
     from kkrunner.files.task_file import TaskFile
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, RunState
     from kkrunner.runs.manager import RunManager
+    from kkrunner.runs.run import Run
     from kkrunner.runs.processing import ProcessingPending
     from kkrunner.runs.records import RunStore
 
 __all__ = [
     "ExecutionOutcome", "ExecutionSpec", "ProcessingPending",
-    "RunManager", "RunState", "RunStore", "TaskFile", "__version__",
+    "Run", "RunManager", "RunState", "RunStore", "TaskFile", "__version__",
 ]
 
 
@@ -28,6 +29,8 @@ def __getattr__(name):
     ):
         from .runs import base
         value = getattr(base, name)
+    elif name == "Run":
+        from .runs.run import Run as value
     elif name == "RunManager":
         from .runs.manager import RunManager as value
     elif name == "ProcessingPending":

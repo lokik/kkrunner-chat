@@ -5,13 +5,15 @@ import pytest
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.files import FileEntry, FileManifest, FileMapping
 from kkrunner.runs import LaunchSpec
-from kkrunner.remote import LocalTransport, RemoteEndpointExecutor
-from kkrunner.remote.executor import _RemoteRun
+from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.client.transport import LocalTransport
+from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
 def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, monkeypatch):
-    executor = RemoteEndpointExecutor(LocalTransport())
+    executor = AgentBackendProxy(LocalTransport())
     manager = RunManager(RunStore(tmp_path / "runs"))
     directory = tmp_path / "local"
     directory.mkdir()
@@ -41,15 +43,15 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
         submitted.append(current)
         return {"state": "running", "remote_id": "opaque-job"}
 
-    monkeypatch.setattr(_RemoteRun, "_prepare_async", prepare)
-    monkeypatch.setattr("kkrunner.remote.executor.start_monitor", lambda *args, **kwargs: None)
+    monkeypatch.setattr(RemoteFileSession, "_prepare_async", prepare)
+    monkeypatch.setattr(run._job, "start", lambda: None)
     executor._submit = submit
 
     async def status(_directory, _backend_id, _files=None):
         return {"state": "running"}
 
     executor._status = status
-    monkeypatch.setattr(run._runner, "_start_completion", lambda: None)
+    monkeypatch.setattr(run, "_start_completion", lambda: None)
     run.submit()
     assert len(submitted) == 1
     snapshot = submitted[0]
@@ -80,8 +82,8 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
     local = FileManifest.from_spec(spec)
-    executor = RemoteEndpointExecutor(LocalTransport())
-    runner = executor.create_run(spec)
+    executor = AgentBackendProxy(LocalTransport())
+    runner = executor.create_run_parts(spec).files
     manifest = asyncio.run(
         runner._submitted_manifest(
             {
@@ -116,7 +118,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
     directory = tmp_path / "work"
     directory.mkdir()
     remote = tmp_path / "remote"
-    executor = RemoteEndpointExecutor(LocalTransport())
+    executor = AgentBackendProxy(LocalTransport())
     spec = ExecutionSpec(
         argv=("ignored",),
         directory=str(directory),
@@ -126,7 +128,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
         cache_files=(None, "restart.dat", "checkpoint-*.dat"),
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
-    runner = executor.create_run(spec)
+    runner = executor.create_run_parts(spec).files
     manifest = FileManifest.from_spec(spec)
 
     async def prepare():
@@ -146,8 +148,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
 @pytest.mark.parametrize("method", ("submit", "start"))
 def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(method):
     from kkrunner.runs.base import SubmissionNotStarted
-    from kkrunner.runs.processing import PostprocessingRunner
-
+    
     failure = SubmissionNotStarted("preflight refused")
 
     class RejectedRunner:
@@ -156,7 +157,7 @@ def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(met
         def submit(self):
             raise failure
 
-    runner = PostprocessingRunner(RejectedRunner(), lambda result: result)
+    runner = Run(RejectedRunner(), process_result=lambda result: result)
     with pytest.raises(SubmissionNotStarted, match="preflight refused") as caught:
         getattr(runner, method)()
     assert caught.value is failure
@@ -204,6 +205,6 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
         cache_files=cache_files,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    runner = RemoteEndpointExecutor(NoSideEffectTransport()).create_run(spec)
+    runner = AgentBackendProxy(NoSideEffectTransport()).create_run_parts(spec).files
     with pytest.raises(SubmissionNotStarted, match="Conflicting optionality|Duplicate file declaration"):
         runner.prepare_submission()

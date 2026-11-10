@@ -1,34 +1,28 @@
-"""Execution backends and their reusable endpoint identities."""
+"""Process and scheduler execution backends with lazy imports."""
 
 from typing import TYPE_CHECKING
 
-from kkrunner.backends.endpoint import ExecutorEndpoint
-
 if TYPE_CHECKING:
-    from kkrunner.backends.local import LocalExecutor
-    from kkrunner.backends.pool import ExecutorPool, default_executor_pool
-    from kkrunner.backends.psij import PsijExecutor
+    from kkrunner.backends.contracts import Backend, Job, JobAttachment, JobRef, JobStatus
+    from kkrunner.backends.process.engine import ProcessBackend
+    from kkrunner.backends.scheduler.engine import PsijBackend
 
-# Run contracts use endpoint metadata. Load implementations only on request so
-# importing those contracts does not load backends or create an import cycle.
-__all__ = ["ExecutorEndpoint", "ExecutorPool", "LocalExecutor", "PsijExecutor", "default_executor_pool"]
+__all__ = ["Backend", "Job", "JobAttachment", "JobRef", "JobStatus", "ProcessBackend", "PsijBackend"]
 
 
 def __getattr__(name):
-    if name == "LocalExecutor":
-        from .local import LocalExecutor as value
-    elif name == "PsijExecutor":
-        from .psij import PsijExecutor as value
-    elif name in (
-        "ExecutorPool",
-        "default_executor_pool",
-    ):
-        from . import pool
-        value = getattr(pool, name)
+    if name in ("Backend", "Job", "JobAttachment", "JobRef", "JobStatus"):
+        from . import contracts
+        value = getattr(contracts, name)
+    elif name == "ProcessBackend":
+        from .process.engine import ProcessBackend as value
+    elif name == "PsijBackend":
+        from .scheduler.engine import PsijBackend as value
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     globals()[name] = value
     return value
+
 
 def __dir__():
     return sorted(set(globals()) | set(__all__))

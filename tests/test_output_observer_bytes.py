@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kkrunner.backends.local import LocalRunner
-from kkrunner.backends.local_managed import _ObserverSink
-from kkrunner.backends.psij import PsijRunner
-from kkrunner.remote.runner import RemoteRunner
+from kkrunner.backends.process.engine import ProcessJob
+from kkrunner.backends.process.managed import _ObserverSink
+from kkrunner.backends.scheduler.engine import PsijJob
+from kkrunner.client.remote_job import RemoteJob
 from kkrunner.runs.base import OutputObservers
 
 
@@ -34,7 +34,7 @@ def test_emit_bytes_decodes_nonempty_chunks(data, expected):
 def test_local_forward_output_persists_and_observes_bytes(kind):
     received = []
     output = BytesIO()
-    runner = object.__new__(LocalRunner)
+    runner = object.__new__(ProcessJob)
     runner.spec = SimpleNamespace(output_file=output, error_file=None)
     runner._output_observers = OutputObservers(lambda text, stream: received.append((text, stream)))
     runner._forward_output(b"message:\xff", kind)
@@ -45,9 +45,9 @@ def test_local_forward_output_persists_and_observes_bytes(kind):
 
 def test_remote_pump_delivers_bytes_without_runner_decoder():
     received, written = ([], [])
-    runner = object.__new__(RemoteRunner)
+    runner = object.__new__(RemoteJob)
     runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
-    runner._write_output = lambda data, kind: written.append((data, kind))
+    runner._stream_writer = lambda data, kind: written.append((data, kind))
     source = SimpleNamespace(read=AsyncMock(side_effect=[b"remote:\xff", b""]))
     asyncio.run(runner._pump(source, "out"))
     assert written == [(b"remote:\xff", "out")]
@@ -55,7 +55,7 @@ def test_remote_pump_delivers_bytes_without_runner_decoder():
 
 
 def test_psij_monitor_forwards_follow_bytes(monkeypatch):
-    import kkrunner.backends.psij as psij_module
+    import kkrunner.backends.scheduler.engine as psij_module
 
     received = []
 
@@ -66,7 +66,7 @@ def test_psij_monitor_forwards_follow_bytes(monkeypatch):
         return SimpleNamespace(exit_code=0, state=SimpleNamespace(name="COMPLETED"))
 
     monkeypatch.setattr(psij_module, "follow_growing_files", follow)
-    runner = object.__new__(PsijRunner)
+    runner = object.__new__(PsijJob)
     runner._stdout_path = "job.out"
     runner._stderr_path = "job.err"
     runner._job = SimpleNamespace(status=SimpleNamespace(state=SimpleNamespace(name="COMPLETED"), exit_code=0))
