@@ -250,6 +250,26 @@ class Run:
             if raw_state != RunState.FINISHED:
                 raise RuntimeError(f"Backend observer completed in unexpected state {raw_state.value}")
 
+            # A local Job can confirm that execution finished even if FOLLOW,
+            # stream delivery or client output closure failed. Backend status
+            # stays FINISHED, but a client Run must not claim completed output
+            # or publish successful postprocessing in that case.
+            if self._file_session is None and self._job.output_error is not None:
+                self._exception = self._job.output_error
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.OUTPUT
+                self._failure_message = str(self._exception)
+                if self._local_files is not None:
+                    # Stream delivery is incomplete; keep unrelated output
+                    # artifacts unchanged, but do not leave stream availability
+                    # as pending or claim that its bytes are reliable.
+                    for stream in (self._local_files.stdout, self._local_files.stderr):
+                        if stream is not None and stream.local_path is not None:
+                            self._local_files = self._local_files.with_file_availability(
+                                stream.local_path, "failed", self._failure_message,
+                            )
+                return
+
             # A Job finishes once its process ends. The client then verifies
             # application artifacts, after native output streams were closed.
             if self._local_files is not None:

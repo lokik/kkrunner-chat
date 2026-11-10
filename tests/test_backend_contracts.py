@@ -205,3 +205,18 @@ def test_managed_job_does_not_expose_direct_detached_configuration(tmp_path):
         pass
     else:
         raise AssertionError("Managed backend detached policy was incorrectly configurable")
+
+
+def test_agent_context_provides_backend_identity_for_job_ref(tmp_path):
+    from types import SimpleNamespace
+
+    from kkrunner.backends.contracts import JobRef
+    from kkrunner.client.agent import _AgentRunContext
+    from kkrunner.client.job import Job
+    from kkrunner.runs.base import ExecutionSpec, LaunchSpec
+
+    endpoint = SimpleNamespace(backend="psij", transport=object())
+    context = _AgentRunContext(endpoint, LaunchSpec())
+    job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)),
+              backend_id="opaque-id")
+    assert job.ref == JobRef("psij", "opaque-id")

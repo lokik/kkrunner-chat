@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-import kkrunner.client.direct_operation as direct_operation
+import kkrunner.client.direct_session as direct_session
 import kkrunner.backends.process.direct.local as local
 from kkrunner.backends.process.backend import DirectProcessBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
@@ -45,9 +45,9 @@ def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
     stopped = []
     stop = local.stop_local_process
 
-    async def record_stop(process):
+    async def record_stop(process, **kwargs):
         stopped.append(process.pid)
-        await stop(process)
+        await stop(process, **kwargs)
 
     monkeypatch.setattr(local, "stop_local_process", record_stop)
     runner = DirectProcessBackend().create_job(
@@ -71,15 +71,15 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
     stopped = []
     stop = local.stop_local_process
 
-    async def record_stop(process):
+    async def record_stop(process, **kwargs):
         stopped.append(process.pid)
-        await stop(process)
+        await stop(process, **kwargs)
 
     async def failing_pump(source, sink, *, eof=None):
         raise RuntimeError("output pump failed")
 
     monkeypatch.setattr(local, "stop_local_process", record_stop)
-    monkeypatch.setattr(direct_operation, "pump_stream", failing_pump)
+    monkeypatch.setattr(direct_session, "pump_stream", failing_pump)
     runner = DirectProcessBackend().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import time; time.sleep(30)"),

@@ -76,3 +76,42 @@ def test_direct_cancel_before_submit_never_launches(tmp_path):
     assert job.wait().return_code is None
     with pytest.raises(RuntimeError, match="cancelled"):
         job.submit()
+
+
+def test_direct_session_is_private_resource_owner_without_second_job_state(tmp_path):
+    from kkrunner.client.direct_session import DirectSession
+
+    spec = ExecutionSpec((sys.executable, "-c", "print('ok')"), directory=str(tmp_path))
+    job = DirectProcessBackend().create_job(spec)
+    assert isinstance(job._direct_session, DirectSession)
+    assert job._direct_session.adapter is job.adapter
+    assert not hasattr(job._direct_session, "state")
+    assert not hasattr(job._direct_session, "result")
+    assert job.run().return_code == 0
+    assert job.state is RunState.FINISHED
+    assert job._direct_session._process is None
+    assert job._direct_session._loop is None
+    assert job._direct_session.pid is not None
+
+
+def test_direct_session_preserves_cancel_before_launch(tmp_path):
+    spec = ExecutionSpec((sys.executable, "-c", "raise SystemExit(12)"), directory=str(tmp_path))
+    job = DirectProcessBackend().create_job(spec)
+    job.cancel()
+    assert job.state is RunState.CANCELLED
+    assert job._direct_session._cancel_requested.is_set()
+    assert job.wait().return_code is None
+    with pytest.raises(RuntimeError, match="cancelled"):
+        job.submit()
+
+
+def test_direct_session_does_not_relabel_failed_launch(tmp_path):
+    spec = ExecutionSpec(("this-command-does-not-exist-kkrunner",), directory=str(tmp_path))
+    job = DirectProcessBackend().create_job(spec)
+    from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
+    with pytest.raises(SubmissionNotStarted):
+        job.submit()
+    assert job.state is RunState.FAILED
+    assert job.failure_phase is FailurePhase.LAUNCH
+    assert job._direct_session._process is None
+    assert job._direct_session._loop is None

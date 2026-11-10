@@ -198,3 +198,122 @@ def test_run_parts_own_file_cleanup_before_and_after_handoff(tmp_path):
     assert events == []
     parts.close()
     assert events == ["close"]
+
+
+
+@pytest.mark.parametrize(
+    "backend_state, expected_state, expected_phase",
+    [
+        (RunState.FINISHED, RunState.FAILED, FailurePhase.OUTPUT),
+        (RunState.FAILED, RunState.FAILED, FailurePhase.EXECUTION),
+        (RunState.CANCELLED, RunState.CANCELLED, None),
+    ],
+)
+def test_local_run_keeps_backend_outcome_but_accounts_for_observation_failure(
+    backend_state, expected_state, expected_phase,
+):
+    """A lost FOLLOW cannot produce a successful client Run or falsify Job facts."""
+    observed = []
+    job = _FinishedJob(observed)
+    job.state = backend_state
+    job.failure_phase = FailurePhase.EXECUTION if backend_state is RunState.FAILED else None
+    delivery_error = OSError("local FOLLOW stream interrupted")
+    job.output_error = delivery_error
+    run = Run(job)
+    run._finish()
+    assert job.state is backend_state
+    assert run.state is expected_state
+    assert run.failure_phase is expected_phase
+    if backend_state is RunState.FINISHED:
+        assert run.exception is delivery_error
+        assert run.failure_message == str(delivery_error)
+        assert run.result.return_code == 0
+
+
+def test_untracked_run_does_not_postprocess_after_failed_local_follow():
+    observed = []
+    job = _FinishedJob(observed)
+    job.state = RunState.FINISHED
+    job.output_error = RuntimeError("FOLLOW decoder failed")
+    run = Run(job, process_result=lambda outcome: observed.append("processed"))
+    run._finish()
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.OUTPUT
+    assert observed == ["wait"]
+
+
+def test_incomplete_local_follow_marks_only_declared_streams_failed(tmp_path):
+    from kkrunner.files.manifest import FileManifest
+
+    spec = ExecutionSpec(
+        argv=("true",), directory=str(tmp_path),
+        output_file="stdout.txt", error_file="stderr.txt",
+        output_files=("other-result.dat",),
+    )
+    job = _FinishedJob([])
+    job.state = RunState.FINISHED
+    job.output_error = OSError("FOLLOW stream truncated")
+    run = Run(job, local_files=FileManifest.from_spec(spec).initialize_availability())
+
+    run._finish()
+
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.OUTPUT
+    assert run.files.stdout.availability_state == "failed"
+    assert run.files.stderr.availability_state == "failed"
+    assert run.files.stdout.availability_message == "FOLLOW stream truncated"
+    assert run.files.outputs[0].availability_state == "pending"
+
+
+def test_managed_follow_writer_failure_terminates_and_reaps_helper(tmp_path):
+    import asyncio
+
+    class Follow:
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(b"data")
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.terminated = False
+            self.reaped = False
+            self.exited = asyncio.Event()
+            self.terminal = None
+
+        def terminate(self):
+            self.terminated = True
+            self.exited.set()
+
+        def kill(self):
+            self.exited.set()
+
+        async def wait(self):
+            await self.exited.wait()
+            self.reaped = True
+            return -15
+
+    class Context:
+        backend = "process"
+        def __init__(self):
+            self.follow = None
+        async def _follow(self, *args, **kwargs):
+            self.follow = Follow()
+            return self.follow
+        async def _status(self, *args, **kwargs):
+            return {"state": "finished", "return_code": 0}
+
+    context = Context()
+    job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)),
+              backend_id="opaque", remote_directory=str(tmp_path),
+              status={"state": "running"})
+    def fail_writer(data, kind):
+        raise OSError("output cannot be written")
+    job.configure_observation(
+        stream_offsets={"out": 0, "err": 0},
+        stream_writer=fail_writer, stream_paths=(None, None),
+    )
+    asyncio.run(job._monitor())
+    assert context.follow.terminated
+    assert context.follow.reaped
+    assert job.state is RunState.FINISHED
+    assert isinstance(job.output_error, OSError)

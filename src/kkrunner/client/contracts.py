@@ -46,4 +46,6 @@ class RunningCommand(Protocol):
 
     def terminate(self) -> None: ...
 
+    def kill(self) -> None: ...
+
 

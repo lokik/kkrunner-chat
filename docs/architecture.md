@@ -176,7 +176,11 @@ are loaded only when requested from `kkrunner.backends`: run contracts depend on
 endpoint metadata, so loading implementations while initializing that package
 would reverse the dependency and create an import cycle. The root import does
 not load local/PSI/J implementations, projects or the remote client/service.
-Direct subprocess execution is isolated in `kkrunner.backends.process.direct.job`, with no supervisor dependency. The `supervised` package contains the reusable supervisor, durable receipts and FOLLOW logic used by both managed-local execution and remote agents. The supervised worker lives in `kkrunner.backends.process.supervised.worker`. A future SSH-direct backend can supply its own Job and RunParts without duplicating or coupling to the supervisor.
+Direct execution uses one client `Job`, with process resources isolated in
+`kkrunner.client.direct_session.DirectSession`. The `supervised` package contains
+the reusable supervisor, durable receipts and FOLLOW logic used by both managed-local
+execution and remote agents. Direct SSH uses that same client `Job` and
+`DirectSession` with `SshProcessAdapter`, without depending on the supervisor.
 Within the PSI/J backend, `backends.psij.job` owns a live job's submission
 and observation, `backends.psij.backend` owns the reusable executor,
 native job cache and callback subscriptions, and `backends.psij.slurm`
@@ -294,7 +298,9 @@ and implement transport-specific staging. They are not native `Backend`
 implementations. There are no parallel `*Backend` aliases for these endpoint
 classes.
 `DirectProcessAdapter` remains an internal mechanism of `Job`, not
-a universal layer across PSI/J and supervised execution.
+a universal layer across PSI/J and supervised execution. `DirectSession`
+owns process handles, event loop, cancellation tasks and stream pumping;
+only the client `Job` owns the lifecycle state, result and callbacks.
 
 **Contract placement.** The only public `Backend` protocol lives in
 `kkrunner.backends.contracts`. It is implemented by native execution
@@ -346,7 +352,7 @@ Managed (supervisor and PSI/J) executions use context-independent operations
 Local managed and agent SSH use the same `Job` and differ only in how the
 endpoint invokes those operations. Direct local and raw SSH use the same
 `Job` in session mode, with process/SSH control mechanics implemented by
-private `client.direct_operation` functions and transport-specific adapters.
+one private `client.direct_session.DirectSession` and transport-specific adapters.
 There is no agent-specific, supervised-specific or direct-specific client
 Job class. PSI/J's native backend helper still manages PSI/J library objects
 internally, not as the public client Job.

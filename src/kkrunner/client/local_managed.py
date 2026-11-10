@@ -2,22 +2,17 @@
 
 The same context-independent module functions are used by the remote agent.
 This client context owns only transport and invocation configuration, not the
-target process. The one-shot FOLLOW command uses the existing stream format.
+target process. FOLLOW is a direct backend operation with separate stdout/stderr pipes.
 """
 
 from __future__ import annotations
 
-import asyncio
-import sys
 from uuid import uuid4
 
 from kkrunner.backends.registry import operation_ref
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.transport import LocalTransport
 from kkrunner.client.execution_request import execution_request
-from kkrunner.remote.protocol import CONTROL_PROTOCOL_VERSION
-from kkrunner.remote.stream import FramedRunningCommand
-from kkrunner.runs.base import RunState
 
 
 class LocalManagedContext:
@@ -61,23 +56,16 @@ class LocalManagedContext:
 
     async def _follow(self, directory, backend_id, *, offsets=None,
                       stdout_path=None, stderr_path=None):
-        options = []
-        if stdout_path is not None:
-            options.extend(("--stdout-path", stdout_path))
-        if stderr_path is not None:
-            options.extend(("--stderr-path", stderr_path))
-        for kind, flag in (("out", "--stdout-offset"), ("err", "--stderr-offset")):
-            value = None if offsets is None else offsets.get(kind)
-            if value is None and offsets is not None:
-                options.append("--live-" + ("stdout" if kind == "out" else "stderr"))
-            elif value is not None:
-                options.extend((flag, str(value)))
-        command = (
-            sys.executable, "-m", "kkrunner_cli",
-            "--protocol-version", str(CONTROL_PROTOCOL_VERSION),
-            "follow", str(self._wire_ref(backend_id)), *options, "--framed",
+        # Local and SSH use identical context-free backend operation names.
+        # Locally, native pipes already keep calculation output separate.
+        offsets = {"out": 0, "err": 0} if offsets is None else offsets
+        return await self.transport.start_operation(
+            self.operation("stream"), self._wire_ref(backend_id),
+            stdout_offset=offsets.get("out"),
+            stderr_offset=offsets.get("err"),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
         )
-        return FramedRunningCommand(await self.transport.start(command))
 
 
 def local_managed_job(spec, *, backend="process", options=None,

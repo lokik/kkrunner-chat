@@ -393,18 +393,39 @@ assert (root / 'run.out').read_text() == '42\\n'
 
 
 def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatch):
-    """A durable terminal state must not conceal an invalid wire greeting."""
-    from kkrunner.backends.process.supervised import job as local_managed
+    """A terminal backend does not erase the local observation failure."""
+    import asyncio
+    from kkrunner.remote.stream import StreamProtocolError
 
     runner = SupervisedProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
-    monkeypatch.setattr(runner, "_refresh", lambda: RunState.FAILED)
+    runner._backend_id = "opaque-target-id"
+    runner._remote_directory = str(tmp_path)
 
-    def malformed_follow(*args, **kwargs):
-        raise ValueError("Unknown supervisor stream protocol")
+    class BrokenFollow:
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.terminal = None
 
-    monkeypatch.setattr(local_managed, "follow_remote", malformed_follow)
-    with pytest.raises(ValueError, match="Unknown supervisor stream protocol"):
-        runner._monitor()
+        async def wait(self):
+            raise StreamProtocolError("Unknown supervisor stream protocol")
+
+        def terminate(self):
+            pass
+
+    async def follow(*args, **kwargs):
+        return BrokenFollow()
+
+    async def status(*args, **kwargs):
+        return {"state": "finished", "return_code": 0}
+
+    monkeypatch.setattr(runner.context, "_follow", follow)
+    monkeypatch.setattr(runner.context, "_status", status)
+    asyncio.run(runner._monitor())
+    assert runner.state is RunState.FINISHED
+    assert isinstance(runner.output_error, StreamProtocolError)
 
 
 def test_unnameable_file_declared_for_local_managed_is_known_prelaunch_error(tmp_path):
@@ -416,3 +437,32 @@ def test_unnameable_file_declared_for_local_managed_is_known_prelaunch_error(tmp
         job.submit()
     assert job.backend_id is None
     assert job.state is RunState.FAILED
+
+
+def test_local_follow_uses_backend_operation_and_psij_wire_identity(tmp_path):
+    import asyncio
+    from kkrunner.client.local_managed import LocalManagedContext
+    from kkrunner.remote.handles import decode_handle
+
+    calls = []
+
+    class Transport:
+        async def start_operation(self, operation, *args, **kwargs):
+            calls.append((operation, args, kwargs))
+            return object()
+
+    context = LocalManagedContext("psij", options={"backend": "pbs", "url": "local"}, transport=Transport())
+    asyncio.run(context._follow(
+        str(tmp_path), "native-id", offsets={"out": 4, "err": None},
+        stdout_path=str(tmp_path / "run.out"),
+    ))
+    operation, args, kwargs = calls[0]
+    assert operation.module == "kkrunner.backends.psij.functions"
+    assert operation.function == "stream"
+    assert decode_handle(args[0]) == {
+        "kind": "psij", "backend": "pbs", "url": "local", "native_id": "native-id",
+    }
+    assert kwargs == {
+        "stdout_offset": 4, "stderr_offset": None,
+        "stdout_path": str(tmp_path / "run.out"), "stderr_path": None,
+    }

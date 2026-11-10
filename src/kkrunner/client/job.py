@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 
 from kkrunner.runs.base import (
     ExecutionOutcome, FailurePhase, OutputObservers, RunState,
@@ -28,14 +28,9 @@ class Job:
         output_listener=None, request_factory=None, completion_cleanup=None, adapter=None,
     ):
         self.context = context
-        self.adapter = adapter
-        self._direct = adapter is not None
-        self._detached = False
-        self._cancel_requested = Event()
+        from kkrunner.client.direct_session import DirectSession
+        self._direct_session = None if adapter is None else DirectSession(adapter)
         self._started = Event()
-        self._process = None
-        self._pid = None
-        self._stop_task = None
         self.spec = spec
         self.callback = callback
         self._backend_id = backend_id
@@ -79,9 +74,19 @@ class Job:
         return cls(None, spec, callback=callback, adapter=adapter)
 
     @property
+    def _direct(self):
+        return self._direct_session is not None
+
+    @property
+    def adapter(self):
+        """Direct adapter for mechanism-specific introspection, not Job state."""
+        return None if self._direct_session is None else self._direct_session.adapter
+
+    @property
     def backend_id(self):
         if self._direct:
-            return str(self._pid) if self._pid is not None and self.adapter.expose_pid else None
+            session = self._direct_session
+            return str(session.pid) if session.pid is not None and session.adapter.expose_pid else None
         return self._backend_id
 
     @property
@@ -167,26 +172,58 @@ class Job:
             raise RuntimeError("Detached policy is fixed by the managed backend")
         if self._state != RunState.NEW:
             raise RuntimeError("Cannot change detached policy after submission")
-        self.adapter.configure_detached(detached)
-        self._detached = detached
+        self._direct_session.configure_detached(detached)
 
     def _forward_output(self, data, kind):
-        from kkrunner.client.direct_operation import forward_output
-        return forward_output(self, data, kind)
+        if self._output_error is None:
+            self._output_error = self._direct_session.output(data, kind)
+        if not self._observation_stopped.is_set():
+            self._output_observers.emit_bytes(data, kind)
 
-    def _ensure_stop_task(self):
-        from kkrunner.client.direct_operation import ensure_stop_task
-        return ensure_stop_task(self)
+    def _emit_detached_output(self, kind, data):
+        if not self._observation_stopped.is_set():
+            self._output_observers.emit_bytes(data, kind)
+
+    def _direct_started(self, pid):
+        self._state = RunState.RUNNING
+        self._started.set()
 
     async def _execute(self):
-        from kkrunner.client.direct_operation import execute
-        return await execute(self)
+        """Apply native direct execution facts to the single Job state."""
+        session = self._direct_session
+        try:
+            outcome = await session.execute(
+                self.spec, on_started=self._direct_started,
+                on_output=self._forward_output,
+                on_detached_output=self._emit_detached_output,
+                on_finish=self._output_observers.finish_bytes,
+            )
+            self.result.return_code = outcome.return_code
+            self._state = outcome.state
+            self._failure_phase = outcome.failure_phase
+            self._failure_message = outcome.message
+            self._started.set()
+            return self.result
+        except BaseException:
+            self._started.set()
+            if self._state not in (RunState.CANCELLED, RunState.FAILED):
+                if session.pid is not None and (
+                    session.adapter.uncertain_after_launch or session.detached
+                ):
+                    self._state = RunState.UNKNOWN
+                    self._failure_phase = None
+                else:
+                    self._state = RunState.FAILED
+                    self._failure_phase = (
+                        FailurePhase.EXECUTION if session.pid is not None else FailurePhase.LAUNCH
+                    )
+            raise
 
     def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
         if self._direct:
             if self._state != RunState.NEW:
                 raise RuntimeError("Cannot configure a submitted direct job")
-            return self.adapter.configure_submission(
+            return self._direct_session.configure_submission(
                 request, stream_offsets=stream_offsets,
                 stream_writer=stream_writer, stream_paths=stream_paths,
             )
@@ -225,10 +262,23 @@ class Job:
         )
 
     def submit(self):
+        from kkrunner.runs.base import SubmissionNotStarted
         if self._direct:
-            from kkrunner.client.direct_operation import submit
-            return submit(self)
-        from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
+            with self._lock:
+                if self._state == RunState.CANCELLED and self._thread is None:
+                    raise RuntimeError("Run was cancelled before submission")
+                if self._state != RunState.NEW:
+                    raise RuntimeError(f"Run is already {self._state.value}")
+                self._state = RunState.SUBMITTING
+                self._thread = Thread(target=self._thread_main, daemon=True)
+                self._thread.start()
+            self._started.wait()
+            if self._direct_session.pid is None and self._state == RunState.FAILED:
+                self._done.wait()
+                error = self._exception or RuntimeError(self._failure_message or "Launch failed")
+                raise SubmissionNotStarted(str(error)) from self._exception
+            return
+
         try:
             self.prepare_submission()
         except SubmissionNotStarted:
@@ -276,7 +326,7 @@ class Job:
 
     async def _monitor(self):
         self._loop = asyncio.get_running_loop()
-        stdout_task = stderr_task = None
+        stdout_task = stderr_task = wait_task = None
         try:
             if self._observation_stopped.is_set():
                 self._state = RunState.UNKNOWN
@@ -298,20 +348,33 @@ class Job:
             stdout_task = asyncio.create_task(self._pump(self._follow_process.stdout, "out"))
             stderr_task = asyncio.create_task(self._pump(self._follow_process.stderr, "err"))
             stream_error = None
+            wait_task = asyncio.create_task(self._follow_process.wait())
             try:
-                await asyncio.gather(self._follow_process.wait(), stdout_task, stderr_task)
+                follow_result, _, _ = await asyncio.gather(
+                    wait_task, stdout_task, stderr_task,
+                )
+                # A plain operation has no framed terminal receipt; its
+                # nonzero exit is an observation failure, not a Job outcome.
+                if follow_result not in (None, 0):
+                    raise subprocess.CalledProcessError(
+                        follow_result, "backend follow operation",
+                    )
             except Exception as exc:
                 stream_error = exc
                 self._output_error = exc
                 # A failed local writer must not leave a FOLLOW subprocess
                 # alive while the client queries the authoritative job state.
                 self._terminate_follow()
+                # gather() does not cancel other tasks when a stream writer
+                # fails. Reap the helper before querying backend status, while
+                # its stdout/stderr readers are still available for draining.
+                await self._reap_follow(wait_task)
             if self._observation_stopped.is_set():
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
                 self._failure_message = "Observation detached"
                 return self.result
-            facts = self._follow_process.terminal
+            facts = getattr(self._follow_process, "terminal", None)
             if facts is None:
                 try:
                     facts = await self.context._status(self._remote_directory, self._backend_id)
@@ -344,7 +407,36 @@ class Job:
             tasks = tuple(task for task in (stdout_task, stderr_task) if task is not None)
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            # A wait task may still be outstanding after a broken or
+            # unresponsive helper; do not leave an asyncio Task unobserved.
+            if wait_task is not None and not wait_task.done():
+                self._terminate_follow()
+                await self._reap_follow(wait_task)
+                if not wait_task.done():
+                    wait_task.cancel()
+                    await asyncio.gather(wait_task, return_exceptions=True)
             self._loop = None
+
+    async def _reap_follow(self, wait_task):
+        """Bounded reap of an already terminated observation helper.
+
+        Read tasks stay active while wait() drains; force-kill is only for
+        a helper that ignores termination. The caller retains the original
+        stream error rather than replacing it with cleanup diagnostics.
+        """
+        try:
+            await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+        except asyncio.TimeoutError:
+            try:
+                self._follow_process.kill()
+            except (ProcessLookupError, RuntimeError):
+                pass
+            try:
+                await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _terminate_follow(self):
         if self._follow_process is not None:
@@ -368,8 +460,15 @@ class Job:
     def _thread_main(self):
         """Finalize observation, decoder and local handles independently."""
         if self._direct:
-            from kkrunner.client.direct_operation import thread_main
-            return thread_main(self)
+            try:
+                asyncio.run(self._execute())
+            except BaseException as exc:
+                self._exception = exc
+                if self._failure_message is None:
+                    self._failure_message = str(exc)
+            finally:
+                finish_monitor(self)
+            return
         try:
             asyncio.run(self._monitor())
         except BaseException as exc:
@@ -386,15 +485,16 @@ class Job:
                 try:
                     cleanup()
                 except BaseException as exc:
-                    if self._exception is None:
-                        self._exception = exc
-                        self._failure_message = str(exc)
                     if self._output_error is None:
                         self._output_error = exc
-                    if self._state == RunState.FINISHED:
-                        self._state = RunState.FAILED
-                        self._failure_phase = FailurePhase.ARTIFACTS
-                    elif not self._state.is_terminal:
+                    # A confirmed terminal backend result is independent of
+                    # client output decoding and cleanup. Let Run classify
+                    # delivery failures; do not make Job.wait() raise an
+                    # execution error after the backend has succeeded.
+                    if not self._state.is_terminal:
+                        if self._exception is None:
+                            self._exception = exc
+                            self._failure_message = str(exc)
                         self._state = RunState.UNKNOWN
                         self._failure_phase = None
             finish_monitor(self)
@@ -428,8 +528,11 @@ class Job:
 
     def cancel(self):
         if self._direct:
-            from kkrunner.client.direct_operation import cancel
-            return cancel(self)
+            if not self._state.is_terminal:
+                self._direct_session.request_cancel()
+                if self._state == RunState.NEW:
+                    self._state = RunState.CANCELLED
+            return
         if self._backend_id is None:
             raise RuntimeError("Job has no confirmed backend identity")
         return request_cancellation(

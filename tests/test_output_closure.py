@@ -150,3 +150,69 @@ def test_local_project_cleanup_attempts_all_stages(tmp_path, monkeypatch, monito
     assert runner.state is RunState.UNKNOWN
     assert runner._done.is_set()
     assert callbacks == [runner.result]
+
+
+
+def test_local_managed_cleanup_does_not_reclassify_backend_execution(tmp_path, monkeypatch):
+    """Output closure belongs to client delivery, not the native Job outcome."""
+    from kkrunner.runs.base import FailurePhase
+
+    class BrokenOutput(_TrackedOutput):
+        def close(self):
+            self.close_calls += 1
+            raise OSError("close failed")
+
+    output = BrokenOutput(str(tmp_path / "result.out"))
+    runner = local_managed_job(ExecutionSpec(
+        argv=("true",), input_file=None, directory=str(tmp_path), output_file=output,
+    ))
+    async def confirmed_completion():
+        runner._state = RunState.FINISHED
+        runner._return_code = 0
+        runner.result.return_code = 0
+
+    monkeypatch.setattr(runner, "_monitor", confirmed_completion)
+    runner._thread_main()
+    assert output.close_calls == 1
+    assert runner.state is RunState.FINISHED
+    assert runner.failure_phase is None
+    assert runner.return_code == 0
+    assert isinstance(runner.output_error, OSError)
+
+
+def test_confirmed_job_output_cleanup_error_is_reported_by_run(tmp_path, monkeypatch):
+    """The managed Job stays successful; the local Run reports failed delivery."""
+    from kkrunner import Run
+    from kkrunner.runs.base import FailurePhase
+
+    class BrokenOutput(_TrackedOutput):
+        def close(self):
+            self.close_calls += 1
+            raise OSError("cannot close output")
+
+    output = BrokenOutput(str(tmp_path / "run.out"))
+    job = local_managed_job(ExecutionSpec(
+        argv=("true",), directory=str(tmp_path), output_file=output,
+    ))
+
+    async def complete_without_follow():
+        job._state = RunState.FINISHED
+        job._return_code = 0
+        job.result.return_code = 0
+
+    monkeypatch.setattr(job, "_monitor", complete_without_follow)
+    run = Run(job)
+    # Exercise the normal asynchronous completion path without submitting a
+    # real target calculation, which the test does not need.
+    job._backend_id = "confirmed-native-job"
+    run.start()
+    with pytest.raises(OSError, match="cannot close output"):
+        run.wait()
+    assert run.result.return_code == 0
+    assert job.state is RunState.FINISHED
+    assert job.exception is None
+    assert job.failure_phase is None
+    assert run.state is RunState.FAILED
+    assert run.failure_phase is FailurePhase.OUTPUT
+    assert isinstance(run.exception, OSError)
+    assert output.close_calls == 1

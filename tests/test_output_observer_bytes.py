@@ -32,18 +32,17 @@ def test_emit_bytes_decodes_nonempty_chunks(data, expected):
 def test_local_forward_output_persists_and_observes_bytes(kind):
     received = []
     output = BytesIO()
-    runner = object.__new__(Job)
     def collect_output(data, stream):
         if stream == "out":
             output.write(data)
         return None
 
-    runner.adapter = SimpleNamespace(output=collect_output)
-    from threading import Event
-    runner._observation_stopped = Event()
-    runner._output_error = None
-    runner.spec = SimpleNamespace(output_file=output, error_file=None)
-    runner._output_observers = OutputObservers(lambda text, stream: received.append((text, stream)))
+    from kkrunner.runs.base import ExecutionSpec
+    runner = Job.direct(
+        ExecutionSpec(("true",), output_file=output),
+        adapter=SimpleNamespace(output=collect_output),
+    )
+    runner.add_output_listener(lambda text, stream: received.append((text, stream)))
     runner._forward_output(b"message:\xff", kind)
     runner._forward_output(b"", kind)
     assert output.getvalue() == (b"message:\xff" if kind == "out" else b"")
