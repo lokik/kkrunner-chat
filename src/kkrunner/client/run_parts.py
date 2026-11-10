@@ -95,6 +95,7 @@ class NativeRunEndpoint:
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         return RunParts(self.backend.create_job(spec, submission_key=submission_key, callback=callback))
 
+
 class NativeReopenableRunEndpoint(NativeRunEndpoint):
     """Native backend with the explicit ability to reopen jobs."""
 
