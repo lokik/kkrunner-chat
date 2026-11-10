@@ -9,7 +9,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.runs import LaunchSpec
-from kkrunner.client import AgentBackendProxy, SshTransport
+from kkrunner.client import AgentRunEndpoint, SshTransport
 from kkrunner.runs.manager import RunManager
 
 pytestmark = pytest.mark.skipif(
@@ -75,7 +75,7 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
         local = tmp_path / "work"
         local.mkdir()
         manager = RunManager(RunStore(tmp_path / "runs"))
-        executor = AgentBackendProxy(SshTransport("tester@127.0.0.1", options=options))
+        executor = AgentRunEndpoint(SshTransport("tester@127.0.0.1", options=options))
         spec = ExecutionSpec(
             [
                 "/opt/venv/bin/python",

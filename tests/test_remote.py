@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, LaunchSpec, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
@@ -38,7 +38,7 @@ def _processed_run(executor, spec):
 
 
 def _executor(transport=None, **kwargs):
-    return AgentBackendProxy(
+    return AgentRunEndpoint(
         transport or LocalTransport(), command=(sys.executable, "-m", "kkrunner_cli"), **kwargs
     )
 
@@ -487,7 +487,7 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote"), input_sync="always"),
     )
-    runner = Run.direct(AgentBackendProxy(LocalTransport()), spec)
+    runner = Run.direct(AgentRunEndpoint(LocalTransport()), spec)
     if preflight:
         with pytest.raises(SubmissionNotStarted, match="Local input file"):
             runner._file_session.prepare_submission()
@@ -518,7 +518,7 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     runner = Run.direct(executor, spec)
 
     async def fail_after_preparation(_request):

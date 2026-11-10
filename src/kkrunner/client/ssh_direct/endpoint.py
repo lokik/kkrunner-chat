@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from kkrunner.backends.contracts import RecoveryResult, UnsupportedCapability
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.remote_paths import RemotePathContext, query_remote_home
 from kkrunner.client.run_parts import RunParts
 
-class SshDirectBackend:
+class SshDirectRunEndpoint:
     """One SSH connection per Job, without a target kkrunner-agent.
 
     The target needs Python 3 and a working SSH connection. A direct Job has no
-    durable identity; use AgentBackendProxy for managed/reconnectable SSH.
+    durable identity; use AgentRunEndpoint for managed/reconnectable SSH.
     """
 
     name = "ssh-direct"
@@ -36,16 +35,12 @@ class SshDirectBackend:
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         spec.require_complete()
-        from kkrunner.backends.process.direct.job import ProcessJob
+        from kkrunner.backends.process.backend import ProcessBackend
         from .runtime import SshProcessAdapter
         context = RemotePathContext(self, spec.launch)
+        backend = ProcessBackend(adapter_factory=lambda: SshProcessAdapter(context))
         return RunParts(
-            ProcessJob(spec, callback=callback, adapter=SshProcessAdapter(context)),
+            backend.create_job(spec, submission_key=submission_key, callback=callback),
             RemoteFileSession(context, spec),
         )
 
-    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-        raise UnsupportedCapability("SSH direct jobs cannot be reattached")
-
-    def recover_submission(self, submission_key, submission, *, submitted_at=None):
-        return RecoveryResult.unsupported("SSH direct execution has no durable submission identity")

@@ -110,7 +110,7 @@ backend, and check the target filesystem as well. Local process and local PSI/J
 therefore share the local filesystem namespace. SSH connections to the same
 host share a target namespace regardless of SSH flags, remote command or backend.
 
-For host aliases or shared mounts, pass filesystem_id to AgentBackendProxy
+For host aliases or shared mounts, pass filesystem_id to AgentRunEndpoint
 or ExecutionEndpoint. Matching IDs declare one shared target filesystem; distinct
 IDs declare distinct ones. A client must use the same identity consistently.
 The API does not infer that different host aliases refer to the same mount.
@@ -157,7 +157,7 @@ clock change that reverses entirely between sampled reads can evade detection.
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
 | `kkrunner.backends` | Process and PSI/J Job implementations, submission/recovery contracts, MPI launch, supervisor and scheduler operations. |
-| `kkrunner.client` | AgentBackendProxy, connection/endpoint identity, backend pools, transport, remote Job and remote file sessions. |
+| `kkrunner.client` | AgentRunEndpoint, connection/endpoint identity, backend pools, transport, remote Job and remote file sessions. |
 | `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
 | `kkrunner.files` | TaskFile, manifests, transfer policy, pathname declarations, captured versions and artifact availability. |
@@ -167,7 +167,7 @@ The root package exports eight backend-independent entry points:
 `ExecutionSpec`, `ExecutionOutcome`, `Run`, `RunManager`, `RunStore`,
 `RunState`, `TaskFile` and `ProcessingPending`. Select a local `ProcessBackend`
 or scheduler `PsijBackend` from `kkrunner.backends`; use
-`kkrunner.client.AgentBackendProxy` with a transport for a remote target.
+`kkrunner.client.AgentRunEndpoint` with a transport for a remote target.
 Projects and advanced file/run types live in their respective subpackages.
 
 The public facades expose the new contracts without deprecated compatibility
@@ -219,7 +219,7 @@ transport, backend, or application code. Local and SSH transports share this
 implementation. Discovery returns metadata in the same response; cache baselines
 query all patterns and exact paths together in one request instead of probing
 each match. File queries and execution share the command configured on the SSH
-transport or its `AgentBackendProxy`, including custom Python environments.
+transport or its `AgentRunEndpoint`, including custom Python environments.
 
 Single-file uploads retain temporary-file staging and atomic replacement. The
 `finalize-upload` operation uses `os.utime(ns=...)` and `os.replace()` to publish
@@ -275,3 +275,40 @@ a memory-only Run has no cross-client processing lease.
 Explicit `detached=False` cannot change a supervisor or scheduler into a
 client-owned process: such a backend rejects an unsupported policy rather
 than pretending that a lost client will terminate the job.
+
+## Backend identity, client attachments and RunEndpoints
+
+The native `Backend` handles one execution via `create_job()` and (if supported)
+`attach_job(BackendJobContext)`. Its backend-only context carries a `JobRef`,
+endpoint identity, working directory and explicit stream paths. Native Jobs
+never receive a `FileManifest`; the client `RunEndpoint` projects the relevant
+paths when reopening a Job.
+
+`JobAttachment` is a **client-side** snapshot of `Execution` and `FileManifest`
+used to rebuild a `RemoteFileSession` or to project a native attachment.
+`recover_submission(submission_key, SubmissionContext)` takes the original
+execution context, because the backend identity is not yet known.
+
+The client `AgentRunEndpoint` and `SshDirectRunEndpoint` assemble `RunParts`
+and implement transport-specific staging. They are not native `Backend`
+implementations. There are no parallel `*Backend` aliases for these endpoint
+classes.
+`DirectProcessAdapter` remains an internal mechanism of `ProcessJob`, not
+a universal layer across PSI/J and supervised execution.
+
+**Contract placement.** The only public `Backend` protocol lives in
+`kkrunner.backends.contracts`. It is implemented by native execution
+mechanisms (`ProcessBackend`, `SupervisedProcessBackend`, `PsijBackend`).
+The `RunEndpoint` protocol and the client-only `JobAttachment` live in
+`kkrunner.client.contracts`, not in a concrete endpoint implementation.
+`DirectProcessAdapter` is private to the direct Job implementation and its
+protocol is isolated in `kkrunner.backends.process.direct.contracts`.
+
+Local direct and SSH direct use the same `ProcessBackend.create_job()`
+factory. A transport-specific, private `DirectProcessAdapter` factory supplies
+the mechanics; `SshDirectRunEndpoint` owns only session composition and file
+transfer. No second SSH-specific public Backend exists.
+
+Direct SSH intentionally has no `open_run_parts()` or
+`recover_submission()` method: unsupported capabilities are absent from its
+structural protocol rather than advertised as methods that always fail.

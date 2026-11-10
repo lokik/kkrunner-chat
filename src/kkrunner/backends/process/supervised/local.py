@@ -31,20 +31,21 @@ def local_status(backend_id):
     return _local_status_from_facts(backend_id, status_remote(backend_id))
 
 
-def attach_local(executor, run, *, callback=None, output_listener=None, start=True):
+def attach_local(executor, context, *, callback=None, output_listener=None, start=True):
     from .job import SupervisedProcessJob
-    if run.execution.endpoint.executor != "local-supervised":
+    if context.endpoint.executor != "local-supervised":
         raise ValueError("Run does not belong to the local backend")
-    backend_id = run.execution.backend_id
+    if context.ref.backend != "process":
+        raise ValueError("Job belongs to a different backend")
+    backend_id = context.ref.token
     if decode_handle(backend_id).get("kind") != "process":
         raise ValueError("Local project does not have a supervisor handle")
-    files = run.files
     spec = ExecutionSpec(
         argv=None,
-        input_file=files.input_file,
-        output_file=files.output_file,
-        error_file=None if files.stderr is None else files.stderr.local_path,
-        directory=run.execution.directory.local,
+        input_file=context.input_file,
+        output_file=context.output_file,
+        error_file=context.error_file,
+        directory=context.directory.local,
     )
     status = local_status(backend_id)
     runner = SupervisedProcessJob(

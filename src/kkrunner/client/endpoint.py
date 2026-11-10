@@ -86,8 +86,8 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
     """Describe a live executor without persisting launch/staging policy."""
     from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
-    from kkrunner.client.agent import AgentBackendProxy
-    from kkrunner.client.ssh_direct import SshDirectBackend, SshDirectTransport
+    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
     if isinstance(executor, SupervisedProcessBackend):
@@ -100,7 +100,7 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
             psij_backend=executor.backend,
             psij_url=executor.url,
         )
-    if isinstance(executor, SshDirectBackend):
+    if isinstance(executor, SshDirectRunEndpoint):
         transport = executor.transport
         if not isinstance(transport, SshDirectTransport):
             return ExecutionEndpoint(executor="custom:{}.{}".format(
@@ -111,13 +111,13 @@ def endpoint_for_backend(executor) -> ExecutionEndpoint:
             ssh_zstd=transport.zstd, filesystem_id=executor.filesystem_id,
             python_command=transport.python_command,
         )
-    if isinstance(executor, AgentBackendProxy):
+    if isinstance(executor, AgentRunEndpoint):
         transport = executor.transport
         psij_backend = None
         psij_url = None
         if executor.backend == "psij":
             options = executor.backend_options or {}
-            # ``AgentBackendProxy(..., backend="psij")`` is a complete
+            # ``AgentRunEndpoint(..., backend="psij")`` is a complete
             # public configuration even when no options are supplied: the
             # target-side PSI/J backend then defaults to Slurm. Persist that
             # default explicitly so restart reconstruction cannot silently
@@ -167,8 +167,8 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
     """Reconstruct a standard executor from persisted endpoint identity."""
     from kkrunner.backends.process.backend import ProcessBackend, SupervisedProcessBackend
     from kkrunner.backends.psij.backend import PsijBackend
-    from kkrunner.client.agent import AgentBackendProxy
-    from kkrunner.client.ssh_direct import SshDirectBackend, SshDirectTransport
+    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import SshTransport
 
     if isinstance(endpoint, dict):
@@ -186,7 +186,7 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
     if endpoint.executor == "ssh-direct":
         if not endpoint.host:
             raise ValueError("SSH direct execution endpoint requires 'host'")
-        return SshDirectBackend(
+        return SshDirectRunEndpoint(
             SshDirectTransport(
                 endpoint.host, options=endpoint.ssh_options, zstd=endpoint.ssh_zstd,
                 python_command=endpoint.python_command,
@@ -205,7 +205,7 @@ def create_backend_from_endpoint(endpoint: ExecutionEndpoint):
                 "backend": endpoint.psij_backend or "slurm",
                 "url": endpoint.psij_url,
             }
-        return AgentBackendProxy(
+        return AgentRunEndpoint(
             SshTransport(
                 endpoint.host,
                 options=endpoint.ssh_options,

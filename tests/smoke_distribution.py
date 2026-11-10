@@ -12,7 +12,7 @@ import kkrunner
 from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.runs import LaunchSpec
 from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
-from kkrunner.client import LocalTransport, AgentBackendProxy
+from kkrunner.client import LocalTransport, AgentRunEndpoint
 from kkrunner.projects import ProjectExecutionManager, ProjectRepository
 
 assert not os.environ.get("PYTHONPATH")
@@ -60,7 +60,7 @@ assert restarted.store.get(run.id).state == RunState.FINISHED
 local, remote = root / "local", root / "remote"
 local.mkdir()
 remote.mkdir()
-executor = AgentBackendProxy(LocalTransport(), command=(str(Path(sys.executable).parent / "kkrunner-agent"),))
+executor = AgentRunEndpoint(LocalTransport(), command=(str(Path(sys.executable).parent / "kkrunner-agent"),))
 run = Run.direct(executor,
     ExecutionSpec(
         [sys.executable, "-c", "print(44)"],

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.runs import DuplicateSubmissionError, FailurePhase, RunStatus
-from kkrunner.backends.contracts import JobAttachment
+from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.client.pool import BackendPool

@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from threading import Lock
 from uuid import uuid4
 
-from kkrunner.backends.contracts import JobAttachment, RecoveryDisposition
+from kkrunner.backends.contracts import RecoveryDisposition
+from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.endpoint import ExecutionEndpoint, endpoint_for_backend
 from kkrunner.client.pool import default_backend_pool
 from kkrunner.files.manifest import FileManifest
@@ -271,9 +272,10 @@ class RunManager(RunFileHistory):
             )
         from kkrunner.runs.model import WorkingDirectory
         try:
+            from kkrunner.backends.contracts import SubmissionContext
             recovery = executor.recover_submission(
                 record.execution.submission_key or record.id,
-                JobAttachment(record.execution, record.files),
+                SubmissionContext(record.execution),
                 submitted_at=record.updated_at,
             )
         except NotImplementedError:
@@ -301,9 +303,12 @@ class RunManager(RunFileHistory):
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
             attached = self.transition(record, execution=execution, files=files)
+            from kkrunner.client.run_parts import status_attachment_for_backend
             return self.update(
                 attached,
-                executor.status(JobAttachment(attached.execution, attached.files))[0],
+                executor.status(status_attachment_for_backend(
+                    executor, JobAttachment(attached.execution, attached.files),
+                ))[0],
             )
         if recovery.disposition is not RecoveryDisposition.ABSENT:
             if (
@@ -772,8 +777,11 @@ class RunManager(RunFileHistory):
                         message="Direct execution has no independent recovery status",
                     )
                 continue
+            from kkrunner.client.run_parts import status_attachment_for_backend
             statuses = executor.status(
-                *(JobAttachment(record.execution, record.files) for record in group)
+                *(status_attachment_for_backend(
+                    executor, JobAttachment(record.execution, record.files),
+                ) for record in group)
             )
             if len(statuses) != len(group):
                 raise RuntimeError("Executor returned wrong number of run statuses")

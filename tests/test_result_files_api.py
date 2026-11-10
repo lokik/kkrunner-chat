@@ -1,7 +1,7 @@
 """Public result-file terminology and explicit endpoint capabilities."""
 
 from kkrunner.backends import ProcessBackend, PsijBackend
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.files import FileManifest, FileState
 
 
@@ -15,4 +15,4 @@ def test_result_file_names_use_canonical_public_api():
 def test_result_file_retrieval_is_an_explicit_endpoint_capability():
     assert ProcessBackend.supports_result_file_retrieval is False
     assert PsijBackend.supports_result_file_retrieval is False
-    assert AgentBackendProxy.supports_result_file_retrieval is True
+    assert AgentRunEndpoint.supports_result_file_retrieval is True

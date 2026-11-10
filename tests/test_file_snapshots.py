@@ -9,7 +9,7 @@ from kkrunner import RunState, RunStore
 from kkrunner.backends import ProcessBackend, SupervisedProcessBackend
 from kkrunner.client.endpoint import endpoint_for_backend
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs import RunManager
 
@@ -22,7 +22,7 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     local.mkdir(parents=True)
     if remote:
         target.mkdir(parents=True)
-        executor = AgentBackendProxy(LocalTransport())
+        executor = AgentRunEndpoint(LocalTransport())
         mapping = FileMapping(str(local.parent), str(target.parent))
     else:
         executor = ProcessBackend()

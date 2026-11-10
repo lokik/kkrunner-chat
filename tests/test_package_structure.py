@@ -17,10 +17,10 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectExecutionManager.__module__ == "kkrunner.projects.manager"
-    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.runs.run import Run
 
-    assert AgentBackendProxy.__module__ == "kkrunner.client.agent"
+    assert AgentRunEndpoint.__module__ == "kkrunner.client.agent"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
@@ -30,7 +30,7 @@ def test_public_managers_have_one_unambiguous_name():
 
 def test_run_and_job_ownership_boundaries_are_explicit():
     from kkrunner.backends import ProcessBackend, PsijBackend
-    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.remote_files import RemoteFileSession
     from kkrunner.client.remote_job import RemoteJob
     from kkrunner.client.run_parts import RunParts
@@ -47,8 +47,8 @@ def test_run_and_job_ownership_boundaries_are_explicit():
     assert isinstance(run_endpoint_for_backend(ProcessBackend()), NativeRunEndpoint)
     assert not hasattr(run_endpoint_for_backend(ProcessBackend()), "open_run_parts")
     assert callable(run_endpoint_for_backend(SupervisedProcessBackend()).open_run_parts)
-    assert callable(AgentBackendProxy.create_run_parts)
-    assert callable(AgentBackendProxy.open_run_parts)
+    assert callable(AgentRunEndpoint.create_run_parts)
+    assert callable(AgentRunEndpoint.open_run_parts)
     assert {"job", "files"} <= set(RunParts.__dataclass_fields__)
 
 

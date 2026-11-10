@@ -8,7 +8,7 @@ import pytest
 from kkrunner import ExecutionSpec
 from kkrunner.backends import mpi as mpi_runtime
 from kkrunner.backends.process.primitives import materialize_local_spec
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.runs.base import LaunchSpec, MpiNotFoundWarning, MpiSpec
 
 
@@ -179,7 +179,7 @@ def test_local_auto_mpi_fallback_respects_warning_option(monkeypatch, tmp_path, 
 
 @pytest.mark.parametrize("warn", (True, False), ids=("warn", "silent"))
 def test_remote_endpoint_mpi_warning_probe_respects_option(monkeypatch, warn):
-    endpoint = object.__new__(AgentBackendProxy)
+    endpoint = object.__new__(AgentRunEndpoint)
     endpoint.backend = "process"
     calls = []
 

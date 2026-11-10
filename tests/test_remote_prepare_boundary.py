@@ -5,7 +5,7 @@ import pytest
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.files import FileEntry, FileManifest, FileMapping
 from kkrunner.runs import LaunchSpec
-from kkrunner.client.agent import AgentBackendProxy
+from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.run import Run
@@ -13,7 +13,7 @@ from kkrunner.runs.manager import RunManager
 
 
 def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, monkeypatch):
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     manager = RunManager(RunStore(tmp_path / "runs"))
     directory = tmp_path / "local"
     directory.mkdir()
@@ -82,7 +82,7 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
     local = FileManifest.from_spec(spec)
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     runner = executor.create_run_parts(spec).files
     manifest = asyncio.run(
         runner._submitted_manifest(
@@ -118,7 +118,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
     directory = tmp_path / "work"
     directory.mkdir()
     remote = tmp_path / "remote"
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     spec = ExecutionSpec(
         argv=("ignored",),
         directory=str(directory),
@@ -205,6 +205,6 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
         cache_files=cache_files,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    runner = AgentBackendProxy(NoSideEffectTransport()).create_run_parts(spec).files
+    runner = AgentRunEndpoint(NoSideEffectTransport()).create_run_parts(spec).files
     with pytest.raises(SubmissionNotStarted, match="Conflicting optionality|Duplicate file declaration"):
         runner.prepare_submission()

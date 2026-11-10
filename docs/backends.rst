@@ -17,18 +17,18 @@ Choose an execution backend
    * - ``PsijBackend``
      - A scheduler visible from the client
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
-   * - ``SshDirectBackend``
+   * - ``SshDirectRunEndpoint``
      - A one-shot command on an SSH host, without a target KKRunner installation
      - SSH and Python 3 on the target; no durable handle or reconnect. Uses the
        same mapped input/output file lifecycle as an agent run.
-   * - ``AgentBackendProxy``
+   * - ``AgentRunEndpoint``
      - Direct execution or a scheduler on an SSH target
      - KKRunner on the target, SSH access and explicit workspace mapping.
 
 Direct SSH execution
 --------------------
 
-``SshDirectBackend`` creates an untracked, connection-owned ``ProcessJob``. No
+``SshDirectRunEndpoint`` creates an untracked, connection-owned ``ProcessJob``. No
 ``kkrunner-agent`` or supervisor runs on the target; a minimal one-shot
 Python worker provides separate live stdout/stderr, cancellation and target-side
 file writing. File staging and synchronization still use ``RemoteFileSession``.
@@ -41,10 +41,10 @@ configured with ``SshDirectTransport(python_command=("python3.12",))``.
 .. code-block:: python
 
    from kkrunner import Run, ExecutionSpec
-   from kkrunner.client import SshDirectBackend, SshDirectTransport
+   from kkrunner.client import SshDirectRunEndpoint, SshDirectTransport
    from kkrunner.runs import LaunchSpec
 
-   backend = SshDirectBackend(SshDirectTransport("alice@cluster.example"))
+   backend = SshDirectRunEndpoint(SshDirectTransport("alice@cluster.example"))
    spec = ExecutionSpec(
        argv=("python3", "-c", "print('hello', flush=True)"),
        directory="/home/alice/work/job",
@@ -56,7 +56,7 @@ configured with ``SshDirectTransport(python_command=("python3.12",))``.
    )
    result = Run.direct(backend, spec).run()
 
-Use ``AgentBackendProxy`` and a ``RunManager`` for persistent SSH
+Use ``AgentRunEndpoint`` and a ``RunManager`` for persistent SSH
 runs. A direct SSH Job has no durable ID and must not be attached, retried after
 an uncertain connection loss, or stored as a managed run. An SSH failure (exit
 255) is reported as UNKNOWN, not proof that the target computation failed.

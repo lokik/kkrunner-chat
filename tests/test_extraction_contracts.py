@@ -167,11 +167,11 @@ def test_stdin_is_part_of_read_manifest(tmp_path):
 
 
 def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch):
-    from kkrunner.client.agent import AgentBackendProxy
+    from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.remote_files import RemoteFileSession
     from kkrunner.client.transport import LocalTransport
 
-    executor = AgentBackendProxy(LocalTransport())
+    executor = AgentRunEndpoint(LocalTransport())
     raw = Run.direct(executor, ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "stdout"))
 
     async def prepared(self):

@@ -7,6 +7,8 @@ lives in this facade; Job remains the only owner of process state.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
+from kkrunner.client.contracts import RunEndpoint
+
 if TYPE_CHECKING:
     from kkrunner.backends.contracts import Job
     from kkrunner.client.remote_files import RemoteFileSession
@@ -79,21 +81,36 @@ class RunParts:
             self.files.close()
 
 
-from typing import Protocol, runtime_checkable
+
+def backend_job_context(attachment, backend_kind):
+    """Project a client attachment to the native backend-only contract.
+
+    FileManifest is the authority for the necessary stream paths; the
+    backend receives only those paths, never the entire manifest.
+    """
+    from kkrunner.backends.contracts import BackendJobContext, JobRef
+
+    execution, files = attachment.execution, attachment.files
+    if execution.backend_id is None:
+        raise ValueError("Cannot attach without a confirmed backend identity")
+    if files is None:
+        raise ValueError("Client attachment requires a FileManifest")
+    return BackendJobContext(
+        ref=JobRef(backend_kind, execution.backend_id),
+        endpoint=execution.endpoint,
+        directory=execution.directory,
+        input_file=files.input_file,
+        output_file=files.output_file,
+        error_file=None if files.stderr is None else files.stderr.local_path,
+    )
 
 
-@runtime_checkable
-class RunEndpoint(Protocol):
-    """Client-side factory; direct endpoints need not support reattachment."""
-
-    def create_run_parts(self, spec, *, submission_key=None, callback=None) -> RunParts: ...
-
-
-@runtime_checkable
-class ReopenableRunEndpoint(RunEndpoint, Protocol):
-    """Optional capability for opening a client session around an existing Job."""
-
-    def open_run_parts(self, attachment, *, callback=None, output_listener=None) -> RunParts: ...
+def status_attachment_for_backend(backend, attachment):
+    """Backend status receives no FileManifest; endpoints own client state."""
+    from kkrunner.backends.contracts import Backend
+    if isinstance(backend, Backend):
+        return backend_job_context(attachment, backend.name)
+    return attachment
 
 
 class NativeRunEndpoint:
@@ -114,8 +131,9 @@ class NativeReopenableRunEndpoint(NativeRunEndpoint):
     """Native backend with the explicit ability to reopen jobs."""
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-        return RunParts(self.backend.open_job(
-            attachment, callback=callback, output_listener=output_listener, start=False,
+        return RunParts(self.backend.attach_job(
+            backend_job_context(attachment, self.backend.name),
+            callback=callback, output_listener=output_listener, start=False,
         ))
 
 

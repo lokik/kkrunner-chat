@@ -19,10 +19,16 @@ class ProcessBackend:
     default_persistent = False
     default_detached = False
 
+    def __init__(self, *, adapter_factory=None):
+        # The adapter is a private implementation detail of ProcessJob.
+        # Local and raw SSH direct both go through this backend factory.
+        self._adapter_factory = adapter_factory
+
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
         from kkrunner.backends.process.direct.job import ProcessJob
-        return ProcessJob(spec, callback=callback)
+        adapter = self._adapter_factory() if self._adapter_factory is not None else None
+        return ProcessJob(spec, callback=callback, adapter=adapter)
 
 
 class SupervisedProcessBackend(ProcessBackend):
@@ -57,10 +63,10 @@ class SupervisedProcessBackend(ProcessBackend):
             error_file=reply.get("error_file"),
         )
 
-    def open_job(self, run, callback=None, output_listener=None, start=True):
+    def attach_job(self, context, *, callback=None, output_listener=None, start=False):
         from kkrunner.backends.process.supervised.local import attach_local
         return attach_local(
-            self, run, callback=callback, output_listener=output_listener, start=start,
+            self, context, callback=callback, output_listener=output_listener, start=start,
         )
 
     def acknowledge_submission(self, run):

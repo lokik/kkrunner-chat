@@ -5,7 +5,7 @@ import sys
 from kkrunner import ExecutionSpec, Run
 from kkrunner.runs import LaunchSpec
 from kkrunner.backends import ProcessBackend
-from kkrunner.client import LocalTransport, AgentBackendProxy
+from kkrunner.client import LocalTransport, AgentRunEndpoint
 
 
 def test_raw_local_paths_and_stdin_are_materialized_at_submission(tmp_path):
@@ -30,7 +30,7 @@ def test_raw_remote_paths_work_with_only_runner_on_target(tmp_path):
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
     remote.mkdir()
-    executor = AgentBackendProxy(LocalTransport(), command=(sys.executable, "-m", "kkrunner"))
+    executor = AgentRunEndpoint(LocalTransport(), command=(sys.executable, "-m", "kkrunner"))
     spec = ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=local,
