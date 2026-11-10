@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from kkrunner.client.contracts import RunningCommand
+from kkrunner.client.operations import BackendOperation, operation_command, operation_payload
 from uuid import uuid4
 
 from kkrunner.files.queries import _sources, checked_files, expand_local_files, local_file_signature, query_files, finalize_upload
@@ -38,6 +39,14 @@ class Transport:
     """
 
     async def run(self, argv, *, cwd=None, input=None, check=True):
+        raise NotImplementedError
+
+    async def call(self, operation: BackendOperation, *args, **kwargs):
+        """Run one context-independent operation and return its JSON result."""
+        raise NotImplementedError
+
+    async def start_operation(self, operation: BackendOperation, *args, **kwargs):
+        """Start a streaming operation; stdout/stderr remain live channels."""
         raise NotImplementedError
 
     async def start(self, argv, *, cwd=None, stdin=None) -> RunningCommand:
@@ -109,6 +118,27 @@ async def _completed_process(process, argv, input=None, check=True):
 
 class LocalTransport(Transport):
     """Transport backed by asyncio subprocesses and the local filesystem."""
+
+    async def call(self, operation: BackendOperation, *args, **kwargs):
+        # The local endpoint executes directly; argument payloads must still
+        # be serializable to uphold the same contract as remote execution.
+        from importlib import import_module
+        import asyncio
+
+        encoded = operation_payload(args, kwargs)
+        request = json.loads(encoded)
+        function = (
+            operation.portable if operation.portable is not None
+            else getattr(import_module(operation.module), operation.function)
+        )
+        result = await asyncio.to_thread(function, *request["args"], **request["kwargs"])
+        # Verify portability of the response, including local-only execution.
+        return json.loads(json.dumps(result, allow_nan=False))
+
+    async def start_operation(self, operation: BackendOperation, *args, **kwargs):
+        payload = operation_payload(args, kwargs)
+        command = operation_command(operation, python=(__import__("sys").executable,), streaming=True)
+        return await self.start((*command, payload), stdin=asyncio.subprocess.PIPE)
 
     async def start(self, argv, *, cwd=None, stdin=None):
         return await asyncio.create_subprocess_exec(
@@ -197,6 +227,17 @@ class LocalTransport(Transport):
 class SshTransport(Transport):
     """Transport using the system ``ssh`` client."""
 
+    async def call(self, operation: BackendOperation, *args, **kwargs):
+        payload = operation_payload(args, kwargs).encode("utf-8")
+        command = operation_command(operation, python=self.python_command)
+        result = await self.run(command, input=payload)
+        return json.loads(result.stdout.decode("utf-8"))
+
+    async def start_operation(self, operation: BackendOperation, *args, **kwargs):
+        payload = operation_payload(args, kwargs)
+        command = operation_command(operation, python=self.python_command, streaming=True)
+        return await self.start((*command, payload), stdin=asyncio.subprocess.PIPE)
+
     def __init__(
         self, host, *, ssh="ssh", options=(), zstd=False,
         command=("kkrunner-agent",), python_command=("python3",),
@@ -273,12 +314,8 @@ class SshTransport(Transport):
             raise
 
     async def call_function(self, function, *args, **kwargs):
-        """Execute a standalone stdlib-compatible Python function on target."""
-        from kkrunner.client.portable_functions import function_source
-        script = function_source(function)
-        payload = json.dumps({"args": args, "kwargs": kwargs}).encode("utf-8")
-        response = await self.run((*self.python_command, "-c", script), input=payload)
-        return json.loads(response.stdout.decode("utf-8"))
+        """Compatibility for existing raw file operations via the same API."""
+        return await self.call(BackendOperation.standalone(function), *args, **kwargs)
 
     async def _finalize_upload(self, temporary, destination, mtime_ns):
         await self.call_function(finalize_upload, temporary, destination, mtime_ns)

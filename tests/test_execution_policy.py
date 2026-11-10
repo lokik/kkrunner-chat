@@ -5,7 +5,7 @@ import pytest
 
 from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.backends.process.backend import DirectProcessBackend
-from kkrunner.backends.process.direct.job import DirectProcessJob
+from kkrunner.client.job import Job
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
 from kkrunner.client.transport import LocalTransport
@@ -26,7 +26,7 @@ def _local_spec(tmp_path, code="print('ok')"):
 
 
 def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path):
-    runner = DirectProcessJob(_local_spec(tmp_path))
+    runner = Job.direct(_local_spec(tmp_path))
     observer_errors = []
 
     def broken_observer(*_):
@@ -43,7 +43,7 @@ def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path)
 
 
 def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
-    raw = DirectProcessJob(_local_spec(tmp_path))
+    raw = Job.direct(_local_spec(tmp_path))
 
     def fail(_outcome):
         raise ValueError("parser failed")
@@ -58,7 +58,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
-    runner = DirectProcessJob(
+    runner = Job.direct(
         _local_spec(tmp_path), callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed"))
     )
     runner.submit()

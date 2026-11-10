@@ -14,7 +14,7 @@ from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files.manifest import FileMapping, FileSyncPolicy
 from kkrunner.remote.protocol import control_command, json_request
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.agent_job import AgentJob
+from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client.contracts import ReopenableRunEndpoint
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
@@ -28,7 +28,7 @@ from kkrunner.runs.base import (
 )
 from kkrunner.runs.model import WorkingDirectory
 
-_REMOTE_BACKENDS = {"process", "psij"}
+from kkrunner.backends.registry import installed_backend_names
 
 
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
@@ -65,7 +65,7 @@ class _AgentRunContext(RemotePathContext):
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         files = RemoteFileSession(self, spec)
-        job = AgentJob(self, spec, callback=callback)
+        job = Job(self, spec, callback=callback)
         return RunParts(
             job, files,
             submission_builder=lambda prepared: self.endpoint.submission_request(
@@ -80,7 +80,7 @@ class _AgentRunContext(RemotePathContext):
         status = await self._status(execution.directory.remote, execution.backend_id)
         files = await RemoteFileSession.from_attachment(self, attachment)
         try:
-            job = AgentJob(
+            job = Job(
                 self, files.spec, callback=callback,
                 output_listener=output_listener,
                 backend_id=execution.backend_id,
@@ -111,7 +111,7 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         command=None,
         filesystem_id=None,
     ):
-        if backend not in _REMOTE_BACKENDS:
+        if backend not in installed_backend_names():
             raise ValueError(f"Unsupported remote executor: {backend!r}")
         self.transport = transport
         self.filesystem_id = filesystem_id

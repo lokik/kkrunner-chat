@@ -177,7 +177,7 @@ class ObservationUnavailable(OSError):
 
 
 @runtime_checkable
-class Job(Protocol):
+class JobProtocol(Protocol):
     """Live, per-execution handle.  Only reopenable jobs need a stable ref."""
 
     @property
@@ -223,13 +223,13 @@ class Job(Protocol):
 class Backend(Protocol):
     """Native execution mechanism; creates Jobs but never client sessions."""
 
-    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None) -> Job: ...
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None) -> JobProtocol: ...
 
 
 class ReopenableBackend(Backend, Protocol):
     def attach_job(
         self, context: BackendJobContext, *, callback=None, output_listener=None, start=False,
-    ) -> Job: ...
+    ) -> JobProtocol: ...
 
 
 class RecoverableBackend(ReopenableBackend, Protocol):
@@ -239,7 +239,7 @@ class RecoverableBackend(ReopenableBackend, Protocol):
 
 
 __all__ = [
-    "Backend", "BackendJobContext", "Job", "JobFailurePhase", "JobRef", "JobStatus",
+    "Backend", "BackendJobContext", "JobProtocol", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoverableBackend", "RecoveryDisposition",
     "RecoveryResult", "ReopenableBackend", "SubmissionContext", "UnsupportedCapability",
     "job_status_from_facts",

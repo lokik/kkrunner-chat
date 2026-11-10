@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from kkrunner.remote.handles import decode_handle
 from kkrunner.runs.base import ExecutionSpec, RunState, RunStatus
-from .operations import status_remote
+from .functions import status as status_remote
 
 
 def _local_status_from_facts(backend_id, facts):
@@ -32,7 +32,7 @@ def local_status(backend_id):
 
 
 def attach_local(executor, context, *, callback=None, output_listener=None, start=True):
-    from .job import SupervisedProcessJob
+    from kkrunner.client.local_managed import attach_local_managed
     if context.endpoint.executor != "local-supervised":
         raise ValueError("Run does not belong to the local backend")
     if context.ref.backend != "process":
@@ -48,18 +48,14 @@ def attach_local(executor, context, *, callback=None, output_listener=None, star
         directory=context.directory.local,
     )
     status = local_status(backend_id)
-    runner = SupervisedProcessJob(
-        executor,
-        spec,
-        callback=callback,
+    return attach_local_managed(
+        spec, backend_id, backend="process", callback=callback,
         output_listener=output_listener,
-        backend_id=backend_id,
-        state=status.state,
-        failure_phase=status.failure_phase,
-        failure_message=status.message,
+        status={
+            "state": status.state.value,
+            "return_code": status.return_code,
+            "failure_phase": None if status.failure_phase is None else status.failure_phase.value,
+            "error": status.message,
+        },
+        start=start,
     )
-    runner._return_code = status.return_code
-    runner.result.return_code = status.return_code
-    if start:
-        runner.start()
-    return runner

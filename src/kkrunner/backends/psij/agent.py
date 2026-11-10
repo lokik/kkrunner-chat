@@ -18,10 +18,10 @@ def _psij_executor(options):
 def submit_remote(request):
     executor = _psij_executor(request.get("executor_options"))
     spec = request_to_spec(request)
-    runner = executor.create_job(spec, submission_key=request.get("id"))
+    runner = executor.create_native_job(spec, submission_key=request.get("id"))
     # PSI/J's _prepare_io() owns cleanup of its complete declared manifest.
     # Running a second cleanup here would duplicate it and risk wildcard caches.
-    runner.submit()
+    runner.submit_native()
     backend_id = runner.backend_id
     if backend_id is None:
         raise RuntimeError("PSI/J submission did not return a backend id")

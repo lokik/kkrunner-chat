@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
-from kkrunner.client.agent_job import AgentJob
+from kkrunner.client.job import Job
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.support.file_locks import FileLock
 from kkrunner.client.transport import LocalTransport
@@ -72,7 +72,7 @@ def _run(tmp_path, state=RunState.FINISHED):
     ).initialize_availability()
     context = _Context(state)
     session = RemoteFileSession(context, spec, files=files, remote_directory="/work/case")
-    job = AgentJob(
+    job = Job(
         context, spec, backend_id="opaque-handle", remote_directory="/work/case",
         status={"state": "running"},
     )

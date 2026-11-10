@@ -28,7 +28,7 @@ class RunParts:
         if self.files is not None:
             self.files.prepare_submission()
             return True
-        prepare = getattr(self.job, "prepare_submission", None)
+        prepare = None if getattr(self.job, "_direct", False) else getattr(self.job, "prepare_submission", None)
         if prepare is not None:
             prepare()
             return True
@@ -54,6 +54,11 @@ class RunParts:
         if type(detached) is not bool:
             raise TypeError("detached must be bool")
         configure = getattr(self.job, "configure_detached", None)
+        if getattr(self.job, "_direct", None) is False:
+            # The shared Job class also represents managed calculations.
+            # For them detached execution is the backend's fixed policy,
+            # not a configurable direct process lifetime.
+            configure = None
         if configure is not None:
             configure(detached)
             if self.files is not None:

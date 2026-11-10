@@ -104,7 +104,7 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 
 
 def _persisted(args):
-    from kkrunner.backends.contracts import JobAttachment
+    from kkrunner.client.contracts import JobAttachment
     from kkrunner.client.endpoint import executor_from_endpoint
     from kkrunner.remote.service import cancel_remote, follow_remote
     record = _record(args)

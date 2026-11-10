@@ -21,15 +21,15 @@ class DirectProcessBackend(Backend):
     default_detached = False
 
     def __init__(self, *, adapter_factory=None):
-        # The adapter is a private implementation detail of DirectProcessJob.
+        # The adapter is a private implementation detail of the direct Job session.
         # Local and raw SSH direct both go through this backend factory.
         self._adapter_factory = adapter_factory
 
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
-        from kkrunner.backends.process.direct.job import DirectProcessJob
+        from kkrunner.client.job import Job
         adapter = self._adapter_factory() if self._adapter_factory is not None else None
-        return DirectProcessJob(spec, callback=callback, adapter=adapter)
+        return Job.direct(spec, callback=callback, adapter=adapter)
 
 
 class SupervisedProcessBackend(RecoverableBackend):
@@ -45,13 +45,14 @@ class SupervisedProcessBackend(RecoverableBackend):
     def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
         spec.require_complete()
         from uuid import uuid4
-        from kkrunner.backends.process.supervised.job import SupervisedProcessJob
-        return SupervisedProcessJob(
-            self, spec, run_id=submission_key or uuid4().hex, callback=callback,
+        from kkrunner.client.local_managed import local_managed_job
+        return local_managed_job(
+            spec, backend="process", submission_key=submission_key or uuid4().hex,
+            callback=callback,
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
-        from kkrunner.backends.process.supervised.operations import recover_remote
+        from kkrunner.backends.process.supervised.functions import recover as recover_remote
         reply = recover_remote(
             run_id,
             {"executor": "process", "directory": submission.execution.directory.local},
@@ -73,11 +74,11 @@ class SupervisedProcessBackend(RecoverableBackend):
         )
 
     def acknowledge_submission(self, run):
-        from kkrunner.backends.process.supervised.operations import acknowledge_submission
+        from kkrunner.backends.process.supervised.functions import acknowledge_submission
         acknowledge_submission(run.execution.submission_key or run.id)
 
     def acknowledge(self, run):
-        from kkrunner.backends.process.supervised.operations import acknowledge_remote
+        from kkrunner.backends.process.supervised.functions import acknowledge as acknowledge_remote
         acknowledge_remote(run.execution.backend_id)
 
     def status(self, *runs):

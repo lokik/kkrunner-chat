@@ -1,7 +1,9 @@
-"""Remote backend job: submission, observation and cancellation only.
+"""Client Job lifecycle for direct sessions and independently executable managed operations.
 
-Local streams, file mappings, staging and downloads belong to RemoteFileSession
-and are orchestrated by Run. No filesystem transfer lifecycle is stored here.
+The Job owns client-side submission state, observation, cancellation and
+listeners, but never owns the backend process or client file synchronization.
+Its controller provides context-independent target operations through the
+selected Endpoint. It works identically with local or remote controllers.
 """
 
 from __future__ import annotations
@@ -17,15 +19,23 @@ from kkrunner.runs.base import (
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
-class AgentJob:
-    """One execution on a remote process or scheduler backend."""
+class Job:
+    """One client handle for a direct or managed backend execution."""
 
     def __init__(
         self, context, spec, *, callback=None,
         backend_id=None, remote_directory=None, status=None,
-        output_listener=None,
+        output_listener=None, request_factory=None, completion_cleanup=None, adapter=None,
     ):
         self.context = context
+        self.adapter = adapter
+        self._direct = adapter is not None
+        self._detached = False
+        self._cancel_requested = Event()
+        self._started = Event()
+        self._process = None
+        self._pid = None
+        self._stop_task = None
         self.spec = spec
         self.callback = callback
         self._backend_id = backend_id
@@ -44,21 +54,40 @@ class AgentJob:
         self._follow_process = None
         self._loop = None
         self._request = None
+        self._request_factory = request_factory
+        self._completion_cleanup = completion_cleanup
         self._stream_offsets = None
         self._stream_paths = (None, None)
         self._stream_writer = None
         self._output_observers = OutputObservers(output_listener)
         self._output_error = None
-        self.result = ExecutionOutcome()
+        from kkrunner.files.paths import file_path
+        self.result = ExecutionOutcome(
+            input_file=file_path(spec.input_file, spec.directory),
+            output_file=file_path(spec.output_file, spec.directory),
+            error_file=file_path(spec.error_file, spec.directory),
+        )
         if status is not None:
             self._apply_backend_facts(status)
 
+    @classmethod
+    def direct(cls, spec, *, callback=None, adapter=None):
+        """Create the direct session variant of the same client Job type."""
+        if adapter is None:
+            from kkrunner.backends.process.direct.local import LocalProcessAdapter
+            adapter = LocalProcessAdapter()
+        return cls(None, spec, callback=callback, adapter=adapter)
+
     @property
     def backend_id(self):
+        if self._direct:
+            return str(self._pid) if self._pid is not None and self.adapter.expose_pid else None
         return self._backend_id
 
     @property
     def ref(self):
+        if self._direct:
+            return None
         from kkrunner.backends.contracts import JobRef
         return None if self._backend_id is None else JobRef(self.context.backend, self._backend_id)
 
@@ -74,6 +103,8 @@ class AgentJob:
 
     @property
     def state(self):
+        if self._direct:
+            return self._state
         if self._thread is not None:
             return self._state
         if self._backend_id is None or self._state.is_terminal:
@@ -84,6 +115,11 @@ class AgentJob:
 
     def status(self):
         from kkrunner.backends.contracts import job_status_from_facts
+        if self._direct:
+            return job_status_from_facts(
+                self.state, return_code=self.return_code,
+                failure_phase=self.failure_phase, message=self.failure_message,
+            )
         if self._backend_id is None:
             return job_status_from_facts(self._state)
         facts = _run_sync(self.context._status(self._remote_directory, self._backend_id))
@@ -96,7 +132,7 @@ class AgentJob:
 
     @property
     def return_code(self):
-        return self._return_code
+        return self.result.return_code if self._direct else self._return_code
 
     @property
     def failure_phase(self):
@@ -124,7 +160,36 @@ class AgentJob:
         self._failure_phase = None if phase is None else FailurePhase(phase)
         self._failure_message = facts.get("error")
 
+
+    def configure_detached(self, detached):
+        """Set direct-process lifetime policy independently of Run persistence."""
+        if not self._direct:
+            raise RuntimeError("Detached policy is fixed by the managed backend")
+        if self._state != RunState.NEW:
+            raise RuntimeError("Cannot change detached policy after submission")
+        self.adapter.configure_detached(detached)
+        self._detached = detached
+
+    def _forward_output(self, data, kind):
+        from kkrunner.client.direct_operation import forward_output
+        return forward_output(self, data, kind)
+
+    def _ensure_stop_task(self):
+        from kkrunner.client.direct_operation import ensure_stop_task
+        return ensure_stop_task(self)
+
+    async def _execute(self):
+        from kkrunner.client.direct_operation import execute
+        return await execute(self)
+
     def configure_submission(self, request, *, stream_offsets, stream_writer, stream_paths):
+        if self._direct:
+            if self._state != RunState.NEW:
+                raise RuntimeError("Cannot configure a submitted direct job")
+            return self.adapter.configure_submission(
+                request, stream_offsets=stream_offsets,
+                stream_writer=stream_writer, stream_paths=stream_paths,
+            )
         if self._request is not None or self._backend_id is not None:
             raise RuntimeError("Job submission is already configured")
         self.configure_observation(
@@ -142,16 +207,52 @@ class AgentJob:
         self._stream_writer = stream_writer
         self._stream_paths = stream_paths
 
+    def prepare_submission(self):
+        """Construct the target request before crossing the submission boundary."""
+        if self._request is not None:
+            return
+        if self._request_factory is None:
+            return  # Remote FileSession supplies a staged request later.
+        request = self._request_factory()
+        from kkrunner.files.paths import file_path
+        output = file_path(self.spec.output_file, self.spec.directory)
+        error = file_path(self.spec.error_file, self.spec.directory)
+        self.configure_submission(
+            request,
+            stream_offsets={"out": 0, "err": 0},
+            stream_writer=None,
+            stream_paths=(output, error),
+        )
+
     def submit(self):
+        if self._direct:
+            from kkrunner.client.direct_operation import submit
+            return submit(self)
+        from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
+        try:
+            self.prepare_submission()
+        except SubmissionNotStarted:
+            raise
+        except Exception as exc:
+            self._state = RunState.FAILED
+            self._failure_phase = FailurePhase.SUBMISSION
+            self._failure_message = str(exc)
+            raise SubmissionNotStarted(str(exc)) from exc
         with self._lock:
             if self._state != RunState.NEW or self._request is None:
-                raise RuntimeError("Remote job is not prepared for submission")
+                raise RuntimeError("Job is not prepared for submission")
             request = self._request
             self._request = None
             self._state = RunState.SUBMITTING
             self._remote_directory = request["directory"]
             try:
                 facts = _run_sync(self.context._submit(request))
+            except SubmissionNotStarted as exc:
+                # The target proves that no calculation was accepted.
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.SUBMISSION
+                self._failure_message = str(exc)
+                raise
             except BaseException:
                 # An accepted submission may have lost its reply.
                 self._state = RunState.UNKNOWN
@@ -254,6 +355,10 @@ class AgentJob:
 
     def stop_observation(self):
         self._observation_stopped.set()
+        if self._direct:
+            # No backend identity exists for reattach. Stopping delivery must
+            # not send an implicit cancel to a detached process.
+            return
         if self._loop is not None:
             try:
                 self._loop.call_soon_threadsafe(self._terminate_follow)
@@ -261,26 +366,56 @@ class AgentJob:
                 pass
 
     def _thread_main(self):
+        """Finalize observation, decoder and local handles independently."""
+        if self._direct:
+            from kkrunner.client.direct_operation import thread_main
+            return thread_main(self)
         try:
             asyncio.run(self._monitor())
         except BaseException as exc:
-            self._exception = exc
+            if self._exception is None:
+                self._exception = exc
+                self._failure_message = self._failure_message or str(exc)
+            if not self._state.is_terminal:
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
         finally:
-            try:
-                self._output_observers.finish_bytes()
-            except BaseException as exc:
-                if self._output_error is None:
-                    self._output_error = exc
-            finally:
-                finish_monitor(self)
+            for cleanup in (self._output_observers.finish_bytes, self._completion_cleanup):
+                if cleanup is None:
+                    continue
+                try:
+                    cleanup()
+                except BaseException as exc:
+                    if self._exception is None:
+                        self._exception = exc
+                        self._failure_message = str(exc)
+                    if self._output_error is None:
+                        self._output_error = exc
+                    if self._state == RunState.FINISHED:
+                        self._state = RunState.FAILED
+                        self._failure_phase = FailurePhase.ARTIFACTS
+                    elif not self._state.is_terminal:
+                        self._state = RunState.UNKNOWN
+                        self._failure_phase = None
+            finish_monitor(self)
 
     def start(self):
-        return start_monitor(self, missing_backend="Remote Job has no backend identity")
+        if self._direct:
+            if self._state == RunState.NEW:
+                return self.submit()
+            raise RuntimeError("A direct process cannot restart its control session")
+        return start_monitor(self, missing_backend="Job has no backend identity")
 
     def wait(self):
+        if self._direct and self._state == RunState.CANCELLED and self._thread is None:
+            return self.result
         return wait_for_monitor(self)
 
     def run(self):
+        if self._direct:
+            if self._state == RunState.NEW:
+                self.submit()
+            return self.wait()
         if self._thread is None:
             if self._backend_id is None:
                 self.submit()
@@ -292,6 +427,9 @@ class AgentJob:
         return await asyncio.to_thread(self.run)
 
     def cancel(self):
+        if self._direct:
+            from kkrunner.client.direct_operation import cancel
+            return cancel(self)
         if self._backend_id is None:
             raise RuntimeError("Job has no confirmed backend identity")
         return request_cancellation(

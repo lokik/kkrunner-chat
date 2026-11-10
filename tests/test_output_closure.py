@@ -4,10 +4,9 @@ import asyncio
 
 import pytest
 
-from kkrunner.backends.process.direct.job import DirectProcessJob
-from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+from kkrunner.client.job import Job
+from kkrunner.client.local_managed import local_managed_job
 from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.agent_job import AgentJob
 from kkrunner.runs.base import ExecutionSpec, RunState, close_output_files
 
 
@@ -36,14 +35,16 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
         async def fail_to_launch(_spec):
             raise RuntimeError("launch failed")
 
-        monkeypatch.setattr("kkrunner.backends.process.direct.job.start_local_process", fail_to_launch)
-        runner = DirectProcessJob(spec)
+        monkeypatch.setattr("kkrunner.backends.process.direct.local.start_local_process", fail_to_launch)
+        runner = Job.direct(spec)
         with pytest.raises(RuntimeError, match="launch failed"):
             asyncio.run(runner._execute())
         assert runner.state == RunState.FAILED
     else:
-        runner = SupervisedProcessJob(None, spec)
-        monkeypatch.setattr(runner, "_monitor", lambda: None)
+        runner = local_managed_job(spec)
+        async def no_observation():
+            return runner.result
+        monkeypatch.setattr(runner, "_monitor", no_observation)
         runner._thread_main()
         assert runner._done.is_set()
         assert runner.exception is None
@@ -83,7 +84,7 @@ def test_remote_monitor_closes_merged_output_once_after_follow_failure(tmp_path)
         argv=("true",), directory=str(tmp_path), input_file=None, output_file=output, error_file=output
     )
     files = RemoteFileSession(object(), spec)
-    job = AgentJob(UnreachableEndpoint(), spec, backend_id="job-1", remote_directory="/remote/case")
+    job = Job(UnreachableEndpoint(), spec, backend_id="job-1", remote_directory="/remote/case")
     asyncio.run(job._monitor())
     assert job.state == RunState.UNKNOWN
     # The backend job never owns local output streams. Only the client file
@@ -123,13 +124,12 @@ def test_local_project_cleanup_attempts_all_stages(tmp_path, monkeypatch, monito
             if close_fails:
                 raise errors[2]
 
-    runner = SupervisedProcessJob(
-        None,
+    runner = local_managed_job(
         ExecutionSpec(argv=("true",), input_file=None, directory=str(tmp_path), output_file=Output()),
         callback=lambda result: callbacks.append(result),
     )
 
-    def monitor():
+    async def monitor():
         calls.append("monitor")
         if monitor_fails:
             raise errors[0]

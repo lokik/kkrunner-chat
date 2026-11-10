@@ -52,6 +52,7 @@ class PsijBackend(RecoverableBackend):
         self.backend = backend
         self.url = url
         self.poll_interval = poll_interval
+        self._native_configuration = config is not None or job_executor is not None
         self._psij = _load_psij()
         self._job_executor = (
             job_executor
@@ -63,11 +64,25 @@ class PsijBackend(RecoverableBackend):
         self._jobs_lock = RLock()
         self._max_idle_jobs = 64
 
-    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+    def create_native_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        """Target-side PSI/J helper. Native state never crosses the Endpoint."""
         from uuid import uuid4
         spec.require_complete()
-        # A scheduler submission has its own identity even without a RunRecord.
         return PsijJob(self, spec, callback=callback, run_id=submission_key or uuid4().hex)
+
+    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None):
+        """Create the same client Job as remote and supervised operations."""
+        if getattr(self, "_native_configuration", False):
+            raise ValueError(
+                "A native PSI/J JobExecutor or config object cannot cross the "
+                "context-independent endpoint boundary; use backend/url options"
+            )
+        from kkrunner.client.local_managed import local_managed_job
+        return local_managed_job(
+            spec, backend="psij",
+            options={"backend": self.backend, "url": self.url},
+            submission_key=submission_key, callback=callback,
+        )
 
     def status(self, *runs):
         from kkrunner.client.endpoint import endpoint_config_for_executor
@@ -235,7 +250,11 @@ class PsijBackend(RecoverableBackend):
             error_file=facts.get("stderr"),
         )
 
-    def attach_job(self, context, *, callback=None, output_listener=None, start=False):
+    def attach_native_observer(self, context, *, callback=None, output_listener=None, start=False):
+        """Internal PSI/J observer for native scheduler callback mechanics.
+
+        Client-facing reattachment uses the shared Job instead.
+        """
         from kkrunner.client.endpoint import endpoint_config_for_executor
 
         if context.endpoint != endpoint_config_for_executor(self):
@@ -262,4 +281,33 @@ class PsijBackend(RecoverableBackend):
         if start:
             runner.start()
         return runner
+
+    def attach_job(self, context, *, callback=None, output_listener=None, start=False):
+        from kkrunner.client.endpoint import endpoint_config_for_executor
+
+        if context.endpoint != endpoint_config_for_executor(self):
+            raise ValueError("Run does not belong to this PSI/J endpoint")
+        if context.ref.backend != "psij":
+            raise ValueError("Job belongs to a different backend")
+        from kkrunner.client.local_managed import attach_local_managed
+        spec = ExecutionSpec(
+            argv=None,
+            input_file=context.input_file,
+            output_file=context.output_file,
+            error_file=context.error_file,
+            directory=context.directory.local,
+        )
+        facts = self.status_native(context.ref.token)
+        return attach_local_managed(
+            spec, context.ref.token, backend="psij",
+            options={"backend": self.backend, "url": self.url},
+            callback=callback, output_listener=output_listener,
+            status={
+                "state": facts.state.value,
+                "return_code": facts.return_code,
+                "failure_phase": None if facts.failure_phase is None else facts.failure_phase.value,
+                "error": facts.message,
+            },
+            start=start,
+        )
 

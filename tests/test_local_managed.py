@@ -250,12 +250,13 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
     cache = NamedFile("restart.pot")
     spec = replace(
         _spec(tmp_path),
-        output_files=(None, output, "a.dat", object()),
-        input_files=(None, inp, "b.inp", 1),
-        cache_files=(None, cache, "restart.pot", object()),
+        output_files=(None, output, "a.dat"),
+        input_files=(None, inp, "b.inp"),
+        cache_files=(None, cache, "restart.pot"),
     )
     runner = SupervisedProcessBackend().create_job(spec, submission_key=RUN_ID)
-    request = runner._request()
+    runner.prepare_submission()
+    request = runner._request
     assert request["output_files"] == [output.name, str(tmp_path / "a.dat")]
     assert request["input_files"] == [inp.name, str(tmp_path / "b.inp")]
     assert request["cache_files"] == [cache.name, str(tmp_path / "restart.pot")]
@@ -291,7 +292,9 @@ def test_local_project_request_uses_common_command_fields(tmp_path):
     spec = replace(
         _spec(tmp_path), mpi_argv=("mpi-program", "input.inp"), mpi_uses_stdin=False, launch=LaunchSpec.from_mpi(3)
     )
-    request = SupervisedProcessBackend().create_job(spec, submission_key=RUN_ID)._request()
+    runner = SupervisedProcessBackend().create_job(spec, submission_key=RUN_ID)
+    runner.prepare_submission()
+    request = runner._request
     for key, value in spec.command_request().items():
         assert request[key] == value
     reconstructed = request_to_spec(request)
@@ -302,11 +305,14 @@ def test_local_project_request_uses_common_command_fields(tmp_path):
 def test_terminal_project_runner_does_not_query_backend(monkeypatch, tmp_path):
     import pytest
 
-    from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+    from kkrunner.client.local_managed import attach_local_managed
     from kkrunner.runs.base import RunState
 
     spec = _spec(tmp_path)
-    runner = SupervisedProcessJob(SupervisedProcessBackend(), spec, backend_id="old-supervisor", state=RunState.FINISHED)
+    runner = attach_local_managed(
+        spec, "old-supervisor",
+        status={"state": "finished", "return_code": 0},
+    )
     monkeypatch.setattr(
         "kkrunner.backends.process.supervised.local.local_status",
         lambda *args: pytest.fail("Terminal runner must not query backend"),
@@ -399,3 +405,14 @@ def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatc
     monkeypatch.setattr(local_managed, "follow_remote", malformed_follow)
     with pytest.raises(ValueError, match="Unknown supervisor stream protocol"):
         runner._monitor()
+
+
+def test_unnameable_file_declared_for_local_managed_is_known_prelaunch_error(tmp_path):
+    from kkrunner.runs.base import SubmissionNotStarted
+
+    spec = replace(_spec(tmp_path), output_files=(object(),))
+    job = SupervisedProcessBackend().create_job(spec, submission_key=RUN_ID)
+    with pytest.raises(SubmissionNotStarted, match="named file"):
+        job.submit()
+    assert job.backend_id is None
+    assert job.state is RunState.FAILED

@@ -4,16 +4,16 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
-from kkrunner.backends.process.direct.job import DirectProcessJob
-from kkrunner.backends.process.supervised.job import SupervisedProcessJob
+from kkrunner.client.job import Job
+from kkrunner.client.job import Job
 from kkrunner.client.endpoint import ExecutionEndpointConfig, executor_from_endpoint, endpoint_config_for_executor
 
 
 def test_direct_mode_never_switches_implicitly(tmp_path):
     backend = DirectProcessBackend()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
-    assert isinstance(backend.create_job(spec), DirectProcessJob)
-    assert isinstance(backend.create_job(spec, submission_key="run-id"), DirectProcessJob)
+    assert isinstance(backend.create_job(spec), Job)
+    assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
     manager = RunManager(RunStore(tmp_path / "runs"))
     assert manager.create_run(backend, spec).record is not None
 
@@ -21,8 +21,8 @@ def test_direct_mode_never_switches_implicitly(tmp_path):
 def test_supervised_mode_is_explicit_and_persistable(tmp_path):
     backend = SupervisedProcessBackend()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
-    assert isinstance(backend.create_job(spec), SupervisedProcessJob)
-    assert isinstance(backend.create_job(spec, submission_key="run-id"), SupervisedProcessJob)
+    assert isinstance(backend.create_job(spec), Job)
+    assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
     endpoint = endpoint_config_for_executor(backend)
     assert endpoint == ExecutionEndpointConfig(executor="local-supervised")
     assert isinstance(executor_from_endpoint(endpoint), SupervisedProcessBackend)
