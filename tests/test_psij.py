@@ -29,7 +29,7 @@ from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.client.contracts import JobAttachment
 
 
-from kkrunner.backends.contracts import SubmissionContext
+from kkrunner.client.contracts import SubmissionContext
 
 
 
