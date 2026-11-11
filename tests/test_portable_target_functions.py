@@ -10,8 +10,7 @@ import pytest
 
 from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client.local import LocalRunEndpoint
-from kkrunner.client.run_parts import run_endpoint_for_executor
-from kkrunner.client.portable_functions import function_source
+from kkrunner.client.portable_functions import function_definition
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
 
@@ -28,7 +27,7 @@ def test_native_backend_does_not_construct_client_session(tmp_path):
     assert not hasattr(DirectBackend, "create_job")
     assert not hasattr(DirectBackend, "create_run_parts")
     endpoint = LocalRunEndpoint(DirectBackend)
-    assert run_endpoint_for_executor(endpoint) is endpoint
+    assert endpoint.backend is DirectBackend
 
 
 def test_portable_file_query_matches_native_batch(tmp_path):
@@ -38,7 +37,7 @@ def test_portable_file_query_matches_native_batch(tmp_path):
     kwargs = {"root": str(tmp_path), "digest": True}
     native = query_files(paths, **kwargs)
     isolated = _isolated(
-        function_source(query_files),
+        function_definition(query_files),
         input=json.dumps({"args": [paths], "kwargs": kwargs}),
     )
     assert json.loads(isolated) == native
