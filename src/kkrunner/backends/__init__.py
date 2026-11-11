@@ -1,11 +1,10 @@
-"""Execution backend functions and explicit backend selection.
+"""Static backend classes with explicit selection.
 
 No registration framework: the three supported implementations are fixed,
 imported lazily only by the target that executes them.
 """
 from __future__ import annotations
 
-from importlib import import_module
 
 def backend_class(kind):
     """Static-operation backend type, separate from client Job instances."""
@@ -19,21 +18,6 @@ def backend_class(kind):
         from .psij import PsijOperations
         return PsijOperations
     raise ValueError(f"Unsupported backend: {kind!r}")
-
-
-def operation_module(kind):
-    """Import path for one of the three supported functional implementations."""
-    if kind == "direct":
-        return "kkrunner.backends.direct"
-    if kind == "process":
-        return "kkrunner.backends.supervised"
-    if kind == "psij":
-        return "kkrunner.backends.psij"
-    raise ValueError(f"Unsupported backend: {kind!r}")
-
-
-def backend_module(kind):
-    return import_module(operation_module(kind))
 
 
 def available_backend_names():
