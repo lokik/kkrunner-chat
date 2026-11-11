@@ -7,7 +7,7 @@ from kkrunner.runs import DuplicateSubmissionError, FailurePhase, RunStatus
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
 from kkrunner import ExecutionOutcome, RunState, RunStore
-from kkrunner.client.pool import ExecutorPool
+from kkrunner.client.pool import EndpointPool
 from kkrunner.runs.manager import RunManager
 
 
@@ -89,7 +89,7 @@ def _spec(tmp_path, *, dataset="case"):
 
 
 def _manager(tmp_path):
-    return RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool())
+    return RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool())
 
 
 def test_submit_persists_submitting_before_backend_call(tmp_path):
