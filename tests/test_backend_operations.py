@@ -11,7 +11,7 @@ from kkrunner.backends.class_helper import static_methods
 from kkrunner.client.operations import BackendOperation, operation_command
 
 OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
-              "stream", "acknowledge", "acknowledge_submission"}
+              "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
 
 
 @pytest.mark.parametrize("kind", ("process", "psij"))

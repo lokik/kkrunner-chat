@@ -29,12 +29,6 @@ def installed_backend_names():
     return frozenset(("process", "psij"))
 
 
-def operation_ref(kind, name):
-    if not isinstance(name, str) or not name.isidentifier():
-        raise ValueError("Operation must be a Python function name")
-    return operation_module(kind), name
-
-
 __all__ = [
     "Backend", "BackendJobContext", "JobProtocol", "JobRef", "JobStatus",
     "SubmissionContext", "DirectProcessBackend", "SupervisedProcessBackend",

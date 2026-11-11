@@ -275,7 +275,7 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         self, directory, backend_id, *, offsets=None,
         stdout_path=None, stderr_path=None,
     ):
-        offsets = {} if offsets is None else offsets
+        offsets = {"out": 0, "err": 0} if offsets is None else offsets
         process = await self.transport.start_operation(
             self._operation("follow_framed"), str(backend_id),
             stdout_offset=offsets.get("out"),
