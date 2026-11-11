@@ -25,6 +25,46 @@ Choose an execution backend
      - Direct execution or a scheduler on an SSH target
      - KKRunner on the target, SSH access and explicit workspace mapping.
 
+
+Target-side backend code and SSH helpers
+----------------------------------------
+
+All target backend operations are declared as static methods on their
+backend class. For each supported backend the SSH endpoint applies its
+`SshHelper` and transmits the resulting Python class source. The helper
+does **not** create a new job state machine.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 24 38 20
+
+   * - Backend
+     - SSH mode
+     - Target requirements
+     - Target-side implementation
+   * - Direct
+     - Portable source (identity helper)
+     - SSH and Python 3; no KKRunner installation
+     - A standalone process worker of roughly 120 lines plus shared MPI
+       resolution and output protection
+   * - Supervised
+     - Import-only helper
+     - Installed KKRunner and a POSIX execution host
+     - Dedicated supervisor worker, socket streams, durable receipts and
+       status/recovery operations (roughly 1,000 lines total)
+   * - PSI/J
+     - Import-only helper
+     - Installed KKRunner with `psij-python` and the scheduler integration
+     - Native PSI/J job, executor, scheduling/accounting and operation modules
+       (roughly 1,150 lines total)
+
+Transferring the full supervised or PSI/J runtime would duplicate installed
+dependencies and complicate persistence and recovery. Their helper source
+contains only delegated method imports; actual code is imported on the target
+host. Direct SSH is deliberately independent and sends the compact worker
+source. Calculation stream FOLLOW uses framed data to distinguish native
+stdout/stderr from SSH diagnostics and delivers a terminal receipt.
+
 Direct SSH execution
 --------------------
 

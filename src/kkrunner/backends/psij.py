@@ -4,9 +4,21 @@ Target execution requires installed kkrunner and psij-python. The SSH helper
 sends only imports and static delegation, never the scheduler implementation.
 """
 
-from kkrunner.native.psij.executor import PsijBackend
-from kkrunner.native.psij.job import PsijJob, psij_state
-from kkrunner.native.psij.slurm import status_native, recover_native, submission_marker
+# Native executor and scheduler helpers are loaded only when explicitly used.
+# Merely selecting the static SSH backend must not import the PSI/J runtime.
+
+
+def __getattr__(name):
+    if name == "PsijBackend":
+        from kkrunner.native.psij.executor import PsijBackend
+        return PsijBackend
+    if name in ("PsijJob", "psij_state"):
+        from kkrunner.native.psij import job
+        return getattr(job, name)
+    if name in ("status_native", "recover_native", "submission_marker"):
+        from kkrunner.native.psij import slurm
+        return getattr(slurm, name)
+    raise AttributeError(name)
 
 
 class PsijOperations:
