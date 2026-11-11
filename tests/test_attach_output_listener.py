@@ -9,7 +9,7 @@ from kkrunner.client.job import Job
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.client.run_parts import RunParts
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
-from kkrunner.client.agent import _AgentRunContext
+from kkrunner.client.ssh import _SshRunContext
 from kkrunner.client.job import Job
 from kkrunner.runs.base import LaunchSpec, RunState
 from kkrunner.runs.manager import RunManager
@@ -87,7 +87,7 @@ def _remote_context(tmp_path):
                 "output_file": "/remote/work/output.out",
             }
 
-    context = _AgentRunContext(Endpoint(), LaunchSpec(local_root=str(tmp_path), remote_root="/remote"))
+    context = _SshRunContext(Endpoint(), LaunchSpec(local_root=str(tmp_path), remote_root="/remote"))
     run = RunRecord(
         id="run",
         state=RunState.RUNNING,

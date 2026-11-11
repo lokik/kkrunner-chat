@@ -5,8 +5,8 @@ import pytest
 from kkrunner import RunState
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client.agent import AgentRunEndpoint
-from kkrunner.client.endpoint import endpoint_config_for_executor
+from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.client.endpoint import describe_endpoint
 from kkrunner.files import FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
@@ -16,7 +16,7 @@ class _Transport:
 
 
 def _run(native_id, *, backend="psij"):
-    endpoint = endpoint_config_for_executor(AgentRunEndpoint(_Transport(), backend=backend))
+    endpoint = describe_endpoint(SshRunEndpoint(_Transport(), backend=backend))
     return RunRecord(
         id=native_id or "unconfirmed",
         state=RunState.RUNNING,
@@ -34,7 +34,7 @@ def _attachment(record):
 
 
 def test_remote_endpoint_status_queries_opaque_handles_individually():
-    executor = AgentRunEndpoint(_Transport(), backend="psij")
+    executor = SshRunEndpoint(_Transport(), backend="psij")
     calls = []
     replies = {
         "job-1": {"state": "running", "return_code": None},
@@ -59,7 +59,7 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
 
 
 def test_remote_terminal_status_does_not_claim_client_completion():
-    executor = AgentRunEndpoint(_Transport(), backend="process")
+    executor = SshRunEndpoint(_Transport(), backend="process")
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -73,13 +73,13 @@ def test_remote_terminal_status_does_not_claim_client_completion():
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
-    executor = AgentRunEndpoint(_Transport(), backend="process")
+    executor = SshRunEndpoint(_Transport(), backend="process")
     with pytest.raises(ValueError, match="different remote endpoint"):
         executor.status(_attachment(_run("job", backend="psij")))
 
 
 def test_recovery_proves_identity_without_claiming_execution_status():
-    executor = AgentRunEndpoint(_Transport(), backend="process")
+    executor = SshRunEndpoint(_Transport(), backend="process")
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -116,7 +116,7 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     ],
 )
 def test_remote_recovery_does_not_guess_non_submission(reply, expected):
-    executor = AgentRunEndpoint(_Transport(), backend="process")
+    executor = SshRunEndpoint(_Transport(), backend="process")
 
     async def request(action, *args, **kwargs):
         assert action == "recover"
@@ -141,7 +141,7 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     ],
 )
 def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
-    executor = AgentRunEndpoint(_Transport(), backend="process")
+    executor = SshRunEndpoint(_Transport(), backend="process")
 
     async def request(action, *args, **kwargs):
         assert action == "status"

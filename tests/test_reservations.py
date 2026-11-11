@@ -9,7 +9,7 @@ from kkrunner.runs import DuplicateSubmissionError, LaunchSpec
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.client import AgentRunEndpoint, SshTransport
+from kkrunner.client import SshRunEndpoint, SshTransport
 from kkrunner.runs.conflicts import submission_conflicts
 
 
@@ -22,7 +22,7 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
             assert command == ("sh", "-c", 'printf "%s" "$HOME"')
             return SimpleNamespace(stdout=b"/home/tester\n")
 
-    executor = AgentRunEndpoint(Transport("cluster"))
+    executor = SshRunEndpoint(Transport("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     spec = ExecutionSpec(
         ["unused"],

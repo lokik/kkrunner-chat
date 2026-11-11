@@ -3,7 +3,7 @@ import asyncio
 from kkrunner import ExecutionSpec
 from kkrunner.files import FileManifest
 from kkrunner.runs import LaunchSpec, MpiSpec
-from kkrunner.client import LocalTransport, AgentRunEndpoint
+from kkrunner.client import LocalTransport, SshRunEndpoint
 
 
 def test_remote_request_carries_target_executor_options(tmp_path):
@@ -16,8 +16,8 @@ def test_remote_request_carries_target_executor_options(tmp_path):
     potential = directory / "start.pot"
     potential.write_text("potential")
     output_file = (directory / "run.out").open("wb")
-    executor = AgentRunEndpoint(
-        LocalTransport(), backend="psij", backend_options={"backend": "slurm", "url": None}
+    executor = SshRunEndpoint(
+        LocalTransport(), backend="psij", backend_options={"executor_name": "slurm", "url": None}
     )
     launch = LaunchSpec(
         mpi=MpiSpec(required=True, autodetect=True, process_count=16),
@@ -69,7 +69,7 @@ def test_nonproject_remote_request_does_not_publish_project_identity(tmp_path):
     root = tmp_path / "local"
     directory = root / "work"
     directory.mkdir(parents=True)
-    executor = AgentRunEndpoint(LocalTransport(), backend="psij")
+    executor = SshRunEndpoint(LocalTransport(), backend="psij")
     files = executor.create_run_parts(
         ExecutionSpec(
             argv=("program",),
@@ -93,7 +93,7 @@ def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
     auxiliary = directory / "plot-*.dat"
     cache = directory / "restart.dat"
     cache.write_text("restart")
-    executor = AgentRunEndpoint(LocalTransport())
+    executor = SshRunEndpoint(LocalTransport())
     spec = ExecutionSpec(
         argv=("program",),
         directory=str(directory),

@@ -1,6 +1,6 @@
 from kkrunner import ExecutionSpec
 from kkrunner.runs import LaunchSpec
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
 
 
 class _Transport:
@@ -8,7 +8,7 @@ class _Transport:
 
 
 def test_remote_project_run_parts_retain_manager_run_id(tmp_path):
-    backend = AgentRunEndpoint(_Transport())
+    backend = SshRunEndpoint(_Transport())
     spec = ExecutionSpec(
         argv=("true",),
         input_file=None,
