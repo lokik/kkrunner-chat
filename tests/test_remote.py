@@ -8,24 +8,32 @@ import pytest
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.client.ssh import SshRunEndpoint
 from kkrunner.backends import SupervisedBackend
-from .test_transport import _LoopbackSshTransport
+from kkrunner.client.transport import SshTransport
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, LaunchSpec, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
 
-class _SpyTransport(_LoopbackSshTransport):
+class _OperationLoopbackTransport(LocalTransport):
+    """Local file transfer with the real framed backend-operation subprocess."""
+
+    host = "loopback"
+    python_command = (sys.executable,)
+    start_operation = SshTransport.start_operation
+
+
+class _SpyTransport(_OperationLoopbackTransport):
     def __init__(self):
         super().__init__()
-        self.put_files = []
-        self.get_files = []
+        self.uploads = []
+        self.downloads = []
 
     async def put_file(self, source, destination):
-        self.put_files.append((Path(source), Path(destination)))
+        self.uploads.append((Path(source), Path(destination)))
         await super().put_file(source, destination)
 
     async def get_file(self, source, destination):
-        self.get_files.append((Path(source), Path(destination)))
+        self.downloads.append((Path(source), Path(destination)))
         await super().get_file(source, destination)
 
 
@@ -41,7 +49,8 @@ def _processed_run(executor, spec):
 
 
 def _executor(transport=None, **kwargs):
-    return SshRunEndpoint(transport or _LoopbackSshTransport(), backend=SupervisedBackend, **kwargs)
+    backend = kwargs.pop("backend", SupervisedBackend)
+    return SshRunEndpoint(transport or _OperationLoopbackTransport(), backend=backend, **kwargs)
 
 
 def _launch(local_root, remote_root, *, input_files=FileSyncPolicy.CHANGED, output_files=FileSyncPolicy.CHANGED):
@@ -140,7 +149,7 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
         assert request["input_file"] == str(target)
         assert request["stdin"] == str(target)
         assert request["input_files"] == [str(target)]
-        assert [destination for _, destination in transport.put_files] == [target]
+        assert [destination for _, destination in transport.uploads] == [target]
     finally:
         spec.input_file.close()
         spec.output_file.close()
@@ -248,7 +257,7 @@ def test_remote_never_policy_ignores_missing_declared_file(tmp_path, direction):
     if direction == "input":
         assert all((src != missing for src, _ in transport.put_files))
     else:
-        assert all((dst != missing for _, dst in transport.get_files))
+        assert all((dst != missing for _, dst in transport.downloads))
 
 
 def test_remote_input_policy_always_requires_local_file(tmp_path):
