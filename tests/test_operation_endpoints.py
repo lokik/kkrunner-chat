@@ -89,10 +89,10 @@ def test_installed_backend_operation_receives_only_explicit_json_arguments(endpo
     asyncio.run(verify())
 
 
-def test_local_streaming_operation_preserves_live_output():
+def test_ssh_loopback_streaming_operation_preserves_live_output():
     """Streaming standalone functions use pipes and a process exit code."""
     async def verify():
-        process = await LocalTransport().start_operation(
+        process = await LoopbackSshTransport().start_operation(
             BackendOperation.standalone(portable_stream), "streamed",
         )
         out, err = await process.communicate()
