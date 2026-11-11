@@ -65,20 +65,18 @@ def test_status_validates_execution_facts_without_client_phases():
 def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
     from kkrunner.backends.contracts import Backend
-    from kkrunner.client.contracts import JobProtocol
     from kkrunner.client import LocalRunEndpoint
     from kkrunner.client.job import Job
-    from kkrunner.client.contracts import RunEndpoint
     from kkrunner.runs.base import ExecutionSpec
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert issubclass(backend, Backend)
         assert not hasattr(backend, "create_job")
         assert not hasattr(backend, "create_run_parts")
         endpoint = LocalRunEndpoint(backend)
-        assert isinstance(endpoint, RunEndpoint)
+        assert callable(endpoint.create_run_parts)
         job = endpoint.create_run_parts(ExecutionSpec(("true",), directory=str(tmp_path))).job
         assert type(job) is Job
-        assert isinstance(job, JobProtocol)
+        assert all(hasattr(job, name) for name in ("submit", "wait", "cancel", "status", "ref"))
     assert DirectBackend.session_bound
     assert not SupervisedBackend.session_bound
     assert not SupervisedBackend.session_bound
