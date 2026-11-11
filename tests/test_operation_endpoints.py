@@ -45,8 +45,9 @@ def test_portable_call(endpoint_type):
 def test_installed_call(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
-        operation = BackendOperation.installed("operator", "add")
-        assert await endpoint.call(operation, 19, 23) == 42
+        from kkrunner.backends import SupervisedBackend
+        operation = BackendOperation.for_backend(SupervisedBackend, "acknowledge_submission")
+        assert await endpoint.call(operation, "missing-submission") == {"acknowledged": False}
     asyncio.run(verify())
 
 
@@ -68,15 +69,17 @@ def test_reject_nonportable_operation_before_submission():
         return captured + value
     with pytest.raises(TypeError):
         BackendOperation.standalone(nested)
-    with pytest.raises(ValueError):
-        BackendOperation.installed("bad-module!", "run")
+    from kkrunner.backends import SupervisedBackend
+    with pytest.raises(ValueError, match="static backend operation"):
+        BackendOperation.for_backend(SupervisedBackend, "not-an-operation")
 
 
 @pytest.mark.parametrize("endpoint_type", [LocalTransport, LoopbackSshTransport])
 def test_installed_backend_operation_receives_only_explicit_json_arguments(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
-        operation = BackendOperation.installed("kkrunner.backends.support", "resolve_mpi_options")
+        from kkrunner.backends.support import resolve_mpi_options
+        operation = BackendOperation.standalone(resolve_mpi_options)
         # Explicit launcher avoids dependence on target environment/MPI.
         result = await endpoint.call(
             operation,
@@ -86,24 +89,19 @@ def test_installed_backend_operation_receives_only_explicit_json_arguments(endpo
     asyncio.run(verify())
 
 
-def test_local_streaming_operation_preserves_terminal_result_out_of_band():
+def test_local_streaming_operation_preserves_live_output():
+    """Streaming standalone functions use pipes and a process exit code."""
     async def verify():
         process = await LocalTransport().start_operation(
-            BackendOperation.installed("operator", "add"), 19, 23,
+            BackendOperation.standalone(portable_stream), "streamed",
         )
-        from pathlib import Path
-        receipt = Path(process._receipt_path)
-        assert receipt.is_file()
         out, err = await process.communicate()
-        assert not receipt.exists()
-        assert out == err == b""
+        assert out == b"streamed"
+        assert err == b""
         assert process.returncode == 0
-        assert process.terminal == 42
         assert await process.wait() == 0
-        assert process.terminal == 42
 
     asyncio.run(verify())
-
 
 @pytest.mark.parametrize("transport_type", [LocalTransport, LoopbackSshTransport])
 def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_path, monkeypatch):
@@ -128,7 +126,7 @@ def test_installed_class_helper_source_never_contains_supervisor_implementation(
     from kkrunner.client.operations import BackendOperation, operation_command
 
     op = BackendOperation.for_backend(backend_class("process"), "submit")
-    command = operation_command(op, python=(sys.executable,), ssh=True)
+    command = operation_command(op, python=(sys.executable,))
     script = command[-1]
     compile(script, "<ssh import-only helper>", "exec")
     assert "from kkrunner.backends.supervised import SupervisedBackend" in script
