@@ -26,8 +26,8 @@ def test_supervised_mode_is_explicit_and_persistable(tmp_path):
     endpoint = describe_endpoint(backend)
     assert endpoint == ExecutionEndpointConfig(location="local", backend="process")
     assert endpoint_from_config(endpoint).backend is SupervisedBackend
-    assert isinstance(executor_from_endpoint(ExecutionEndpointConfig()), LocalRunEndpoint)
-    assert endpoint != endpoint_config_for_executor(LocalRunEndpoint())
+    assert isinstance(endpoint_from_config(ExecutionEndpointConfig()), LocalRunEndpoint)
+    assert endpoint != describe_endpoint(LocalRunEndpoint())
 
 
 def test_native_client_capabilities_match_backend(tmp_path):
