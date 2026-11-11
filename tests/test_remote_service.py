@@ -7,11 +7,11 @@ from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner import RunState
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.backends.supervised import mailbox as remote_mailbox
-from kkrunner.backends.supervised import support as process_operations
+from kkrunner.backends.supervised import backend as process_operations
 from kkrunner.backends.supervised import streams as supervisor
 from kkrunner.backends.supervised import worker as remote_process_worker
 from kkrunner.backends.psij import slurm as psij_slurm
-from kkrunner.backends.psij import support as scheduler_operations
+from kkrunner.backends.psij import backend as scheduler_operations
 from kkrunner.backends.support import messages
 from kkrunner.remote import service as remote_service
 
@@ -28,7 +28,7 @@ def _process_handle(tmp_path):
 
 
 def _psij_handle(tmp_path):
-    handle = {"kind": "psij", "backend": "slurm", "url": None, "native_id": "42"}
+    handle = {"kind": "psij", "executor_name": "slurm", "url": None, "native_id": "42"}
     return (handle, encode_handle(handle))
 
 
