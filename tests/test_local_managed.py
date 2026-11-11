@@ -191,7 +191,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.backends.supervised import operations as process_operations
+    from kkrunner.backends.supervised import backend as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):
@@ -217,14 +217,13 @@ def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
 
 
 def test_terminal_local_runner_never_regresses_to_running(tmp_path, monkeypatch):
-    from kkrunner.client.local_managed import LocalManagedContext as local_project
 
     runner = LocalRunEndpoint(SupervisedBackend).create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner._backend_id = "opaque-handle"
     runner._state = RunState.FINISHED
     runner._return_code = 0
     runner.result.return_code = 0
-    monkeypatch.setattr(local_project, "_status", lambda *args: RunStatus(RunState.RUNNING))
+    monkeypatch.setattr(runner.context, "_status", lambda *args: RunStatus(RunState.RUNNING))
     assert runner.state == RunState.FINISHED
     assert runner.return_code == 0
 
@@ -258,8 +257,8 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.backends.supervised.operations import _clean_request_outputs
-    from kkrunner.remote.messages import request_to_spec
+    from kkrunner.backends.supervised.support import _clean_request_outputs
+    from kkrunner.backends.support.messages import request_to_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
         (tmp_path / name).write_text(name)
@@ -433,33 +432,30 @@ def test_unnameable_file_declared_for_local_managed_is_known_prelaunch_error(tmp
     assert job.state is RunState.FAILED
 
 
-def test_local_follow_uses_backend_operation_and_psij_wire_identity(tmp_path):
+def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, monkeypatch):
     import asyncio
-    from kkrunner.client.local_managed import LocalManagedContext
-    from kkrunner.remote.handles import decode_handle
+    from kkrunner.backends import PsijBackend
+    from kkrunner.client.local import LocalRunEndpoint
+    from kkrunner.remote.handles import encode_handle
 
     calls = []
 
-    class Transport:
-        async def start_operation(self, operation, *args, **kwargs):
-            calls.append((operation, args, kwargs))
-            return object()
+    async def follow(job_ref, stdout, stderr, **options):
+        calls.append((job_ref, options))
+        return {"state": "running", "return_code": None}
 
-    context = LocalManagedContext("psij", options={"backend": "pbs", "url": "local"}, transport=Transport())
-    asyncio.run(context._follow(
-        str(tmp_path), "native-id", offsets={"out": 4, "err": None},
-        stdout_path=str(tmp_path / "run.out"),
+    monkeypatch.setattr(PsijBackend, "follow", follow)
+    endpoint = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
+    identity = encode_handle({"kind": "psij", "executor_name": "pbs", "url": "local", "native_id": "native-id"})
+    result = asyncio.run(endpoint._follow(
+        str(tmp_path), identity, on_output=lambda *_: None,
+        offsets={"out": 4, "err": None}, stdout_path=str(tmp_path / "run.out"),
     ))
-    operation, args, kwargs = calls[0]
-    assert operation.backend.__module__ == "kkrunner.backends.psij"
-    assert operation.function == "stream"
-    assert decode_handle(args[0]) == {
-        "kind": "psij", "backend": "pbs", "url": "local", "native_id": "native-id",
-    }
-    assert kwargs == {
+    assert result["state"] == "running"
+    assert calls == [(identity, {
         "stdout_offset": 4, "stderr_offset": None,
         "stdout_path": str(tmp_path / "run.out"), "stderr_path": None,
-    }
+    })]
 
 
 def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_path, monkeypatch):
