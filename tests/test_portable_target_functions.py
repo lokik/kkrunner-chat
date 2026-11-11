@@ -55,7 +55,7 @@ def test_portable_file_query_rejects_escaping_symlink(tmp_path):
     (tmp_path / "elsewhere").write_text("secret")
     payload = json.dumps({"args": [["outside"]], "kwargs": {"root": str(root)}})
     result = subprocess.run(
-        (sys.executable, "-I", "-c", function_source(query_files)),
+        (sys.executable, "-I", "-c", _operation_script(query_files)),
         input=payload, text=True, capture_output=True,
     )
     assert result.returncode != 0
@@ -67,7 +67,7 @@ def test_portable_finalize_upload_preserves_mtime(tmp_path):
     temporary.write_text("payload")
     timestamp = 1729000000123456789
     payload = json.dumps({"args": [str(temporary), str(destination), timestamp], "kwargs": {}})
-    assert json.loads(_isolated(function_source(finalize_upload), input=payload)) is None
+    assert json.loads(_isolated(_operation_script(finalize_upload), input=payload)) is None
     assert destination.read_text() == "payload"
     assert destination.stat().st_mtime_ns == timestamp
 
@@ -82,7 +82,7 @@ def test_portable_mpi_options_matches_local_resolver(monkeypatch):
     # without relying on the CI host having any MPI software.
     isolated_request = {**request, "launcher": ["custom-mpi", "--bind"]}
     result = _isolated(
-        function_source(resolve_mpi_options),
+        _operation_script(resolve_mpi_options),
         input=json.dumps({"args": [isolated_request], "kwargs": {}}),
     )
     assert native == ("srun", "-n", "3")
@@ -101,7 +101,7 @@ def test_portable_output_cleanup_preserves_wildcard_cache(tmp_path):
         },
     }
     payload = json.dumps({"args": [request], "kwargs": {}})
-    assert json.loads(_isolated(function_source(prepare_target_outputs), input=payload)) is None
+    assert json.loads(_isolated(_operation_script(prepare_target_outputs), input=payload)) is None
     assert cache.read_text() == "saved"
     assert not stale.exists()
 
@@ -110,4 +110,4 @@ def test_remote_function_rejects_module_globals():
     def nested():
         return 1
     with pytest.raises(TypeError, match="top-level"):
-        function_source(nested)
+        _operation_script(nested)
