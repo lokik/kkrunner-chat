@@ -8,7 +8,7 @@ from kkrunner.runs.base import ExecutionSpec
 from kkrunner.backends.contracts import Backend
 from kkrunner.native.direct.local_adapter import LocalProcessAdapter
 from kkrunner.native.direct.ssh_adapter import SshProcessAdapter
-from kkrunner.native.direct.worker import WORKER_SOURCE
+from kkrunner.native.direct.worker import WORKER_SOURCE, DIRECT_LIBRARY_SOURCE
 
 class DirectProcessAdapter(Protocol):
     """Process mechanism, not a second Job lifecycle or state owner."""
@@ -79,3 +79,12 @@ class DirectBackend:
     from kkrunner.backends.class_helper import identity as SshHelper
 
     stream = staticmethod(stream)
+
+# The identity helper serializes this self-contained class, not the host-only
+# wrapper above. The two entrypoints share the same worker implementation.
+DirectBackend.__source__ = DIRECT_LIBRARY_SOURCE + """
+class DirectBackend:
+    @staticmethod
+    def stream(request):
+        return execute(request)
+"""

@@ -21,7 +21,7 @@ class BackendOperation:
     backend: type | None = None
 
     def __post_init__(self):
-        installed = self.module is not None or self.function is not None
+        installed = self.module is not None
         if sum((installed, self.portable is not None, self.backend is not None)) != 1:
             raise ValueError("Choose exactly one of installed, portable or backend operation")
         if installed:

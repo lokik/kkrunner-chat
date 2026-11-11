@@ -138,3 +138,9 @@ except Exception as error:
 )
 
 
+
+# The SSH static-method runner uses the same worker functions without the
+# command-line bootstrap. No installed package imports occur on the target.
+_BOOTSTRAP_MARKER = "\\ntry:\\n    sys.exit(execute(json.loads(sys.argv[1])))"
+assert WORKER_SOURCE.count(_BOOTSTRAP_MARKER) == 1
+DIRECT_LIBRARY_SOURCE = WORKER_SOURCE.split(_BOOTSTRAP_MARKER, 1)[0]

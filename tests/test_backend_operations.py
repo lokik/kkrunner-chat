@@ -84,3 +84,22 @@ def test_backend_ssh_source_is_python_and_uses_class_dispatch():
     assert command[:2] == ("python3", "-c")
     compile(command[2], "<backend ssh>", "exec")
     assert "SupervisedBackendSsh.status" in command[2]
+
+
+def test_backend_operation_reference_is_well_formed():
+    from kkrunner.backends import backend_class
+    from kkrunner.client.operations import BackendOperation
+    for kind in ("direct", "process", "psij"):
+        operation = BackendOperation.for_backend(backend_class(kind), "stream")
+        assert operation.backend is backend_class(kind)
+        assert operation.function == "stream"
+
+
+def test_portable_direct_ssh_backend_is_self_contained():
+    from kkrunner.backends import backend_class
+    from kkrunner.client.operations import BackendOperation, operation_command
+    backend = backend_class("direct")
+    code = operation_command(BackendOperation.for_backend(backend, "stream"), ssh=True)[-1]
+    compile(code, "<direct ssh backend>", "exec")
+    assert "def execute(request):" in code
+    assert "from kkrunner" not in code
