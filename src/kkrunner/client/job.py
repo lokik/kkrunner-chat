@@ -9,7 +9,6 @@ selected Endpoint. It works identically with local or remote controllers.
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from threading import Event, Lock, Thread
 
 from kkrunner.runs.base import (
@@ -46,7 +45,7 @@ class Job:
         self._return_code = None
         self._cancel_future = None
         self._observation_stopped = Event()
-        self._follow_process = None
+        self._follow_task = None
         self._loop = None
         self._request = None
         self._request_factory = request_factory
@@ -69,8 +68,8 @@ class Job:
     def direct(cls, spec, *, callback=None, adapter=None):
         """Create the direct session variant of the same client Job type."""
         if adapter is None:
-            from kkrunner.native.direct.local_adapter import LocalProcessAdapter
-            adapter = LocalProcessAdapter()
+            from kkrunner.client.direct_channels import LocalDirectChannel
+            adapter = LocalDirectChannel()
         return cls(None, spec, callback=callback, adapter=adapter)
 
     @property
@@ -94,7 +93,7 @@ class Job:
         if self._direct:
             return None
         from kkrunner.backends.contracts import JobRef
-        return None if self._backend_id is None else JobRef(self.context.backend, self._backend_id)
+        return None if self._backend_id is None else JobRef(self.context.backend.name, self._backend_id)
 
     @property
     def observing(self):
@@ -315,73 +314,38 @@ class Job:
             self._apply_backend_facts(facts)
         self.start()
 
-    async def _pump(self, source, kind):
-        while True:
-            data = await source.read(65536)
-            if not data:
-                return
-            if self._stream_writer is not None:
-                self._stream_writer(data, kind)
+    def _observed_output(self, data, kind):
+        if self._stream_writer is not None:
+            self._stream_writer(data, kind)
+        if not self._observation_stopped.is_set():
             self._output_observers.emit_bytes(data, kind)
 
     async def _monitor(self):
         self._loop = asyncio.get_running_loop()
-        stdout_task = stderr_task = wait_task = None
+        stream_error = None
         try:
             if self._observation_stopped.is_set():
-                self._state = RunState.UNKNOWN
                 return self.result
+            self._follow_task = asyncio.create_task(self.context._follow(
+                self._remote_directory, self._backend_id,
+                on_output=self._observed_output, offsets=self._stream_offsets,
+                stdout_path=self._stream_paths[0], stderr_path=self._stream_paths[1],
+            ))
             try:
-                self._follow_process = await self.context._follow(
-                    self._remote_directory, self._backend_id,
-                    offsets=self._stream_offsets,
-                    stdout_path=self._stream_paths[0],
-                    stderr_path=self._stream_paths[1],
-                )
-            except (OSError, ConnectionError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
-                self._state = RunState.UNKNOWN
-                self._failure_phase = None
-                self._failure_message = str(exc)
+                facts = await self._follow_task
+            except asyncio.CancelledError:
+                if not self._observation_stopped.is_set():
+                    raise
                 return self.result
-            if self._observation_stopped.is_set():
-                self._terminate_follow()
-            stdout_task = asyncio.create_task(self._pump(self._follow_process.stdout, "out"))
-            stderr_task = asyncio.create_task(self._pump(self._follow_process.stderr, "err"))
-            stream_error = None
-            wait_task = asyncio.create_task(self._follow_process.wait())
-            try:
-                follow_result, _, _ = await asyncio.gather(
-                    wait_task, stdout_task, stderr_task,
-                )
-                # A plain operation has no framed terminal receipt; its
-                # nonzero exit is an observation failure, not a Job outcome.
-                if follow_result not in (None, 0):
-                    raise subprocess.CalledProcessError(
-                        follow_result, "backend follow operation",
-                    )
             except Exception as exc:
                 stream_error = exc
                 self._output_error = exc
-                # A failed local writer must not leave a FOLLOW subprocess
-                # alive while the client queries the authoritative job state.
-                self._terminate_follow()
-                # gather() does not cancel other tasks when a stream writer
-                # fails. Reap the helper before querying backend status, while
-                # its stdout/stderr readers are still available for draining.
-                await self._reap_follow(wait_task)
-            if self._observation_stopped.is_set():
-                self._state = RunState.UNKNOWN
-                self._failure_phase = None
-                self._failure_message = "Observation detached"
-                return self.result
-            facts = getattr(self._follow_process, "terminal", None)
-            if facts is None:
+                # Observation failure does not prove execution failure.
+                # The context has already closed its observation resources.
                 try:
                     facts = await self.context._status(self._remote_directory, self._backend_id)
-                except (OSError, ConnectionError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
-                    self._state = RunState.UNKNOWN
-                    self._failure_phase = None
-                    self._failure_message = str(stream_error or exc)
+                except Exception:
+                    self._failure_message = str(exc)
                     return self.result
             self._apply_backend_facts(facts)
             if not self._state.is_terminal:
@@ -390,60 +354,25 @@ class Job:
                 self._failure_message = str(stream_error or "Output follow ended without terminal backend status")
             return self.result
         except BaseException as exc:
+            self._state = RunState.UNKNOWN
+            self._failure_phase = None
+            self._failure_message = str(exc)
+            self._exception = exc
+            raise
+        finally:
             if self._observation_stopped.is_set():
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
                 self._failure_message = "Observation detached"
-                return self.result
-            self._state = RunState.UNKNOWN
-            self._failure_phase = None
-            self._failure_message = self._failure_message or str(exc)
-            self._exception = exc
-            raise
-        finally:
-            for task in (stdout_task, stderr_task):
-                if task is not None and not task.done():
-                    task.cancel()
-            tasks = tuple(task for task in (stdout_task, stderr_task) if task is not None)
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            # A wait task may still be outstanding after a broken or
-            # unresponsive helper; do not leave an asyncio Task unobserved.
-            if wait_task is not None and not wait_task.done():
-                self._terminate_follow()
-                await self._reap_follow(wait_task)
-                if not wait_task.done():
-                    wait_task.cancel()
-                    await asyncio.gather(wait_task, return_exceptions=True)
+            elif self._failure_message is not None and not self._state.is_terminal:
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
+            self._follow_task = None
             self._loop = None
 
-    async def _reap_follow(self, wait_task):
-        """Bounded reap of an already terminated observation helper.
-
-        Read tasks stay active while wait() drains; force-kill is only for
-        a helper that ignores termination. The caller retains the original
-        stream error rather than replacing it with cleanup diagnostics.
-        """
-        try:
-            await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-        except asyncio.TimeoutError:
-            try:
-                self._follow_process.kill()
-            except (ProcessLookupError, RuntimeError):
-                pass
-            try:
-                await asyncio.wait_for(asyncio.shield(wait_task), timeout=2)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    def _terminate_follow(self):
-        if self._follow_process is not None:
-            try:
-                self._follow_process.terminate()
-            except (ProcessLookupError, RuntimeError):
-                pass
+    def _stop_follow(self):
+        if self._follow_task is not None:
+            self._follow_task.cancel()
 
     def stop_observation(self):
         self._observation_stopped.set()
@@ -453,7 +382,7 @@ class Job:
             return
         if self._loop is not None:
             try:
-                self._loop.call_soon_threadsafe(self._terminate_follow)
+                self._loop.call_soon_threadsafe(self._stop_follow)
             except RuntimeError:
                 pass
 

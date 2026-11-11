@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
 from kkrunner.client.endpoint import endpoint_config_for_executor
-from kkrunner.files.manifest import FileMapping, FileSyncPolicy
+from kkrunner.files.manifest import FileMapping
 from kkrunner.backends import backend_class
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.remote_files import RemoteFileSession
@@ -19,9 +19,8 @@ from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client.contracts import ReopenableRunEndpoint
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
-from kkrunner.remote.stream import FramedRunningCommand
+from kkrunner.client.observation import follow_framed_command
 from kkrunner.runs.base import (
-    FailurePhase,
     LaunchSpec,
     MpiNotFoundWarning,
     RunState,
@@ -29,7 +28,6 @@ from kkrunner.runs.base import (
 )
 from kkrunner.runs.model import WorkingDirectory
 
-from kkrunner.backends import installed_backend_names
 
 
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
@@ -45,7 +43,7 @@ def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     )
 
 
-class _AgentRunContext(RemotePathContext):
+class _SshRunContext(RemotePathContext):
     @property
     def backend(self):
         """Execution backend identity is owned by the endpoint."""
@@ -61,17 +59,21 @@ class _AgentRunContext(RemotePathContext):
         return await self.endpoint._cancel(directory, backend_id, files)
 
     async def _follow(
-        self, directory, backend_id, *, offsets=None,
+        self, directory, backend_id, *, on_output, offsets=None,
         stdout_path=None, stderr_path=None,
     ):
         return await self.endpoint._follow(
-            directory, backend_id, offsets=offsets,
+            directory, backend_id, on_output=on_output, offsets=offsets,
             stdout_path=stdout_path, stderr_path=stderr_path,
         )
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         files = RemoteFileSession(self, spec)
-        job = Job(self, spec, callback=callback)
+        if self.backend.session_bound:
+            from kkrunner.client.direct_channels import SshDirectChannel
+            job = Job.direct(spec, callback=callback, adapter=SshDirectChannel(self))
+        else:
+            job = Job(self, spec, callback=callback)
         return RunParts(
             job, files,
             submission_builder=lambda prepared: self.endpoint.submission_request(
@@ -99,35 +101,50 @@ class _AgentRunContext(RemotePathContext):
             raise
 
 
-class AgentRunEndpoint(ReopenableRunEndpoint):
-    default_persistent = True
-    default_detached = True
-
+class SshRunEndpoint(ReopenableRunEndpoint):
     """Reusable remote endpoint with client-owned lifecycle state."""
 
-    name = "agent"
+    name = "ssh"
     supports_result_file_retrieval = True
 
     def __init__(
         self,
         transport,
         *,
-        backend="process",
+        backend=None,
         backend_options=None,
-        command=None,
         filesystem_id=None,
     ):
-        if backend not in installed_backend_names():
-            raise ValueError(f"Unsupported remote executor: {backend!r}")
+        backend = backend_class("direct") if backend is None else backend
+        backend = backend_class(backend) if isinstance(backend, str) else backend
         self.transport = transport
         self.filesystem_id = filesystem_id
         self.backend = backend
-        self.backend_options = dict(backend_options or {})
-        self.command = tuple(command if command is not None else getattr(transport, "command", ("kkrunner-agent",)))
-        if hasattr(transport, "command"):
-            transport.command = self.command
+        self.backend_options = dict(backend.default_options)
+        self.backend_options.update(backend_options or {})
         self.computer = getattr(transport, "host", None)
         self._remote_home_cache = None
+
+    @property
+    def default_persistent(self):
+        return self.backend.default_persistent
+
+    @property
+    def default_detached(self):
+        return self.backend.default_detached
+
+    @property
+    def requires_backend_identity(self):
+        return not self.backend.session_bound
+
+    @property
+    def supports_reattachment(self):
+        return not self.backend.session_bound
+
+    def _require_managed(self):
+        if self.backend.session_bound:
+            from kkrunner.backends.contracts import UnsupportedCapability
+            raise UnsupportedCapability("Direct execution has no durable identity or reattachment")
 
     async def _remote_home(self):
         if self._remote_home_cache is None:
@@ -135,18 +152,18 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         return self._remote_home_cache
 
     def submission_request(self, prepared_files, *, submission_key=None):
-        """Only the execution endpoint chooses backend protocol and durability."""
+        """Add the selected backend configuration to the staged target request."""
         return {
             **prepared_files,
             "id": submission_key,
-            "executor": self.backend,
+            "executor": self.backend.name,
             "executor_options": dict(self.backend_options),
-            "detached": True,
+            "detached": self.backend.default_detached,
         }
 
     def _operation(self, name):
         """Select the target backend class, never a serialized Python object."""
-        return BackendOperation.for_backend(backend_class(self.backend), name)
+        return BackendOperation.for_backend(self.backend, name)
 
     async def _invoke(self, name, *args, **kwargs):
         return await self.transport.call(self._operation(name), *args, **kwargs)
@@ -155,13 +172,13 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
     def _context(endpoint, launch):
         if not isinstance(launch, LaunchSpec):
             launch = LaunchSpec(**dict(launch))
-        return _AgentRunContext(endpoint, launch)
+        return _SshRunContext(endpoint, launch)
 
     def _validate_run(self, run):
         if run.execution.endpoint != endpoint_config_for_executor(self):
             raise ValueError("Run belongs to a different remote endpoint")
-        if not run.execution.backend_id or not run.execution.directory.remote:
-            raise ValueError("Remote run lacks backend identity or working directory")
+        if not run.execution.directory.remote:
+            raise ValueError("Remote run lacks a target working directory")
 
     @staticmethod
     def _launch_from_manifest(files):
@@ -246,14 +263,15 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         launch = request.get("launch") or {}
         mpi = launch.get("mpi") or {}
         if (
-            self.backend == "process"
+            self.backend.resolves_mpi_launcher
             and mpi.get("autodetect")
             and not mpi.get("required")
             and mpi.get("warning", True)
         ):
             # Shared support rule, evaluated on the actual execution host.
+            from kkrunner.backends.support import resolve_mpi_options
             resolved = await self.transport.call(
-                BackendOperation.installed("kkrunner.backends.support", "resolve_mpi_options"),
+                BackendOperation.standalone(resolve_mpi_options),
                 mpi,
             )
             if not resolved:
@@ -272,7 +290,7 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         return await self._invoke("cancel", backend_id)
 
     async def _follow(
-        self, directory, backend_id, *, offsets=None,
+        self, directory, backend_id, *, on_output, offsets=None,
         stdout_path=None, stderr_path=None,
     ):
         offsets = {"out": 0, "err": 0} if offsets is None else offsets
@@ -284,21 +302,28 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
             stderr_path=stderr_path,
         )
         # Keep the transport diagnostic channel out of calculation stderr.
-        return FramedRunningCommand(process)
+        return await follow_framed_command(process, on_output)
 
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
+        if self.backend.session_bound:
+            return None
         key = run.execution.submission_key or run.id
         return _run_sync(self._invoke("acknowledge_submission", key))
 
     def acknowledge(self, run):
         """Release a delivered receipt only after durable RunRecord completion."""
+        if self.backend.session_bound:
+            return None
         self._validate_run(run)
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
 
     def status(self, *runs):
+        self._require_managed()
         for run in runs:
             self._validate_run(run)
+            if not run.execution.backend_id:
+                raise ValueError("Run lacks a backend identity")
         if not runs:
             return ()
 
@@ -322,7 +347,7 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         state = await self._invoke(
             "recover",
             run_id,
-            {"executor": self.backend, "executor_options": self.backend_options,
+            {"executor": self.backend.name, "executor_options": self.backend_options,
              "directory": directory},
             submitted_at=submitted_at,
         )
@@ -335,13 +360,16 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         if not remote_id:
             raise RuntimeError("Recovered submission has no remote_id")
         return RecoveryResult.found(
-            JobRef(self.backend, str(remote_id)),
+            JobRef(self.backend.name, str(remote_id)),
             directory=state.get("directory") or directory,
             output_file=state.get("output_file"),
             error_file=state.get("error_file"),
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
+        if self.backend.session_bound:
+            from kkrunner.backends.contracts import RecoveryResult
+            return RecoveryResult.unsupported("Direct execution has no submission recovery")
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
@@ -436,6 +464,7 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
         )
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
+        self._require_managed()
         return _run_sync(
             self._open_run_parts(
                 attachment, callback=callback, output_listener=output_listener,

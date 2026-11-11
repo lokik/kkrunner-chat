@@ -15,8 +15,8 @@ def backend_class(kind):
         from .supervised import SupervisedBackend
         return SupervisedBackend
     if kind == "psij":
-        from .psij import PsijOperations
-        return PsijOperations
+        from .psij import PsijBackend
+        return PsijBackend
     raise ValueError(f"Unsupported backend: {kind!r}")
 
 
@@ -29,24 +29,18 @@ def installed_backend_names():
     return frozenset(("process", "psij"))
 
 
-__all__ = [
-    "Backend", "BackendJobContext", "JobProtocol", "JobRef", "JobStatus",
-    "SubmissionContext", "DirectProcessBackend", "SupervisedProcessBackend",
-    "PsijBackend",
-]
+__all__ = ["DirectBackend", "SupervisedBackend", "PsijBackend"]
 
 
 def __getattr__(name):
-    if name in ("Backend", "BackendJobContext", "JobProtocol", "JobRef", "JobStatus", "SubmissionContext"):
-        from . import contracts
-        value = getattr(contracts, name)
-    elif name == "DirectProcessBackend":
-        from .direct import DirectProcessBackend as value
-    elif name == "SupervisedProcessBackend":
-        from .supervised import SupervisedProcessBackend as value
-    elif name == "PsijBackend":
-        from .psij import PsijBackend as value
-    else:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    kinds = {"DirectBackend": "direct", "SupervisedBackend": "process", "PsijBackend": "psij"}
+    try:
+        value = backend_class(kinds[name])
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
     globals()[name] = value
     return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

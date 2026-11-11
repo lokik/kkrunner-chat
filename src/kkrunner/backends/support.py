@@ -1,12 +1,14 @@
 """Shared backend operations and stdlib-level process/MPI support."""
 from __future__ import annotations
 
-# Expose host modules for local diagnostics; the portable resolver imports
-# them inside its own function to remain independent when transported.
+import asyncio
+import errno
 import os
-import shutil
+import signal
+import warnings
+from dataclasses import replace
 
-from kkrunner.runs.base import MpiSpec
+from kkrunner.runs.base import ExecutionSpec, MpiNotFoundWarning, MpiSpec
 
 
 def resolve_mpi_options(options):
@@ -42,11 +44,6 @@ def resolve_mpi_options(options):
     return tuple(launcher)
 
 
-def find_default_mpi_launcher():
-    """Expose the shared target resolution for host-local diagnostics."""
-    return resolve_mpi_options({"required": True, "autodetect": True})
-
-
 def resolve_mpi_command(spec: MpiSpec):
     """Adapt the validated native MpiSpec to the portable target resolver."""
     if not isinstance(spec, MpiSpec):
@@ -57,19 +54,6 @@ def resolve_mpi_command(spec: MpiSpec):
         "launcher": spec.launcher,
         "process_count": spec.process_count,
     })
-
-
-import asyncio
-import errno
-import os
-import signal
-import warnings
-from contextlib import ExitStack
-from dataclasses import replace
-
-from kkrunner.runs.base import ExecutionSpec, MpiNotFoundWarning
-
-_DEFAULT_STDIN = object()
 
 
 def _mpi_command(launch):
@@ -107,32 +91,6 @@ def materialize_local_spec(spec: ExecutionSpec) -> ExecutionSpec:
         argv=(*launcher, *spec.mpi_argv),
         stdin=spec.stdin if spec.mpi_uses_stdin else None,
     )
-
-
-async def start_local_process(
-    spec: ExecutionSpec,
-    *,
-    stdin=_DEFAULT_STDIN,
-    stdout=asyncio.subprocess.PIPE,
-    stderr=asyncio.subprocess.PIPE,
-    start_new_session=False,
-):
-    """Start a local process with caller-selected standard streams."""
-    if stdin is _DEFAULT_STDIN:
-        stdin = spec.stdin
-    with ExitStack() as opened:
-        if isinstance(stdin, (str, os.PathLike)):
-            from kkrunner.files.paths import file_path
-
-            stdin = opened.enter_context(open(file_path(stdin, spec.directory), "rb"))
-        return await asyncio.create_subprocess_exec(
-            *spec.argv,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            cwd=spec.directory,
-            start_new_session=start_new_session,
-        )
 
 
 async def pump_stream(source, sink, *, eof=None):

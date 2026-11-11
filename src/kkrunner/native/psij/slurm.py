@@ -1,6 +1,5 @@
 """Slurm-native status and submission recovery."""
 
-"""PSI/J functional backend with native scheduler support and stateless operations."""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +7,8 @@ import shlex
 import subprocess
 from datetime import datetime
 
-from kkrunner.runs.base import FailurePhase, RunState, RunStatus
+from kkrunner.backends.contracts import JobFailurePhase, JobStatus
+from kkrunner.runs.states import RunState
 
 
 _SLURM_STATE_MAP = {
@@ -135,7 +135,7 @@ def _slurm_accounting_matches(run_id, submitted_at):
     return tuple(matches)
 
 
-def status_native(native_id):
+def status_native(native_id: str) -> JobStatus:
     """Read scheduler facts for a local Slurm job without initializing PSI/J."""
     native_id = str(native_id)
     # A PSI/J attach initially reports NEW; short-lived remote commands
@@ -179,11 +179,10 @@ def status_native(native_id):
         return_code = 0
     elif state == RunState.FINISHED and return_code != 0:
         state = RunState.FAILED
-    return RunStatus(
+    return JobStatus(
         state=state,
-        backend_id=native_id,
         return_code=return_code,
-        failure_phase=FailurePhase.EXECUTION if state == RunState.FAILED else None,
+        failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
     )
 
 
@@ -237,5 +236,3 @@ def recover_native(run_id, directory, *, submitted_at=None):
         "stderr": stderr,
         "return_code": return_code,
     }
-
-

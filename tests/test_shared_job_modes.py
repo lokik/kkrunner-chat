@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionSpec, RunState
-from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.backends import SupervisedBackend
 from kkrunner.client.job import Job
 from kkrunner.client.transport import LocalTransport
 from kkrunner.client.agent import AgentRunEndpoint
@@ -15,7 +16,7 @@ from kkrunner.client.ssh_direct.endpoint import SshDirectRunEndpoint
 
 def test_direct_local_and_direct_ssh_create_the_same_job_class(tmp_path):
     spec = ExecutionSpec((sys.executable, "-c", "print('ready')"), directory=str(tmp_path))
-    local = DirectProcessBackend().create_job(spec)
+    local = LocalRunEndpoint().create_job(spec)
     remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(spec).job
     assert type(local) is type(remote) is Job
     assert local.adapter.expose_pid
@@ -25,7 +26,7 @@ def test_direct_local_and_direct_ssh_create_the_same_job_class(tmp_path):
 
 def test_supervised_and_remote_agent_create_the_same_job_class(tmp_path):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    supervised = SupervisedProcessBackend().create_job(spec)
+    supervised = LocalRunEndpoint(SupervisedBackend).create_job(spec)
     agent = AgentRunEndpoint(LocalTransport()).create_run_parts(spec).job
     assert type(supervised) is type(agent) is Job
     assert not supervised._direct
@@ -35,23 +36,19 @@ def test_supervised_and_remote_agent_create_the_same_job_class(tmp_path):
 def test_psij_client_uses_the_same_job_class(monkeypatch, tmp_path):
     import kkrunner.backends.psij as module
 
-    class NativeExecutor:
-        @classmethod
-        def get_instance(cls, backend, url=None, config=None):
-            return object()
-
-    monkeypatch.setattr(module, "_load_psij", lambda: SimpleNamespace(JobExecutor=NativeExecutor))
+    from kkrunner.client.local import LocalRunEndpoint
+    from kkrunner.backends import PsijBackend
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    job = module.PsijBackend("slurm").create_job(spec, submission_key="key")
+    job = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"}).create_job(spec, submission_key="key")
     assert type(job) is Job
     assert job.context.backend == "psij"
     assert job.state is RunState.NEW
 
 
 def test_direct_confirmed_exit_is_distinct_from_unknown_channel(tmp_path):
-    from kkrunner.backends.direct import LocalProcessAdapter
+    from kkrunner.client.direct_channels import LocalDirectChannel
 
-    class UncertainChannel(LocalProcessAdapter):
+    class UncertainChannel(LocalDirectChannel):
         expose_pid = False
         uncertain_after_launch = True
 
@@ -79,10 +76,10 @@ def test_direct_cancel_before_submit_never_launches(tmp_path):
 
 
 def test_direct_session_is_private_resource_owner_without_second_job_state(tmp_path):
-    from kkrunner.backends.direct import DirectSession
+    from kkrunner.client.direct_session import DirectSession
 
     spec = ExecutionSpec((sys.executable, "-c", "print('ok')"), directory=str(tmp_path))
-    job = DirectProcessBackend().create_job(spec)
+    job = LocalRunEndpoint().create_job(spec)
     assert isinstance(job._direct_session, DirectSession)
     assert job._direct_session.adapter is job.adapter
     assert not hasattr(job._direct_session, "state")
@@ -96,7 +93,7 @@ def test_direct_session_is_private_resource_owner_without_second_job_state(tmp_p
 
 def test_direct_session_preserves_cancel_before_launch(tmp_path):
     spec = ExecutionSpec((sys.executable, "-c", "raise SystemExit(12)"), directory=str(tmp_path))
-    job = DirectProcessBackend().create_job(spec)
+    job = LocalRunEndpoint().create_job(spec)
     job.cancel()
     assert job.state is RunState.CANCELLED
     assert job._direct_session._cancel_requested.is_set()
@@ -107,7 +104,7 @@ def test_direct_session_preserves_cancel_before_launch(tmp_path):
 
 def test_direct_session_does_not_relabel_failed_launch(tmp_path):
     spec = ExecutionSpec(("this-command-does-not-exist-kkrunner",), directory=str(tmp_path))
-    job = DirectProcessBackend().create_job(spec)
+    job = LocalRunEndpoint().create_job(spec)
     from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
     with pytest.raises(SubmissionNotStarted):
         job.submit()

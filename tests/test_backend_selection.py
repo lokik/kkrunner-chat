@@ -30,6 +30,6 @@ def test_backend_selection_rejects_unknown_kind_or_invalid_operation():
 
 def test_direct_backend_is_portable_without_agent():
     from kkrunner.remote.service import _backend_for_kind
-    assert backend_class("direct").SshHelper(backend_class("direct")) is backend_class("direct")
+    assert backend_class("direct").SshHelper is backend_class("direct")
     with pytest.raises(ValueError, match="installed agent"):
         _backend_for_kind("direct")

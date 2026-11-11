@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from kkrunner.client.endpoint import endpoint_config_for_executor
-from kkrunner.backends import DirectProcessBackend
+from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.client.job import Job
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
@@ -125,7 +125,7 @@ class _UncertainRunner(_NotStartedRunner):
 
 def _project_wrapper(tmp_path, runner):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    executor = DirectProcessBackend()
+    executor = LocalRunEndpoint()
     endpoint = endpoint_config_for_executor(executor)
     record = manager.new_record(
         directory=tmp_path, endpoint=endpoint, metadata={"test": {"task": "SCF"}}, processing_required=True
@@ -228,7 +228,7 @@ def test_file_path_strict_contract_preserves_optional_none(tmp_path):
 
 
 def test_strict_runner_path_errors_remain_backend_specific(tmp_path):
-    from kkrunner.native.psij.job import _path as psij_path
+    from kkrunner.native.psij.submission import _path as psij_path
     from kkrunner.client.remote_files import RemoteFileSession
 
     spec = ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path))
@@ -287,10 +287,10 @@ def test_partial_spec_distinguishes_unknown_from_empty_argv(tmp_path):
 
 def test_partial_spec_cannot_be_submitted_to_public_backend_apis(tmp_path):
     from kkrunner import ExecutionSpec, Run, RunManager, RunStore
-    from kkrunner.backends import DirectProcessBackend
+    from kkrunner.client.local import LocalRunEndpoint
 
     spec = ExecutionSpec(argv=None, directory=str(tmp_path))
-    backend = DirectProcessBackend()
+    backend = LocalRunEndpoint()
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
         Run.direct(backend, spec)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):

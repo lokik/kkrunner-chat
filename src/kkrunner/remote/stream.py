@@ -35,7 +35,7 @@ class FramedSink:
         self.stream.flush()
 
 
-def follow_framed(follow, job_ref, **options):
+async def follow_framed(follow, job_ref, **options):
     """Deliver backend FOLLOW and its terminal outcome over one data channel.
 
     Transport stderr is reserved for SSH diagnostics. No client file state
@@ -46,7 +46,7 @@ def follow_framed(follow, job_ref, **options):
     output = sys.stdout.buffer
     output.write(STREAM_MAGIC)
     output.flush()
-    outcome = follow(
+    outcome = await follow(
         job_ref,
         FramedSink(output, "out"),
         FramedSink(output, "err"),
@@ -120,83 +120,3 @@ async def read_stream_frames(source):
         except KeyError as exc:
             raise StreamProtocolError(f"Remote stream contains an unknown channel code: {code!r}") from exc
         yield kind, await _read_exactly(source, size)
-
-
-class FramedRunningCommand:
-    """Expose calculation streams from one framed transport command.
-
-    The wrapped process' stdout is the framed data channel. Its stderr is a
-    transport/control diagnostic channel and is deliberately never exposed as
-    calculation stderr.
-    """
-
-    def __init__(self, process, *, diagnostic_limit=65536):
-        self._process = process
-        self.stdout = asyncio.StreamReader()
-        self.stderr = asyncio.StreamReader()
-        self.returncode = None
-        self._diagnostic_limit = diagnostic_limit
-        self._diagnostics = bytearray()
-        self._protocol_error = None
-        self.terminal = None
-        self._frames_task = asyncio.create_task(self._demultiplex())
-        self._diagnostics_task = asyncio.create_task(self._drain_diagnostics())
-
-    @property
-    def diagnostics(self):
-        return bytes(self._diagnostics)
-
-    async def _demultiplex(self):
-        try:
-            async for kind, data in read_stream_frames(self._process.stdout):
-                if kind == "terminal":
-                    self.terminal = data
-                    continue
-                (self.stderr if kind == "err" else self.stdout).feed_data(data)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._protocol_error = exc
-            try:
-                self._process.terminate()
-            except (ProcessLookupError, RuntimeError):
-                pass
-        finally:
-            self.stdout.feed_eof()
-            self.stderr.feed_eof()
-
-    async def _drain_diagnostics(self):
-        while True:
-            data = await self._process.stderr.read(65536)
-            if not data:
-                return
-            remaining = self._diagnostic_limit - len(self._diagnostics)
-            if remaining > 0:
-                self._diagnostics.extend(data[:remaining])
-
-    async def wait(self):
-        self.returncode = await self._process.wait()
-        await asyncio.gather(self._frames_task, self._diagnostics_task)
-        diagnostic = self.diagnostics.decode("utf8", errors="replace").strip()
-        if self._protocol_error is not None:
-            message = str(self._protocol_error)
-            if diagnostic:
-                message += f"; remote transport diagnostic: {diagnostic}"
-            raise StreamProtocolError(message) from self._protocol_error
-        if self.returncode != 0:
-            message = f"Remote stream helper exited with status {self.returncode}"
-            if diagnostic:
-                message += f"; remote transport diagnostic: {diagnostic}"
-            raise StreamProtocolError(message)
-        # A clean helper exit proves only that the transport command ended.
-        # Without its terminal frame the result stream may be truncated.
-        # The subsequent native status query cannot repair lost bytes.
-        if self.terminal is None:
-            raise StreamProtocolError("Remote stream ended without terminal frame")
-        return self.returncode
-
-    def terminate(self):
-        return self._process.terminate()
-
-    def kill(self):
-        return self._process.kill()

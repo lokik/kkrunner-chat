@@ -10,7 +10,6 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
-from typing import Optional
 
 from kkrunner.client.contracts import RunningCommand
 from kkrunner.client.operations import BackendOperation, operation_command, operation_payload
@@ -19,7 +18,6 @@ from uuid import uuid4
 from kkrunner.files.queries import _sources, checked_files, expand_local_files, local_file_signature, query_files, finalize_upload
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
-
 
 
 def _local_temporary_path(destination):
@@ -116,89 +114,26 @@ async def _completed_process(process, argv, input=None, check=True):
     return result
 
 
-
-class _LocalOperationProcess:
-    """Own the local streaming command and its out-of-band return value.
-
-    The transport's stdout/stderr remain exclusively calculation bytes.
-    A private temporary receipt contains the Python operation's return value;
-    it is removed after wait(), including on unsuccessful helper exit.
-    """
-
-    def __init__(self, process, receipt_path):
-        self._process = process
-        self._receipt_path = receipt_path
-        self._settled = False
-        self.terminal = None
-        self.stdout = process.stdout
-        self.stderr = process.stderr
-        self.stdin = process.stdin
-
-    @property
-    def returncode(self):
-        return self._process.returncode
-
-    async def wait(self):
-        code = await self._process.wait()
-        if not self._settled:
-            self._settled = True
-            try:
-                if code == 0:
-                    with open(self._receipt_path, encoding="utf8") as receipt:
-                        payload = receipt.read()
-                    self.terminal = json.loads(payload) if payload else None
-            finally:
-                try:
-                    os.unlink(self._receipt_path)
-                except FileNotFoundError:
-                    pass
-        return code
-
-    async def communicate(self, input=None):
-        stdout, stderr = await self._process.communicate(input)
-        await self.wait()
-        return stdout, stderr
-
-    def terminate(self):
-        self._process.terminate()
-
-    def kill(self):
-        self._process.kill()
-
-
 class LocalTransport(Transport):
     """Transport backed by asyncio subprocesses and the local filesystem."""
 
     async def call(self, operation: BackendOperation, *args, **kwargs):
         # The local endpoint executes directly; argument payloads must still
         # be serializable to uphold the same contract as remote execution.
-        from importlib import import_module
-        import asyncio
+        import inspect
 
         encoded = operation_payload(args, kwargs)
         request = json.loads(encoded)
         function = (
             getattr(operation.backend, operation.function) if operation.backend is not None
-            else operation.portable if operation.portable is not None
-            else getattr(import_module(operation.module), operation.function)
+            else operation.portable
         )
-        result = await asyncio.to_thread(function, *request["args"], **request["kwargs"])
+        if inspect.iscoroutinefunction(function):
+            result = await function(*request["args"], **request["kwargs"])
+        else:
+            result = await asyncio.to_thread(function, *request["args"], **request["kwargs"])
         # Verify portability of the response, including local-only execution.
         return json.loads(json.dumps(result, allow_nan=False))
-
-    async def start_operation(self, operation: BackendOperation, *args, **kwargs):
-        import tempfile
-
-        payload = operation_payload(args, kwargs)
-        command = operation_command(operation, python=(__import__("sys").executable,), streaming=True)
-        fd, receipt_path = tempfile.mkstemp(prefix="kkrunner-operation-", suffix=".json")
-        os.close(fd)
-        try:
-            process = await self.start((*command, payload, receipt_path), stdin=asyncio.subprocess.PIPE)
-        except BaseException:
-            os.unlink(receipt_path)
-            raise
-        return _LocalOperationProcess(process, receipt_path)
 
     async def start(self, argv, *, cwd=None, stdin=None):
         return await asyncio.create_subprocess_exec(
@@ -289,20 +224,19 @@ class SshTransport(Transport):
 
     async def call(self, operation: BackendOperation, *args, **kwargs):
         payload = operation_payload(args, kwargs).encode("utf-8")
-        command = operation_command(operation, python=self.python_command, ssh=True)
+        command = operation_command(operation, python=self.python_command)
         result = await self.run(command, input=payload)
         return json.loads(result.stdout.decode("utf-8"))
 
     async def start_operation(self, operation: BackendOperation, *args, **kwargs):
         payload = operation_payload(args, kwargs)
-        command = operation_command(operation, python=self.python_command, streaming=True, ssh=True)
+        command = operation_command(operation, python=self.python_command, streaming=True)
         return await self.start((*command, payload), stdin=asyncio.subprocess.PIPE)
 
     def __init__(
         self, host, *, ssh="ssh", options=(), zstd=False,
-        command=("kkrunner-agent",), python_command=("python3",),
+        python_command=("python3",),
     ):
-        self.command = tuple(command)
         self.python_command = (
             (python_command,) if isinstance(python_command, str) else tuple(python_command)
         )
@@ -374,7 +308,7 @@ class SshTransport(Transport):
             raise
 
     async def call_function(self, function, *args, **kwargs):
-        """Compatibility for existing raw file operations via the same API."""
+        """Invoke a portable shared function through the common operation path."""
         return await self.call(BackendOperation.standalone(function), *args, **kwargs)
 
     async def _finalize_upload(self, temporary, destination, mtime_ns):

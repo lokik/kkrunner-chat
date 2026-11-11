@@ -268,11 +268,11 @@ class RunManager(RunFileHistory):
             # uncertainty rather than claiming that no process was launched.
             return self.transition(
                 record, state=RunState.UNKNOWN,
-                message="Direct submission cannot be resolved after client loss",
+                message="Submission recovery is not supported by this endpoint",
             )
         from kkrunner.runs.model import WorkingDirectory
         try:
-            from kkrunner.backends.contracts import SubmissionContext
+            from kkrunner.client.contracts import SubmissionContext
             recovery = executor.recover_submission(
                 record.execution.submission_key or record.id,
                 SubmissionContext(record.execution),
@@ -282,12 +282,7 @@ class RunManager(RunFileHistory):
             return record
         if recovery.disposition is RecoveryDisposition.FOUND:
             endpoint = record.execution.endpoint
-            expected_kind = (
-                "psij" if endpoint.executor == "psij" or (
-                    endpoint.executor == "ssh" and endpoint.psij_backend is not None
-                ) else "process" if endpoint.executor in ("local-supervised", "ssh") else None
-            )
-            if expected_kind is not None and recovery.ref.backend != expected_kind:
+            if recovery.ref.backend != endpoint.backend:
                 raise ValueError("Recovered job belongs to a different backend")
             execution = record.execution.submitted(recovery.ref.token)
             if recovery.directory is not None and recovery.directory != execution.directory.target:
@@ -296,29 +291,23 @@ class RunManager(RunFileHistory):
                     directory=WorkingDirectory(execution.directory.local, recovery.directory),
                 )
             files = record.files
-            if endpoint.executor in ("psij", "ssh"):
+            if endpoint.executor == "ssh":
                 files = files.with_remote_stream_paths(
                     stdout=recovery.output_file, stderr=recovery.error_file,
                 )
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
             attached = self.transition(record, execution=execution, files=files)
-            from kkrunner.client.run_parts import status_attachment_for_backend
             return self.update(
                 attached,
-                executor.status(status_attachment_for_backend(
-                    executor, JobAttachment(attached.execution, attached.files),
-                ))[0],
+                executor.status(JobAttachment(attached.execution, attached.files))[0],
+            )
+        if recovery.disposition is RecoveryDisposition.UNSUPPORTED:
+            return self.transition(
+                record, state=RunState.UNKNOWN,
+                message=recovery.message or "Submission recovery is not supported by this endpoint",
             )
         if recovery.disposition is not RecoveryDisposition.ABSENT:
-            if (
-                record.execution.endpoint.executor == "ssh-direct"
-                and recovery.disposition is RecoveryDisposition.UNSUPPORTED
-            ):
-                return self.transition(
-                    record, state=RunState.UNKNOWN,
-                    message="Direct SSH submission cannot be recovered after connection loss",
-                )
             return record
 
         def mark_absent(latest):
@@ -403,7 +392,7 @@ class RunManager(RunFileHistory):
             return latest
         record = latest
         if (
-            record.execution.endpoint.executor == "local-supervised"
+            record.execution.endpoint.executor == "local"
             and status.state.is_terminal and status.files is None
         ):
             # Backend status contains execution facts only. The client-side
@@ -732,8 +721,7 @@ class RunManager(RunFileHistory):
             submission_key=uuid4().hex,
         )
         self.register_executor(backend, endpoint)
-        from kkrunner.client.run_parts import run_endpoint_for_executor
-        parts = run_endpoint_for_executor(backend).create_run_parts(
+        parts = backend.create_run_parts(
             spec, submission_key=record.execution.submission_key,
         )
         parts.configure_detached(
@@ -777,11 +765,8 @@ class RunManager(RunFileHistory):
                         message="Direct execution has no independent recovery status",
                     )
                 continue
-            from kkrunner.client.run_parts import status_attachment_for_backend
             statuses = executor.status(
-                *(status_attachment_for_backend(
-                    executor, JobAttachment(record.execution, record.files),
-                ) for record in group)
+                *(JobAttachment(record.execution, record.files) for record in group)
             )
             if len(statuses) != len(group):
                 raise RuntimeError("Executor returned wrong number of run statuses")
@@ -804,8 +789,10 @@ class RunManager(RunFileHistory):
             raise RuntimeError(f"Run {record.id} has no backend reference")
         backend = self.executor_for(record) if backend is None else backend
         self.register_executor(backend, record.execution.endpoint)
-        from kkrunner.client.run_parts import run_endpoint_for_executor
-        parts = run_endpoint_for_executor(backend).open_run_parts(
+        if not getattr(backend, "supports_reattachment", False):
+            from kkrunner.backends.contracts import UnsupportedCapability
+            raise UnsupportedCapability("This endpoint does not support reattachment")
+        parts = backend.open_run_parts(
             JobAttachment(record.execution, record.files),
             output_listener=output_listener,
         )
@@ -822,4 +809,3 @@ class RunManager(RunFileHistory):
             parts.abort()
             raise
         return attached
-

@@ -64,5 +64,4 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
     }
     import json
     # Validate before contacting a target, not after a possibly accepted submit.
-    json.dumps(request, allow_nan=False)
-    return request
+    return json.loads(json.dumps(request, allow_nan=False))

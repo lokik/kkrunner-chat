@@ -1,6 +1,7 @@
 """One direct process session, shared by local and SSH adapters.
 
-Owns subprocess lifetime, cancellation, pipe readers and output callbacks.
+Owns client observation tasks, cancellation requests and output callbacks.
+The target backend owns the calculation process and its group termination.
 The client Job owns lifecycle state, Run persistence and result processing.
 """
 from __future__ import annotations
@@ -26,7 +27,7 @@ class DirectOutcome:
 
 
 class DirectSession:
-    """Own one direct process session, leaving lifecycle decisions to Job."""
+    """Own one direct observation session, leaving lifecycle decisions to Job."""
 
     def __init__(self, adapter):
         self.adapter = adapter
@@ -156,7 +157,7 @@ class DirectSession:
             ):
                 # A detached child survives observation failure unless
                 # cancellation was explicitly requested.
-                await self.adapter.stop(self._process)
+                await self.adapter.stop(self._process, discard_output=True)
             raise
         finally:
             try:
@@ -169,6 +170,3 @@ class DirectSession:
                 finally:
                     self._process = None
                     self._loop = None
-
-
-

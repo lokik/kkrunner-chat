@@ -1,3 +1,4 @@
+from dataclasses import replace
 """Live snapshots do not disturb run artifacts or historical state."""
 
 import asyncio
@@ -6,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from kkrunner import RunState, RunStore
-from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.backends import SupervisedBackend
 from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
 from kkrunner.client.agent import AgentRunEndpoint
@@ -25,7 +27,7 @@ def running_run(tmp_path, remote=False, output="result.dat"):
         executor = AgentRunEndpoint(LocalTransport())
         mapping = FileMapping(str(local.parent), str(target.parent))
     else:
-        executor = DirectProcessBackend()
+        executor = LocalRunEndpoint()
         mapping = None
     manager = RunManager(RunStore(tmp_path / "history"))
     manager.register_executor(executor)
@@ -142,7 +144,7 @@ def test_snapshot_runner_convenience(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "history"))
     run = manager.create_run(
-        SupervisedProcessBackend(),
+        LocalRunEndpoint(SupervisedBackend),
         ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"),
     )
     run.run()

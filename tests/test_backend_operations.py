@@ -48,12 +48,12 @@ def test_backend_interfaces_use_static_methods():
 
 def test_installed_ssh_helper_delegates_without_copying_implementation():
     from kkrunner.backends import backend_class
-    from kkrunner.backends.class_helper import class_source, static_methods
+    from kkrunner.backends.class_helper import method_source, static_methods
     for kind in ("process", "psij"):
         backend = backend_class(kind)
-        helper = backend.SshHelper(backend)
+        helper = backend.SshHelper
         assert set(static_methods(helper)) == set(static_methods(backend))
-        source = class_source(helper)
+        source = method_source(helper, "submit")
         assert f"from {backend.__module__} import {backend.__name__}" in source
         assert "def submit(*args, **kwargs):" in source
         assert "def _local_submit" not in source
@@ -66,7 +66,7 @@ def test_backend_ssh_source_is_python_and_uses_class_dispatch():
     command = operation_command(operation, python=("python3",), ssh=True)
     assert command[:2] == ("python3", "-c")
     compile(command[2], "<backend ssh>", "exec")
-    assert "SupervisedBackendSsh.status" in command[2]
+    assert "return SupervisedBackend.status" in command[2]
 
 
 def test_backend_operation_reference_is_well_formed():
@@ -84,7 +84,7 @@ def test_portable_direct_ssh_backend_is_self_contained():
     backend = backend_class("direct")
     code = operation_command(BackendOperation.for_backend(backend, "stream"), ssh=True)[-1]
     compile(code, "<direct ssh backend>", "exec")
-    assert "def execute(request):" in code
+    assert "def stream(request," in code
     assert "from kkrunner" not in code
 
 

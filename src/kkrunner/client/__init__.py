@@ -3,27 +3,27 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.client.agent import AgentRunEndpoint
-    from kkrunner.client.contracts import JobAttachment, RunEndpoint, ReopenableRunEndpoint
+    from kkrunner.client.local import LocalRunEndpoint
+    from kkrunner.client.ssh import SshRunEndpoint
+    from kkrunner.client.contracts import JobAttachment, JobProtocol, SubmissionContext, RunEndpoint, ReopenableRunEndpoint
     from kkrunner.client.endpoint import ExecutionEndpointConfig
     from kkrunner.client.pool import ExecutorPool, default_executor_pool
-    from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import LocalTransport, SshTransport, Transport
 
 __all__ = [
-    "AgentRunEndpoint", "ExecutorPool", "ExecutionEndpointConfig", "JobAttachment", "RunEndpoint", "ReopenableRunEndpoint", "LocalTransport",
-    "SshTransport", "SshDirectRunEndpoint", "SshDirectTransport", "Transport", "default_executor_pool",
+    "LocalRunEndpoint", "SshRunEndpoint",
+    "ExecutorPool", "ExecutionEndpointConfig", "JobAttachment", "JobProtocol",
+    "SubmissionContext", "RunEndpoint", "ReopenableRunEndpoint", "LocalTransport",
+    "SshTransport", "Transport", "default_executor_pool",
 ]
 
 
 def __getattr__(name):
-    if name == "AgentRunEndpoint":
-        from . import agent
-        value = getattr(agent, name)
-    elif name in ("SshDirectRunEndpoint", "SshDirectTransport"):
-        from . import ssh_direct
-        value = getattr(ssh_direct, name)
-    elif name in ("JobAttachment", "RunEndpoint", "ReopenableRunEndpoint"):
+    if name == "LocalRunEndpoint":
+        from .local import LocalRunEndpoint as value
+    elif name == "SshRunEndpoint":
+        from .ssh import SshRunEndpoint as value
+    elif name in ("JobAttachment", "JobProtocol", "SubmissionContext", "RunEndpoint", "ReopenableRunEndpoint"):
         from . import contracts
         value = getattr(contracts, name)
     elif name == "ExecutionEndpointConfig":

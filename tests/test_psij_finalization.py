@@ -2,13 +2,16 @@ from threading import Event
 from types import SimpleNamespace
 
 from kkrunner import RunState
-from kkrunner.backends.psij import PsijJob
+from kkrunner.client.job import Job
 from kkrunner.runs.base import OutputObservers
 
 
 def test_psij_observer_failure_is_uncertain_not_a_proven_backend_failure():
-    runner = object.__new__(PsijJob)
-    runner._job = SimpleNamespace(status=SimpleNamespace(state=SimpleNamespace(name="COMPLETED")))
+    runner = object.__new__(Job)
+    runner._direct_session = None
+    runner._backend_id = "native-job"
+    runner._state = RunState.RUNNING
+    runner._completion_cleanup = None
     runner._exception = None
     runner._failure_phase = None
     runner._failure_message = None

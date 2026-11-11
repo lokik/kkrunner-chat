@@ -9,8 +9,13 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client import LocalTransport, SshDirectRunEndpoint
-from kkrunner.client.ssh_direct.transport import _FINALIZE_SOURCE, _QUERY_SOURCE
-from kkrunner.backends.direct import WORKER_SOURCE
+from kkrunner.client.portable_functions import function_source
+from kkrunner.files.queries import finalize_upload, query_files
+_FINALIZE_SOURCE = function_source(finalize_upload, invocation="finalize")
+_QUERY_SOURCE = function_source(query_files, invocation="query")
+from kkrunner.backends.direct import DirectBackend
+from kkrunner.client.operations import BackendOperation, operation_command
+WORKER_SOURCE = operation_command(BackendOperation.for_backend(DirectBackend, "stream"), ssh=True, streaming=True)[-1]
 from kkrunner.runs import LaunchSpec
 
 
@@ -102,9 +107,9 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
 
 
 def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
-    from kkrunner.backends import DirectProcessBackend
+    from kkrunner.client.local import LocalRunEndpoint
     from kkrunner.client.job import Job
-    local = DirectProcessBackend().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
+    local = LocalRunEndpoint().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
     remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(
         ExecutionSpec(argv=("true",), directory=str(tmp_path))
     ).job
@@ -169,11 +174,13 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
             "cache_patterns": [str(root / "restart*.pot")],
         },
     }
+    from kkrunner.files.availability import prepare_target_outputs
+    prepare_target_outputs(request)
     async def run_worker():
         # Keep the control pipe open while the target runs: EOF means SSH
         # disconnection and must cancel a direct process.
         process = await LocalTransport().start(
-            (sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
+            (sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps({"args": [request], "kwargs": {}})),
             stdin=asyncio.subprocess.PIPE,
         )
         try:
@@ -196,8 +203,8 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
 
 
 def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path):
-    from kkrunner.backends import DirectProcessBackend
-    job = DirectProcessBackend().create_job(
+    from kkrunner.client.local import LocalRunEndpoint
+    job = LocalRunEndpoint().create_job(
         ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path))
     )
     assert job.run().return_code == 0
@@ -206,12 +213,12 @@ def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path
 
 def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
     """Direct adapters return the command specification, never mutate Job state."""
-    from kkrunner.backends.direct import SshProcessAdapter
+    from kkrunner.client.direct_channels import SshDirectChannel
     from kkrunner.client.remote_paths import RemotePathContext
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)
     backend = SshDirectRunEndpoint(LocalTransport())
-    adapter = SshProcessAdapter(RemotePathContext(backend, spec.launch))
+    adapter = SshDirectChannel(RemotePathContext(backend, spec.launch))
     with pytest.raises(ValueError, match="staged request"):
         adapter.prepare(spec)
     adapter.configure_submission(

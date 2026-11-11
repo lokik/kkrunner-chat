@@ -36,7 +36,8 @@ def cancel_remote(remote_id):
 
 
 def follow_remote(remote_id, stdout, stderr, **options):
-    return _backend_for_ref(remote_id).follow(remote_id, stdout, stderr, **options)
+    import asyncio
+    return asyncio.run(_backend_for_ref(remote_id).follow(remote_id, stdout, stderr, **options))
 
 
 def recover_remote(run_id, request, *, submitted_at=None):

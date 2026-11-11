@@ -39,7 +39,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
     from threading import Event
 
     from kkrunner import ExecutionSpec, Run
-    from kkrunner.backends import DirectProcessBackend
+    from kkrunner.client.local import LocalRunEndpoint
 
     ended, results = Event(), []
     run = None
@@ -48,7 +48,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         results.append(run.wait())
         ended.set()
 
-    run = Run.direct(DirectProcessBackend(), ExecutionSpec(["true"], directory=tmp_path), callback=completed)
+    run = Run.direct(LocalRunEndpoint(), ExecutionSpec(["true"], directory=tmp_path), callback=completed)
     run.submit()
     assert ended.wait(3), "completion callback deadlocked waiting for its own completion event"
     assert results == [run.result]

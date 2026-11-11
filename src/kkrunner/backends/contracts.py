@@ -9,14 +9,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
-
-from kkrunner.runs.states import RunState
+from typing import (
+    TYPE_CHECKING, Awaitable, BinaryIO, Callable, ClassVar, Mapping, Optional, Protocol, Tuple, Union,
+)
 
 if TYPE_CHECKING:
-    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
-    from kkrunner.runs.model import Execution, WorkingDirectory
-    from kkrunner.client.endpoint import ExecutionEndpointConfig
+    from typing_extensions import Unpack
+    from kkrunner.backends.messages import (
+        AcknowledgeReply, ExecutionRequest, FollowOptions, RecoveryReply, RecoveryRequest,
+        StatusReply, SubmissionReply,
+    )
+
+from kkrunner.runs.states import RunState
+from kkrunner.support.decorators import class_property
 
 
 class JobFailurePhase(str, Enum):
@@ -38,35 +43,6 @@ class JobRef:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"JobRef.{name} must be a nonempty string")
-
-
-@dataclass(frozen=True)
-class BackendJobContext:
-    """Backend-only reattachment context for an already identified Job.
-
-    No FileManifest, FileSession, client Run state or processing metadata.
-    Stream paths are observation hints; they do not own output files.
-    """
-
-    ref: JobRef
-    endpoint: ExecutionEndpointConfig
-    directory: WorkingDirectory
-    input_file: Optional[str] = None
-    output_file: Optional[str] = None
-    error_file: Optional[str] = None
-
-    @property
-    def execution(self):
-        """Execution identity for native status queries, without file data."""
-        from kkrunner.runs.model import Execution
-        return Execution(self.endpoint, self.directory, self.ref.token)
-
-
-@dataclass(frozen=True)
-class SubmissionContext:
-    """Original submitted execution context, before its JobRef was known."""
-
-    execution: Execution
 
 
 @dataclass(frozen=True)
@@ -176,71 +152,110 @@ class ObservationUnavailable(OSError):
     """Observation was lost; this is not a terminal backend failure."""
 
 
-@runtime_checkable
-class JobProtocol(Protocol):
-    """Live, per-execution handle.  Only reopenable jobs need a stable ref."""
+class ByteSink(Protocol):
+    """Borrowed binary output; write/flush complete before returning."""
 
-    @property
-    def ref(self) -> Optional[JobRef]: ...
-
-    @property
-    def backend_id(self) -> Optional[str]: ...
-
-    @property
-    def state(self): ...
-
-    # The Job has a runtime specification; the original submission spec
-    # is a separate client-side value and may not survive reattachment.
-    @property
-    def spec(self) -> ExecutionSpec: ...
-
-    @property
-    def return_code(self) -> Optional[int]: ...
-
-    @property
-    def exception(self) -> Optional[BaseException]: ...
-
-    @property
-    def failure_phase(self): ...
-
-    @property
-    def failure_message(self) -> Optional[str]: ...
-
-    def add_output_listener(self, callback) -> None: ...
-
-    def add_output_error_listener(self, callback) -> None: ...
-
-    def status(self) -> JobStatus: ...
-
-    def submit(self) -> None: ...
-
-    def wait(self) -> ExecutionOutcome: ...
-
-    def cancel(self) -> None: ...
+    def write(self, data: bytes, /) -> Optional[int]: ...
+    def flush(self) -> None: ...
 
 
-@runtime_checkable
-class Backend(Protocol):
-    """Native execution mechanism; creates Jobs but never client sessions."""
+class AsyncByteSink(Protocol):
+    """Borrowed binary output whose write awaits available capacity."""
 
-    def create_job(self, spec: ExecutionSpec, *, submission_key=None, callback=None) -> JobProtocol: ...
-
-
-class ReopenableBackend(Backend, Protocol):
-    def attach_job(
-        self, context: BackendJobContext, *, callback=None, output_listener=None, start=False,
-    ) -> JobProtocol: ...
+    def write(self, data: bytes, /) -> Awaitable[Optional[int]]: ...
+    def flush(self) -> None: ...
 
 
-class RecoverableBackend(ReopenableBackend, Protocol):
-    def recover_submission(
-        self, submission_key: str, submission: SubmissionContext, *, submitted_at=None,
-    ) -> RecoveryResult: ...
+class ControlReader(Protocol):
+    async def readline(self) -> bytes: ...
+
+
+class DirectOperations(Protocol):
+    """Static namespace interface for one session-bound execution."""
+
+    @staticmethod
+    async def stream(
+        request: ExecutionRequest, *,
+        stdout: Optional[Union[ByteSink, AsyncByteSink]] = None,
+        stderr: Optional[Union[ByteSink, AsyncByteSink]] = None,
+        control: Optional[ControlReader] = None,
+        files: Optional[Mapping[str, BinaryIO]] = None,
+        started: Optional[Callable[[int], None]] = None,
+        stdin: Optional[BinaryIO] = None,
+    ) -> int: ...
+
+
+class ManagedOperations(Protocol):
+    """Static namespace interface for durable execution and observation.
+
+    submit returns an opaque identity. status/cancel/follow return native
+    facts. Cancelling follow closes only its observer, while cancel requests
+    calculation termination. recover never starts a second calculation.
+    """
+
+    @staticmethod
+    def submit(request: ExecutionRequest) -> SubmissionReply: ...
+
+    @staticmethod
+    def status(job_ref: str) -> StatusReply: ...
+
+    @staticmethod
+    def cancel(job_ref: str) -> StatusReply: ...
+
+    @staticmethod
+    def recover(
+        submission_key: str, request: RecoveryRequest, *, submitted_at: Optional[str] = None,
+    ) -> RecoveryReply: ...
+
+    @staticmethod
+    def acknowledge(job_ref: str) -> AcknowledgeReply: ...
+
+    @staticmethod
+    def acknowledge_submission(submission_key: str) -> AcknowledgeReply: ...
+
+    @staticmethod
+    async def follow(
+        job_ref: str, stdout: ByteSink, stderr: ByteSink, **options: Unpack[FollowOptions],
+    ) -> StatusReply: ...
+
+    @staticmethod
+    async def stream(job_ref: str, **options: Unpack[FollowOptions]) -> StatusReply: ...
+
+    @staticmethod
+    async def follow_framed(job_ref: str, **options: Unpack[FollowOptions]) -> None: ...
+
+
+class Backend:
+    """Namespace contract for stateless target operations.
+
+    Every backend implements stream(subject, **options). Session-bound
+    backends receive an execution request and return an exit code. Durable
+    backends receive a job reference and return authoritative terminal facts;
+    they also declare submit, status, cancel, recover and acknowledgement.
+    Short operations are synchronous and exchange JSON-compatible values.
+    follow(ref, stdout, stderr, **options) is asynchronous and borrows its
+    sinks; cancelling it releases observation without cancelling execution.
+    stream is asynchronous too, using interpreter streams at the SSH boundary.
+    recover(key, request, submitted_at=...) returns a receipt, None when
+    indeterminate, or an explicit unsupported reply. It never resubmits.
+    The endpoint supplies location, transport and client resources.
+    """
+
+    name: str
+    default_options: ClassVar[Tuple[Tuple[str, Optional[str]], ...]] = ()
+    resolves_mpi_launcher = False
+    session_bound = True
+    default_persistent = False
+    default_detached = False
+
+    @class_property
+    def SshHelper(cls):
+        """Portable implementations are sent unchanged, one method at a time."""
+        return cls
 
 
 __all__ = [
-    "Backend", "BackendJobContext", "JobProtocol", "JobFailurePhase", "JobRef", "JobStatus",
-    "ObservationUnavailable", "RecoverableBackend", "RecoveryDisposition",
-    "RecoveryResult", "ReopenableBackend", "SubmissionContext", "UnsupportedCapability",
-    "job_status_from_facts",
+    "Backend", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
+    "ObservationUnavailable", "RecoveryDisposition", "RecoveryResult",
+    "UnsupportedCapability", "job_status_from_facts",
 ]

@@ -32,10 +32,10 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
     )
     if backend == "local":
 
-        async def fail_to_launch(_spec):
+        def fail_to_launch(*args, **kwargs):
             raise RuntimeError("launch failed")
 
-        monkeypatch.setattr("kkrunner.backends.direct.start_local_process", fail_to_launch)
+        monkeypatch.setattr("subprocess.Popen", fail_to_launch)
         runner = Job.direct(spec)
         with pytest.raises(RuntimeError, match="launch failed"):
             asyncio.run(runner._execute())

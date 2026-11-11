@@ -8,7 +8,7 @@ from kkrunner.runs.base import _close_distinct
 
 
 class ExecutorPool:
-    """Process-local cache of native Backends and client RunEndpoints."""
+    """Process-local cache of configured client RunEndpoints."""
 
     def __init__(self):
         self._executors = {}

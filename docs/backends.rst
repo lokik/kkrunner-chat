@@ -8,22 +8,24 @@ Choose an execution backend
    * - Backend
      - Use
      - Requirements and limits
-   * - ``DirectProcessBackend``
+   * - ``DirectBackend``
      - A direct subprocess on the client machine
      - No durable handle or reattachment.
-   * - ``SupervisedProcessBackend``
+   * - ``SupervisedBackend``
      - A reconnectable process on the client machine
      - POSIX process groups and Unix sockets, plus retained supervisor receipts.
    * - ``PsijBackend``
      - A scheduler visible from the client
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
-   * - ``SshDirectRunEndpoint``
-     - A one-shot command on an SSH host, without a target KKRunner installation
-     - SSH and Python 3 on the target; no durable handle or reconnect. Uses the
-       same mapped input/output file lifecycle as an agent run.
-   * - ``AgentRunEndpoint``
-     - Direct execution or a scheduler on an SSH target
-     - KKRunner on the target, SSH access and explicit workspace mapping.
+
+
+Location and execution mode are independent. ``LocalRunEndpoint(BackendClass)``
+invokes the selected namespace locally; ``SshRunEndpoint(transport,
+backend=BackendClass)`` invokes it over SSH. Both accept all three classes
+above and default to ``DirectBackend``. A backend determines execution lifetime,
+reattachment support and its ``SshHelper``; location never selects supervision.
+The persisted descriptor stores ``executor="local"`` or ``"ssh"`` separately
+from ``backend="direct"``, ``"process"`` or ``"psij"`` and backend options.
 
 
 Target-side backend code and SSH helpers
@@ -31,7 +33,7 @@ Target-side backend code and SSH helpers
 
 All target backend operations are declared as static methods on their
 backend class. For each supported backend the SSH endpoint applies its
-`SshHelper` and transmits the resulting Python class source. The helper
+``SshHelper`` and transmits only the selected method definition. The helper
 does **not** create a new job state machine.
 
 .. list-table::
@@ -45,18 +47,17 @@ does **not** create a new job state machine.
    * - Direct
      - Portable source (identity helper)
      - SSH and Python 3; no KKRunner installation
-     - A standalone process worker of roughly 120 lines plus shared MPI
-       resolution and output protection
+     - The same asynchronous process operation used by local execution;
+       shared MPI resolution and output protection run before it
    * - Supervised
      - Import-only helper
      - Installed KKRunner and a POSIX execution host
      - Dedicated supervisor worker, socket streams, durable receipts and
-       status/recovery operations (roughly 1,000 lines total)
+       status/recovery operations
    * - PSI/J
      - Import-only helper
      - Installed KKRunner with `psij-python` and the scheduler integration
-     - Native PSI/J job, executor, scheduling/accounting and operation modules
-       (roughly 1,150 lines total)
+     - Native PSI/J submission, callback observation and scheduler/accounting operations
 
 Transferring the full supervised or PSI/J runtime would duplicate installed
 dependencies and complicate persistence and recovery. Their helper source
@@ -68,23 +69,24 @@ stdout/stderr from SSH diagnostics and delivers a terminal receipt.
 Direct SSH execution
 --------------------
 
-``SshDirectRunEndpoint`` creates an untracked, connection-owned ``DirectProcessJob``. No
+``SshRunEndpoint`` with ``backend=DirectBackend`` creates a connection-owned client ``Job``. No
 ``kkrunner-agent`` or supervisor runs on the target; a minimal one-shot
 Python worker provides separate live stdout/stderr, cancellation and target-side
 file writing. File staging and synchronization still use ``RemoteFileSession``.
 Both directions of transfer use SSH; agentless file metadata queries and
 atomic upload publication execute source-transferred, stdlib-only Python functions.
-The same ``DirectProcessJob`` handles direct local and direct SSH process lifecycles;
+The same ``Job`` and ``DirectSession`` coordinate direct local and SSH execution;
 only the launch/stop/output adapter differs. The target Python command can be
-configured with ``SshDirectTransport(python_command=("python3.12",))``.
+configured with ``SshTransport(python_command=("python3.12",))``.
 
 .. code-block:: python
 
    from kkrunner import Run, ExecutionSpec
-   from kkrunner.client import SshDirectRunEndpoint, SshDirectTransport
+   from kkrunner.backends import DirectBackend
+   from kkrunner.client import SshRunEndpoint, SshTransport
    from kkrunner.runs import LaunchSpec
 
-   backend = SshDirectRunEndpoint(SshDirectTransport("alice@cluster.example"))
+   endpoint = SshRunEndpoint(SshTransport("alice@cluster.example"), backend=DirectBackend)
    spec = ExecutionSpec(
        argv=("python3", "-c", "print('hello', flush=True)"),
        directory="/home/alice/work/job",
@@ -94,32 +96,34 @@ configured with ``SshDirectTransport(python_command=("python3.12",))``.
            remote_root="/scratch/alice/runs",
        ),
    )
-   result = Run.direct(backend, spec).run()
+   result = Run.direct(endpoint, spec).run()
 
-Use ``AgentRunEndpoint`` and a ``RunManager`` for persistent SSH
-runs. A direct SSH Job has no durable ID and must not be attached, retried after
-an uncertain connection loss, or stored as a managed run. An SSH failure (exit
-255) is reported as UNKNOWN, not proof that the target computation failed.
+Use ``SshRunEndpoint(transport, backend=SupervisedBackend)`` and a ``RunManager`` for persistent SSH
+runs that need reconnection. Direct SSH may retain client-side history, but
+has no durable ID for attachment or submission recovery. Never automatically
+retry after uncertain connection loss. An SSH failure (exit 255) is reported
+as UNKNOWN, not proof that the target computation failed.
 
 Local and scheduler execution
 -------------------------------
 
-Use ``Run.direct(DirectProcessBackend(), spec)`` for an untracked run. Use
-``RunManager.create_run(SupervisedProcessBackend(), spec)`` for durable local
+Use ``Run.direct(LocalRunEndpoint(DirectBackend), spec)`` for an untracked run. Use
+``RunManager.create_run(LocalRunEndpoint(SupervisedBackend), spec)`` for durable local
 supervision; the execution mode does not depend on whether a submission key
 was supplied. The same manager interface accepts a scheduler executor:
 
 .. code-block:: python
 
    from kkrunner.backends import PsijBackend
+   from kkrunner.client import LocalRunEndpoint
 
-   executor = PsijBackend(backend="slurm")
+   executor = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"})
    # manager and spec are created as in the persistent-run example.
    run = manager.create_run(executor, spec)
    run.submit()
 
-The PSI/J module can be imported without PSI/J installed; constructing a real
-scheduler executor needs the extra. A scheduler job is only the backend part of
+Backend classes and configured endpoints can be created without PSI/J
+installed; executing a scheduler operation needs the extra. A scheduler job is only the backend part of
 a run: downloads and application processing may continue after that job exits.
 
 Endpoint identity and reuse
@@ -179,8 +183,9 @@ requirements for every attach operation.
 ``RunManager.recover_submitting(record)`` attempts recovery of a stale
 ``submitting`` record. Missing receipts, unavailable accounting and temporarily
 missing accounting rows do not prove that submission failed. If the backend
-cannot resolve acceptance, the record stays ``submitting`` and its file
-reservation remains held. The manager does not automatically submit a second
+cannot yet resolve acceptance, the record stays ``submitting`` and its file
+reservation remains held. Unsupported recovery changes the state to ``unknown``
+without proving non-submission or releasing reservations. The manager does not automatically submit a second
 command. Multiple matching scheduler jobs raise an error rather than selecting
 one arbitrarily. Inspect the backend and restore its state before deciding
 whether a new submission is safe.
@@ -202,10 +207,11 @@ does not supply MPI libraries or repair a binary's runtime linkage.
 Architecture boundary
 ---------------------
 
-The native ``Backend`` contract creates or opens a ``Job`` and does not
-import client-side sessions. A client ``RunEndpoint`` composes the Job with a
-file session as ``RunParts``. Native process and PSI/J backends are adapted by
-``BackendRunEndpoint``; remote proxies compose their own sessions.
+Backend classes are namespaces of static target operations. They neither
+create client Jobs nor receive client file manifests. ``LocalRunEndpoint``
+holds the selected backend class and calls its methods directly. SSH selects
+``Backend.SshHelper`` and sends a single method definition. The endpoint
+creates the client ``Job`` and composes it with a file session as ``RunParts``.
 
 The file session prepares mapped paths and a manifest, but does not decide
 which executor runs or whether the submission is detached. The endpoint builds
@@ -218,7 +224,7 @@ finished does not itself imply the client Run is complete: RunManager
 maps it to downloading until the Run synchronizes output and finishes
 optional postprocessing.
 
-Direct local and direct SSH processes share the same DirectProcessJob lifecycle.
+Direct local and direct SSH execution share the same client Job lifecycle.
 Their adapters receive command specifications and processes and report transport
 observations; required application output verification belongs to the client,
 not to a native Job. The host-side MPI launcher decision and safe deletion of
@@ -227,8 +233,12 @@ SSH-direct transfers these independent native functions as source when no
 KKRunner is installed on the target.
 
 ``RunParts`` owns the transfer-resource handoff to the Run completion observer,
-including failed attachment cleanup. Supervised execution retains its installed
-KKRunner agent and detached supervisor for receipts and recovery.
+including failed attachment cleanup. Supervised execution retains an independent supervisor for receipts and
+recovery. Local FOLLOW awaits the existing socket coroutine directly. SSH
+starts a Python observer that calls the same backend FOLLOW and forwards
+framed bytes. Cancelling observation closes only that follower; cancelling
+the calculation requires the separate backend ``cancel`` operation. PSI/J
+observation uses native status callbacks and releases them on detach.
 
 Runtime ownership and immutable declarations
 -------------------------------------------

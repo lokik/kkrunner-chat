@@ -71,20 +71,20 @@ Backends and their execution contracts
 .. autosummary::
    :toctree: _generated
 
-   DirectProcessBackend
+   DirectBackend
+   SupervisedBackend
    PsijBackend
-   Job
-   JobRef
-   JobStatus
-   BackendJobContext
-   SubmissionContext
 
 .. currentmodule:: kkrunner.backends.contracts
 
 .. autosummary::
    :toctree: _generated
 
-   JobState
+   Backend
+   DirectOperations
+   ManagedOperations
+   JobRef
+   JobStatus
    JobFailurePhase
    RecoveryDisposition
    RecoveryResult
@@ -99,8 +99,10 @@ Client endpoints, transport and pooling
 .. autosummary::
    :toctree: _generated
 
-   AgentRunEndpoint
-   SshDirectRunEndpoint
+   LocalRunEndpoint
+   SshRunEndpoint
+   JobProtocol
+   SubmissionContext
    RunEndpoint
    ReopenableRunEndpoint
    JobAttachment

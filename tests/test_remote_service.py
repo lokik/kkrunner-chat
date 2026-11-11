@@ -452,10 +452,10 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
     kept = tmp_path / "cache.pot"
     output.write_bytes(b"stale")
     kept.write_bytes(b"restart")
-    from kkrunner.backends.psij import PsijJob
+    from kkrunner.native.psij.submission import PsijSubmission
     from kkrunner.native.psij import operations as scheduler_operations
 
-    class Runner(PsijJob):
+    class Runner(PsijSubmission):
         def __init__(self, spec):
             self.spec = spec
             self._stdout_path = None
@@ -467,7 +467,7 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
         failure_phase = None
         result = type("Result", (), {"output_file": None, "error_file": None})()
 
-        def submit(self):
+        def submit_native(self):
             self._prepare_io()
             assert not output.exists()
             assert kept.read_bytes() == b"restart"
@@ -476,7 +476,7 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
         backend = "slurm"
         url = None
 
-        def create_job(self, spec, *, submission_key=None):
+        def create_native_job(self, spec, *, submission_key=None):
             return Runner(spec)
 
     monkeypatch.setattr(scheduler_operations, "_psij_executor", lambda options: Backend())

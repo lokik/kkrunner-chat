@@ -7,10 +7,8 @@ lives in this facade; Job remains the only owner of process state.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
-from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint
-
 if TYPE_CHECKING:
-    from kkrunner.backends.contracts import Job
+    from kkrunner.client.job import Job
     from kkrunner.client.remote_files import RemoteFileSession
 
 
@@ -84,72 +82,3 @@ class RunParts:
     def close(self):
         if self.files is not None:
             self.files.close()
-
-
-
-def backend_job_context(attachment, backend_kind):
-    """Project a client attachment to the native backend-only contract.
-
-    FileManifest is the authority for the necessary stream paths; the
-    backend receives only those paths, never the entire manifest.
-    """
-    from kkrunner.backends.contracts import BackendJobContext, JobRef
-
-    execution, files = attachment.execution, attachment.files
-    if execution.backend_id is None:
-        raise ValueError("Cannot attach without a confirmed backend identity")
-    if files is None:
-        raise ValueError("Client attachment requires a FileManifest")
-    return BackendJobContext(
-        ref=JobRef(backend_kind, execution.backend_id),
-        endpoint=execution.endpoint,
-        directory=execution.directory,
-        input_file=files.input_file,
-        output_file=files.output_file,
-        error_file=None if files.stderr is None else files.stderr.local_path,
-    )
-
-
-def status_attachment_for_backend(backend, attachment):
-    """Backend status receives no FileManifest; endpoints own client state."""
-    from kkrunner.backends.contracts import Backend
-    if isinstance(backend, Backend):
-        return backend_job_context(attachment, backend.name)
-    return attachment
-
-
-class BackendRunEndpoint(RunEndpoint):
-    """Compose a native Backend into the client-side Run protocol.
-
-    The native backend never needs to import RunParts or know how the client
-    stores and synchronizes files.
-    """
-
-    def __init__(self, backend):
-        self.backend = backend
-
-    def create_run_parts(self, spec, *, submission_key=None, callback=None):
-        return RunParts(self.backend.create_job(spec, submission_key=submission_key, callback=callback))
-
-
-class ReopenableBackendRunEndpoint(BackendRunEndpoint, ReopenableRunEndpoint):
-    """Native backend with the explicit ability to reopen jobs."""
-
-    def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-        return RunParts(self.backend.attach_job(
-            backend_job_context(attachment, self.backend.name),
-            callback=callback, output_listener=output_listener, start=False,
-        ))
-
-
-def run_endpoint_for_executor(backend) -> RunEndpoint:
-    """Native mechanisms require a client composition; remote proxies are endpoints."""
-    from kkrunner.backends.contracts import Backend, ReopenableBackend
-
-    if isinstance(backend, ReopenableBackend):
-        return ReopenableBackendRunEndpoint(backend)
-    if isinstance(backend, Backend):
-        return BackendRunEndpoint(backend)
-    if not isinstance(backend, RunEndpoint):
-        raise TypeError("Expected a native Backend or a client RunEndpoint")
-    return backend

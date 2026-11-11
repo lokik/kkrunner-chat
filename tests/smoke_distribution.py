@@ -11,7 +11,8 @@ from pathlib import Path
 import kkrunner
 from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.runs import LaunchSpec
-from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.backends import SupervisedBackend
 from kkrunner.client import LocalTransport, AgentRunEndpoint
 from kkrunner.projects import ProjectRunManager, ProjectRepository
 
@@ -25,7 +26,7 @@ assert md.version("kkrunner") == kkrunner.__version__
 
 root = Path(tempfile.mkdtemp(prefix="kkrunner-distribution-"))
 raw = Run.direct(
-    DirectProcessBackend(),
+    LocalRunEndpoint(),
     ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=root,
@@ -39,7 +40,7 @@ projects = ProjectRepository(root / "projects")
 project = projects.create("Wheel review", directory=root)
 manager = ProjectRunManager(project_repository=projects, project=project)
 run = manager.create_run(
-    SupervisedProcessBackend(),
+    LocalRunEndpoint(SupervisedBackend),
     ExecutionSpec(
         [sys.executable, "-c", "print(43)"],
         directory=root,

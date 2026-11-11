@@ -35,7 +35,7 @@ _FAKE_PSIJ = SimpleNamespace(Job=_Job, JobSpec=_JobSpec, JobAttributes=_JobAttri
 
 def _executor(monkeypatch, backend="slurm"):
     monkeypatch.setattr(psij_backend, "_load_psij", lambda: _FAKE_PSIJ)
-    return psij_backend.PsijBackend(backend, job_executor=object())
+    return psij_backend.PsijExecutor(backend, job_executor=object())
 
 
 def _spec(tmp_path):

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Optional, Protocol
 
 if TYPE_CHECKING:
-    from kkrunner.backends.contracts import JobRef
+    from kkrunner.backends.contracts import JobRef, JobStatus
+    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.client.run_parts import RunParts
     from kkrunner.files.manifest import FileManifest
     from kkrunner.runs.model import Execution
@@ -21,14 +22,14 @@ class JobAttachment:
     files: FileManifest
 
 
-@runtime_checkable
 class RunEndpoint(Protocol):
     """Create an entire client session, never implement the backend contract."""
+
+    supports_reattachment: bool
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None) -> RunParts: ...
 
 
-@runtime_checkable
 class ReopenableRunEndpoint(RunEndpoint, Protocol):
     """Optional ability to reattach client-side resources around an existing Job."""
 
@@ -49,3 +50,50 @@ class RunningCommand(Protocol):
     def kill(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class SubmissionContext:
+    """Original submitted execution context, before its JobRef was known."""
+
+    execution: Execution
+
+
+class JobProtocol(Protocol):
+    """Live, per-execution handle.  Only reopenable jobs need a stable ref."""
+
+    @property
+    def ref(self) -> Optional[JobRef]: ...
+
+    @property
+    def backend_id(self) -> Optional[str]: ...
+
+    @property
+    def state(self): ...
+
+    # The Job has a runtime specification; the original submission spec
+    # is a separate client-side value and may not survive reattachment.
+    @property
+    def spec(self) -> ExecutionSpec: ...
+
+    @property
+    def return_code(self) -> Optional[int]: ...
+
+    @property
+    def exception(self) -> Optional[BaseException]: ...
+
+    @property
+    def failure_phase(self): ...
+
+    @property
+    def failure_message(self) -> Optional[str]: ...
+
+    def add_output_listener(self, callback) -> None: ...
+
+    def add_output_error_listener(self, callback) -> None: ...
+
+    def status(self) -> JobStatus: ...
+
+    def submit(self) -> None: ...
+
+    def wait(self) -> ExecutionOutcome: ...
+
+    def cancel(self) -> None: ...

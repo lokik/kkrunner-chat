@@ -8,10 +8,9 @@ import sys
 
 import pytest
 
-from kkrunner.backends.contracts import Backend
 from kkrunner.backends.support import resolve_mpi_options
-from kkrunner.backends import DirectProcessBackend
-from kkrunner.client.run_parts import BackendRunEndpoint, run_endpoint_for_executor
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.client.run_parts import run_endpoint_for_executor
 from kkrunner.client.portable_functions import function_source
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
@@ -25,11 +24,11 @@ def _isolated(script, *, input=None, args=()):
 
 
 def test_native_backend_does_not_construct_client_session(tmp_path):
-    backend = DirectProcessBackend()
-    assert isinstance(backend, Backend)
-    assert not hasattr(backend, "create_run_parts")
-    endpoint = run_endpoint_for_executor(backend)
-    assert isinstance(endpoint, BackendRunEndpoint)
+    from kkrunner.backends import DirectBackend
+    assert not hasattr(DirectBackend, "create_job")
+    assert not hasattr(DirectBackend, "create_run_parts")
+    endpoint = LocalRunEndpoint(DirectBackend)
+    assert run_endpoint_for_executor(endpoint) is endpoint
 
 
 def test_portable_file_query_matches_native_batch(tmp_path):

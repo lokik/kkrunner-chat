@@ -1,5 +1,7 @@
 """Installed supervisor target operations."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -13,7 +15,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.remote.messages import request_to_spec, status_reply
+from kkrunner.backends.messages import (
+    AcknowledgeReply, ExecutionRequest, RecoveryReply, RecoveryRequest, StatusReply, SubmissionReply,
+    request_to_spec, status_reply,
+)
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.support.process_identity import ProcessIdentity
@@ -27,7 +32,7 @@ from kkrunner.native.supervised.mailbox import (
 from kkrunner.native.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.native.supervised.streams import follow_socket, SupervisorClosedBeforeFollow
 
-def _acknowledge_submission_impl(run_id):
+def _acknowledge_submission_impl(run_id: str) -> AcknowledgeReply:
     return {"acknowledged": _mailbox_acknowledge_submission(run_id)}
 
 
@@ -56,7 +61,7 @@ def _clean_request_outputs(spec, directory, output_path=None, error_path=None):
         },
     })
 
-def _local_submit(request):
+def _local_submit(request: ExecutionRequest) -> SubmissionReply:
     if os.name != "posix":
         raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
     from kkrunner.backends.support import materialize_local_spec
@@ -67,8 +72,11 @@ def _local_submit(request):
     try:
         directory = Path(request["directory"]).expanduser().resolve()
         directory.mkdir(parents=True, exist_ok=True)
-        original_spec = request_to_spec(dict(request, directory=os.fspath(directory)))
+        target_request = request.copy()
+        target_request["directory"] = os.fspath(directory)
+        original_spec = request_to_spec(target_request)
         spec = materialize_local_spec(original_spec)
+        assert spec.argv is not None
 
         output_path = _absolute(directory, spec.output_file)
         error_path = _absolute(directory, spec.error_file)
@@ -170,19 +178,17 @@ def _local_submit(request):
             raise SubmissionNotStarted(str(exc)) from exc
         raise
     finally:
-        for fd in (start_fd, release_fd, socket_read_fd, socket_write_fd):
-            if fd is not None:
-                os.close(fd)
+        for cleanup_fd in (start_fd, release_fd, socket_read_fd, socket_write_fd):
+            if cleanup_fd is not None:
+                os.close(cleanup_fd)
 
-    reply = {
+    reply: SubmissionReply = {
+        **status_reply(RunState.RUNNING),
         "remote_id": remote_id,
-        "state": RunState.RUNNING.value,
         "directory": os.fspath(directory),
         "input_file": _absolute(directory, spec.input_file),
         "output_file": output_path,
         "error_file": error_path,
-        "return_code": None,
-        "failure_phase": None,
     }
     return reply
 
@@ -199,12 +205,12 @@ def _process_outcome(receipt_id):
         raise RuntimeError("Invalid remote process outcome artifact") from exc
     return state, return_code, failure_phase, data.get("error")
 
-def _submit_impl(request):
+def _submit_impl(request: ExecutionRequest) -> SubmissionReply:
     """Submit one process job, preserving the atomic release barrier."""
     return _local_submit(request)
 
 
-def _status_impl(remote_id):
+def _status_impl(remote_id: str) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
@@ -219,7 +225,7 @@ def _status_impl(remote_id):
     return status_reply(state, return_code, failure_phase=failure_phase, error=error)
 
 
-def _cancel_impl(remote_id, timeout=1.0):
+def _cancel_impl(remote_id: str, timeout: float = 1.0) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
@@ -239,21 +245,27 @@ def _cancel_impl(remote_id, timeout=1.0):
     return _status_impl(remote_id)
 
 
-def _acknowledge_impl(remote_id):
+def _acknowledge_impl(remote_id: str) -> AcknowledgeReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
     return {"acknowledged": _mailbox_acknowledge_outcome(handle["receipt_id"])}
 
 
-def _recover_impl(run_id, request, *, submitted_at=None):
+def _recover_impl(
+    run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
+) -> RecoveryReply:
     reply = _mailbox_recover_submission(run_id)
     if reply is None:
         return None
-    return dict(reply, directory=request["directory"], **_status_impl(reply["remote_id"]))
+    return {
+        **_status_impl(reply["remote_id"]),
+        "remote_id": reply["remote_id"], "directory": request["directory"],
+        "output_file": reply.get("output_file"), "error_file": reply.get("error_file"),
+    }
 
 
-def _follow_impl(
+async def follow(
     remote_id,
     stdout,
     stderr,
@@ -263,9 +275,8 @@ def _follow_impl(
     poll_interval=0.1,
     stdout_path=None,
     stderr_path=None,
-    observation_started=None,
 ):
-    """Follow direct supervisors or scheduler-owned streams until terminal state."""
+    """Observe one supervisor; cancellation closes only the follower socket."""
     handle = decode_handle(remote_id)
     offsets = {"out": stdout_offset, "err": stderr_offset}
     streams = {"out": stdout, "err": stderr}
@@ -291,16 +302,11 @@ def _follow_impl(
         streams[kind].write(data)
         streams[kind].flush()
 
-    async def drain_from_socket():
-        if observation_started is not None:
-            observation_started(asyncio.get_running_loop(), asyncio.current_task())
-        requested = dict(offsets)
-        if stdout_path is not None and stdout_path == stderr_path:
-            requested.pop("err")
-        return await follow_socket(path, requested, on_chunk)
-
+    requested = dict(offsets)
+    if stdout_path is not None and stdout_path == stderr_path:
+        requested.pop("err")
     try:
-        return asyncio.run(drain_from_socket())
+        return await follow_socket(path, requested, on_chunk)
     except SupervisorClosedBeforeFollow:
         # A failed launch can finish after connect() but before the server
         # handles FOLLOW. No protocol bytes or process output were received.
@@ -337,6 +343,5 @@ def _follow_impl(
                         break
                     streams[kind].write(data)
                     streams[kind].flush()
+                    await asyncio.sleep(0)
         return status
-
-

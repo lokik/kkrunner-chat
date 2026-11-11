@@ -1,21 +1,26 @@
 """Installed PSI/J operations, independent of client FileSession."""
 
+from __future__ import annotations
+
 import asyncio
+import logging
 
 from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.remote.messages import request_to_spec, status_reply
-from kkrunner.runs.base import FailurePhase, RunState
-from kkrunner.support.growing_file_tail import follow_job_files
-from .executor import PsijBackend
-from .job import psij_state
+from kkrunner.backends.messages import (
+    AcknowledgeReply, ExecutionRequest, RecoveryReply, RecoveryRequest, StatusReply, SubmissionReply,
+    request_to_spec, status_reply,
+)
+from kkrunner.backends.contracts import JobFailurePhase
+from kkrunner.runs.states import RunState
+from kkrunner.support.growing_file_tail import follow_growing_files
+from .executor import PsijExecutor
+from .submission import psij_state
 from .slurm import status_native
 
-def _psij_executor(options):
+def _psij_executor(options={}):
+    return PsijExecutor(options.get("backend") or "slurm", url=options.get("url"))
 
-    options = options or {}
-    return PsijBackend(options.get("backend") or "slurm", url=options.get("url"))
-
-def _submit_impl(request):
+def _submit_impl(request: ExecutionRequest) -> SubmissionReply:
     executor = _psij_executor(request.get("executor_options"))
     spec = request_to_spec(request)
     runner = executor.create_native_job(spec, submission_key=request.get("id"))
@@ -35,18 +40,16 @@ def _submit_impl(request):
     )
     return {
         "remote_id": remote_id,
-        "state": runner.state.value,
+        **status_reply(runner.state, runner.return_code, failure_phase=runner.failure_phase),
         "directory": request["directory"],
         "input_file": request.get("input_file"),
         "output_file": runner.result.output_file,
         "error_file": runner.result.error_file,
-        "return_code": runner.return_code,
-        "failure_phase": (None if runner.failure_phase is None else runner.failure_phase.value),
     }
 
 
 
-def _status_impl(remote_id):
+def _status_impl(remote_id: str) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
@@ -61,7 +64,7 @@ def _status_impl(remote_id):
     )
 
 
-def _cancel_impl(remote_id):
+def _cancel_impl(remote_id: str) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
@@ -71,15 +74,17 @@ def _cancel_impl(remote_id):
     return _status_impl(remote_id)
 
 
-def _acknowledge_impl(remote_id):
+def _acknowledge_impl(remote_id: str) -> AcknowledgeReply:
     return {"acknowledged": False}
 
 
-def _acknowledge_submission_impl(run_id):
+def _acknowledge_submission_impl(run_id: str) -> AcknowledgeReply:
     return {"acknowledged": False}
 
 
-def _recover_impl(run_id, request, *, submitted_at=None):
+def _recover_impl(
+    run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
+) -> RecoveryReply:
     backend = _psij_executor(request.get("executor_options"))
     facts = backend.recover_native(
         run_id, request["directory"], submitted_at=submitted_at,
@@ -98,9 +103,8 @@ def _recover_impl(run_id, request, *, submitted_at=None):
     state = facts["state"]
     return {
         "remote_id": remote_id,
-        "state": state.value,
-        "return_code": facts["return_code"],
-        "failure_phase": (FailurePhase.EXECUTION.value if state == RunState.FAILED else None),
+        **status_reply(state, facts["return_code"],
+                       failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None),
         "directory": facts["directory"],
         "output_file": facts["stdout"],
         "error_file": facts["stderr"],
@@ -118,32 +122,53 @@ async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_inter
         streams[kind].write(data)
         streams[kind].flush()
 
-    async def terminal(_native_status):
-        facts = await asyncio.to_thread(_status_impl, remote_id)
-        if RunState(facts["state"]).is_terminal:
-            return facts
-        native = job.status
+    loop = asyncio.get_running_loop()
+    finished = loop.create_future()
+
+    def deliver(status):
+        if not finished.done():
+            finished.set_result(status)
+
+    def status_changed(_job, status):
+        if not psij_state(status).is_terminal:
+            return
+        try:
+            loop.call_soon_threadsafe(deliver, status)
+        except RuntimeError:
+            pass  # Observation has already closed its event loop.
+
+    async def terminal():
+        if not finished.done():
+            return None
+        native = finished.result()
         state = psij_state(native)
         return status_reply(
-            state,
-            getattr(native, "exit_code", None),
-            failure_phase=(FailurePhase.EXECUTION if state == RunState.FAILED else None),
+            state, getattr(native, "exit_code", None),
+            failure_phase=(JobFailurePhase.EXECUTION if state == RunState.FAILED else None),
             error=getattr(native, "message", None),
         )
 
-    return await follow_job_files(
-        paths,
-        emit,
-        job.wait,
-        terminal=terminal,
-        offsets=offsets,
-        poll_interval=max(poll_interval, 1.0),
-    )
+    try:
+        job.set_job_status_callback(status_changed)
+        # Completion can race with callback registration.
+        status_changed(job, job.status)
+        return await follow_growing_files(
+            paths, emit, terminal, offsets=offsets,
+            poll_interval=max(poll_interval, 1.0), wakeup=finished,
+        )
+    finally:
+        finished.cancel()
+        # PSI/J versions that wrap None as a callback require a callable.
+        # Release the observer closure without cancelling the scheduler job.
+        try:
+            job.set_job_status_callback(lambda _job, _status: None)
+        except Exception:
+            logging.getLogger(__name__).exception("Failed to release PSI/J observation callback")
 
-def _follow_impl(
+
+async def follow(
     remote_id, stdout, stderr, *, stdout_offset=0, stderr_offset=0,
     poll_interval=0.1, stdout_path=None, stderr_path=None,
-    observation_started=None,
 ):
     handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
@@ -151,6 +176,4 @@ def _follow_impl(
     offsets = {"out": stdout_offset, "err": stderr_offset}
     paths = {"out": stdout_path, "err": stderr_path}
     streams = {"out": stdout, "err": stderr}
-    return asyncio.run(_follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval))
-
-
+    return await _follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval)

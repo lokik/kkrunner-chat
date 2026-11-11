@@ -4,7 +4,7 @@ import sys
 
 from kkrunner import ExecutionSpec, Run
 from kkrunner.runs import LaunchSpec
-from kkrunner.backends import DirectProcessBackend
+from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.client import LocalTransport, AgentRunEndpoint
 
 
@@ -19,7 +19,7 @@ def test_raw_local_paths_and_stdin_are_materialized_at_submission(tmp_path):
         output_file="stdout.txt",
         error_file="stderr.txt",
     )
-    run = Run.direct(DirectProcessBackend(), spec)
+    run = Run.direct(LocalRunEndpoint(), spec)
     assert not (tmp_path / "stdout.txt").exists()
     assert run.run().return_code == 0
     assert (tmp_path / "stdout.txt").read_text() == "answer\n"

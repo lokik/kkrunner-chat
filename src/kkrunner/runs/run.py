@@ -101,8 +101,7 @@ class Run:
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
-        from kkrunner.client.run_parts import run_endpoint_for_executor
-        parts = run_endpoint_for_executor(backend).create_run_parts(spec)
+        parts = backend.create_run_parts(spec)
         parts.configure_detached(
             getattr(backend, "default_detached", False) if detached is None else detached,
             default=getattr(backend, "default_detached", False),
@@ -216,7 +215,7 @@ class Run:
             if self._file_session is not None and raw_state.is_terminal:
                 self._state = RunState.DOWNLOADING
                 try:
-                    if raw_state == RunState.FINISHED and self._job.output_error is not None:
+                    if raw_state == RunState.FINISHED and getattr(self._job, "output_error", None) is not None:
                         raise self._job.output_error
                     self._file_session.synchronize(raw_state)
                     # Flush and close the client-owned streams *before*
@@ -254,7 +253,7 @@ class Run:
             # stream delivery or client output closure failed. Backend status
             # stays FINISHED, but a client Run must not claim completed output
             # or publish successful postprocessing in that case.
-            if self._file_session is None and self._job.output_error is not None:
+            if self._file_session is None and getattr(self._job, "output_error", None) is not None:
                 self._exception = self._job.output_error
                 self._state = RunState.FAILED
                 self._failure_phase = FailurePhase.OUTPUT

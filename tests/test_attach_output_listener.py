@@ -1,11 +1,13 @@
+from tests._helpers import open_job
 from dataclasses import replace
 from types import SimpleNamespace
 
-from kkrunner.backends import DirectProcessBackend, PsijBackend
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.backends import PsijBackend
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.job import Job
 from kkrunner.client.endpoint import ExecutionEndpointConfig
-from kkrunner.client.run_parts import RunParts, backend_job_context
+from kkrunner.client.run_parts import RunParts
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
 from kkrunner.client.agent import _AgentRunContext
 from kkrunner.client.job import Job
@@ -40,7 +42,7 @@ class _AttachedRunner:
         pass
 
 
-class _AttachExecutor(DirectProcessBackend):
+class _AttachExecutor(LocalRunEndpoint):
     def acknowledge(self, run):
         pass
 
@@ -155,33 +157,11 @@ def test_remote_attach_can_defer_monitor_start(monkeypatch, tmp_path):
     assert events == [("remote replay\n", "out")]
 
 
-def _psij_executor():
-
-    class Job:
-        def __init__(self):
-            self.native_id = "42"
-            self.status = SimpleNamespace(state=SimpleNamespace(name="ACTIVE"))
-
-    class JobExecutor:
-        def attach(self, job, native_id):
-            job.native_id = native_id
-
-    executor = object.__new__(PsijBackend)
-    executor.backend = "slurm"
-    executor.url = None
-    executor.poll_interval = 0.01
-    executor._psij = SimpleNamespace(Job=Job)
-    executor._job_executor = JobExecutor()
-    from collections import OrderedDict
-    from threading import RLock
-
-    executor._jobs = OrderedDict()
-    executor._observers = {}
-    executor._jobs_lock = RLock()
-    executor._max_idle_jobs = 64
-    from kkrunner.runs.base import RunStatus
-    executor.status_native = lambda native_id: RunStatus(RunState.RUNNING, backend_id=native_id)
-    return executor
+def _psij_executor(monkeypatch):
+    endpoint = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"})
+    from kkrunner.native.psij import operations
+    monkeypatch.setattr(operations, "_status_impl", lambda identity: {"state": "running"})
+    return endpoint
 
 
 def _psij_run(tmp_path):
@@ -212,8 +192,8 @@ def test_psij_attach_installs_listener_before_monitor(monkeypatch, tmp_path):
         self._done.set()
 
     monkeypatch.setattr(Job, "_thread_main", immediate_monitor)
-    runner = _psij_executor().attach_job(
-        backend_job_context(JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), "psij"),
+    runner = open_job(_psij_executor(monkeypatch), 
+        JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files),
         callback=lambda result: events.append(("finished", None)),
         output_listener=lambda text, kind: events.append((text, kind)),
     )
@@ -229,8 +209,8 @@ def test_psij_attach_can_defer_monitor_start(monkeypatch, tmp_path):
         self._done.set()
 
     monkeypatch.setattr(Job, "_thread_main", immediate_monitor)
-    runner = _psij_executor().attach_job(
-        backend_job_context(JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files), "psij"),
+    runner = open_job(_psij_executor(monkeypatch), 
+        JobAttachment(_psij_run(tmp_path).execution, _psij_run(tmp_path).files),
         output_listener=lambda text, kind: events.append((text, kind)), start=False,
     )
     assert runner._thread is None

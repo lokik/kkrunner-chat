@@ -5,9 +5,7 @@ run selection, store, or application-specific parser.
 """
 
 import argparse
-import asyncio
 import json
-import os
 import sys
 
 
@@ -58,7 +56,7 @@ def _direct(args, *, action):
                              stdout_path=args.stdout_path, stderr_path=args.stderr_path)
     from kkrunner.client.transport import SshTransport
     from kkrunner.remote.protocol import json_request
-    transport = SshTransport(args.host, options=args.ssh_option, command=(args.agent,))
+    transport = SshTransport(args.host, options=args.ssh_option)
     if action != "follow":
         from kkrunner.support.async_utils import run_coro_sync
         return run_coro_sync(json_request(transport, (args.agent,), action, args.remote_id))
@@ -68,7 +66,7 @@ def _direct(args, *, action):
 
 def _follow_remote(transport, command, remote_id, from_start, stdout_path, stderr_path):
     from kkrunner.remote.protocol import control_command
-    from kkrunner.remote.stream import FramedRunningCommand
+    from kkrunner.client.observation import follow_framed_command
     from kkrunner.support.async_utils import run_coro_sync
 
     async def observe():
@@ -82,23 +80,12 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
         else:
             options.extend(("--live-stdout", "--live-stderr"))
         proc = await transport.start(control_command(command, "follow", remote_id, *options, "--framed"))
-        observed = FramedRunningCommand(proc)
+        def emit(data, kind):
+            output = sys.stderr.buffer if kind == "err" else sys.stdout.buffer
+            output.write(data)
+            output.flush()
 
-        async def drain(source, destination):
-            while data := await source.read(65536):
-                destination.write(data)
-                destination.flush()
-
-        try:
-            await asyncio.gather(drain(observed.stdout, sys.stdout.buffer),
-                                 drain(observed.stderr, sys.stderr.buffer))
-            await observed.wait()
-            if observed.terminal is None:
-                raise RuntimeError("Agent follow ended without terminal status")
-            return observed.terminal
-        except BaseException:
-            observed.terminate()
-            raise
+        return await follow_framed_command(proc, emit)
 
     return run_coro_sync(observe())
 
@@ -143,10 +130,18 @@ def _persisted(args):
             from kkrunner.support.async_utils import run_coro_sync
             return run_coro_sync(backend._cancel(record.execution.directory.remote,
                                                  record.execution.backend_id))
-        return _follow_remote(backend.transport, backend.command, record.execution.backend_id,
-                              args.from_start,
-                              record.files.stdout.remote_path if record.files.stdout else None,
-                              record.files.stderr.remote_path if record.files.stderr else None)
+        from kkrunner.support.async_utils import run_coro_sync
+        offset = 0 if args.from_start else None
+        def output(data, kind):
+            stream = sys.stderr.buffer if kind == "err" else sys.stdout.buffer
+            stream.write(data)
+            stream.flush()
+        return run_coro_sync(backend._follow(
+            record.execution.directory.remote, record.execution.backend_id,
+            on_output=output, offsets={"out": offset, "err": offset},
+            stdout_path=record.files.stdout.remote_path if record.files.stdout else None,
+            stderr_path=record.files.stderr.remote_path if record.files.stderr else None,
+        ))
     if args.action == "cancel":
         return cancel_remote(record.execution.backend_id)
     offset = 0 if args.from_start else None
