@@ -186,13 +186,16 @@ objects; those are **not** serialized to the target.
 `backends.class_helper.class_helper` generates an import-only class with the
 same public static methods. Each target backend chooses an `SshHelper`:
 the portable direct backend uses identity, whereas supervised and PSI/J use
-the import-only generated class. The SSH operation transport serializes the
-selected class source, not a backend instance. Generated installed helpers
-import the backend at execution time on the target.
+the import-only generated class. SSH transports transmit the source of the
+**selected static method only**, not the entire helper class or a backend
+instance. Installed helper methods import their backend when called on target.
 
 The native mechanisms live under `native/direct`, `native/supervised`
-and `native/psij`, where responsibilities are split by process adapter,
-supervisor, socket streams, receipt storage, scheduler and job lifetime.
+and `native/psij`, where the target execution mechanisms are split by
+responsibility. Client-side process adapters instead live in
+`client.local_direct` and `client.ssh_direct.adapter`; they bridge a shared
+`DirectSession` to local or SSH process transports. The standalone direct
+worker remains under `native/direct`.
 The direct `DirectSession` is in `client.direct_session`: it owns a transient
 subprocess, its pipes and cancellation, but not the client's Job/Run state.
 
@@ -302,7 +305,7 @@ The client `AgentRunEndpoint` and `SshDirectRunEndpoint` assemble `RunParts`
 and implement transport-specific staging. They are not native `Backend`
 implementations. There are no parallel `*Backend` aliases for these endpoint
 classes.
-`DirectProcessAdapter` remains an internal mechanism of `Job`, not
+Local and SSH process adapters remain internal to `Job`, not
 a universal layer across PSI/J and supervised execution. `DirectSession`
 owns process handles, event loop, cancellation tasks and stream pumping;
 only the client `Job` owns the lifecycle state, result and callbacks.
@@ -312,13 +315,15 @@ only the client `Job` owns the lifecycle state, result and callbacks.
 mechanisms (`DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend`).
 The `RunEndpoint` protocol and the client-only `JobAttachment` live in
 `kkrunner.client.contracts`, not in a concrete endpoint implementation.
-`DirectProcessAdapter` is private to the direct Job implementation and its
-protocol is defined in `kkrunner.backends.direct`.
+No additional `DirectProcessAdapter` protocol is needed: `DirectSession`
+uses a private duck-typed transport adapter contract, with concrete adapters
+owned by the client.
 
 Local direct and SSH direct use the same `DirectProcessBackend.create_job()`
-factory. A transport-specific, private `DirectProcessAdapter` factory supplies
-the mechanics; `SshDirectRunEndpoint` owns only session composition and file
-transfer. No second SSH-specific public Backend exists.
+factory. Its private adapter factory selects local or SSH transport mechanics;
+`SshDirectRunEndpoint` owns remote staging and file transfers. Native process
+lifecycle remains in the shared `DirectSession`; no second SSH-specific public
+Backend exists.
 
 Direct SSH intentionally has no `open_run_parts()` or
 `recover_submission()` method: unsupported capabilities are absent from its
@@ -332,7 +337,7 @@ structural protocol rather than advertised as methods that always fail.
 | Native execution | `Backend`, `ReopenableBackend`, `RecoverableBackend` | `DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend` |
 | Per-client execution handle | `Job` (structural protocol) | `Job`, `Job`, `PsijJob` (internal), `Job` |
 | Client session assembly | `RunEndpoint`, `ReopenableRunEndpoint` | `BackendRunEndpoint`, `ReopenableBackendRunEndpoint`, `AgentRunEndpoint`, `SshDirectRunEndpoint` |
-| Internal process mechanics | `DirectProcessAdapter` | `LocalProcessAdapter`, `SshProcessAdapter` |
+| Client process transport bindings | Private adapter interface (no protocol type) | `LocalProcessAdapter`, `SshDirectProcessAdapter` |
 | Command and file transport | `Transport`, `RunningCommand` | `LocalTransport`, `SshTransport`, `SshDirectTransport` |
 | Durable execution coordination | `RunManager` | `ProjectRunManager` for project-scoped runs |
 | Serializable endpoint descriptor | `ExecutionEndpointConfig` | Distinct from `RunEndpoint`, which constructs sessions |

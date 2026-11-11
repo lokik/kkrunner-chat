@@ -206,12 +206,12 @@ def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path
 
 def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
     """Direct adapters return the command specification, never mutate Job state."""
-    from kkrunner.backends.direct import SshProcessAdapter
+    from kkrunner.client.ssh_direct.adapter import SshDirectProcessAdapter
     from kkrunner.client.remote_paths import RemotePathContext
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)
     backend = SshDirectRunEndpoint(LocalTransport())
-    adapter = SshProcessAdapter(RemotePathContext(backend, spec.launch))
+    adapter = SshDirectProcessAdapter(RemotePathContext(backend, spec.launch))
     with pytest.raises(ValueError, match="staged request"):
         adapter.prepare(spec)
     adapter.configure_submission(

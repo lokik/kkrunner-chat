@@ -31,7 +31,7 @@ Target-side backend code and SSH helpers
 
 All target backend operations are declared as static methods on their
 backend class. For each supported backend the SSH endpoint applies its
-`SshHelper` and transmits the resulting Python class source. The helper
+`SshHelper` and transmits the Python source of the selected static method only. The helper
 does **not** create a new job state machine.
 
 .. list-table::
@@ -59,9 +59,8 @@ does **not** create a new job state machine.
        (roughly 1,150 lines total)
 
 Transferring the full supervised or PSI/J runtime would duplicate installed
-dependencies and complicate persistence and recovery. Their helper source
-contains only delegated method imports; actual code is imported on the target
-host. Direct SSH is deliberately independent and sends the compact worker
+dependencies and complicate persistence and recovery. For any selected operation, their SSH helper source contains one delegated
+method import; actual code is imported on the target host. Direct SSH is deliberately independent and sends the compact worker
 source. Calculation stream FOLLOW uses framed data to distinguish native
 stdout/stderr from SSH diagnostics and delivers a terminal receipt.
 

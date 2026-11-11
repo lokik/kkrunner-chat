@@ -75,16 +75,19 @@ if len(sys.argv) > 5:
 
 
 def _ssh_class_command(operation, python, streaming):
-    from kkrunner.backends.class_helper import class_source
-    backend = operation.backend
-    chosen = backend.SshHelper(backend)
-    source = class_source(chosen)
-    entrypoint = f"{chosen.__name__}.{operation.function}"
+    from kkrunner.backends.class_helper import method_source
+
+    original = operation.backend
+    target = original.SshHelper(original)
+    source = method_source(target, operation.function)
+    # The selected static method can be an imported top-level function
+    # (direct backend: execute) or a generated installed delegate.
+    name = vars(target)[operation.function].__func__.__name__
     lines = [source, "import json, sys"]
     if streaming:
         lines.extend((
             "payload = json.loads(sys.argv[1])",
-            f"result = {entrypoint}(*payload['args'], **payload['kwargs'])",
+            f"result = {name}(*payload['args'], **payload['kwargs'])",
             "if len(sys.argv) > 2:",
             "    with open(sys.argv[2], 'w', encoding='utf8') as receipt:",
             "        json.dump(result, receipt, allow_nan=False)",
@@ -94,11 +97,11 @@ def _ssh_class_command(operation, python, streaming):
             "from contextlib import redirect_stdout",
             "payload = json.loads(sys.stdin.buffer.read())",
             "with redirect_stdout(sys.stderr):",
-            f"    result = {entrypoint}(*payload['args'], **payload['kwargs'])",
+            f"    result = {name}(*payload['args'], **payload['kwargs'])",
             "sys.stdout.write(json.dumps(result))",
         ))
-    source = "\n".join(lines) + "\n"
-    return (*python, "-u", "-c", source) if streaming else (*python, "-c", source)
+    script = "\n".join(lines) + "\n"
+    return (*python, "-u", "-c", script) if streaming else (*python, "-c", script)
 
 
 # In the installed case, this short runner is the same for all backends.

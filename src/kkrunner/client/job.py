@@ -69,7 +69,7 @@ class Job:
     def direct(cls, spec, *, callback=None, adapter=None):
         """Create the direct session variant of the same client Job type."""
         if adapter is None:
-            from kkrunner.native.direct.local_adapter import LocalProcessAdapter
+            from kkrunner.client.local_direct import LocalProcessAdapter
             adapter = LocalProcessAdapter()
         return cls(None, spec, callback=callback, adapter=adapter)
 
