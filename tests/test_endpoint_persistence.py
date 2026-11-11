@@ -108,7 +108,7 @@ def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):
     restarted = RunManager(store, endpoint_pool=pool)
     attached = restarted.attach(record.id, process_result=lambda outcome: outcome)
     assert pool.endpoints == [endpoint]
-    assert attached.backend is executor
+    assert attached.endpoint is executor
     assert executor.calls == [(JobAttachment(record.execution, record.files), None, None)]
     attached.cancel()
 
