@@ -42,21 +42,21 @@ def _submission_ticket(run_id):
     return _state_root() / "remote-submissions" / (name + ".json")
 
 
-def _mailbox_publish_submission(run_id, reply):
+def publish_submission(run_id, reply):
     """Temporary identity handoff, never a target-side run lifecycle record."""
     path = _submission_ticket(run_id)
     durable_mkdir(path.parent, parents=True, exist_ok=True, mode=0o700)
     durable_write_json(path, reply, mode=0o600)
 
 
-def _mailbox_recover_submission(run_id):
+def recover_submission(run_id):
     try:
         return json.loads(_submission_ticket(run_id).read_text())
     except FileNotFoundError:
         return None
 
 
-def _mailbox_acknowledge_submission(run_id):
+def acknowledge_submission(run_id):
     path = _submission_ticket(run_id)
     try:
         path.unlink()
@@ -66,7 +66,7 @@ def _mailbox_acknowledge_submission(run_id):
     return True
 
 
-def _mailbox_publish_outcome(receipt_id, state, return_code, failure_phase=None, *, error=None):
+def publish_outcome(receipt_id, state, return_code, failure_phase=None, *, error=None):
     """Publish once: cancellation must not overwrite natural completion."""
     state = RunState(state)
     if not state.is_terminal:
@@ -100,7 +100,7 @@ def _mailbox_publish_outcome(receipt_id, state, return_code, failure_phase=None,
         fsync_directory(path.parent)
 
 
-def _mailbox_read_outcome(receipt_id):
+def read_outcome(receipt_id):
     """Read non-destructively so interrupted clients can retry."""
     try:
         result = json.loads(_path(receipt_id).read_text(encoding="utf-8"))
@@ -114,7 +114,7 @@ def _mailbox_read_outcome(receipt_id):
     return result
 
 
-def _mailbox_acknowledge_outcome(receipt_id):
+def acknowledge_outcome(receipt_id):
     """Delete only after the client has durably committed its own run state."""
     path = _path(receipt_id)
     try:
