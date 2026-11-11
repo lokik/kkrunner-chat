@@ -103,3 +103,34 @@ def test_local_streaming_operation_preserves_terminal_result_out_of_band():
         assert process.terminal == 42
 
     asyncio.run(verify())
+
+
+@pytest.mark.parametrize("transport_type", [LocalTransport, LoopbackSshTransport])
+def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_path, monkeypatch):
+    """The generated import-only helper must execute a real installed backend."""
+    from kkrunner.backends import backend_class
+    from kkrunner.client.operations import BackendOperation
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "mailbox"))
+    operation = BackendOperation.for_backend(
+        backend_class("process"), "acknowledge_submission"
+    )
+
+    async def verify():
+        reply = await transport_type().call(operation, "missing-submission")
+        assert reply == {"acknowledged": False}
+
+    asyncio.run(verify())
+
+
+def test_installed_class_helper_source_never_contains_supervisor_implementation():
+    from kkrunner.backends import backend_class
+    from kkrunner.client.operations import BackendOperation, operation_command
+
+    op = BackendOperation.for_backend(backend_class("process"), "submit")
+    command = operation_command(op, python=(sys.executable,), ssh=True)
+    script = command[-1]
+    compile(script, "<ssh import-only helper>", "exec")
+    assert "from kkrunner.backends.supervised import SupervisedBackend" in script
+    assert "_local_submit" not in script
+    assert "class SupervisorStreams" not in script
