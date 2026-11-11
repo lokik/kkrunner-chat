@@ -32,7 +32,10 @@ class PsijOperations:
     @staticmethod
     def recover(submission_key, request, *, submitted_at=None):
         from kkrunner.native.psij.operations import _recover_impl
-        return _recover_impl(submission_key, request, submitted_at=submitted_at)
+        try:
+            return _recover_impl(submission_key, request, submitted_at=submitted_at)
+        except NotImplementedError as exc:
+            return {"unsupported": True, "error": str(exc)}
 
     @staticmethod
     def acknowledge(job_ref):

@@ -45,13 +45,13 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
         },
     }
 
-    async def request(action, *args, payload=None):
-        calls.append((action, args, payload))
+    async def request(action, *args, **kwargs):
+        calls.append((action, args, kwargs))
         return replies[args[0]]
 
-    executor._json_request = request
+    executor._invoke = request
     statuses = executor.status(*(_attachment(_run(ref)) for ref in ("job-1", "job-2")))
-    assert calls == [("status", ("job-1",), None), ("status", ("job-2",), None)]
+    assert calls == [("status", ("job-1",), {}), ("status", ("job-2",), {})]
     assert [status.backend_id for status in statuses] == ["job-1", "job-2"]
     assert [status.state for status in statuses] == [RunState.RUNNING, RunState.FAILED]
     assert statuses[1].failure_phase == FailurePhase.LAUNCH
@@ -62,14 +62,14 @@ def test_remote_terminal_status_does_not_claim_client_completion():
     executor = AgentRunEndpoint(_Transport(), backend="process")
     calls = []
 
-    async def request(action, *args, payload=None):
-        calls.append((action, args, payload))
+    async def request(action, *args, **kwargs):
+        calls.append((action, args, kwargs))
         return {"state": "finished", "return_code": 0}
 
-    executor._json_request = request
+    executor._invoke = request
     (status,) = executor.status(_attachment(_run("opaque-process", backend="process")))
     assert status.state == RunState.FINISHED
-    assert calls == [("status", ("opaque-process",), None)]
+    assert calls == [("status", ("opaque-process",), {})]
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
@@ -82,21 +82,22 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     executor = AgentRunEndpoint(_Transport(), backend="process")
     calls = []
 
-    async def request(action, *args, payload=None):
-        calls.append((action, args, payload))
+    async def request(action, *args, **kwargs):
+        calls.append((action, args, kwargs))
         return {
             "state": "running", "remote_id": "opaque-job", "directory": "/work/case",
             "output_file": "/work/case/run.out", "error_file": "/work/case/run.err",
         }
 
-    executor._json_request = request
+    executor._invoke = request
     result = executor.recover_submission(
         "run-1", _attachment(_run(None, backend="process")),
         submitted_at="2026-10-13T08:00:00+02:00",
     )
     assert calls == [(
-        "recover", ("/work/case", "run-1"),
-        {"executor": "process", "executor_options": {}, "submitted_at": "2026-10-13T08:00:00+02:00"},
+        "recover",
+        ("run-1", {"executor": "process", "executor_options": {}, "directory": "/work/case"}),
+        {"submitted_at": "2026-10-13T08:00:00+02:00"},
     )]
     assert result.disposition == RecoveryDisposition.FOUND
     assert result.ref.backend == "process"
@@ -117,11 +118,11 @@ def test_recovery_proves_identity_without_claiming_execution_status():
 def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     executor = AgentRunEndpoint(_Transport(), backend="process")
 
-    async def request(action, *args, payload=None):
+    async def request(action, *args, **kwargs):
         assert action == "recover"
         return reply
 
-    executor._json_request = request
+    executor._invoke = request
     result = executor.recover_submission("run-1", _attachment(_run(None, backend="process")))
     assert result.disposition == expected
     assert result.ref is None
@@ -142,12 +143,12 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
 def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
     executor = AgentRunEndpoint(_Transport(), backend="process")
 
-    async def request(action, *args, payload=None):
+    async def request(action, *args, **kwargs):
         assert action == "status"
         assert args == ("opaque-job",)
         return dict(facts)
 
-    executor._json_request = request
+    executor._invoke = request
     (status,) = executor.status(_attachment(_run("opaque-job", backend="process")))
     assert status.state == expected_state
     assert status.backend_id == "opaque-job"
