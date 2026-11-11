@@ -114,7 +114,6 @@ def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner.client.local import LocalRunEndpoint
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.job import Job
-    from kkrunner.client.job import Job
 
     backend = LocalRunEndpoint()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
@@ -144,7 +143,7 @@ assert 'kkrunner.backends.supervised' not in sys.modules
 def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
-from kkrunner.native.psij import slurm
+from kkrunner.backends.psij import slurm
 assert callable(slurm.status)
 assert 'psij' not in sys.modules
 assert 'kkrunner.backends.psij.executor' not in sys.modules
@@ -213,13 +212,15 @@ for name in package.__all__:
 def forbidden(name):
     raise AssertionError("cached attribute unexpectedly resolved again: " + name)
 
-original = package.__getattr__
-package.__getattr__ = forbidden
+original = getattr(package, "__getattr__", None)
+if original is not None:
+    package.__getattr__ = forbidden
 try:
     for name, value in resolved.items():
         assert getattr(package, name) is value, name
 finally:
-    package.__getattr__ = original
+    if original is not None:
+        package.__getattr__ = original
 """
     subprocess.run([sys.executable, "-c", code, module_name], check=True, timeout=10)
 

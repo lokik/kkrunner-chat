@@ -14,7 +14,7 @@ from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.direct import DirectBackend
 from kkrunner.client.operations import BackendOperation, operation_command
-WORKER_SOURCE = operation_command(BackendOperation.for_backend(DirectBackend, "stream"), ssh=True, streaming=True)[-1]
+WORKER_SOURCE = operation_command(BackendOperation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
 
 
 def test_explicit_and_contextual_persistence(tmp_path):
@@ -122,7 +122,8 @@ def test_raw_ssh_worker_detached_does_not_require_agent_or_client_streams(tmp_pa
 
 def test_direct_ssh_detached_waits_and_retrieves_declared_streams(tmp_path):
     """An attached observer still knows exit code and obtains target files."""
-    from kkrunner.client import LocalTransport, SshDirectRunEndpoint
+    from kkrunner.client import SshRunEndpoint
+    from .test_transport import _LoopbackSshTransport
     from kkrunner.runs import LaunchSpec
 
     local, remote = tmp_path / "local", tmp_path / "remote"
@@ -136,7 +137,7 @@ def test_direct_ssh_detached_waits_and_retrieves_declared_streams(tmp_path):
         error_file=str(local / "stderr.txt"),
         launch=LaunchSpec(local_root=local, remote_root=remote),
     )
-    run = Run.create(SshDirectRunEndpoint(LocalTransport()), spec, detached=True)
+    run = Run.create(SshRunEndpoint(_LoopbackSshTransport()), spec, detached=True)
     result = run.run()
     assert result.return_code == 0
     assert run.state == RunState.FINISHED

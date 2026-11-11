@@ -4,8 +4,6 @@ import sys
 
 import pytest
 
-import kkrunner.backends.direct as direct_session
-import kkrunner.backends.direct as local
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.runs.base import ExecutionSpec, RunState
 
@@ -41,15 +39,18 @@ def test_local_stream_targets_are_independent(tmp_path, store_stdout, store_stde
         assert stderr.closed
 
 
-def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
-    stopped = []
-    stop = local.stop_local_process
+def test_repeated_cancel_sends_only_one_initial_group_signal(tmp_path, monkeypatch):
+    import os
+    import signal
+    calls = []
+    original = os.killpg
 
-    async def record_stop(process, **kwargs):
-        stopped.append(process.pid)
-        await stop(process, **kwargs)
+    def observe(pid, sig):
+        if sig == signal.SIGTERM:
+            calls.append(pid)
+        return original(pid, sig)
 
-    monkeypatch.setattr(local, "stop_local_process", record_stop)
+    monkeypatch.setattr(os, "killpg", observe)
     runner = LocalRunEndpoint().create_job(
         ExecutionSpec(
             argv=(sys.executable, "-c", "import time; time.sleep(30)"),
@@ -64,25 +65,21 @@ def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
     runner.cancel()
     runner.wait()
     assert runner.state == RunState.CANCELLED
-    assert stopped == [pid]
+    assert calls == [pid]
 
 
 def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypatch):
-    stopped = []
-    stop = local.stop_local_process
+    import os
+    from kkrunner.client.direct_channels import _OutputChannel
 
-    async def record_stop(process, **kwargs):
-        stopped.append(process.pid)
-        await stop(process, **kwargs)
-
-    async def failing_pump(source, sink, *, eof=None):
+    async def failing_write(self, data):
         raise RuntimeError("output pump failed")
 
-    monkeypatch.setattr(local, "stop_local_process", record_stop)
-    monkeypatch.setattr(direct_session, "pump_stream", failing_pump)
+    monkeypatch.setattr(_OutputChannel, "write", failing_write)
     runner = LocalRunEndpoint().create_job(
         ExecutionSpec(
-            argv=(sys.executable, "-c", "import time; time.sleep(30)"),
+            argv=(sys.executable, "-c",
+                  "import time; print('ready', flush=True); time.sleep(30)"),
             directory=str(tmp_path),
             input_file=None,
             output_file=None,
@@ -92,8 +89,10 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
     pid = int(runner.backend_id)
     with pytest.raises(RuntimeError, match="output pump failed"):
         runner.wait()
-    assert runner.state == RunState.FAILED
-    assert stopped == [pid]
+    assert runner.state is RunState.FAILED
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
 
 def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
     from kkrunner import Run
@@ -136,14 +135,10 @@ def test_local_direct_mpi_resolution_does_not_replace_declaration(tmp_path, monk
     from kkrunner import Run, ExecutionSpec
     from kkrunner.runs import LaunchSpec
 
-    monkeypatch.setattr(
-        "kkrunner.backends.support.resolve_mpi_command",
-        lambda mpi: (sys.executable, "-c"),
-    )
     spec = ExecutionSpec(
         argv=("unused-serial",),
         mpi_argv=("print('from MPI')",),
-        launch=LaunchSpec.from_mpi(True),
+        launch=LaunchSpec.from_mpi((sys.executable, "-c")),
         directory=str(tmp_path),
         output_file=str(tmp_path / "output.txt"),
     )

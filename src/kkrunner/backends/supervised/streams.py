@@ -307,6 +307,12 @@ async def follow_socket(path, offsets, on_chunk):
         raise ConnectionError("Supervisor ended without terminal outcome")
     finally:
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # A supervisor may have closed its socket after publishing the
+            # terminal frame. Cleanup must not replace the received outcome
+            # (or the original protocol exception) with a socket reset.
+            pass
 
 

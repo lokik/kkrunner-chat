@@ -11,7 +11,7 @@ from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
-from kkrunner.backends.supervised import operations as process_operations
+from kkrunner.backends.supervised import backend as process_operations
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
@@ -30,7 +30,7 @@ def test_disappeared_local_process_is_unknown(monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory("/tmp"), handle),
+        execution=Execution(ExecutionEndpointConfig(location="local", backend="process"), WorkingDirectory("/tmp"), handle),
         files=FileManifest(),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -74,24 +74,26 @@ def test_local_status_projection_and_identity_recovery_are_independent(
     monkeypatch.setattr(
         SupervisedBackend,
         "status",
-        lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity"),
+        staticmethod(lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity")),
     )
     endpoint = LocalRunEndpoint(SupervisedBackend)
     queried = endpoint.status(JobAttachment(
-        Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory(str(tmp_path)), backend_id), files,
+        Execution(ExecutionEndpointConfig(location="local", backend="process"), WorkingDirectory(str(tmp_path)), backend_id), files,
     ))[0]
     from kkrunner.files.availability import local_manifest
     projected = local_manifest(files, queried) if state.is_terminal else None
-    monkeypatch.setattr(
-        process_operations, "_recover_impl",
-        lambda run_id, request, **options: (
-            {"remote_id": backend_id, "directory": str(tmp_path)}
-            if run_id == "test-run" and request == {"executor": "process", "executor_options": {}, "directory": str(tmp_path)}
-            else pytest.fail("Unexpected recovery request")
-        ),
-    )
+    def recover(run_id, request, **options):
+        assert run_id == "test-run"
+        assert request == {
+            "backend": "process",
+            "backend_options": {},
+            "directory": str(tmp_path),
+        }
+        return {"remote_id": backend_id, "directory": str(tmp_path)}
+
+    monkeypatch.setattr(SupervisedBackend, "recover", staticmethod(recover))
     submission = JobAttachment(
-        Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory(str(tmp_path))),
+        Execution(ExecutionEndpointConfig(location="local", backend="process"), WorkingDirectory(str(tmp_path))),
         files,
     )
     recovered = LocalRunEndpoint(SupervisedBackend).recover_submission(
@@ -114,9 +116,9 @@ def test_local_status_projection_and_identity_recovery_are_independent(
 
 def test_local_status_without_manifest_keeps_backend_facts(monkeypatch, tmp_path):
     facts = {"state": "finished", "return_code": 0, "error": None, "failure_phase": None}
-    monkeypatch.setattr(SupervisedBackend, "status", lambda backend_id: facts)
+    monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda backend_id: facts))
     attachment = JobAttachment(
-        Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory(str(tmp_path)), "opaque"),
+        Execution(ExecutionEndpointConfig(location="local", backend="process"), WorkingDirectory(str(tmp_path)), "opaque"),
         FileManifest(),
     )
     status = LocalRunEndpoint(SupervisedBackend).status(attachment)[0]

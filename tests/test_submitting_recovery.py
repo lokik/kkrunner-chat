@@ -6,7 +6,7 @@ import pytest
 from kkrunner.runs import DuplicateSubmissionError, RunStatus
 from kkrunner.backends.contracts import JobRef, RecoveryResult
 from kkrunner.client.run_parts import RunParts
-from kkrunner.client.pool import ExecutorPool
+from kkrunner.client.pool import EndpointPool
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
@@ -76,7 +76,7 @@ def _run(manager, executor, tmp_path):
 
 def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
     executor = _RecoveringExecutor(RecoveryResult.absent())
-    manager = RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool(), submitting_grace=0)
+    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool(), submitting_grace=0)
     abandoned = _run(manager, executor, tmp_path)
     manager.reserve(abandoned.record)
     replacement = _run(manager, executor, tmp_path)
@@ -93,7 +93,7 @@ def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
     "recovered, grace, expected_state, expected_backend, recovery_calls",
     [
         pytest.param(
-            RecoveryResult.found(JobRef("process", "existing-job")),
+            RecoveryResult.found(JobRef("direct", "existing-job")),
             0,
             RunState.QUEUED,
             "existing-job",
@@ -109,7 +109,7 @@ def test_unresolved_or_recovered_submission_keeps_duplicate_protection(
     tmp_path, recovered, grace, expected_state, expected_backend, recovery_calls
 ):
     executor = _RecoveringExecutor(recovered)
-    manager = RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool(), submitting_grace=grace)
+    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool(), submitting_grace=grace)
     uncertain = _run(manager, executor, tmp_path)
     manager.reserve(uncertain.record)
     replacement = _run(manager, executor, tmp_path)

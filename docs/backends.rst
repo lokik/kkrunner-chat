@@ -20,10 +20,12 @@ Choose an execution backend
 
 
 Location and execution mode are independent. ``LocalRunEndpoint(BackendClass)``
-invokes the selected namespace locally; ``SshRunEndpoint(transport,
-backend=BackendClass)`` invokes it over SSH. Both accept all three classes
-above and default to ``DirectBackend``. A backend determines execution lifetime,
-reattachment support and its ``SshHelper``; location never selects supervision.
+and ``SshRunEndpoint(transport, backend=BackendClass)`` construct configured backend
+instances; both also accept an already configured instance. They default to
+``DirectBackend``. ``endpoint.backend`` is always an instance. Its immutable
+``options`` and ``supports`` are computed when constructed; the backend class
+still supplies the static native operations and ``SshHelper``. Location never
+selects supervision.
 The persisted descriptor stores ``location="local"`` or ``"ssh"`` separately
 from ``backend="direct"``, ``"process"`` or ``"psij"`` and backend options.
 
@@ -32,7 +34,7 @@ Target-side backend code and SSH helpers
 ----------------------------------------
 
 All target backend operations are declared as static methods on their
-backend class. For each supported backend the SSH endpoint applies its
+backend class. The SSH endpoint selects ``type(endpoint.backend)`` and applies its
 ``SshHelper`` and transmits only the selected method definition. The helper
 does **not** create a new job state machine.
 
@@ -117,12 +119,12 @@ was supplied. The same manager interface accepts a scheduler endpoint:
    from kkrunner.backends import PsijBackend
    from kkrunner.client import LocalRunEndpoint
 
-   endpoint = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "slurm"})
+   endpoint = LocalRunEndpoint(PsijBackend(executor_name="slurm"))
    # manager and spec are created as in the persistent-run example.
    run = manager.create_run(endpoint, spec)
    run.submit()
 
-Backend classes and configured endpoints can be created without PSI/J
+Backend instances and configured endpoints can be created without PSI/J
 installed; executing a scheduler operation needs the extra. A scheduler job is only the backend part of
 a run: downloads and application processing may continue after that job exits.
 
@@ -139,6 +141,15 @@ Close explicitly owned pools when their application scope ends.
 
 Recovery capabilities
 -----------------------
+
+A configured backend exposes an immutable set of capabilities through
+``endpoint.backend.supports``. ``REATTACH`` means reconnecting with a known
+job ID is supported; ``RECOVER`` means the selected configuration implements
+submission discovery without a known job ID. ``PsijBackend(executor_name="slurm",
+url=None)`` supports both. Other PSI/J schedulers, and Slurm with an explicit
+URL, support reattachment but not ``RECOVER``. Backend capabilities describe
+available operations, not guaranteed success or retention of scheduler records.
+
 
 Reconnecting with a stored backend ID and recovering an interrupted submission
 are different operations. A crash during submission can leave a ``submitting``
@@ -207,10 +218,11 @@ does not supply MPI libraries or repair a binary's runtime linkage.
 Architecture boundary
 ---------------------
 
-Backend classes are namespaces of static target operations. They neither
-create client Jobs nor receive client file manifests. ``LocalRunEndpoint``
-holds the selected backend class and calls its methods directly. SSH selects
-``Backend.SshHelper`` and sends a single method definition. The endpoint
+Backend classes define static target operations; their configured instances
+own the immutable ``options`` and ``supports``. They neither create client Jobs
+nor receive client file manifests. ``LocalRunEndpoint`` holds a configured
+backend instance and invokes its static methods. SSH selects
+``type(endpoint.backend).SshHelper`` and sends a single method definition. The endpoint
 creates the client ``Job`` and composes it with a file session as ``RunParts``.
 
 The file session prepares mapped paths and a manifest, but does not decide
@@ -241,7 +253,7 @@ the calculation requires the separate backend ``cancel`` operation. PSI/J
 observation uses native status callbacks and releases them on detach.
 
 Runtime ownership and immutable declarations
--------------------------------------------
+--------------------------------------------
 
 The public ``Run.spec`` is the original execution declaration, not a scratch
 space for active file streams or transport resources. For direct processes the

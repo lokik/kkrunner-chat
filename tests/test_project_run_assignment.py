@@ -69,7 +69,8 @@ def test_run_is_durable_in_project_namespace_before_backend_submit(tmp_path):
     observed = []
     executor.runner.on_submit = lambda: observed.append(manager.store.get(run.id).state)
     run.submit()
-    assert executor.run_id == run.id
+    assert executor.run_id == run.record.execution.submission_key
+    assert executor.run_id != run.id
     assert observed == [RunState.SUBMITTING]
     stored = manager.store.get(run.id)
     assert stored.metadata["test"]["input_definition"] == "DOS"

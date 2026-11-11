@@ -3,7 +3,7 @@ import asyncio
 from kkrunner import ExecutionSpec
 from kkrunner.files import FileManifest
 from kkrunner.runs import LaunchSpec, MpiSpec
-from kkrunner.client import LocalTransport, AgentRunEndpoint
+from kkrunner.client import LocalTransport, SshRunEndpoint
 
 
 def test_remote_request_carries_target_executor_options(tmp_path):
@@ -16,8 +16,8 @@ def test_remote_request_carries_target_executor_options(tmp_path):
     potential = directory / "start.pot"
     potential.write_text("potential")
     output_file = (directory / "run.out").open("wb")
-    executor = AgentRunEndpoint(
-        LocalTransport(), backend="psij", backend_options={"backend": "slurm", "url": None}
+    executor = SshRunEndpoint(
+        LocalTransport(), backend="psij", backend_options={"executor_name": "slurm", "url": None}
     )
     launch = LaunchSpec(
         mpi=MpiSpec(required=True, autodetect=True, process_count=16),
@@ -38,9 +38,9 @@ def test_remote_request_carries_target_executor_options(tmp_path):
     files = parts.files
     context = files.context
     remote_directory = asyncio.run(context.map_directory(directory))
-    request = asyncio.run(files._prepare_request("test-run", remote_directory, FileManifest.from_spec(spec)))
-    assert request["executor"] == "psij"
-    assert request["executor_options"] == {"backend": "slurm", "url": None}
+    request = executor.submission_request(asyncio.run(files._prepare_request(remote_directory, FileManifest.from_spec(spec))), submission_key="test-run")
+    assert request["backend"] == "psij"
+    assert request["backend_options"] == {"executor_name": "slurm", "url": None}
     assert request["argv"] == ["program"]
     assert request["mpi_uses_stdin"] is True
     assert request["mpi_argv"][0] == "programMPI"
@@ -69,7 +69,7 @@ def test_nonproject_remote_request_does_not_publish_project_identity(tmp_path):
     root = tmp_path / "local"
     directory = root / "work"
     directory.mkdir(parents=True)
-    executor = AgentRunEndpoint(LocalTransport(), backend="psij")
+    executor = SshRunEndpoint(LocalTransport(), backend="psij")
     files = executor.create_run_parts(
         ExecutionSpec(
             argv=("program",),
@@ -80,11 +80,11 @@ def test_nonproject_remote_request_does_not_publish_project_identity(tmp_path):
         )
     )
     request, _manifest = asyncio.run(files.files._prepare_async())
-    assert request["id"] is None
+    assert executor.submission_request(request)["id"] is None
 
 
 def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
-    from kkrunner.remote.messages import request_to_spec
+    from kkrunner.backends.support.messages import request_to_spec
 
     root = tmp_path / "local"
     directory = root / "work"
@@ -93,7 +93,7 @@ def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
     auxiliary = directory / "plot-*.dat"
     cache = directory / "restart.dat"
     cache.write_text("restart")
-    executor = AgentRunEndpoint(LocalTransport())
+    executor = SshRunEndpoint(LocalTransport())
     spec = ExecutionSpec(
         argv=("program",),
         directory=str(directory),
@@ -105,7 +105,7 @@ def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
     )
     files = executor.create_run_parts(spec).files
     remote_dir = tmp_path / "remote" / "work"
-    request = asyncio.run(files._prepare_request("test-run", str(remote_dir), FileManifest.from_spec(spec)))
+    request = asyncio.run(files._prepare_request(str(remote_dir), FileManifest.from_spec(spec)))
     assert "output_files" not in request
     assert "cache_files" not in request
     restored = request_to_spec(request)

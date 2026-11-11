@@ -82,9 +82,9 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
     assert not SupervisedBackend.session_bound
     assert not PsijBackend.session_bound
     expected = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
-    assert DirectBackend.supports == frozenset()
-    assert SupervisedBackend.supports == expected
-    assert PsijBackend.supports == expected
+    assert DirectBackend().supports == frozenset()
+    assert SupervisedBackend().supports == expected
+    assert PsijBackend().supports == expected
 
 
 def test_direct_rejects_reattachment_without_resubmission(tmp_path):
@@ -123,6 +123,6 @@ def test_client_context_provides_backend_identity_for_job_ref(tmp_path):
     from kkrunner.client.job import Job
     from kkrunner.runs.base import ExecutionSpec
 
-    context = SimpleNamespace(backend=PsijBackend)
+    context = SimpleNamespace(backend=PsijBackend())
     job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)), backend_id="opaque-id")
     assert job.ref == JobRef("psij", "opaque-id")

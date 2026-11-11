@@ -2,7 +2,7 @@
 
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import PsijBackend
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
 from kkrunner.files import FileManifest, FileState
 
 
@@ -16,4 +16,4 @@ def test_result_file_names_use_canonical_public_api():
 def test_result_file_retrieval_is_an_explicit_endpoint_capability():
     assert LocalRunEndpoint.supports_result_file_retrieval is False
     assert LocalRunEndpoint(PsijBackend).supports_result_file_retrieval is False
-    assert AgentRunEndpoint.supports_result_file_retrieval is True
+    assert SshRunEndpoint.supports_result_file_retrieval is True

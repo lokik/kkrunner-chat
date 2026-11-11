@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.client.endpoint import endpoint_config_for_executor
+from kkrunner.client.endpoint import describe_endpoint
 from kkrunner.files.manifest import FileManifest
-from kkrunner.client.agent import AgentRunEndpoint
-from kkrunner.client.transport import LocalTransport
+from kkrunner.client.ssh import SshRunEndpoint
+from .test_remote import _OperationLoopbackTransport
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
 from kkrunner.runs.model import Execution, WorkingDirectory
 from kkrunner.client.contracts import JobAttachment
@@ -17,8 +17,8 @@ from kkrunner.runs.records import RunRecord
 
 
 def _executor(*, backend="process"):
-    return AgentRunEndpoint(
-        LocalTransport(), backend=backend, command=(sys.executable, "-m", "kkrunner_cli")
+    return SshRunEndpoint(
+        _OperationLoopbackTransport(), backend=backend
     )
 
 
@@ -48,7 +48,7 @@ def _processed(raw):
             error=b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes(),
         )
 
-    runner = Run(raw.job, backend=raw.backend, file_session=raw.files, process_result=process)
+    runner = Run(raw.job, endpoint=raw.backend, file_session=raw.files, process_result=process)
     runner.start()
     return runner
 
@@ -101,7 +101,7 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
     (remote_root / "calculation" / "release").write_text("go")
     assert attached.backend_id == run.execution.backend_id
     result = attached.wait()
-    assert attached.state == RunState.FINISHED
+    assert attached.state == RunState.FINISHED, (attached.failure_message, attached.failure_phase, repr(attached._job.output_error))
     assert result.return_code == 0
     assert result.output == b"done\n"
     assert (workdir / "run.out").read_bytes() == b"done\n"
@@ -140,7 +140,11 @@ def test_remote_executor_first_attach_after_completion_replays_finished_run(tmp_
         launch=_launch(local_root, remote_root),
     )
     original = Run.direct(first_executor, spec)
-    assert original.run().return_code == 0
+    original_result = original.run()
+    assert original_result.return_code == 0, (
+        original.state, original.failure_message, original.failure_phase,
+        repr(original._job.output_error), original._job.state,
+    )
     run = _record(original)
     assert run.execution.backend_id is not None
     executor = _executor()
@@ -161,7 +165,7 @@ def test_remote_executor_attach_rejects_reference_for_other_backend(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_config_for_executor(_executor(backend="psij")),
+            describe_endpoint(_executor(backend="psij")),
             WorkingDirectory(str(tmp_path), "/remote/calculation"),
             "job",
         ),
@@ -192,7 +196,7 @@ def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            endpoint_config_for_executor(endpoint), WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle"
+            describe_endpoint(endpoint), WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle"
         ),
         files=FileManifest(stdout=FileEntry(local_path=str(local_output), remote_path=str(remote_root / "run.out"))),
         metadata={"example": {"task": "SCF"}},

@@ -5,7 +5,7 @@ from kkrunner.backends.contracts import JobRef, RecoveryResult
 
 
 def test_scheduler_handle_contains_only_native_execution_identity():
-    identity = {"kind": "psij", "backend": "slurm", "url": None, "native_id": "123"}
+    identity = {"kind": "psij", "executor_name": "slurm", "url": None, "native_id": "123"}
     handle = encode_handle(identity)
     assert decode_handle(handle) == identity
     assert all(key not in decode_handle(handle) for key in (
@@ -14,7 +14,7 @@ def test_scheduler_handle_contains_only_native_execution_identity():
 
 
 def test_recovery_stream_locations_are_separate_from_job_reference():
-    handle = encode_handle({"kind": "psij", "backend": "slurm", "url": None, "native_id": "123"})
+    handle = encode_handle({"kind": "psij", "executor_name": "slurm", "url": None, "native_id": "123"})
     recovery = RecoveryResult.found(
         JobRef("psij", handle),
         directory="/scratch/work", output_file="run.out", error_file="run.err",

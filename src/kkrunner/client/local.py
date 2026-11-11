@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from kkrunner.backends import backend_class
+from kkrunner.backends import configured_backend
 from kkrunner.backends.contracts import BackendCapability, JobRef, RecoveryResult, UnsupportedCapability
 from kkrunner.client.contracts import RunEndpoint
 from kkrunner.client.execution_request import execution_request
@@ -18,9 +18,10 @@ from kkrunner.support.async_utils import run_coro_sync
 
 
 class LocalRunEndpoint(RunEndpoint):
-    """Invoke a backend namespace on this host, without a backend instance.
+    """Invoke the selected configured backend on this host.
 
-    Configuration and client attachment belong here. The target operations
+    Backend configuration belongs to ``self.backend``. Client attachment
+    and transport resources belong here. The target operations
     see only an execution request or an opaque job reference.
     """
 
@@ -28,9 +29,7 @@ class LocalRunEndpoint(RunEndpoint):
     supports_tracked_runs = True
 
     def __init__(self, backend=None, *, backend_options=None):
-        self.backend = backend_class("direct") if backend is None else backend
-        self.backend_options = dict(getattr(self.backend, "default_options", ()))
-        self.backend_options.update(backend_options or {})
+        self.backend = configured_backend(backend, options=backend_options)
         self.transport = LocalTransport()
 
     @property
@@ -53,7 +52,7 @@ class LocalRunEndpoint(RunEndpoint):
             return {
                 **execution_request(spec),
                 "backend": self.backend.name,
-                "backend_options": dict(self.backend_options),
+                "backend_options": dict(self.backend.options),
                 "id": submission_key or uuid4().hex,
                 "detached": True,
             }
@@ -67,7 +66,7 @@ class LocalRunEndpoint(RunEndpoint):
         return RunParts(self.create_job(spec, submission_key=submission_key, callback=callback))
 
     def _operation(self, name):
-        return BackendOperation.for_backend(self.backend, name)
+        return BackendOperation.for_backend(type(self.backend), name)
 
     async def _submit(self, request):
         return await self.transport.call(self._operation("submit"), request)
@@ -143,7 +142,7 @@ class LocalRunEndpoint(RunEndpoint):
             return RecoveryResult.unsupported("Direct execution has no submission recovery")
         reply = run_coro_sync(self.transport.call(
             self._operation("recover"), submission_key,
-            {"backend": self.backend.name, "backend_options": self.backend_options,
+            {"backend": self.backend.name, "backend_options": dict(self.backend.options),
              "directory": submission.execution.directory.target},
             submitted_at=submitted_at,
         ))

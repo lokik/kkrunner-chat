@@ -41,7 +41,9 @@ class SupervisedBackend(Backend, ManagedOperations):
     session_bound = False
     default_persistent = True
     default_detached = True
-    supports = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
 
     @staticmethod
     def acknowledge_submission(run_id: str) -> AcknowledgeReply:
@@ -289,7 +291,8 @@ class SupervisedBackend(Backend, ManagedOperations):
             if facts["state"] != RunState.FAILED.value or facts.get("failure_phase") != FailurePhase.LAUNCH.value:
                 raise
             return facts
-        except (FileNotFoundError, ConnectionRefusedError):
+        except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError,
+                ConnectionAbortedError, BrokenPipeError):
             # A completed supervisor has removed its transient socket. Replay
             # declared spools once, without the historical polling lifecycle.
             facts = SupervisedBackend.status(remote_id)

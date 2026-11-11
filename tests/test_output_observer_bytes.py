@@ -53,8 +53,11 @@ def test_remote_pump_delivers_bytes_without_runner_decoder():
     runner = object.__new__(Job)
     runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
     runner._stream_writer = lambda data, kind: written.append((data, kind))
+    from threading import Event
+    runner._observation_stopped = Event()
     source = SimpleNamespace(read=AsyncMock(side_effect=[b"remote:\xff", b""]))
-    asyncio.run(runner._pump(source, "out"))
+    while data := asyncio.run(source.read(65536)):
+        runner._observed_output(data, "out")
     assert written == [(b"remote:\xff", "out")]
     assert received == [("remote:�", "out")]
 
@@ -67,8 +70,11 @@ def test_shared_job_decodes_bytes_when_no_client_file_sink():
     runner = object.__new__(Job)
     runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
     runner._stream_writer = None
+    from threading import Event
+    runner._observation_stopped = Event()
     source = SimpleNamespace(read=AsyncMock(side_effect=["výstup".encode("utf8"), b""]))
-    asyncio.run(runner._pump(source, "out"))
+    while data := asyncio.run(source.read(65536)):
+        runner._observed_output(data, "out")
     assert received == [("výstup", "out")]
 
 

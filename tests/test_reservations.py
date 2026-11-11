@@ -9,7 +9,7 @@ from kkrunner.runs import DuplicateSubmissionError, LaunchSpec
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.client import AgentRunEndpoint, SshTransport
+from kkrunner.client import SshRunEndpoint, SshTransport
 from kkrunner.runs.conflicts import submission_conflicts
 
 
@@ -22,7 +22,7 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
             assert command == ("sh", "-c", 'printf "%s" "$HOME"')
             return SimpleNamespace(stdout=b"/home/tester\n")
 
-    executor = AgentRunEndpoint(Transport("cluster"))
+    executor = SshRunEndpoint(Transport("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     spec = ExecutionSpec(
         ["unused"],
@@ -48,13 +48,13 @@ def test_explicit_shared_filesystem_connects_different_host_aliases(tmp_path):
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/shared/work",
-        endpoint=ExecutionEndpointConfig(executor="ssh", host="host-a", filesystem_id="shared"),
+        endpoint=ExecutionEndpointConfig(location="ssh", host="host-a", filesystem_id="shared"),
         files=FileManifest(stdout=FileEntry(str(tmp_path / "one/out"), "/shared/work/out")),
     )
     second = manager.new_record(
         directory=tmp_path / "two",
         remote_directory="/shared/work",
-        endpoint=ExecutionEndpointConfig(executor="ssh", host="host-b", filesystem_id="shared"),
+        endpoint=ExecutionEndpointConfig(location="ssh", host="host-b", filesystem_id="shared"),
         files=FileManifest(stdout=FileEntry(str(tmp_path / "two/out"), "/shared/work/out")),
     )
     assert submission_conflicts(first, second)

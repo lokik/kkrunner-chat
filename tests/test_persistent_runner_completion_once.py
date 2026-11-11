@@ -47,9 +47,9 @@ def _run(tmp_path, *, manager=None, backend=None, record=None, job=None, callbac
             record, state=RunState.RUNNING,
             execution=record.execution.submitted("backend-job"),
         )
-    manager.register_executor(backend, record.execution.endpoint)
+    manager.register_endpoint(backend, record.execution.endpoint)
     job = job or _Job()
-    return Run(job, manager=manager, backend=backend, record=record, callback=callback), job, manager, backend
+    return Run(job, manager=manager, endpoint=backend, record=record, callback=callback), job, manager, backend
 
 
 def test_reading_state_does_not_write_to_store(tmp_path, monkeypatch):

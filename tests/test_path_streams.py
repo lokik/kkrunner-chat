@@ -5,7 +5,7 @@ import sys
 from kkrunner import ExecutionSpec, Run
 from kkrunner.runs import LaunchSpec
 from kkrunner.client.local import LocalRunEndpoint
-from kkrunner.client import LocalTransport, AgentRunEndpoint
+from kkrunner.client import SshRunEndpoint, SshTransport
 
 
 def test_raw_local_paths_and_stdin_are_materialized_at_submission(tmp_path):
@@ -30,7 +30,15 @@ def test_raw_remote_paths_work_with_only_runner_on_target(tmp_path):
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
     remote.mkdir()
-    executor = AgentRunEndpoint(LocalTransport(), command=(sys.executable, "-m", "kkrunner"))
+    class LoopbackSshTransport(SshTransport):
+        def __init__(self):
+            super().__init__("loopback", python_command=(sys.executable,))
+
+        def _command(self, argv, cwd=None):
+            assert cwd is None
+            return tuple(argv)
+
+    executor = SshRunEndpoint(LoopbackSshTransport())
     spec = ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=local,

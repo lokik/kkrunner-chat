@@ -253,7 +253,7 @@ class SshDirectChannel:
         request, _ = await prepare_direct_request(self.context.transport, request)
         request["detached"] = self.detached
         return await self.context.transport.start_operation(
-            BackendOperation.for_backend(self.context.endpoint.backend, "stream"), request,
+            BackendOperation.for_backend(type(self.context.endpoint.backend), "stream"), request,
         )
 
     async def stop(self, process, *, discard_output=False):

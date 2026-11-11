@@ -2,24 +2,26 @@
 
 import pytest
 
-from kkrunner.client.pool import ExecutorPool
+from kkrunner.client.pool import EndpointPool
 
 
 def test_endpoint_normalizes_known_defaults_without_resolving_hostnames():
     from kkrunner.client.endpoint import ExecutionEndpointConfig
 
-    assert ExecutionEndpointConfig(executor="psij") == ExecutionEndpointConfig(executor="psij", psij_backend="slurm", host="unused")
-    assert ExecutionEndpointConfig(executor="ssh", host="cluster") == ExecutionEndpointConfig(
-        executor="ssh", host="cluster", remote_command=("kkrunner",)
+    assert ExecutionEndpointConfig(backend="psij") == ExecutionEndpointConfig(
+        backend="psij", backend_options={"executor_name": "slurm"}
     )
-    assert ExecutionEndpointConfig(executor="ssh", host="cluster") != ExecutionEndpointConfig(
-        executor="ssh", host="cluster.example.org"
+    assert ExecutionEndpointConfig(location="ssh", host="cluster") == ExecutionEndpointConfig(
+        location="ssh", host="cluster", python_command=("python3",)
+    )
+    assert ExecutionEndpointConfig(location="ssh", host="cluster") != ExecutionEndpointConfig(
+        location="ssh", host="cluster.example.org"
     )
 
 
 def test_executor_pool_close_attempts_all_after_failure():
     """One failing backend must not prevent cleanup of the remaining backends."""
-    pool = ExecutorPool()
+    pool = EndpointPool()
     closed = []
     backends = {}
 
@@ -50,7 +52,7 @@ def test_executor_pool_close_attempts_all_after_failure():
 
 
 def test_executor_pool_close_accepts_backends_without_close():
-    pool = ExecutorPool()
+    pool = EndpointPool()
     executor = object()
     pool.get("no-close", lambda: executor)
     pool.close()
@@ -59,7 +61,7 @@ def test_executor_pool_close_accepts_backends_without_close():
 
 def test_executor_pool_closes_shared_backend_only_once():
     """A backend may be cached under several keys but is one owned object."""
-    pool = ExecutorPool()
+    pool = EndpointPool()
     calls = []
 
     class Shared:

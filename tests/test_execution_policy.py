@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from kkrunner.client.endpoint import endpoint_config_for_executor
+from kkrunner.client.endpoint import describe_endpoint
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.client.job import Job
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
@@ -126,11 +126,11 @@ class _UncertainRunner(_NotStartedRunner):
 def _project_wrapper(tmp_path, runner):
     manager = RunManager(RunStore(tmp_path / "runs"))
     executor = LocalRunEndpoint()
-    endpoint = endpoint_config_for_executor(executor)
+    endpoint = describe_endpoint(executor)
     record = manager.new_record(
         directory=tmp_path, endpoint=endpoint, metadata={"test": {"task": "SCF"}}, processing_required=True
     )
-    return (manager, Run(runner, manager=manager, backend=executor, record=record))
+    return (manager, Run(runner, manager=manager, endpoint=executor, record=record))
 
 
 def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):

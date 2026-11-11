@@ -3,13 +3,13 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from kkrunner.client.local import LocalRunEndpoint
-from kkrunner.backends import PsijBackend
+from kkrunner.backends import PsijBackend, SupervisedBackend
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.job import Job
-from kkrunner.client.endpoint import ExecutionEndpointConfig
+from kkrunner.client.endpoint import ExecutionEndpointConfig, describe_endpoint
 from kkrunner.client.run_parts import RunParts
 from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
-from kkrunner.client.agent import _AgentRunContext
+from kkrunner.client.ssh import _SshRunContext
 from kkrunner.client.job import Job
 from kkrunner.runs.base import LaunchSpec, RunState
 from kkrunner.runs.manager import RunManager
@@ -54,13 +54,14 @@ class _AttachExecutor(LocalRunEndpoint):
 
 def test_manager_attach_forwards_initial_output_listener(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    record = manager.new_record(directory=tmp_path, metadata={"test": {"task": "SCF"}}, processing_required=True)
+    endpoint = _AttachExecutor(SupervisedBackend)
+    record = manager.new_record(directory=tmp_path, endpoint=describe_endpoint(endpoint), metadata={"test": {"task": "SCF"}}, processing_required=True)
     record = replace(record, state=RunState.RUNNING, execution=record.execution.submitted("123"))
     manager.store.save(record)
     output = []
     runner = manager.attach(
         record,
-        backend=_AttachExecutor(),
+        endpoint=endpoint,
         process_result=lambda result: result,
         output_listener=lambda text, kind: output.append((text, kind)),
     )
@@ -87,14 +88,14 @@ def _remote_context(tmp_path):
                 "output_file": "/remote/work/output.out",
             }
 
-    context = _AgentRunContext(Endpoint(), LaunchSpec(local_root=str(tmp_path), remote_root="/remote"))
+    context = _SshRunContext(Endpoint(), LaunchSpec(local_root=str(tmp_path), remote_root="/remote"))
     run = RunRecord(
         id="run",
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpointConfig(executor="ssh", host="host"),
+            ExecutionEndpointConfig(location="ssh", host="host"),
             WorkingDirectory(str(tmp_path / "work"), "/remote/work"),
             "run",
         ),
@@ -158,9 +159,8 @@ def test_remote_attach_can_defer_monitor_start(monkeypatch, tmp_path):
 
 
 def _psij_executor(monkeypatch):
-    endpoint = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"})
-    from kkrunner.backends.psij import operations
-    monkeypatch.setattr(operations, "_status_impl", lambda identity: {"state": "running"})
+    endpoint = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "slurm"})
+    monkeypatch.setattr(PsijBackend, "status", staticmethod(lambda identity: {"state": "running"}))
     return endpoint
 
 
@@ -171,7 +171,7 @@ def _psij_run(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpointConfig(executor="psij", psij_backend="slurm"), WorkingDirectory(str(tmp_path)), "42"
+            ExecutionEndpointConfig(backend="psij", backend_options={"executor_name": "slurm"}), WorkingDirectory(str(tmp_path)), "42"
         ),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "output.out")),
