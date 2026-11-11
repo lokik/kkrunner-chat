@@ -10,7 +10,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client import LocalTransport, SshDirectRunEndpoint
 from kkrunner.client.ssh_direct.transport import _FINALIZE_SOURCE, _QUERY_SOURCE
-from kkrunner.client.ssh_direct.worker import WORKER_SOURCE
+from kkrunner.backends.direct import WORKER_SOURCE
 from kkrunner.runs import LaunchSpec
 
 
@@ -102,7 +102,7 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
 
 
 def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
-    from kkrunner.backends.process.backend import DirectProcessBackend
+    from kkrunner.backends import DirectProcessBackend
     from kkrunner.client.job import Job
     local = DirectProcessBackend().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
     remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(
@@ -196,7 +196,7 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
 
 
 def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path):
-    from kkrunner.backends.process.backend import DirectProcessBackend
+    from kkrunner.backends import DirectProcessBackend
     job = DirectProcessBackend().create_job(
         ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path))
     )
@@ -206,7 +206,7 @@ def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path
 
 def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
     """Direct adapters return the command specification, never mutate Job state."""
-    from kkrunner.client.ssh_direct.runtime import SshProcessAdapter
+    from kkrunner.backends.direct import SshProcessAdapter
     from kkrunner.client.remote_paths import RemotePathContext
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)

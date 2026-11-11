@@ -104,7 +104,7 @@ def test_native_backend_attach_receives_only_job_context(tmp_path):
 
 
 def test_raw_ssh_and_local_share_native_job_factory(monkeypatch, tmp_path):
-    from kkrunner.backends.process.backend import DirectProcessBackend
+    from kkrunner.backends import DirectProcessBackend
     from kkrunner.client import SshDirectRunEndpoint, LocalTransport
     from kkrunner.runs.base import ExecutionSpec
 
@@ -158,7 +158,7 @@ def test_protocol_definitions_are_independent_of_implementations():
     import kkrunner.client as client
     from kkrunner.backends.contracts import Backend, JobProtocol, RecoverableBackend
     from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint, RunningCommand
-    from kkrunner.backends.process.direct.contracts import DirectProcessAdapter
+    from kkrunner.backends.direct import DirectProcessAdapter
 
     assert Backend.__module__ == "kkrunner.backends.contracts"
     assert RecoverableBackend.__module__ == "kkrunner.backends.contracts"
@@ -166,7 +166,7 @@ def test_protocol_definitions_are_independent_of_implementations():
     assert RunEndpoint.__module__ == "kkrunner.client.contracts"
     assert ReopenableRunEndpoint.__module__ == "kkrunner.client.contracts"
     assert RunningCommand.__module__ == "kkrunner.client.contracts"
-    assert DirectProcessAdapter.__module__ == "kkrunner.backends.process.direct.contracts"
+    assert DirectProcessAdapter.__module__ == "kkrunner.backends.direct"
     assert not hasattr(backends, "ProcessBackend")
     assert not hasattr(backends, "ProtocolBackend")
     assert not hasattr(client, "BackendPool")

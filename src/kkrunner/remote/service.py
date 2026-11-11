@@ -5,14 +5,14 @@ are delegated through the registry below. Backend-specific execution logic
 remains in the respective backend modules.
 """
 
-from importlib import import_module
-
 from kkrunner.remote.handles import decode_handle
 
 
 def _backend_for_kind(kind):
-    from kkrunner.backends.registry import operation_module
-    return import_module(operation_module(kind))
+    from kkrunner.backends import backend_module, installed_backend_names
+    if kind not in installed_backend_names():
+        raise ValueError(f"Backend {kind!r} is not available through the installed agent")
+    return backend_module(kind)
 
 
 def _backend_for_request(request):

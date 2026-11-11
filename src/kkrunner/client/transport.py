@@ -116,6 +116,56 @@ async def _completed_process(process, argv, input=None, check=True):
     return result
 
 
+
+class _LocalOperationProcess:
+    """Own the local streaming command and its out-of-band return value.
+
+    The transport's stdout/stderr remain exclusively calculation bytes.
+    A private temporary receipt contains the Python operation's return value;
+    it is removed after wait(), including on unsuccessful helper exit.
+    """
+
+    def __init__(self, process, receipt_path):
+        self._process = process
+        self._receipt_path = receipt_path
+        self._settled = False
+        self.terminal = None
+        self.stdout = process.stdout
+        self.stderr = process.stderr
+        self.stdin = process.stdin
+
+    @property
+    def returncode(self):
+        return self._process.returncode
+
+    async def wait(self):
+        code = await self._process.wait()
+        if not self._settled:
+            self._settled = True
+            try:
+                if code == 0:
+                    with open(self._receipt_path, encoding="utf8") as receipt:
+                        payload = receipt.read()
+                    self.terminal = json.loads(payload) if payload else None
+            finally:
+                try:
+                    os.unlink(self._receipt_path)
+                except FileNotFoundError:
+                    pass
+        return code
+
+    async def communicate(self, input=None):
+        stdout, stderr = await self._process.communicate(input)
+        await self.wait()
+        return stdout, stderr
+
+    def terminate(self):
+        self._process.terminate()
+
+    def kill(self):
+        self._process.kill()
+
+
 class LocalTransport(Transport):
     """Transport backed by asyncio subprocesses and the local filesystem."""
 
@@ -136,9 +186,18 @@ class LocalTransport(Transport):
         return json.loads(json.dumps(result, allow_nan=False))
 
     async def start_operation(self, operation: BackendOperation, *args, **kwargs):
+        import tempfile
+
         payload = operation_payload(args, kwargs)
         command = operation_command(operation, python=(__import__("sys").executable,), streaming=True)
-        return await self.start((*command, payload), stdin=asyncio.subprocess.PIPE)
+        fd, receipt_path = tempfile.mkstemp(prefix="kkrunner-operation-", suffix=".json")
+        os.close(fd)
+        try:
+            process = await self.start((*command, payload, receipt_path), stdin=asyncio.subprocess.PIPE)
+        except BaseException:
+            os.unlink(receipt_path)
+            raise
+        return _LocalOperationProcess(process, receipt_path)
 
     async def start(self, argv, *, cwd=None, stdin=None):
         return await asyncio.create_subprocess_exec(

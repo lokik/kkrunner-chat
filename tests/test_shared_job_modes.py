@@ -33,7 +33,7 @@ def test_supervised_and_remote_agent_create_the_same_job_class(tmp_path):
 
 
 def test_psij_client_uses_the_same_job_class(monkeypatch, tmp_path):
-    import kkrunner.backends.psij.backend as module
+    import kkrunner.backends.psij as module
 
     class NativeExecutor:
         @classmethod
@@ -49,7 +49,7 @@ def test_psij_client_uses_the_same_job_class(monkeypatch, tmp_path):
 
 
 def test_direct_confirmed_exit_is_distinct_from_unknown_channel(tmp_path):
-    from kkrunner.backends.process.direct.local import LocalProcessAdapter
+    from kkrunner.backends.direct import LocalProcessAdapter
 
     class UncertainChannel(LocalProcessAdapter):
         expose_pid = False
@@ -79,7 +79,7 @@ def test_direct_cancel_before_submit_never_launches(tmp_path):
 
 
 def test_direct_session_is_private_resource_owner_without_second_job_state(tmp_path):
-    from kkrunner.client.direct_session import DirectSession
+    from kkrunner.backends.direct import DirectSession
 
     spec = ExecutionSpec((sys.executable, "-c", "print('ok')"), directory=str(tmp_path))
     job = DirectProcessBackend().create_job(spec)

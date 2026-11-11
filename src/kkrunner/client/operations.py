@@ -60,7 +60,10 @@ sys.stdout.write(json.dumps(result))
 _INSTALLED_START = """import importlib, json, sys
 operation = getattr(importlib.import_module(sys.argv[1]), sys.argv[2])
 request = json.loads(sys.argv[3])
-operation(*request['args'], **request['kwargs'])
+result = operation(*request['args'], **request['kwargs'])
+if len(sys.argv) > 4:
+    with open(sys.argv[4], 'w', encoding='utf8') as receipt:
+        json.dump(result, receipt, allow_nan=False)
 """
 
 

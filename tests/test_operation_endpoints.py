@@ -76,11 +76,30 @@ def test_reject_nonportable_operation_before_submission():
 def test_installed_backend_operation_receives_only_explicit_json_arguments(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
-        operation = BackendOperation.installed("kkrunner.backends.mpi", "resolve_mpi_options")
+        operation = BackendOperation.installed("kkrunner.backends.support", "resolve_mpi_options")
         # Explicit launcher avoids dependence on target environment/MPI.
         result = await endpoint.call(
             operation,
             {"required": True, "launcher": ["mpiexec", "--bind"], "process_count": 2},
         )
         assert list(result) == ["mpiexec", "--bind", "-np", "2"]
+    asyncio.run(verify())
+
+
+def test_local_streaming_operation_preserves_terminal_result_out_of_band():
+    async def verify():
+        process = await LocalTransport().start_operation(
+            BackendOperation.installed("operator", "add"), 19, 23,
+        )
+        from pathlib import Path
+        receipt = Path(process._receipt_path)
+        assert receipt.is_file()
+        out, err = await process.communicate()
+        assert not receipt.exists()
+        assert out == err == b""
+        assert process.returncode == 0
+        assert process.terminal == 42
+        assert await process.wait() == 0
+        assert process.terminal == 42
+
     asyncio.run(verify())

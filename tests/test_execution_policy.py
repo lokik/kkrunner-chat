@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from kkrunner.client.endpoint import endpoint_config_for_executor
-from kkrunner.backends.process.backend import DirectProcessBackend
+from kkrunner.backends import DirectProcessBackend
 from kkrunner.client.job import Job
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
@@ -228,7 +228,7 @@ def test_file_path_strict_contract_preserves_optional_none(tmp_path):
 
 
 def test_strict_runner_path_errors_remain_backend_specific(tmp_path):
-    from kkrunner.backends.psij.job import _path as psij_path
+    from kkrunner.backends.psij import _path as psij_path
     from kkrunner.client.remote_files import RemoteFileSession
 
     spec = ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path))
