@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from kkrunner.backends import backend_class
-from kkrunner.backends.contracts import JobRef, RecoveryResult, UnsupportedCapability
+from kkrunner.backends.contracts import BackendCapability, JobRef, RecoveryResult, UnsupportedCapability
 from kkrunner.client.contracts import RunEndpoint
 from kkrunner.client.execution_request import execution_request
 from kkrunner.client.operations import BackendOperation
@@ -41,10 +41,6 @@ class LocalRunEndpoint(RunEndpoint):
     def default_detached(self):
         return self.backend.default_detached
 
-    @property
-    def requires_backend_identity(self):
-        return not self.backend.session_bound
-
     def create_job(self, spec, *, submission_key=None, callback=None):
         from kkrunner.client.job import Job
 
@@ -69,10 +65,6 @@ class LocalRunEndpoint(RunEndpoint):
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         return RunParts(self.create_job(spec, submission_key=submission_key, callback=callback))
-
-    @property
-    def supports_reattachment(self):
-        return not self.backend.session_bound
 
     def _operation(self, name):
         return BackendOperation.for_backend(self.backend, name)
@@ -101,7 +93,7 @@ class LocalRunEndpoint(RunEndpoint):
         )
 
     def _require_managed(self):
-        if not self.requires_backend_identity:
+        if BackendCapability.REATTACH not in self.backend.supports:
             raise UnsupportedCapability("Direct execution has no durable identity or reattachment")
 
     def _validate_run(self, run):
@@ -147,7 +139,7 @@ class LocalRunEndpoint(RunEndpoint):
         return RunParts(job)
 
     def recover_submission(self, submission_key, submission, *, submitted_at=None):
-        if not self.requires_backend_identity:
+        if BackendCapability.RECOVER not in self.backend.supports:
             return RecoveryResult.unsupported("Direct execution has no submission recovery")
         reply = run_coro_sync(self.transport.call(
             self._operation("recover"), submission_key,
@@ -166,14 +158,14 @@ class LocalRunEndpoint(RunEndpoint):
         )
 
     def acknowledge_submission(self, run):
-        if not self.requires_backend_identity:
+        if BackendCapability.REATTACH not in self.backend.supports:
             return None
         return run_coro_sync(self.transport.call(
             self._operation("acknowledge_submission"), run.execution.submission_key or run.id,
         ))
 
     def acknowledge(self, run):
-        if not self.requires_backend_identity:
+        if BackendCapability.REATTACH not in self.backend.supports:
             return None
         self._validate_run(run)
         return run_coro_sync(self.transport.call(

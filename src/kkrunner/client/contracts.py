@@ -25,15 +25,8 @@ class JobAttachment:
 class RunEndpoint(Protocol):
     """Create an entire client session, never implement the backend contract."""
 
-    supports_reattachment: bool
-
     def create_run_parts(self, spec, *, submission_key=None, callback=None) -> RunParts: ...
 
-
-class ReopenableRunEndpoint(RunEndpoint, Protocol):
-    """Optional ability to reattach client-side resources around an existing Job."""
-
-    def open_run_parts(self, attachment: JobAttachment, *, callback=None, output_listener=None) -> RunParts: ...
 
 
 class RunningCommand(Protocol):

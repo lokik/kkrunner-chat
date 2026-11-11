@@ -15,13 +15,20 @@ from typing import (
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
-    from kkrunner.backends.messages import (
+    from kkrunner.backends.support.messages import (
         AcknowledgeReply, ExecutionRequest, FollowOptions, RecoveryReply, RecoveryRequest,
         StatusReply, SubmissionReply,
     )
 
 from kkrunner.runs.states import RunState
 from kkrunner.support.decorators import class_property
+
+
+class BackendCapability(str, Enum):
+    """Native backend guarantees, independent of client transport."""
+
+    REATTACH = "reattach"
+    RECOVER = "recover"
 
 
 class JobFailurePhase(str, Enum):
@@ -245,6 +252,7 @@ class Backend:
     default_options: ClassVar[Tuple[Tuple[str, Optional[str]], ...]] = ()
     resolves_mpi_launcher = False
     session_bound = True
+    supports: ClassVar[frozenset[BackendCapability]] = frozenset()
     default_persistent = False
     default_detached = False
 
@@ -255,7 +263,7 @@ class Backend:
 
 
 __all__ = [
-    "Backend", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
+    "Backend", "BackendCapability", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoveryDisposition", "RecoveryResult",
     "UnsupportedCapability", "job_status_from_facts",
 ]

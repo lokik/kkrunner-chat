@@ -9,13 +9,13 @@ from __future__ import annotations
 def backend_class(kind):
     """Static-operation backend type, separate from client Job instances."""
     if kind == "direct":
-        from .direct import DirectBackend
+        from .direct.backend import DirectBackend
         return DirectBackend
     if kind == "process":
-        from .supervised import SupervisedBackend
+        from .supervised.backend import SupervisedBackend
         return SupervisedBackend
     if kind == "psij":
-        from .psij import PsijBackend
+        from .psij.backend import PsijBackend
         return PsijBackend
     raise ValueError(f"Unsupported backend: {kind!r}")
 

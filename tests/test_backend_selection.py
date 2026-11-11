@@ -3,7 +3,7 @@
 import pytest
 
 from kkrunner.backends import available_backend_names, installed_backend_names, backend_class
-from kkrunner.backends.class_helper import static_methods
+from kkrunner.backends.support.class_helper import static_methods
 from kkrunner.client.operations import BackendOperation
 
 

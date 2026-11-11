@@ -1,4 +1,4 @@
-from kkrunner.native.psij.submission import psij_state
+from kkrunner.backends.psij.submission import psij_state
 import asyncio
 
 
@@ -37,10 +37,10 @@ from kkrunner.backends.contracts import SubmissionContext
 from kkrunner.files import FileEntry, FileManifest
 
 
-import kkrunner.native.psij.executor as psij_backend
+import kkrunner.backends.psij.executor as psij_backend
 
 
-from kkrunner.native.psij import slurm as psij_slurm
+from kkrunner.backends.psij import slurm as psij_slurm
 
 
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
@@ -742,7 +742,7 @@ def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypa
 
 
 def test_remote_psij_submit_does_not_start_client_monitor(monkeypatch, tmp_path):
-    from kkrunner.native.psij import operations as agent
+    from kkrunner.backends.psij import operations as agent
 
     calls = []
     class FakeRunner:
@@ -777,6 +777,6 @@ def test_remote_psij_submit_does_not_start_client_monitor(monkeypatch, tmp_path)
 def _recovery_endpoint(executor, monkeypatch):
     from kkrunner.backends import PsijBackend
     from kkrunner.client.local import LocalRunEndpoint
-    from kkrunner.native.psij import operations
+    from kkrunner.backends.psij import operations
     monkeypatch.setattr(operations, "_psij_executor", lambda options: executor)
     return LocalRunEndpoint(PsijBackend, backend_options={"backend": executor.backend, "url": executor.url})

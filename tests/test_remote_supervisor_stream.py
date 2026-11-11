@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from kkrunner.native.supervised.streams import _HIGH, SupervisorStreams, _Follower, follow_socket, frame
+from kkrunner.backends.supervised.streams import _HIGH, SupervisorStreams, _Follower, follow_socket, frame
 
 
 def test_supervisor_live_replay_and_terminal(tmp_path):
@@ -400,7 +400,7 @@ def test_supervisor_start_closes_streams_and_directory_on_socket_bind_error(tmp_
 
 
 def test_supervisor_start_closes_bound_server_if_chmod_fails(tmp_path, monkeypatch):
-    from kkrunner.native.supervised import streams as module
+    from kkrunner.backends.supervised import streams as module
 
     def fail_chmod(path, mode):
         raise OSError("socket permissions unavailable")

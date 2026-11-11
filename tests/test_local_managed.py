@@ -11,12 +11,13 @@ import pytest
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import SupervisedBackend
-from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
+from kkrunner.backends.contracts import RecoveryDisposition
+from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
-from kkrunner.native.supervised.mailbox import recover_submission
+from kkrunner.backends.supervised.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.backends.supervised import SupervisedBackend
 from kkrunner.support.process_identity import ProcessIdentity
@@ -190,7 +191,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.native.supervised import operations as process_operations
+    from kkrunner.backends.supervised import operations as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):
@@ -257,7 +258,7 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.native.supervised.operations import _clean_request_outputs
+    from kkrunner.backends.supervised.operations import _clean_request_outputs
     from kkrunner.remote.messages import request_to_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):

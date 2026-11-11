@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from uuid import uuid4
 
-from kkrunner.backends.contracts import RecoveryDisposition
+from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.endpoint import ExecutionEndpointConfig, describe_endpoint
 from kkrunner.client.pool import default_endpoint_pool
@@ -789,9 +789,9 @@ class RunManager(RunFileHistory):
             raise RuntimeError(f"Run {record.id} has no backend reference")
         endpoint = self.endpoint_for(record) if endpoint is None else endpoint
         self.register_endpoint(endpoint, record.execution.endpoint)
-        if not getattr(endpoint, "supports_reattachment", False):
+        if BackendCapability.REATTACH not in endpoint.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
-            raise UnsupportedCapability("This endpoint does not support reattachment")
+            raise UnsupportedCapability("This backend does not support reattachment")
         parts = endpoint.open_run_parts(
             JobAttachment(record.execution, record.files),
             output_listener=output_listener,

@@ -7,7 +7,7 @@ import pytest
 
 from kkrunner import ExecutionSpec
 from kkrunner.backends import support as mpi_runtime
-from kkrunner.backends.support import materialize_local_spec
+from kkrunner.backends.support.process import materialize_local_spec
 from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.runs.base import LaunchSpec, MpiNotFoundWarning, MpiSpec
 

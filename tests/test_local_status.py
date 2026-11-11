@@ -7,10 +7,11 @@ import pytest
 
 from kkrunner import RunState
 from kkrunner.backends import SupervisedBackend
-from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
+from kkrunner.backends.contracts import RecoveryDisposition
+from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
-from kkrunner.native.supervised import operations as process_operations
+from kkrunner.backends.supervised import operations as process_operations
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory

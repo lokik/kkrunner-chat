@@ -17,7 +17,8 @@ from kkrunner.client.operations import BackendOperation
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
-from kkrunner.client.contracts import ReopenableRunEndpoint
+from kkrunner.client.contracts import RunEndpoint
+from kkrunner.backends.contracts import BackendCapability
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.client.observation import follow_framed_command
 from kkrunner.runs.base import (
@@ -101,7 +102,7 @@ class _SshRunContext(RemotePathContext):
             raise
 
 
-class SshRunEndpoint(ReopenableRunEndpoint):
+class SshRunEndpoint(RunEndpoint):
     """Reusable remote endpoint with client-owned lifecycle state."""
 
     name = "ssh"
@@ -133,16 +134,8 @@ class SshRunEndpoint(ReopenableRunEndpoint):
     def default_detached(self):
         return self.backend.default_detached
 
-    @property
-    def requires_backend_identity(self):
-        return not self.backend.session_bound
-
-    @property
-    def supports_reattachment(self):
-        return not self.backend.session_bound
-
     def _require_managed(self):
-        if self.backend.session_bound:
+        if BackendCapability.REATTACH not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("Direct execution has no durable identity or reattachment")
 
@@ -269,7 +262,7 @@ class SshRunEndpoint(ReopenableRunEndpoint):
             and mpi.get("warning", True)
         ):
             # Shared support rule, evaluated on the actual execution host.
-            from kkrunner.backends.support import resolve_mpi_options
+            from kkrunner.backends.support.process import resolve_mpi_options
             resolved = await self.transport.call(
                 BackendOperation.standalone(resolve_mpi_options),
                 mpi,
@@ -306,14 +299,14 @@ class SshRunEndpoint(ReopenableRunEndpoint):
 
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
-        if self.backend.session_bound:
+        if BackendCapability.REATTACH not in self.backend.supports:
             return None
         key = run.execution.submission_key or run.id
         return _run_sync(self._invoke("acknowledge_submission", key))
 
     def acknowledge(self, run):
         """Release a delivered receipt only after durable RunRecord completion."""
-        if self.backend.session_bound:
+        if BackendCapability.REATTACH not in self.backend.supports:
             return None
         self._validate_run(run)
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
@@ -367,7 +360,7 @@ class SshRunEndpoint(ReopenableRunEndpoint):
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
-        if self.backend.session_bound:
+        if BackendCapability.RECOVER not in self.backend.supports:
             from kkrunner.backends.contracts import RecoveryResult
             return RecoveryResult.unsupported("Direct execution has no submission recovery")
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))

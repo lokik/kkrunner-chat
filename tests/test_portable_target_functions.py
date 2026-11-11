@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from kkrunner.backends.support import resolve_mpi_options
+from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.client.run_parts import run_endpoint_for_executor
 from kkrunner.client.portable_functions import function_source

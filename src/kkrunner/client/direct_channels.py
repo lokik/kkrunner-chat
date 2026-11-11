@@ -11,7 +11,7 @@ import os
 from dataclasses import replace
 
 from kkrunner.backends.direct import DirectBackend
-from kkrunner.backends.support import resolve_mpi_options
+from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client.execution_request import execution_request
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.transport import LocalTransport

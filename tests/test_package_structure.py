@@ -17,10 +17,10 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
-    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.runs.run import Run
 
-    assert AgentRunEndpoint.__module__ == "kkrunner.client.agent"
+    assert SshRunEndpoint.__module__ == "kkrunner.client.ssh"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
@@ -31,11 +31,9 @@ def test_public_managers_have_one_unambiguous_name():
 def test_run_and_job_ownership_boundaries_are_explicit():
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
     from kkrunner.client import LocalRunEndpoint
-    from kkrunner.client.run_parts import run_endpoint_for_executor
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert not hasattr(backend, "create_job")
         endpoint = LocalRunEndpoint(backend)
-        assert run_endpoint_for_executor(endpoint) is endpoint
         assert callable(endpoint.create_run_parts)
     assert DirectBackend.session_bound
     assert not SupervisedBackend.session_bound
@@ -95,7 +93,7 @@ from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore, backends
 assert 'DirectBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.psij', 'kkrunner.client.agent', 'kkrunner.projects', 'psij',
+    'kkrunner.backends.psij', 'kkrunner.client.ssh', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import DirectBackend
 assert backends.DirectBackend is DirectBackend
@@ -107,8 +105,8 @@ assert 'kkrunner.backends.psij' not in sys.modules
 
 def test_process_strategies_have_distinct_implementations():
     from kkrunner.backends import DirectBackend, SupervisedBackend
-    assert DirectBackend.__module__ == "kkrunner.backends.direct"
-    assert SupervisedBackend.__module__ == "kkrunner.backends.supervised"
+    assert DirectBackend.__module__ == "kkrunner.backends.direct.backend"
+    assert SupervisedBackend.__module__ == "kkrunner.backends.supervised.backend"
 
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
@@ -131,7 +129,7 @@ def test_remote_process_service_reuses_supervised_backend_operations():
     from kkrunner.remote import service
 
     assert backend_class("process") is SupervisedBackend
-    assert service.submit_remote.__module__ == "kkrunner.remote.service"
+    assert service._backend_for_kind("process") is SupervisedBackend
 
 
 def test_direct_process_import_does_not_load_supervisor():
@@ -147,9 +145,9 @@ def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
 from kkrunner.native.psij import slurm
-assert callable(slurm.status_native)
+assert callable(slurm.status)
 assert 'psij' not in sys.modules
-assert 'kkrunner.native.psij.executor' not in sys.modules
+assert 'kkrunner.backends.psij.executor' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -226,20 +224,13 @@ finally:
     subprocess.run([sys.executable, "-c", code, module_name], check=True, timeout=10)
 
 
-def test_all_backend_implementations_are_flat_modules():
-    """Prevent reintroducing nested per-backend packages or a registry."""
+def test_all_backends_have_local_packages():
     from pathlib import Path
     import kkrunner.backends
-
     root = Path(kkrunner.backends.__file__).parent
-    assert {path.name for path in root.glob("*.py")} == {
-        "__init__.py", "contracts.py", "direct.py",
-        "supervised.py", "psij.py", "support.py",
-    }
-    assert not any(
-        child.is_dir() and child.name != "__pycache__"
-        for child in root.iterdir()
-    )
+    for name in ("direct", "supervised", "psij"):
+        assert (root / name / "backend.py").is_file()
+    assert (root / "support").is_dir()
 
 
 def test_agent_and_direct_have_distinct_supported_operations():
