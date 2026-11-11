@@ -25,7 +25,7 @@ def test_supervised_mode_is_explicit_and_persistable(tmp_path):
     assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
     endpoint = describe_endpoint(backend)
     assert endpoint == ExecutionEndpointConfig(location="local", backend="process")
-    assert endpoint_from_config(endpoint).backend is SupervisedBackend
+    assert isinstance(endpoint_from_config(endpoint).backend, SupervisedBackend)
     assert isinstance(endpoint_from_config(ExecutionEndpointConfig()), LocalRunEndpoint)
     assert endpoint != describe_endpoint(LocalRunEndpoint())
 

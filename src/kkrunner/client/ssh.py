@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
 from kkrunner.client.endpoint import describe_endpoint
 from kkrunner.files.manifest import FileMapping
-from kkrunner.backends import backend_class
+from kkrunner.backends import configured_backend
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.job import Job
@@ -116,13 +116,10 @@ class SshRunEndpoint(RunEndpoint):
         backend_options=None,
         filesystem_id=None,
     ):
-        backend = backend_class("direct") if backend is None else backend
-        backend = backend_class(backend) if isinstance(backend, str) else backend
+        backend = configured_backend(backend, options=backend_options)
         self.transport = transport
         self.filesystem_id = filesystem_id
         self.backend = backend
-        self.backend_options = dict(backend.default_options)
-        self.backend_options.update(backend_options or {})
         self.computer = getattr(transport, "host", None)
         self._remote_home_cache = None
 
@@ -150,13 +147,13 @@ class SshRunEndpoint(RunEndpoint):
             **prepared_files,
             "id": submission_key,
             "backend": self.backend.name,
-            "backend_options": dict(self.backend_options),
+            "backend_options": dict(self.backend.options),
             "detached": self.backend.default_detached,
         }
 
     def _operation(self, name):
         """Select the target backend class, never a serialized Python object."""
-        return BackendOperation.for_backend(self.backend, name)
+        return BackendOperation.for_backend(type(self.backend), name)
 
     async def _invoke(self, name, *args, **kwargs):
         return await self.transport.call(self._operation(name), *args, **kwargs)
@@ -340,7 +337,7 @@ class SshRunEndpoint(RunEndpoint):
         state = await self._invoke(
             "recover",
             run_id,
-            {"backend": self.backend.name, "backend_options": self.backend_options,
+            {"backend": self.backend.name, "backend_options": dict(self.backend.options),
              "directory": directory},
             submitted_at=submitted_at,
         )

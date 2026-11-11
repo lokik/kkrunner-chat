@@ -41,7 +41,7 @@ def test_manager_reconstructs_local_executor_after_restart(tmp_path):
     store.save(record)
     restarted = RunManager(store, endpoint_pool=EndpointPool())
     executor = restarted.endpoint_for(store.get(record.id))
-    assert executor.backend is SupervisedBackend
+    assert isinstance(executor.backend, SupervisedBackend)
 
 
 def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):
@@ -130,8 +130,8 @@ def test_pool_reconstructs_and_reuses_ssh_endpoint():
     assert first.transport.host == "cluster"
     assert first.transport.options == ("-p", "2222")
     assert first.transport.zstd is True
-    assert first.backend is PsijBackend
-    assert first.backend_options == {"executor_name": "slurm", "url": "local://slurm"}
+    assert isinstance(first.backend, PsijBackend)
+    assert dict(first.backend.options) == {"executor_name": "slurm", "url": "local://slurm"}
 
 
 def test_default_remote_psij_endpoint_survives_restart():
@@ -140,5 +140,5 @@ def test_default_remote_psij_endpoint_survives_restart():
     restored = EndpointPool().for_config(endpoint)
     assert endpoint.backend == "psij"
     assert isinstance(restored, SshRunEndpoint)
-    assert restored.backend is PsijBackend
-    assert restored.backend_options == {"executor_name": "slurm", "url": None}
+    assert isinstance(restored.backend, PsijBackend)
+    assert dict(restored.backend.options) == {"executor_name": "slurm", "url": None}

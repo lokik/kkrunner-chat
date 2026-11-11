@@ -32,7 +32,18 @@ class PsijBackend(Backend, ManagedOperations):
     session_bound = False
     default_persistent = True
     default_detached = True
-    supports = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+    def __init__(self, **options):
+        super().__init__(**options)
+        executor_name = self.options["executor_name"]
+        url = self.options["url"]
+        if not isinstance(executor_name, str) or not executor_name.strip():
+            raise ValueError("PSI/J executor_name must be a nonempty string")
+        if url is not None and (not isinstance(url, str) or not url):
+            raise ValueError("PSI/J url must be a nonempty string or None")
+        supports = {BackendCapability.REATTACH}
+        if executor_name.lower() == "slurm" and url is None:
+            supports.add(BackendCapability.RECOVER)
+        self.supports = frozenset(supports)
 
     @staticmethod
     def submit(request: ExecutionRequest) -> SubmissionReply:

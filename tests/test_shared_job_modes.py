@@ -40,7 +40,7 @@ def test_psij_client_uses_the_same_job_class(monkeypatch, tmp_path):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
     job = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "slurm"}).create_job(spec, submission_key="key")
     assert type(job) is Job
-    assert job.context.backend == "psij"
+    assert isinstance(job.context.backend, PsijBackend)
     assert job.state is RunState.NEW
 
 

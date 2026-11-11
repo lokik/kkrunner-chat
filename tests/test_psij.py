@@ -779,4 +779,4 @@ def _recovery_endpoint(executor, monkeypatch):
     from kkrunner.client.local import LocalRunEndpoint
     from kkrunner.backends.psij import operations
     monkeypatch.setattr(operations, "_psij_executor", lambda options: executor)
-    return LocalRunEndpoint(PsijBackend, backend_options={"backend": executor.backend, "url": executor.url})
+    return LocalRunEndpoint(PsijBackend, backend_options={"executor_name": executor.backend, "url": executor.url})

@@ -43,10 +43,10 @@ def test_backend_and_location_round_trip_independently(backend, location):
     assert config.location == location
     assert config.backend == backend.name
     assert hash(config) == hash(loaded)
-    assert restored.backend is backend
+    assert isinstance(restored.backend, backend)
     assert restored.default_detached == backend.default_detached
     assert restored.default_persistent == backend.default_persistent
-    assert restored.backend.supports == backend.supports
+    assert restored.backend.supports == backend().supports
 
 
 @pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend))

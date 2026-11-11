@@ -10,7 +10,7 @@ def test_supervised_client_job_is_shared(tmp_path):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
     job = LocalRunEndpoint(SupervisedBackend).create_job(spec)
     assert type(job) is Job
-    assert job.context.backend is SupervisedBackend
+    assert isinstance(job.context.backend, SupervisedBackend)
     assert job.ref is None
 
 
@@ -22,6 +22,6 @@ def test_psij_local_client_does_not_construct_target_runtime(tmp_path):
     )
     assert type(job) is Job
     assert job.context is endpoint
-    assert job.context.backend is PsijBackend
-    assert job.context.backend_options["executor_name"] == "slurm"
+    assert isinstance(job.context.backend, PsijBackend)
+    assert job.context.backend.options["executor_name"] == "slurm"
     assert job.ref is None  # No target identity until submission is accepted.

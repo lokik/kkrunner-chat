@@ -32,7 +32,7 @@ def test_native_backend_does_not_construct_client_session(tmp_path):
     assert not hasattr(DirectBackend, "create_job")
     assert not hasattr(DirectBackend, "create_run_parts")
     endpoint = LocalRunEndpoint(DirectBackend)
-    assert endpoint.backend is DirectBackend
+    assert isinstance(endpoint.backend, DirectBackend)
 
 
 def test_portable_file_query_matches_native_batch(tmp_path):

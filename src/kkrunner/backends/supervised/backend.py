@@ -41,7 +41,9 @@ class SupervisedBackend(Backend, ManagedOperations):
     session_bound = False
     default_persistent = True
     default_detached = True
-    supports = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
 
     @staticmethod
     def acknowledge_submission(run_id: str) -> AcknowledgeReply:

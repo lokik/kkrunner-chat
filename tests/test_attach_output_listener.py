@@ -158,7 +158,7 @@ def test_remote_attach_can_defer_monitor_start(monkeypatch, tmp_path):
 
 
 def _psij_executor(monkeypatch):
-    endpoint = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"})
+    endpoint = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "slurm"})
     from kkrunner.backends.psij import operations
     monkeypatch.setattr(operations, "_status_impl", lambda identity: {"state": "running"})
     return endpoint
