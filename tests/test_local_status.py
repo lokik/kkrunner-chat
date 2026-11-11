@@ -11,7 +11,7 @@ from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
-from kkrunner.backends.supervised import operations as process_operations
+from kkrunner.backends.supervised import support as process_operations
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
@@ -30,7 +30,7 @@ def test_disappeared_local_process_is_unknown(monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory("/tmp"), handle),
+        execution=Execution(ExecutionEndpointConfig(location="local", backend="process"), WorkingDirectory("/tmp"), handle),
         files=FileManifest(),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
