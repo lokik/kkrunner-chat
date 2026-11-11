@@ -566,3 +566,10 @@ def stream(request):
         stdout=sys.stdout.buffer,
         stderr=sys.stderr.buffer,
     )
+
+class DirectBackend:
+    """Direct process operations, portable SSH worker provided separately."""
+
+    from kkrunner.backends.class_helper import identity as SshHelper
+
+    stream = staticmethod(stream)

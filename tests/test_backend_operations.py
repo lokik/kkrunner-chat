@@ -52,3 +52,35 @@ def test_direct_backend_exposes_one_portable_execution_entry():
     assert callable(module.stream)
     assert callable(module.resolve_mpi_options)
     assert "def execute(request):" in module.WORKER_SOURCE
+
+
+def test_backend_interfaces_use_static_methods():
+    from kkrunner.backends import backend_class
+    from kkrunner.backends.class_helper import static_methods
+    for kind in ("direct", "process", "psij"):
+        backend = backend_class(kind)
+        assert "stream" in static_methods(backend)
+        assert backend.SshHelper is not None
+
+
+def test_installed_ssh_helper_delegates_without_copying_implementation():
+    from kkrunner.backends import backend_class
+    from kkrunner.backends.class_helper import class_source, static_methods
+    for kind in ("process", "psij"):
+        backend = backend_class(kind)
+        helper = backend.SshHelper(backend)
+        assert set(static_methods(helper)) == set(static_methods(backend))
+        source = class_source(helper)
+        assert f"from {backend.__module__} import {backend.__name__}" in source
+        assert "def submit(*args, **kwargs):" in source
+        assert "def _local_submit" not in source
+
+
+def test_backend_ssh_source_is_python_and_uses_class_dispatch():
+    from kkrunner.backends import backend_class
+    from kkrunner.client.operations import BackendOperation, operation_command
+    operation = BackendOperation.for_backend(backend_class("process"), "status")
+    command = operation_command(operation, python=("python3",), ssh=True)
+    assert command[:2] == ("python3", "-c")
+    compile(command[2], "<backend ssh>", "exec")
+    assert "SupervisedBackendSsh.status" in command[2]

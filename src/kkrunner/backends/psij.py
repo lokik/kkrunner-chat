@@ -1171,3 +1171,17 @@ def follow(job_ref, stdout, stderr, **options):
     return _follow_impl(job_ref, stdout, stderr, **options)
 
 
+
+class PsijOperations:
+    """Installed scheduler operations; PsijBackend owns the native executor."""
+
+    from kkrunner.backends.class_helper import class_helper as SshHelper
+
+    submit = staticmethod(submit)
+    status = staticmethod(status)
+    cancel = staticmethod(cancel)
+    recover = staticmethod(recover)
+    acknowledge = staticmethod(acknowledge)
+    acknowledge_submission = staticmethod(acknowledge_submission)
+    follow = staticmethod(follow)
+    stream = staticmethod(stream)

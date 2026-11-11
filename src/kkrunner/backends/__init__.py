@@ -7,6 +7,20 @@ from __future__ import annotations
 
 from importlib import import_module
 
+def backend_class(kind):
+    """Static-operation backend type, separate from client Job instances."""
+    if kind == "direct":
+        from .direct import DirectBackend
+        return DirectBackend
+    if kind == "process":
+        from .supervised import SupervisedBackend
+        return SupervisedBackend
+    if kind == "psij":
+        from .psij import PsijOperations
+        return PsijOperations
+    raise ValueError(f"Unsupported backend: {kind!r}")
+
+
 def operation_module(kind):
     """Import path for one of the three supported functional implementations."""
     if kind == "direct":
