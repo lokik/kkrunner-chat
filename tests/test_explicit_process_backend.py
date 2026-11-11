@@ -6,8 +6,7 @@ from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client.job import Job
-from kkrunner.client.job import Job
-from kkrunner.client.endpoint import ExecutionEndpointConfig, executor_from_endpoint, endpoint_config_for_executor
+from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_from_config, describe_endpoint
 
 
 def test_direct_mode_never_switches_implicitly(tmp_path):
@@ -24,17 +23,16 @@ def test_supervised_mode_is_explicit_and_persistable(tmp_path):
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
     assert isinstance(backend.create_job(spec), Job)
     assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
-    endpoint = endpoint_config_for_executor(backend)
-    assert endpoint == ExecutionEndpointConfig(executor="local-supervised")
-    assert executor_from_endpoint(endpoint).backend is SupervisedBackend
+    endpoint = describe_endpoint(backend)
+    assert endpoint == ExecutionEndpointConfig(location="local", backend="process")
+    assert endpoint_from_config(endpoint).backend is SupervisedBackend
     assert isinstance(executor_from_endpoint(ExecutionEndpointConfig()), LocalRunEndpoint)
     assert endpoint != endpoint_config_for_executor(LocalRunEndpoint())
 
 
 def test_native_client_capabilities_match_backend(tmp_path):
-    from kkrunner.client.run_parts import run_endpoint_for_executor
-    direct = run_endpoint_for_executor(LocalRunEndpoint())
-    supervised = run_endpoint_for_executor(LocalRunEndpoint(SupervisedBackend))
+    direct = LocalRunEndpoint()
+    supervised = LocalRunEndpoint(SupervisedBackend)
     assert direct.backend.session_bound
     assert callable(supervised.open_run_parts)
 
