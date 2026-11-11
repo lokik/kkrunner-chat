@@ -50,7 +50,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(ExecutionEndpointConfig(executor="local-supervised"), WorkingDirectory(str(tmp_path)), backend_id),
+        execution=Execution(ExecutionEndpointConfig(backend="process"), WorkingDirectory(str(tmp_path)), backend_id),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "out.txt")) if stdout else None,
             stderr=FileEntry(local_path=str(tmp_path / "err.txt")) if stderr else None,
@@ -464,9 +464,10 @@ def test_local_follow_uses_backend_operation_and_psij_wire_identity(tmp_path):
 
 def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_path, monkeypatch):
     import asyncio
-    from kkrunner.client.local_managed import local_managed_job
+    from kkrunner.client.local import LocalRunEndpoint
+    from kkrunner.backends import SupervisedBackend
 
-    job = local_managed_job(_spec(tmp_path))
+    job = LocalRunEndpoint(SupervisedBackend).create_job(_spec(tmp_path))
     job._backend_id = "opaque-psij-id"
     job._remote_directory = str(tmp_path)
 

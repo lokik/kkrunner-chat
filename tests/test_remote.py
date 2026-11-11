@@ -497,7 +497,7 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote"), input_sync="always"),
     )
-    runner = Run.direct(AgentRunEndpoint(LocalTransport()), spec)
+    runner = Run.direct(_executor(), spec)
     if preflight:
         with pytest.raises(SubmissionNotStarted, match="Local input file"):
             runner._file_session.prepare_submission()

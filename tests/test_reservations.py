@@ -48,13 +48,13 @@ def test_explicit_shared_filesystem_connects_different_host_aliases(tmp_path):
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/shared/work",
-        endpoint=ExecutionEndpointConfig(executor="ssh", host="host-a", filesystem_id="shared"),
+        endpoint=ExecutionEndpointConfig(location="ssh", host="host-a", filesystem_id="shared"),
         files=FileManifest(stdout=FileEntry(str(tmp_path / "one/out"), "/shared/work/out")),
     )
     second = manager.new_record(
         directory=tmp_path / "two",
         remote_directory="/shared/work",
-        endpoint=ExecutionEndpointConfig(executor="ssh", host="host-b", filesystem_id="shared"),
+        endpoint=ExecutionEndpointConfig(location="ssh", host="host-b", filesystem_id="shared"),
         files=FileManifest(stdout=FileEntry(str(tmp_path / "two/out"), "/shared/work/out")),
     )
     assert submission_conflicts(first, second)

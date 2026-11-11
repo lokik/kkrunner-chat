@@ -195,7 +195,7 @@ def _psij_run(directory, backend_id=None):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpointConfig(executor="psij", psij_backend="slurm"), WorkingDirectory(str(directory)), backend_id
+            ExecutionEndpointConfig(backend="psij", backend_options={"executor_name": "slurm"}), WorkingDirectory(str(directory)), backend_id
         ),
         files=FileManifest(
             inputs=(FileEntry(local_path=str(directory / "run.inp")),),

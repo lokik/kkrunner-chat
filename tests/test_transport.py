@@ -413,13 +413,13 @@ def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd)
 
 
 def test_ssh_endpoint_compression_roundtrips_from_transport():
-    from kkrunner.client.endpoint import executor_from_endpoint, endpoint_config_for_executor
-    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
+    from kkrunner.client.ssh import SshRunEndpoint
 
     for compressed in (False, True):
-        endpoint = endpoint_config_for_executor(AgentRunEndpoint(SshTransport("cluster", zstd=compressed)))
+        endpoint = describe_endpoint(SshRunEndpoint(SshTransport("cluster", zstd=compressed)))
         assert endpoint.ssh_zstd is compressed
-        restored = executor_from_endpoint(endpoint)
+        restored = endpoint_from_config(endpoint)
         assert restored.transport.zstd is compressed
 
 
@@ -545,12 +545,12 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
 
 
 def test_agent_endpoint_retains_target_python_configuration():
-    from kkrunner.client.agent import AgentRunEndpoint
-    from kkrunner.client.endpoint import endpoint_config_for_executor, executor_from_endpoint
+    from kkrunner.client.ssh import SshRunEndpoint
+    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
 
-    backend = AgentRunEndpoint(
+    backend = SshRunEndpoint(
         SshTransport("cluster", python_command=("python3.12",))
     )
-    endpoint = endpoint_config_for_executor(backend)
+    endpoint = describe_endpoint(backend)
     assert endpoint.python_command == ("python3.12",)
-    assert endpoint_config_for_executor(executor_from_endpoint(endpoint)) == endpoint
+    assert describe_endpoint(endpoint_from_config(endpoint)) == endpoint

@@ -136,17 +136,17 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
     asyncio.run(check())
 
 
-def test_remote_endpoint_reuses_configured_file_service_command():
-    from kkrunner.client.endpoint import executor_from_endpoint, endpoint_config_for_executor
-    from kkrunner.client.agent import AgentRunEndpoint
+def test_remote_endpoint_reuses_configured_target_python_command():
+    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
+    from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.client.transport import SshTransport
 
-    command = (sys.executable, "-m", "kkrunner")
-    transport = SshTransport("host")
-    executor = AgentRunEndpoint(transport, command=command)
-    assert transport.command == executor.command == command
-    restored = executor_from_endpoint(endpoint_config_for_executor(executor))
-    assert restored.transport.command == restored.command == command
+    command = (sys.executable,)
+    transport = SshTransport("host", python_command=command)
+    endpoint = SshRunEndpoint(transport)
+    assert endpoint.transport.python_command == command
+    restored = endpoint_from_config(describe_endpoint(endpoint))
+    assert restored.transport.python_command == command
 
 
 def test_special_file_metadata_does_not_open_fifo(tmp_path):

@@ -246,7 +246,7 @@ def test_remote_conflicts_use_declared_target_paths_before_staging(tmp_path):
     from kkrunner.client.endpoint import ExecutionEndpointConfig
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    endpoint = ExecutionEndpointConfig(executor="ssh", host="cluster")
+    endpoint = ExecutionEndpointConfig(location="ssh", host="cluster")
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/jobs/shared",
