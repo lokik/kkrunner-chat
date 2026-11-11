@@ -241,7 +241,7 @@ the calculation requires the separate backend ``cancel`` operation. PSI/J
 observation uses native status callbacks and releases them on detach.
 
 Runtime ownership and immutable declarations
--------------------------------------------
+--------------------------------------------
 
 The public ``Run.spec`` is the original execution declaration, not a scratch
 space for active file streams or transport resources. For direct processes the
