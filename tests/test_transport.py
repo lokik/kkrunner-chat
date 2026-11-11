@@ -164,7 +164,7 @@ class _LoopbackSshTransport(SshTransport):
     """Exercise the real SSH transfer implementation without an SSH server."""
 
     def __init__(self, *, zstd=False):
-        super().__init__("local-test", zstd=zstd, command=(sys.executable, "-m", "kkrunner_cli"))
+        super().__init__("local-test", zstd=zstd, python_command=(sys.executable,))
 
     def _command(self, argv, cwd=None):
         assert cwd is None

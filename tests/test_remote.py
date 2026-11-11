@@ -6,14 +6,17 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.backends import SupervisedBackend
+from .test_transport import _LoopbackSshTransport
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, LaunchSpec, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
 
-class _SpyTransport(LocalTransport):
+class _SpyTransport(_LoopbackSshTransport):
     def __init__(self):
+        super().__init__()
         self.put_files = []
         self.get_files = []
 
@@ -38,9 +41,7 @@ def _processed_run(executor, spec):
 
 
 def _executor(transport=None, **kwargs):
-    return AgentRunEndpoint(
-        transport or LocalTransport(), command=(sys.executable, "-m", "kkrunner_cli"), **kwargs
-    )
+    return SshRunEndpoint(transport or _LoopbackSshTransport(), backend=SupervisedBackend, **kwargs)
 
 
 def _launch(local_root, remote_root, *, input_files=FileSyncPolicy.CHANGED, output_files=FileSyncPolicy.CHANGED):
