@@ -13,8 +13,8 @@ from kkrunner.client.contracts import JobAttachment
 from kkrunner.backends.contracts import SubmissionContext
 from kkrunner.client.run_parts import backend_job_context
 from kkrunner.files import FileEntry, FileManifest
-import kkrunner.backends.psij as psij_backend
-from kkrunner.backends import psij as psij_slurm
+import kkrunner.native.psij.executor as psij_backend
+from kkrunner.native.psij import slurm as psij_slurm
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
 
 

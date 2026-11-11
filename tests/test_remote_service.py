@@ -6,12 +6,12 @@ import pytest
 from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner import RunState
 from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.backends import supervised as remote_mailbox
-from kkrunner.backends import supervised as process_operations
-from kkrunner.backends import supervised as supervisor
-from kkrunner.backends import supervised as remote_process_worker
-from kkrunner.backends import psij as psij_slurm
-from kkrunner.backends import psij as scheduler_operations
+from kkrunner.native.supervised import mailbox as remote_mailbox
+from kkrunner.native.supervised import operations as process_operations
+from kkrunner.native.supervised import streams as supervisor
+from kkrunner.native.supervised import worker as remote_process_worker
+from kkrunner.native.psij import slurm as psij_slurm
+from kkrunner.native.psij import operations as scheduler_operations
 from kkrunner.remote import messages
 from kkrunner.remote import service as remote_service
 
@@ -33,9 +33,9 @@ def _psij_handle(tmp_path):
 
 
 def _write_outcome(path, state, return_code, failure_phase=None):
-    from kkrunner.backends import supervised as remote_mailbox
+    from kkrunner.native.supervised import mailbox as remote_mailbox
 
-    return remote_mailbox._mailbox_publish_outcome("a" * 32, state, return_code, failure_phase)
+    return remote_mailbox.publish_outcome("a" * 32, state, return_code, failure_phase)
 
 
 def test_remote_id_is_opaque_backend_handle_without_lifecycle_state(tmp_path):
@@ -346,7 +346,7 @@ def test_uncertain_submit_uses_only_temporary_identity_ticket(tmp_path, monkeypa
         }
     )
     reply = {"remote_id": handle, "directory": str(tmp_path), "state": "running"}
-    remote_mailbox._mailbox_publish_submission(run_id, reply)
+    remote_mailbox.publish_submission(run_id, reply)
     recovered = remote_service.recover_remote(run_id, {"executor": "process", "directory": str(tmp_path)})
     assert recovered["remote_id"] == handle
     assert remote_service.acknowledge_submission("process", run_id) == {"acknowledged": True}
@@ -453,7 +453,7 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
     output.write_bytes(b"stale")
     kept.write_bytes(b"restart")
     from kkrunner.backends.psij import PsijJob
-    from kkrunner.backends import psij as scheduler_operations
+    from kkrunner.native.psij import operations as scheduler_operations
 
     class Runner(PsijJob):
         def __init__(self, spec):
@@ -601,7 +601,7 @@ def test_supervisor_prelaunch_failure_publishes_durable_receipt_and_closes_fd(tm
     import asyncio
     import os
 
-    from kkrunner.backends import supervised as remote_mailbox
+    from kkrunner.native.supervised import mailbox as remote_mailbox
 
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
     read_fd, write_fd = os.pipe()
@@ -644,7 +644,7 @@ def test_supervisor_prelaunch_failure_publishes_durable_receipt_and_closes_fd(tm
             read_fd = None
         with pytest.raises(OSError):
             os.fstat(write_fd)
-        outcome = remote_mailbox._mailbox_read_outcome(receipt)
+        outcome = remote_mailbox.read_outcome(receipt)
         assert outcome["state"] == RunState.FAILED.value
         assert outcome["failure_phase"] == FailurePhase.LAUNCH.value
         assert outcome["return_code"] == 127
@@ -664,7 +664,7 @@ def test_supervisor_stdin_close_failure_preserves_terminal_receipt(tmp_path, mon
     import os
     import sys
 
-    from kkrunner.backends import supervised as remote_mailbox
+    from kkrunner.native.supervised import mailbox as remote_mailbox
 
     original_input = tmp_path / "input"
     original_input.write_bytes(b"input")
@@ -715,7 +715,7 @@ def test_supervisor_stdin_close_failure_preserves_terminal_receipt(tmp_path, mon
     finally:
         with os.fdopen(reader, "rb") as pipe:
             assert pipe.readline().endswith(b"/socket\n")
-    receipt = remote_mailbox._mailbox_read_outcome(receipt_id)
+    receipt = remote_mailbox.read_outcome(receipt_id)
     assert opened and opened[0].stream.closed
     assert receipt["state"] == RunState.FAILED.value
     if launch_failure:
@@ -852,7 +852,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 ):
     import asyncio
 
-    from kkrunner.backends import supervised as supervisor
+    from kkrunner.native.supervised import streams as supervisor
 
     _, remote_id, _ = _process_handle(tmp_path)
     facts = messages.status_reply(state, 127, failure_phase=phase)
@@ -865,7 +865,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
         async for kind, offset, data in supervisor.receive(reader):
             on_chunk(kind, offset, data)
 
-    monkeypatch.setattr(supervisor, "follow_socket", closed_socket)
+    monkeypatch.setattr(process_operations, "follow_socket", closed_socket)
     out = io.BytesIO()
     if recover:
         assert remote_service.follow_remote(remote_id, out, io.BytesIO()) == facts
@@ -878,7 +878,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_path, monkeypatch):
     import asyncio
 
-    from kkrunner.backends import supervised as supervisor
+    from kkrunner.native.supervised import streams as supervisor
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
@@ -892,14 +892,14 @@ def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_p
         reader.feed_eof()
         return await supervisor.receive(reader).__anext__()
 
-    monkeypatch.setattr(supervisor, "follow_socket", malformed_socket)
+    monkeypatch.setattr(process_operations, "follow_socket", malformed_socket)
     with pytest.raises(ValueError, match="Unknown supervisor stream protocol"):
         remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
 
 
 @pytest.mark.parametrize("offset", [-1, 1, False])
 def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, monkeypatch, offset):
-    from kkrunner.backends import supervised as supervisor
+    from kkrunner.native.supervised import streams as supervisor
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
@@ -910,6 +910,6 @@ def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, m
     async def closed_socket(*args):
         raise supervisor.SupervisorClosedBeforeFollow(b"", len(supervisor.MAGIC))
 
-    monkeypatch.setattr(supervisor, "follow_socket", closed_socket)
+    monkeypatch.setattr(process_operations, "follow_socket", closed_socket)
     with pytest.raises(supervisor.SupervisorClosedBeforeFollow):
         remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO(), stdout_offset=offset)

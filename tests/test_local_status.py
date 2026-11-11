@@ -10,7 +10,7 @@ from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
 from kkrunner.client import local_supervised as local_project
-from kkrunner.backends import supervised as process_operations
+from kkrunner.native.supervised import operations as process_operations
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
