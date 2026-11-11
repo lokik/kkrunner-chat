@@ -53,3 +53,8 @@ class PsijOperations:
     def stream(job_ref, **options):
         import sys
         return PsijOperations.follow(job_ref, sys.stdout.buffer, sys.stderr.buffer, **options)
+
+    @staticmethod
+    def follow_framed(job_ref, **options):
+        from kkrunner.remote.stream import follow_framed
+        return follow_framed(PsijOperations.follow, job_ref, **options)
