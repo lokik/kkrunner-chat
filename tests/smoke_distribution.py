@@ -13,7 +13,7 @@ from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.runs import LaunchSpec
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import LocalTransport, AgentRunEndpoint
+from kkrunner.client import SshRunEndpoint, SshTransport
 from kkrunner.projects import ProjectRunManager, ProjectRepository
 
 assert not os.environ.get("PYTHONPATH")
@@ -61,7 +61,18 @@ assert restarted.store.get(run.id).state == RunState.FINISHED
 local, remote = root / "local", root / "remote"
 local.mkdir()
 remote.mkdir()
-executor = AgentRunEndpoint(LocalTransport(), command=(str(Path(sys.executable).parent / "kkrunner-agent"),))
+class LoopbackSshTransport(SshTransport):
+    """Run SSH target commands locally using the real operation protocol."""
+
+    def __init__(self):
+        super().__init__("loopback", python_command=(sys.executable,))
+
+    def _command(self, argv, cwd=None):
+        assert cwd is None
+        return tuple(argv)
+
+
+executor = SshRunEndpoint(LoopbackSshTransport())
 run = Run.direct(executor,
     ExecutionSpec(
         [sys.executable, "-c", "print(44)"],
@@ -85,7 +96,7 @@ print(
             "module": kkrunner.__file__,
             "raw": "ok",
             "managed_reconnect": "ok",
-            "remote_executable": "ok",
+            "ssh_loopback_execution": "ok",
             "without_ase": True,
         }
     )
