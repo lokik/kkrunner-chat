@@ -10,9 +10,14 @@ import pytest
 
 from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client.local import LocalRunEndpoint
-from kkrunner.client.portable_functions import function_definition
+from kkrunner.client.operations import BackendOperation, operation_command
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
+
+
+def _operation_script(function):
+    """Exercise the actual transported JSON operation, not a legacy wrapper."""
+    return operation_command(BackendOperation.standalone(function), python=(sys.executable,))[-1]
 
 
 def _isolated(script, *, input=None, args=()):
@@ -37,7 +42,7 @@ def test_portable_file_query_matches_native_batch(tmp_path):
     kwargs = {"root": str(tmp_path), "digest": True}
     native = query_files(paths, **kwargs)
     isolated = _isolated(
-        function_definition(query_files),
+        _operation_script(query_files),
         input=json.dumps({"args": [paths], "kwargs": kwargs}),
     )
     assert json.loads(isolated) == native
