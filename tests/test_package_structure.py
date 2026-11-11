@@ -144,11 +144,11 @@ def test_local_process_backend_selects_one_execution_strategy(tmp_path):
 
 
 def test_remote_process_service_reuses_supervised_backend_operations():
-    from kkrunner.backends import operation_module
-    from kkrunner.backends import supervised as functions
+    from kkrunner.backends import backend_class
+    from kkrunner.backends.supervised import SupervisedBackend
     from kkrunner.remote import service
 
-    assert operation_module("process") == functions.__name__
+    assert backend_class("process") is SupervisedBackend
     assert service.submit_remote.__module__ == "kkrunner.remote.service"
 
 
@@ -164,10 +164,10 @@ assert 'kkrunner.backends.supervised' not in sys.modules
 def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
-from kkrunner.backends import psij as slurm
+from kkrunner.native.psij import slurm
 assert callable(slurm.status_native)
 assert 'psij' not in sys.modules
-assert 'kkrunner.backends.psij' in sys.modules
+assert 'kkrunner.native.psij.executor' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -177,8 +177,8 @@ def test_psij_agent_import_does_not_load_executor_implementation():
     # the reusable PSI/J executor; it is only needed on actual submission.
     code = """
 import sys
-from kkrunner.backends import psij as agent
-assert callable(agent.follow)
+from kkrunner.backends.psij import PsijOperations
+assert callable(PsijOperations.follow)
 assert 'kkrunner.backends.psij' in sys.modules
 assert 'psij' not in sys.modules
 """

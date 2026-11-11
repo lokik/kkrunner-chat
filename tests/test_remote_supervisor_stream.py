@@ -400,7 +400,7 @@ def test_supervisor_start_closes_streams_and_directory_on_socket_bind_error(tmp_
 
 
 def test_supervisor_start_closes_bound_server_if_chmod_fails(tmp_path, monkeypatch):
-    from kkrunner.backends import supervised as module
+    from kkrunner.native.supervised import streams as module
 
     def fail_chmod(path, mode):
         raise OSError("socket permissions unavailable")

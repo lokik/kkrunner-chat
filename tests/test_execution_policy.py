@@ -228,7 +228,7 @@ def test_file_path_strict_contract_preserves_optional_none(tmp_path):
 
 
 def test_strict_runner_path_errors_remain_backend_specific(tmp_path):
-    from kkrunner.backends.psij import _path as psij_path
+    from kkrunner.native.psij.job import _path as psij_path
     from kkrunner.client.remote_files import RemoteFileSession
 
     spec = ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path))
