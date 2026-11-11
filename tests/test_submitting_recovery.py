@@ -6,7 +6,7 @@ import pytest
 from kkrunner.runs import DuplicateSubmissionError, RunStatus
 from kkrunner.backends.contracts import JobRef, RecoveryResult
 from kkrunner.client.run_parts import RunParts
-from kkrunner.client.pool import ExecutorPool
+from kkrunner.client.pool import EndpointPool
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
@@ -76,7 +76,7 @@ def _run(manager, executor, tmp_path):
 
 def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
     executor = _RecoveringExecutor(RecoveryResult.absent())
-    manager = RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool(), submitting_grace=0)
+    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool(), submitting_grace=0)
     abandoned = _run(manager, executor, tmp_path)
     manager.reserve(abandoned.record)
     replacement = _run(manager, executor, tmp_path)
