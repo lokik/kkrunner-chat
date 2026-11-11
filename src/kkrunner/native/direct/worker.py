@@ -1,17 +1,15 @@
-"""Portable direct-SSH target source; no target kkrunner dependency.
+"""Portable direct execution, defined as regular Python functions.
 
-Generated from the same MPI resolver and output preparation functions used
-by local execution, followed by the standalone subprocess worker.
+The SSH transport assembles a self-contained script from these functions and
+the shared MPI/output-preparation functions. There is only one implementation
+of each rule; no worker function is stored in a raw Python source string.
 """
+
 from inspect import getsource
 
 from kkrunner.backends.support import resolve_mpi_options
 from kkrunner.files.availability import prepare_target_outputs
 
-# One implementation of each target rule; the remaining worker code owns only
-# SSH-direct child process streams and cancellation.
-WORKER_SOURCE = (
-    getsource(resolve_mpi_options) + "\n" + getsource(prepare_target_outputs) + "\n" + r'''
 import glob
 import json
 import os
@@ -21,6 +19,7 @@ import subprocess
 import sys
 import threading
 from contextlib import ExitStack
+
 
 def choose_command(request):
     serial = request["argv"]
@@ -34,6 +33,7 @@ def choose_command(request):
             raise FileNotFoundError("Required remote MPI launcher is missing")
         return serial, request.get("stdin")
     return list(launcher) + parallel, (request.get("stdin") if request.get("mpi_uses_stdin", True) else None)
+
 
 def execute(request):
     os.chdir(request["directory"])
@@ -129,18 +129,15 @@ def execute(request):
         code = returncode
         return code if code >= 0 else 128 - code
 
-try:
-    sys.exit(execute(json.loads(sys.argv[1])))
-except Exception as error:
-    sys.stderr.write("SSH direct worker: " + str(error) + "\n")
-    sys.exit(127)
-'''
-)
+
+_BOOTSTRAP = "try:\n    sys.exit(execute(json.loads(sys.argv[1])))\nexcept Exception as error:\n    sys.stderr.write(\"SSH direct worker: \" + str(error) + \"\\n\")\n    sys.exit(127)"
 
 
-
-# The SSH static-method runner uses the same worker functions without the
-# command-line bootstrap. No installed package imports occur on the target.
-_BOOTSTRAP_MARKER = "\ntry:\n    sys.exit(execute(json.loads(sys.argv[1])))"
-assert WORKER_SOURCE.count(_BOOTSTRAP_MARKER) == 1
-DIRECT_LIBRARY_SOURCE = WORKER_SOURCE.split(_BOOTSTRAP_MARKER, 1)[0]
+DIRECT_LIBRARY_SOURCE = "\n\n".join((
+    "import glob\nimport json\nimport os\nimport shutil\nimport signal\nimport subprocess\nimport sys\nimport threading\nfrom contextlib import ExitStack",
+    getsource(resolve_mpi_options),
+    getsource(prepare_target_outputs),
+    getsource(choose_command),
+    getsource(execute),
+))
+WORKER_SOURCE = DIRECT_LIBRARY_SOURCE + "\n\n" + _BOOTSTRAP + "\n"
