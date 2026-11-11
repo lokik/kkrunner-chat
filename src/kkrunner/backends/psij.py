@@ -1094,9 +1094,9 @@ async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_inter
         streams[kind].flush()
 
     async def terminal(_native_status):
-        status = await asyncio.to_thread(status, remote_id)
-        if RunState(status["state"]).is_terminal:
-            return status
+        facts = await asyncio.to_thread(_status_impl, remote_id)
+        if RunState(facts["state"]).is_terminal:
+            return facts
         native = job.status
         state = psij_state(native)
         return status_reply(
