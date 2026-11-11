@@ -17,10 +17,10 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
-    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.runs.run import Run
 
-    assert AgentRunEndpoint.__module__ == "kkrunner.client.agent"
+    assert SshRunEndpoint.__module__ == "kkrunner.client.ssh"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
@@ -95,7 +95,7 @@ from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore, backends
 assert 'DirectBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.psij', 'kkrunner.client.agent', 'kkrunner.projects', 'psij',
+    'kkrunner.backends.psij', 'kkrunner.client.ssh', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import DirectBackend
 assert backends.DirectBackend is DirectBackend
@@ -131,7 +131,7 @@ def test_remote_process_service_reuses_supervised_backend_operations():
     from kkrunner.remote import service
 
     assert backend_class("process") is SupervisedBackend
-    assert service.submit_remote.__module__ == "kkrunner.remote.service"
+    assert service._backend_for_kind("process") is SupervisedBackend
 
 
 def test_direct_process_import_does_not_load_supervisor():
@@ -147,7 +147,7 @@ def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
 from kkrunner.native.psij import slurm
-assert callable(slurm.status_native)
+assert callable(slurm.status)
 assert 'psij' not in sys.modules
 assert 'kkrunner.native.psij.executor' not in sys.modules
 """
@@ -233,8 +233,8 @@ def test_all_backend_implementations_are_flat_modules():
 
     root = Path(kkrunner.backends.__file__).parent
     assert {path.name for path in root.glob("*.py")} == {
-        "__init__.py", "contracts.py", "direct.py",
-        "supervised.py", "psij.py", "support.py",
+        "__init__.py", "contracts.py", "class_helper.py", "messages.py",
+        "direct.py", "supervised.py", "psij.py", "support.py",
     }
     assert not any(
         child.is_dir() and child.name != "__pycache__"
