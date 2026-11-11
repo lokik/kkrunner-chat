@@ -8,6 +8,7 @@ are eligible. The helper owns no jobs, streams, connections or registrations.
 from __future__ import annotations
 
 import inspect
+from functools import lru_cache
 
 
 def identity(backend):
@@ -24,6 +25,7 @@ def static_methods(backend):
     )
 
 
+@lru_cache(maxsize=None)
 def class_helper(backend):
     """Return a class delegating all public static operations to *backend*."""
     methods = static_methods(backend)

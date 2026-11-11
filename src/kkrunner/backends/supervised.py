@@ -24,7 +24,7 @@ class SupervisedProcessBackend(RecoverableBackend):
         )
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
-        recover_remote = recover
+        recover_remote = SupervisedBackend.recover
         reply = recover_remote(
             run_id,
             {"executor": "process", "directory": submission.execution.directory.local},
@@ -46,11 +46,10 @@ class SupervisedProcessBackend(RecoverableBackend):
         )
 
     def acknowledge_submission(self, run):
-        from kkrunner.backends.supervised import acknowledge_submission
-        acknowledge_submission(run.execution.submission_key or run.id)
+        SupervisedBackend.acknowledge_submission(run.execution.submission_key or run.id)
 
     def acknowledge(self, run):
-        acknowledge_remote = acknowledge
+        acknowledge_remote = SupervisedBackend.acknowledge
         acknowledge_remote(run.execution.backend_id)
 
     def status(self, *runs):
@@ -63,48 +62,47 @@ class SupervisedProcessBackend(RecoverableBackend):
         return tuple(statuses)
 
 
-def stream(job_ref, **options):
-    import sys
-    return follow(job_ref, sys.stdout.buffer, sys.stderr.buffer, **options)
-
-def submit(request):
-    from kkrunner.native.supervised.operations import _submit_impl
-    return _submit_impl(request)
-
-def status(job_ref):
-    from kkrunner.native.supervised.operations import _status_impl
-    return _status_impl(job_ref)
-
-def cancel(job_ref):
-    from kkrunner.native.supervised.operations import _cancel_impl
-    return _cancel_impl(job_ref)
-
-def recover(submission_key, request, *, submitted_at=None):
-    from kkrunner.native.supervised.operations import _recover_impl
-    return _recover_impl(submission_key, request, submitted_at=submitted_at)
-
-def acknowledge(job_ref):
-    from kkrunner.native.supervised.operations import _acknowledge_impl
-    return _acknowledge_impl(job_ref)
-
-def acknowledge_submission(submission_key):
-    from kkrunner.native.supervised.operations import _acknowledge_submission_impl
-    return _acknowledge_submission_impl(submission_key)
-
-def follow(job_ref, stdout, stderr, **options):
-    from kkrunner.native.supervised.operations import _follow_impl
-    return _follow_impl(job_ref, stdout, stderr, **options)
-
 class SupervisedBackend:
-    """Installed target-side supervisor operations; no retained runtime state."""
+    """Installed target backend. All operations are stateless static methods."""
 
     from kkrunner.backends.class_helper import class_helper as SshHelper
 
-    submit = staticmethod(submit)
-    status = staticmethod(status)
-    cancel = staticmethod(cancel)
-    recover = staticmethod(recover)
-    acknowledge = staticmethod(acknowledge)
-    acknowledge_submission = staticmethod(acknowledge_submission)
-    follow = staticmethod(follow)
-    stream = staticmethod(stream)
+    @staticmethod
+    def submit(request):
+        from kkrunner.native.supervised.operations import _submit_impl
+        return _submit_impl(request)
+
+    @staticmethod
+    def status(job_ref):
+        from kkrunner.native.supervised.operations import _status_impl
+        return _status_impl(job_ref)
+
+    @staticmethod
+    def cancel(job_ref):
+        from kkrunner.native.supervised.operations import _cancel_impl
+        return _cancel_impl(job_ref)
+
+    @staticmethod
+    def recover(submission_key, request, *, submitted_at=None):
+        from kkrunner.native.supervised.operations import _recover_impl
+        return _recover_impl(submission_key, request, submitted_at=submitted_at)
+
+    @staticmethod
+    def acknowledge(job_ref):
+        from kkrunner.native.supervised.operations import _acknowledge_impl
+        return _acknowledge_impl(job_ref)
+
+    @staticmethod
+    def acknowledge_submission(submission_key):
+        from kkrunner.native.supervised.operations import _acknowledge_submission_impl
+        return _acknowledge_submission_impl(submission_key)
+
+    @staticmethod
+    def follow(job_ref, stdout, stderr, **options):
+        from kkrunner.native.supervised.operations import _follow_impl
+        return _follow_impl(job_ref, stdout, stderr, **options)
+
+    @staticmethod
+    def stream(job_ref, **options):
+        import sys
+        return SupervisedBackend.follow(job_ref, sys.stdout.buffer, sys.stderr.buffer, **options)

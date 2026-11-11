@@ -59,26 +59,24 @@ class DirectProcessBackend(Backend):
 
 
 
-def stream(request):
-    """Run the portable target script with a request encoded as JSON."""
-    import json
-    import subprocess
-    import sys
-    from kkrunner.native.direct.worker import WORKER_SOURCE
-    return subprocess.call(
-        (sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
-        stdin=sys.stdin.buffer,
-        stdout=sys.stdout.buffer,
-        stderr=sys.stderr.buffer,
-    )
-
-
 class DirectBackend:
-    """Direct process operations, portable SSH worker provided separately."""
+    """Portable direct SSH execution using a self-contained worker script."""
 
     from kkrunner.backends.class_helper import identity as SshHelper
 
-    stream = staticmethod(stream)
+    @staticmethod
+    def stream(request):
+        import json
+        import subprocess
+        import sys
+        from kkrunner.native.direct.worker import WORKER_SOURCE
+        return subprocess.call(
+            (sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
+            stdin=sys.stdin.buffer,
+            stdout=sys.stdout.buffer,
+            stderr=sys.stderr.buffer,
+        )
+
 
 # The identity helper serializes this self-contained class, not the host-only
 # wrapper above. The two entrypoints share the same worker implementation.
