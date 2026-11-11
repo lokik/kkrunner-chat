@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from kkrunner.backends import operation_ref
+from kkrunner.backends import backend_class
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.transport import LocalTransport
 from kkrunner.client.execution_request import execution_request
@@ -22,7 +22,7 @@ class LocalManagedContext:
         self.transport = LocalTransport() if transport is None else transport
 
     def operation(self, name):
-        return BackendOperation.installed(*operation_ref(self.backend, name))
+        return BackendOperation.for_backend(backend_class(self.backend), name)
 
     def _wire_ref(self, identity):
         """PSI/J exposes its native scheduler ID to local clients.

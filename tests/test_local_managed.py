@@ -15,9 +15,9 @@ from kkrunner.client.run_parts import backend_job_context
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
-from kkrunner.backends.supervised import _mailbox_recover_submission as recover_submission
+from kkrunner.native.supervised.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.backends.supervised import acknowledge_submission, status as status_remote
+from kkrunner.backends.supervised import SupervisedBackend
 from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.runs.base import FailurePhase, RunStatus
 
@@ -122,7 +122,7 @@ def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
     assert time.monotonic() - started < 2
     runner.wait()
     assert runner.state == RunState.CANCELLED
-    assert status_remote(runner.backend_id)["state"] == "cancelled"
+    assert SupervisedBackend.status(runner.backend_id)["state"] == "cancelled"
 
 
 def test_missing_ticket_keeps_submission_uncertain(tmp_path):
@@ -186,7 +186,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
     runner = SupervisedProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     runner.wait()
-    assert acknowledge_submission(RUN_ID)["acknowledged"]
+    assert SupervisedBackend.acknowledge_submission(RUN_ID)["acknowledged"]
     assert SupervisedProcessBackend().status(
         _attachment(_record(tmp_path, runner.backend_id))
     )[0].state == RunState.FINISHED
@@ -194,7 +194,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.backends import supervised as process_operations
+    from kkrunner.native.supervised import operations as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):
@@ -261,7 +261,7 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.backends.supervised import _clean_request_outputs
+    from kkrunner.native.supervised.operations import _clean_request_outputs
     from kkrunner.remote.messages import request_to_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
@@ -454,7 +454,7 @@ def test_local_follow_uses_backend_operation_and_psij_wire_identity(tmp_path):
         stdout_path=str(tmp_path / "run.out"),
     ))
     operation, args, kwargs = calls[0]
-    assert operation.module == "kkrunner.backends.psij"
+    assert operation.backend.__module__ == "kkrunner.backends.psij"
     assert operation.function == "stream"
     assert decode_handle(args[0]) == {
         "kind": "psij", "backend": "pbs", "url": "local", "native_id": "native-id",

@@ -178,7 +178,8 @@ class LocalTransport(Transport):
         encoded = operation_payload(args, kwargs)
         request = json.loads(encoded)
         function = (
-            operation.portable if operation.portable is not None
+            getattr(operation.backend, operation.function) if operation.backend is not None
+            else operation.portable if operation.portable is not None
             else getattr(import_module(operation.module), operation.function)
         )
         result = await asyncio.to_thread(function, *request["args"], **request["kwargs"])
@@ -288,13 +289,13 @@ class SshTransport(Transport):
 
     async def call(self, operation: BackendOperation, *args, **kwargs):
         payload = operation_payload(args, kwargs).encode("utf-8")
-        command = operation_command(operation, python=self.python_command)
+        command = operation_command(operation, python=self.python_command, ssh=True)
         result = await self.run(command, input=payload)
         return json.loads(result.stdout.decode("utf-8"))
 
     async def start_operation(self, operation: BackendOperation, *args, **kwargs):
         payload = operation_payload(args, kwargs)
-        command = operation_command(operation, python=self.python_command, streaming=True)
+        command = operation_command(operation, python=self.python_command, streaming=True, ssh=True)
         return await self.start((*command, payload), stdin=asyncio.subprocess.PIPE)
 
     def __init__(

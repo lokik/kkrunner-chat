@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from kkrunner.remote.handles import decode_handle
 from kkrunner.runs.base import ExecutionSpec, RunState, RunStatus
-from kkrunner.backends.supervised import status as status_remote
+from kkrunner.backends.supervised import SupervisedBackend
 
 
 def _local_status_from_facts(backend_id, facts):
@@ -28,7 +28,7 @@ def _local_status_from_facts(backend_id, facts):
 
 
 def local_status(backend_id):
-    return _local_status_from_facts(backend_id, status_remote(backend_id))
+    return _local_status_from_facts(backend_id, SupervisedBackend.status(backend_id))
 
 
 def attach_local(executor, context, *, callback=None, output_listener=None, start=True):

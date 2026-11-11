@@ -1,7 +1,7 @@
 """Stateless agent adapter: transport protocol to backend operations.
 
 All execution, status, cancellation, recovery, follow and acknowledgements
-are delegated through the registry below. Backend-specific execution logic
+are delegated through the explicit backend classes. Backend-specific execution logic
 remains in the respective backend modules.
 """
 
@@ -9,10 +9,10 @@ from kkrunner.remote.handles import decode_handle
 
 
 def _backend_for_kind(kind):
-    from kkrunner.backends import backend_module, installed_backend_names
+    from kkrunner.backends import backend_class, installed_backend_names
     if kind not in installed_backend_names():
         raise ValueError(f"Backend {kind!r} is not available through the installed agent")
-    return backend_module(kind)
+    return backend_class(kind)
 
 
 def _backend_for_request(request):

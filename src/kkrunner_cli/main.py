@@ -45,19 +45,6 @@ def _print_json(value):
     print(json.dumps(value), flush=True)
 
 
-class _FramedSink:
-    def __init__(self, stream, kind):
-        self.stream = stream
-        self.kind = kind
-
-    def write(self, data):
-        from kkrunner.remote.stream import encode_stream_frame
-
-        self.stream.write(encode_stream_frame(self.kind, data))
-
-    def flush(self):
-        self.stream.flush()
-
 
 def run(args, global_args=None):
     from kkrunner.remote.protocol import CONTROL_PROTOCOL_VERSION, check_control_protocol
@@ -100,8 +87,9 @@ def run(args, global_args=None):
             stream = sys.stdout.buffer
             stream.write(STREAM_MAGIC)
             stream.flush()
-            stdout = _FramedSink(stream, "out")
-            stderr = _FramedSink(stream, "err")
+            from kkrunner.remote.stream import FramedSink
+            stdout = FramedSink(stream, "out")
+            stderr = FramedSink(stream, "err")
         else:
             stdout = sys.stdout.buffer
             stderr = sys.stderr.buffer

@@ -4,8 +4,8 @@ import pytest
 from kkrunner import RunState
 from kkrunner.remote import service as remote_service
 from kkrunner.remote.handles import decode_handle
-from kkrunner.backends import supervised as remote_mailbox
-from kkrunner.backends import psij as scheduler_operations
+from kkrunner.native.supervised import mailbox as remote_mailbox
+from kkrunner.native.psij import operations as scheduler_operations
 
 
 def test_direct_remote_process_without_pending_identity_returns_none(tmp_path, monkeypatch):

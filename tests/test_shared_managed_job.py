@@ -24,7 +24,7 @@ def test_local_psij_context_uses_scheduler_identity_without_an_object():
 
 
 def test_psij_backend_constructs_shared_client_job_with_native_config(monkeypatch, tmp_path):
-    import kkrunner.backends.psij as native
+    import kkrunner.native.psij.executor as native
     from types import SimpleNamespace
 
     class FakeExecutor:
@@ -42,7 +42,7 @@ def test_psij_backend_constructs_shared_client_job_with_native_config(monkeypatc
 
 
 def test_psij_client_rejects_unserializable_executor_configuration(monkeypatch, tmp_path):
-    import kkrunner.backends.psij as native
+    import kkrunner.native.psij.executor as native
     from types import SimpleNamespace
     monkeypatch.setattr(native, "_load_psij", lambda: SimpleNamespace())
     backend = native.PsijBackend("slurm", job_executor=object())

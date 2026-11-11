@@ -176,15 +176,25 @@ are loaded only when requested from `kkrunner.backends`: run contracts depend on
 endpoint metadata, so loading implementations while initializing that package
 would reverse the dependency and create an import cycle. The root import does
 not load local/PSI/J implementations, projects or the remote client/service.
-The three backend implementations are flat modules: `backends.direct`,
-`backends.supervised` and `backends.psij`. Shared process and MPI
-primitives live in `backends.support`. Direct local and SSH use the
-same direct execution implementation and the private `DirectSession`;
-supervised uses its own durable supervisor and FOLLOW; PSI/J uses native
-scheduler callbacks and recovery. No backend implementation is hidden
-inside a client transport directory or nested backend package.
-Target dispatch imports the named module; no plugin registration framework
-or long-lived module-global backend instance is required.
+The three target backend interfaces are small classes with explicit static
+methods in `backends.direct`, `backends.supervised` and `backends.psij`.
+Each method delegates to the implementation that actually owns the work.
+Reusable client execution and attachment belong to the separate
+`DirectProcessBackend`, `SupervisedProcessBackend` and `PsijBackend`
+objects; those are **not** serialized to the target.
+
+`backends.class_helper.class_helper` generates an import-only class with the
+same public static methods. Each target backend chooses an `SshHelper`:
+the portable direct backend uses identity, whereas supervised and PSI/J use
+the import-only generated class. The SSH operation transport serializes the
+selected class source, not a backend instance. Generated installed helpers
+import the backend at execution time on the target.
+
+The native mechanisms live under `native/direct`, `native/supervised`
+and `native/psij`, where responsibilities are split by process adapter,
+supervisor, socket streams, receipt storage, scheduler and job lifetime.
+The direct `DirectSession` is in `client.direct_session`: it owns a transient
+subprocess, its pipes and cancellation, but not the client's Job/Run state.
 
 `files` and `support` do not import the run lifecycle, projects, backends or
 remote service. File reservations use generic local path expansion without
@@ -343,11 +353,11 @@ class remains a shared implementation class, not a second `Backend` protocol.
 
 `kkrunner.client.job.Job` is the single client-side lifecycle class.
 Managed (supervisor and PSI/J) executions use context-independent operations
-(`submit/status/cancel/follow/recover`) available as importable functions.
+(`submit/status/cancel/follow/recover`) declared as static methods.
 Local managed and agent SSH use the same `Job` and differ only in how the
 endpoint invokes those operations. Direct local and raw SSH use the same
 `Job` in session mode, with process/SSH control mechanics implemented by
-one private `backends.direct.DirectSession` and transport-specific adapters.
+one private `client.direct_session.DirectSession` and transport-specific adapters.
 There is no agent-specific, supervised-specific or direct-specific client
 Job class. PSI/J's native backend helper still manages PSI/J library objects
 internally, not as the public client Job.

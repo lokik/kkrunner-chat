@@ -1,34 +1,35 @@
-"""Backend kinds identify functions, not Python objects or client sessions."""
+"""Backend kinds resolve to static operation classes, without a registry."""
 
 import pytest
 
-from kkrunner.backends import available_backend_names, installed_backend_names, operation_module, operation_ref
+from kkrunner.backends import available_backend_names, installed_backend_names, backend_class
+from kkrunner.backends.class_helper import static_methods
 from kkrunner.client.operations import BackendOperation
 
 
-def test_backend_selection_matches_agent_capabilities():
+def test_backend_selection_matches_target_capabilities():
     from kkrunner.remote.service import _backend_for_kind
+
     assert available_backend_names() == {"direct", "process", "psij"}
     assert installed_backend_names() == {"process", "psij"}
-    for name in installed_backend_names():
-        module = operation_module(name)
-        assert _backend_for_kind(name).__name__ == module
-        reference = BackendOperation.installed(*operation_ref(name, "status"))
-        assert reference.module == module
-        assert reference.function == "status"
+    for kind in installed_backend_names():
+        cls = backend_class(kind)
+        assert _backend_for_kind(kind) is cls
+        assert "status" in static_methods(cls)
+        operation = BackendOperation.for_backend(cls, "status")
+        assert operation.backend is cls
+        assert operation.function == "status"
 
 
 def test_backend_selection_rejects_unknown_kind_or_invalid_operation():
     with pytest.raises(ValueError, match="Unsupported"):
-        operation_module("nonexistent")
-    with pytest.raises(ValueError, match="function"):
-        operation_ref("process", "not-a-function!")
+        backend_class("nonexistent")
+    with pytest.raises(ValueError, match="static backend operation"):
+        BackendOperation.for_backend(backend_class("process"), "not-a-function!")
 
 
-
-def test_direct_backend_is_available_without_agent_submission():
-    from kkrunner.backends import backend_module
-    assert backend_module("direct").__name__ == operation_module("direct")
+def test_direct_backend_is_portable_without_agent():
     from kkrunner.remote.service import _backend_for_kind
+    assert backend_class("direct").SshHelper(backend_class("direct")) is backend_class("direct")
     with pytest.raises(ValueError, match="installed agent"):
         _backend_for_kind("direct")

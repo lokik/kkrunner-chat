@@ -12,7 +12,8 @@ from pathlib import Path, PurePosixPath
 from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
 from kkrunner.client.endpoint import endpoint_config_for_executor
 from kkrunner.files.manifest import FileMapping, FileSyncPolicy
-from kkrunner.remote.protocol import control_command, json_request
+from kkrunner.backends import backend_class
+from kkrunner.client.operations import BackendOperation
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
@@ -143,11 +144,12 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
             "detached": True,
         }
 
-    async def _json_request(self, action, *args, payload=None):
-        return await json_request(self.transport, self.command, action, *args, payload=payload)
+    def _operation(self, name):
+        """Select the target backend class, never a serialized Python object."""
+        return BackendOperation.for_backend(backend_class(self.backend), name)
 
-    def _control_command(self, action, *args):
-        return control_command(self.command, action, *args)
+    async def _invoke(self, name, *args, **kwargs):
+        return await self.transport.call(self._operation(name), *args, **kwargs)
 
     @staticmethod
     def _context(endpoint, launch):
@@ -243,50 +245,56 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
     async def _submit(self, request):
         launch = request.get("launch") or {}
         mpi = launch.get("mpi") or {}
-        if self.backend == "process" and mpi.get("autodetect") and not mpi.get("required") and mpi.get("warning", True):
-            resolved = await self._json_request("resolve-mpi", payload={"mpi": "auto"})
-            if not resolved.get("mpi"):
+        if (
+            self.backend == "process"
+            and mpi.get("autodetect")
+            and not mpi.get("required")
+            and mpi.get("warning", True)
+        ):
+            # Shared support rule, evaluated on the actual execution host.
+            resolved = await self.transport.call(
+                BackendOperation.installed("kkrunner.backends.support", "resolve_mpi_options"),
+                mpi,
+            )
+            if not resolved:
                 warnings.warn(
                     "MPI autodetection did not find an MPI launcher on the remote "
                     "host; the calculation will run without MPI.",
                     MpiNotFoundWarning,
                     stacklevel=3,
                 )
-        return await self._json_request("submit", request["directory"], payload=request)
+        return await self._invoke("submit", request)
 
     async def _status(self, directory, backend_id, files=None):
-        return await self._json_request("status", backend_id)
+        return await self._invoke("status", backend_id)
 
     async def _cancel(self, directory, backend_id, files=None):
-        return await self._json_request("cancel", backend_id)
+        return await self._invoke("cancel", backend_id)
 
     async def _follow(
         self, directory, backend_id, *, offsets=None,
         stdout_path=None, stderr_path=None,
     ):
-        options = []
-        if stdout_path:
-            options.extend(("--stdout-path", stdout_path))
-        if stderr_path:
-            options.extend(("--stderr-path", stderr_path))
-        for kind, option in (("out", "--stdout-offset"), ("err", "--stderr-offset")):
-            offset = None if offsets is None else offsets.get(kind)
-            if offset is not None:
-                options.extend((option, str(offset)))
-            elif offsets is not None:
-                options.append("--live-" + ("stdout" if kind == "out" else "stderr"))
-        process = await self.transport.start(self._control_command("follow", str(backend_id), *options, "--framed"))
+        offsets = {"out": 0, "err": 0} if offsets is None else offsets
+        process = await self.transport.start_operation(
+            self._operation("follow_framed"), str(backend_id),
+            stdout_offset=offsets.get("out"),
+            stderr_offset=offsets.get("err"),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+        )
+        # Keep the transport diagnostic channel out of calculation stderr.
         return FramedRunningCommand(process)
 
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
         key = run.execution.submission_key or run.id
-        return _run_sync(self._json_request("ack-submit", self.backend, key))
+        return _run_sync(self._invoke("acknowledge_submission", key))
 
     def acknowledge(self, run):
         """Release a delivered receipt only after durable RunRecord completion."""
         self._validate_run(run)
-        return _run_sync(self._json_request("ack", run.execution.backend_id))
+        return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
 
     def status(self, *runs):
         for run in runs:
@@ -311,15 +319,12 @@ class AgentRunEndpoint(ReopenableRunEndpoint):
 
     async def _recover_submission(self, run_id, submission, *, submitted_at=None):
         directory = await self._resolve_submission_directory(submission.execution.directory.target)
-        state = await self._json_request(
+        state = await self._invoke(
             "recover",
-            directory,
             run_id,
-            payload={
-                "executor": self.backend,
-                "executor_options": self.backend_options,
-                "submitted_at": submitted_at,
-            },
+            {"executor": self.backend, "executor_options": self.backend_options,
+             "directory": directory},
+            submitted_at=submitted_at,
         )
         from kkrunner.backends.contracts import JobRef, RecoveryResult
         if state is None:

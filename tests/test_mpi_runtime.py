@@ -6,7 +6,7 @@ from dataclasses import asdict
 import pytest
 
 from kkrunner import ExecutionSpec
-from kkrunner.backends import mpi as mpi_runtime
+from kkrunner.backends import support as mpi_runtime
 from kkrunner.backends.support import materialize_local_spec
 from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.runs.base import LaunchSpec, MpiNotFoundWarning, MpiSpec
@@ -183,13 +183,19 @@ def test_remote_endpoint_mpi_warning_probe_respects_option(monkeypatch, warn):
     endpoint.backend = "process"
     calls = []
 
-    async def request(action, *args, payload=None):
-        calls.append((action, args, payload))
-        if action == "resolve-mpi":
-            return {"mpi": None}
+    class Transport:
+        async def call(self, operation, *args):
+            assert operation.module == "kkrunner.backends.support"
+            assert operation.function == "resolve_mpi_options"
+            calls.append(("resolve-mpi", args))
+            return None
+
+    async def invoke(action, *args, **kwargs):
+        calls.append((action, args))
         return {"state": "queued", "directory": "/remote/run"}
 
-    monkeypatch.setattr(endpoint, "_json_request", request)
+    endpoint.transport = Transport()
+    endpoint._invoke = invoke
     payload = {
         "directory": "/remote/run",
         "launch": {
