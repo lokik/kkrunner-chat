@@ -132,5 +132,7 @@ def test_installed_class_helper_source_never_contains_supervisor_implementation(
     script = command[-1]
     compile(script, "<ssh import-only helper>", "exec")
     assert "from kkrunner.backends.supervised import SupervisedBackend" in script
+    assert "def status(" not in script
+    assert "class SupervisedBackendSsh:" not in script
     assert "_local_submit" not in script
     assert "class SupervisorStreams" not in script

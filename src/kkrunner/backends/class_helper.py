@@ -1,57 +1,75 @@
-"""SSH source adapter for stateless backend classes.
+"""Generate import-only SSH delegates and serialize individual static methods.
 
-Installed backends transmit import-only wrappers; portable backends retain
-their own method implementations. Only explicitly declared static operations
-are eligible. The helper owns no jobs, streams, connections or registrations.
+Backend classes are client-side references. Only the selected operation and
+its explicit portable dependencies are sent to the target.
 """
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from functools import lru_cache
 
 
 def identity(backend):
-    """Use the backend unchanged when its implementation is portable."""
+    """Keep an already-portable backend unchanged."""
     return backend
 
 
 def static_methods(backend):
+    """Public static operations declared directly by a top-level class."""
     if not inspect.isclass(backend) or backend.__qualname__ != backend.__name__:
         raise TypeError("Backend must be a top-level class")
     return tuple(
-        name for name, member in backend.__dict__.items()
+        name for name, member in vars(backend).items()
         if not name.startswith("_") and isinstance(member, staticmethod)
     )
 
 
 @lru_cache(maxsize=None)
 def class_helper(backend):
-    """Return a class delegating all public static operations to *backend*."""
-    methods = static_methods(backend)
-    if not methods:
-        raise TypeError(f"{backend.__name__} exposes no static operations")
-    module, name = backend.__module__, backend.__name__
+    """Return a class whose static methods delegate to an installed backend."""
+    names = static_methods(backend)
+    if not names:
+        raise TypeError(f"{backend.__name__} declares no static operations")
+    module, klass = backend.__module__, backend.__name__
     if not all(part.isidentifier() for part in module.split(".")):
-        raise ValueError("Backend module is not importable")
-    helper_name = name + "Ssh"
-    lines = [f"class {helper_name}:"]
-    for method in methods:
-        lines.extend((
-            "    @staticmethod",
-            f"    def {method}(*args, **kwargs):",
-            f"        from {module} import {name}",
-            f"        return {name}.{method}(*args, **kwargs)",
-            "",
-        ))
-    source = "\n".join(lines)
-    namespace = {"__name__": module}
-    exec(compile(source, f"<{helper_name}>", "exec"), namespace)
-    helper = namespace[helper_name]
-    helper.__source__ = source
+        raise TypeError("Backend must have an importable module")
+
+    methods = {}
+    sources = {}
+    for name in names:
+        code = (
+            f"def {name}(*args, **kwargs):\n"
+            f"    from {module} import {klass}\n"
+            f"    return {klass}.{name}(*args, **kwargs)\n"
+        )
+        namespace = {}
+        exec(compile(code, f"<SSH {klass}.{name}>", "exec"), namespace)
+        methods[name] = staticmethod(namespace[name])
+        sources[name] = code
+    helper = type(f"{klass}Ssh", (), methods)
+    helper.__method_sources__ = sources
     return helper
 
 
-def class_source(backend):
-    """Source of a helper class for transmission, never an arbitrary object."""
-    return backend.__dict__.get("__source__") or inspect.getsource(backend)
+def method_source(backend, name):
+    """Return only the selected method's function source, without the class."""
+    if name not in static_methods(backend):
+        raise ValueError(f"{backend.__name__}.{name} is not a static operation")
+
+    portable = vars(backend).get("__method_sources__", {})
+    if name in portable:
+        return portable[name]
+
+    function = vars(backend)[name].__func__
+    source = textwrap.dedent(inspect.getsource(function))
+    tree = ast.parse(source)
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
+        raise TypeError("Only synchronous Python static methods may be sent")
+    decorators = tree.body[0].decorator_list
+    if any(not isinstance(dec, ast.Name) or dec.id != "staticmethod" for dec in decorators):
+        raise TypeError("Only @staticmethod decorators may be removed")
+    # The transmitted method becomes a top-level function on the target.
+    return "".join(source.splitlines(keepends=True)[len(decorators):])

@@ -130,7 +130,7 @@ def execute(request):
         return code if code >= 0 else 128 - code
 
 
-_BOOTSTRAP = "try:\n    sys.exit(execute(json.loads(sys.argv[1])))\nexcept Exception as error:\n    sys.stderr.write(\"SSH direct worker: \" + str(error) + \"\\n\")\n    sys.exit(127)"
+DIRECT_BOOTSTRAP_SOURCE = "try:\n    sys.exit(execute(json.loads(sys.argv[1])))\nexcept Exception as error:\n    sys.stderr.write(\"SSH direct worker: \" + str(error) + \"\\n\")\n    sys.exit(127)"
 
 
 DIRECT_LIBRARY_SOURCE = "\n\n".join((
@@ -140,4 +140,4 @@ DIRECT_LIBRARY_SOURCE = "\n\n".join((
     getsource(choose_command),
     getsource(execute),
 ))
-WORKER_SOURCE = DIRECT_LIBRARY_SOURCE + "\n\n" + _BOOTSTRAP + "\n"
+WORKER_SOURCE = DIRECT_LIBRARY_SOURCE + "\n\n" + DIRECT_BOOTSTRAP_SOURCE + "\n"

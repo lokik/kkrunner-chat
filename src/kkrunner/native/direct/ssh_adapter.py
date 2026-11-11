@@ -5,7 +5,7 @@ import asyncio
 import json
 
 from kkrunner.runs.base import RunState
-from kkrunner.native.direct.worker import WORKER_SOURCE
+from kkrunner.native.direct.worker import DIRECT_BOOTSTRAP_SOURCE
 
 
 class SshProcessAdapter:
@@ -41,9 +41,16 @@ class SshProcessAdapter:
     async def launch(self, spec):
         request, self._request = self._request, None
         request["detached"] = self._detached
+        from kkrunner.backends.direct import DirectBackend
+        from kkrunner.backends.class_helper import method_source
+
+        backend = DirectBackend.SshHelper(DirectBackend)
+        # Only the requested static operation and its required dependencies.
+        source = method_source(backend, "stream")
+        script = source + "\n\n" + DIRECT_BOOTSTRAP_SOURCE + "\n"
         python_command = getattr(self.context.transport, "python_command", ("python3",))
         return await self.context.transport.start(
-            (*python_command, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
+            (*python_command, "-u", "-c", script, json.dumps(request)),
             stdin=asyncio.subprocess.PIPE,
         )
 

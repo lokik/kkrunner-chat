@@ -59,30 +59,19 @@ class DirectProcessBackend(Backend):
 
 
 
+from kkrunner.native.direct.worker import execute
+
+
 class DirectBackend:
-    """Portable direct SSH execution using a self-contained worker script."""
+    """Portable target operation; no remote KKRunner installation required."""
 
     from kkrunner.backends.class_helper import identity as SshHelper
 
-    @staticmethod
-    def stream(request):
-        import json
-        import subprocess
-        import sys
-        from kkrunner.native.direct.worker import WORKER_SOURCE
-        return subprocess.call(
-            (sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps(request)),
-            stdin=sys.stdin.buffer,
-            stdout=sys.stdout.buffer,
-            stderr=sys.stderr.buffer,
-        )
+    # The *same* implementation is called on the target; no substitute
+    # version of this method is embedded in another class definition.
+    stream = staticmethod(execute)
 
 
-# The identity helper serializes this self-contained class, not the host-only
-# wrapper above. The two entrypoints share the same worker implementation.
-DirectBackend.__source__ = DIRECT_LIBRARY_SOURCE + """
-class DirectBackend:
-    @staticmethod
-    def stream(request):
-        return execute(request)
-"""
+# Direct's static operation needs several separately defined portable
+# functions. They are extracted from their real implementations, not copied.
+DirectBackend.__method_sources__ = {"stream": DIRECT_LIBRARY_SOURCE}
