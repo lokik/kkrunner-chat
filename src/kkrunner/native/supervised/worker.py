@@ -9,7 +9,7 @@ import sys
 
 from kkrunner.backends.support import pump_stream, stop_local_process
 from kkrunner.native.supervised.streams import SupervisorStreams
-from kkrunner.native.supervised.mailbox import publish_outcome as _mailbox_publish_outcome
+from kkrunner.native.supervised.mailbox import publish_outcome
 from kkrunner.runs.base import FailurePhase, RunState
 
 _SPEC_ENV = "KKRunner_REMOTE_PROCESS_SPEC"
@@ -159,7 +159,7 @@ async def _run(spec):
             "error": message,
         }
         try:
-            _mailbox_publish_outcome(
+            publish_outcome(
                 spec["receipt_id"],
                 state,
                 return_code,

@@ -19,7 +19,7 @@ class ProjectRunManager(RunManager):
         self,
         store=None,
         *,
-        executor_pool=None,
+        endpoint_pool=None,
         submitting_grace=60.0,
         project_repository=None,
         project=None,
@@ -34,7 +34,7 @@ class ProjectRunManager(RunManager):
             store = RunStore(self.projects.directory.parent / "projects_runs")
         super().__init__(
             store,
-            executor_pool=executor_pool,
+            endpoint_pool=endpoint_pool,
             submitting_grace=submitting_grace,
         )
 
@@ -56,7 +56,7 @@ class ProjectRunManager(RunManager):
             return self
         return type(self)(
             store=self.store,
-            executor_pool=self.executor_pool,
+            endpoint_pool=self.endpoint_pool,
             submitting_grace=self.submitting_grace,
             project_repository=self.projects,
             project=current,
@@ -64,7 +64,7 @@ class ProjectRunManager(RunManager):
 
     def create_run(
         self,
-        executor,
+        endpoint,
         spec,
         *,
         process_result=None,
@@ -80,7 +80,7 @@ class ProjectRunManager(RunManager):
             raise ValueError("A tracked run must belong to an existing project")
         return RunManager.create_run(
             manager,
-            executor,
+            endpoint,
             spec,
             process_result=process_result,
             metadata=metadata,

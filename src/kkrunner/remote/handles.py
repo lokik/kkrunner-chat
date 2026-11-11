@@ -42,8 +42,8 @@ def decode_handle(value):
         )
     elif kind == "psij":
         valid = (
-            isinstance(data.get("backend"), str)
-            and bool(data["backend"])
+            isinstance(data.get("executor_name"), str)
+            and bool(data["executor_name"])
             and (data.get("url") is None or isinstance(data["url"], str))
             and isinstance(data.get("native_id"), str)
             and bool(data["native_id"])

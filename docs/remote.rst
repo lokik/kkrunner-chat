@@ -28,7 +28,7 @@ No separate agent endpoint or persistent agent service is required.
 
 For a one-shot command use ``backend=DirectBackend`` on the same endpoint.
 For a scheduler use ``backend=PsijBackend`` and
-``backend_options={"backend": "slurm"}``. The endpoint type and file-transfer
+``backend_options={"executor_name": "slurm"}``. The endpoint type and file-transfer
 mechanism stay the same. A direct backend has no durable identity for reconnect;
 client-side history alone cannot provide recovery after connection loss.
 

@@ -600,10 +600,10 @@ class RemoteFileSession:
     def execution(self, backend_id):
         if backend_id is None and self._remote_directory is None:
             return None
-        from kkrunner.client.endpoint import endpoint_config_for_executor
+        from kkrunner.client.endpoint import describe_endpoint
         from kkrunner.runs.model import Execution, WorkingDirectory
         return Execution(
-            endpoint_config_for_executor(self.context.endpoint),
+            describe_endpoint(self.context.endpoint),
             WorkingDirectory(os.path.abspath(self.spec.directory), self._remote_directory),
             backend_id=backend_id,
         )

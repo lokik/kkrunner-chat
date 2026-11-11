@@ -160,7 +160,7 @@ class RunFileHistory:
         if record.execution.directory.remote is None:
             from kkrunner.files.snapshots import local_snapshot
             return local_snapshot(path, destination=destination)
-        return self.executor_for(record).snapshot_file(record, path, destination=destination)
+        return self.endpoint_for(record).snapshot_file(record, path, destination=destination)
 
     def retrieve_result_files(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
@@ -171,8 +171,8 @@ class RunFileHistory:
         if not missing or record.execution.backend_id is None:
             return record
 
-        executor = self.executor_for(record)
-        if not executor.supports_result_file_retrieval:
+        endpoint = self.endpoint_for(record)
+        if not endpoint.supports_result_file_retrieval:
             return record
 
         versions = {
@@ -189,9 +189,9 @@ class RunFileHistory:
             )
             try:
                 if staged is None:
-                    executor.fetch_result_files(record, (path,))
+                    endpoint.fetch_result_files(record, (path,))
                 else:
-                    executor.fetch_result_files(
+                    endpoint.fetch_result_files(
                         record,
                         (path,),
                         destinations={path: os.fspath(staged)},

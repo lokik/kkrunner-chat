@@ -16,7 +16,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
 from kkrunner.client import LocalRunEndpoint, SshRunEndpoint, SshTransport
-from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_config_for_executor, executor_from_endpoint
+from kkrunner.client.endpoint import ExecutionEndpointConfig, describe_endpoint, endpoint_from_config
 from kkrunner.client.operations import BackendOperation, operation_command, operation_payload
 
 
@@ -36,11 +36,11 @@ class LoopbackSshTransport(SshTransport):
 def test_backend_and_location_round_trip_independently(backend, location):
     endpoint = (LocalRunEndpoint(backend) if location == "local" else
                 SshRunEndpoint(SshTransport("example"), backend=backend))
-    config = endpoint_config_for_executor(endpoint)
+    config = describe_endpoint(endpoint)
     loaded = ExecutionEndpointConfig(**json.loads(json.dumps(asdict(config))))
-    restored = executor_from_endpoint(loaded)
+    restored = endpoint_from_config(loaded)
 
-    assert config.executor == location
+    assert config.location == location
     assert config.backend == backend.name
     assert hash(config) == hash(loaded)
     assert restored.backend is backend
@@ -143,7 +143,7 @@ def test_native_scheduler_status_contains_only_execution_facts(monkeypatch):
     from kkrunner.native.psij import slurm
 
     monkeypatch.setattr(slurm, "_slurm_details", lambda identity: {"JobState": "COMPLETED", "ExitCode": "7:0"})
-    status = slurm.status_native("42")
+    status = slurm.status("42")
     assert isinstance(status, JobStatus)
     assert status.state.value == "failed"
     assert status.return_code == 7
@@ -177,7 +177,7 @@ def test_native_psij_status_contains_only_execution_facts(monkeypatch):
     job = SimpleNamespace(status=native_status)
     monkeypatch.setattr(executor, "_load_psij", lambda: SimpleNamespace(Job=lambda: job))
     runtime = executor.PsijExecutor("local", job_executor=SimpleNamespace(attach=lambda job, identity: None))
-    status = runtime.status_native("42")
+    status = runtime.status("42")
     assert isinstance(status, JobStatus)
     assert status.state.value == "failed"
     assert status.return_code == 7

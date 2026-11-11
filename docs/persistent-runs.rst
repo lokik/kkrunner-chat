@@ -17,7 +17,7 @@ downloading files or processing results.
 in a directory. Each record contains a stable run ID, backend identity, file
 manifest and lifecycle state. :class:`~kkrunner.RunManager` creates managed
 runs backed by that store and returns a :class:`~kkrunner.Run`.
-Use ``manager.create_run(executor, spec)`` and ``run.submit()`` to start one.
+Use ``manager.create_run(endpoint, spec)`` and ``run.submit()`` to start one.
 After restarting the client, reopen the same store and call
 ``manager.attach(run_id)`` to continue a nonterminal run.
 

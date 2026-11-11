@@ -102,7 +102,7 @@ For runs managed through the same RunStore, submission reserves declared file
 paths until the run reaches a terminal state. This applies with or without
 projects; untracked `Run.direct()` executions do not take these reservations.
 
-Before reservation the remote executor resolves absolute target paths without
+Before reservation the SSH endpoint resolves absolute target paths without
 staging or opening outputs. Only after the complete footprint has been durably
 reserved may uploads and submission begin. Reservations check local read/write
 paths (including uploads and downloaded/streamed results) independently of the
@@ -327,7 +327,7 @@ recovery never authorizes a duplicate submission.
 | Commands and file transport | `LocalTransport`, `SshTransport` |
 | Persistence and end-to-end completion | `RunManager`, `Run`, `RunStore` |
 | Serializable endpoint configuration | `ExecutionEndpointConfig` |
-| Reuse of configured client endpoints | `ExecutorPool` |
+| Reuse of configured client endpoints | `EndpointPool` |
 
 The backend contract and pure identity/status/recovery values live in
 `backends.contracts`. Client Job/endpoint protocols and attachment contexts
@@ -349,7 +349,7 @@ PSI/J client Job, or process-based local FOLLOW fallback.
 backend=BackendClass)` are the only standard execution locations. Either can
 use `DirectBackend`, `SupervisedBackend` or `PsijBackend`. Backend metadata
 selects session-bound versus durable behavior, default persistence/detachment
-and SSH deployment. The descriptor stores the location (`executor`) and backend
+and SSH deployment. The descriptor stores the location (`location`) and backend
 as separate fields; no `ssh-direct`, `local-supervised` or `psij` location exists.
 Backend options are immutable key/value pairs for serialization and pool keys.
 The old agent endpoint, direct SSH endpoint and direct SSH transport were removed.

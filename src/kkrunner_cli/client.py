@@ -92,7 +92,7 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 
 def _persisted(args):
     from kkrunner.client.contracts import JobAttachment
-    from kkrunner.client.endpoint import executor_from_endpoint
+    from kkrunner.client.endpoint import endpoint_from_config
     from kkrunner.remote.service import cancel_remote, follow_remote
     record = _record(args)
     if args.host:
@@ -121,14 +121,14 @@ def _persisted(args):
             raise RuntimeError("Run has not been submitted")
         return {"state": record.state.value, "return_code": record.return_code,
                 "error": record.message}
-    backend = executor_from_endpoint(record.execution.endpoint)
+    endpoint = endpoint_from_config(record.execution.endpoint)
     attachment = JobAttachment(record.execution, record.files)
     if args.action == "status":
-        return _facts(backend.status(attachment)[0])
-    if record.execution.endpoint.executor == "ssh":
+        return _facts(endpoint.status(attachment)[0])
+    if record.execution.endpoint.location == "ssh":
         if args.action == "cancel":
             from kkrunner.support.async_utils import run_coro_sync
-            return run_coro_sync(backend._cancel(record.execution.directory.remote,
+            return run_coro_sync(endpoint._cancel(record.execution.directory.remote,
                                                  record.execution.backend_id))
         from kkrunner.support.async_utils import run_coro_sync
         offset = 0 if args.from_start else None
@@ -136,7 +136,7 @@ def _persisted(args):
             stream = sys.stderr.buffer if kind == "err" else sys.stdout.buffer
             stream.write(data)
             stream.flush()
-        return run_coro_sync(backend._follow(
+        return run_coro_sync(endpoint._follow(
             record.execution.directory.remote, record.execution.backend_id,
             on_output=output, offsets={"out": offset, "err": offset},
             stdout_path=record.files.stdout.remote_path if record.files.stdout else None,

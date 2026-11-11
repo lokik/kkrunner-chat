@@ -7,14 +7,14 @@ if TYPE_CHECKING:
     from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.client.contracts import JobAttachment, JobProtocol, SubmissionContext, RunEndpoint, ReopenableRunEndpoint
     from kkrunner.client.endpoint import ExecutionEndpointConfig
-    from kkrunner.client.pool import ExecutorPool, default_executor_pool
+    from kkrunner.client.pool import EndpointPool, default_endpoint_pool
     from kkrunner.client.transport import LocalTransport, SshTransport, Transport
 
 __all__ = [
     "LocalRunEndpoint", "SshRunEndpoint",
-    "ExecutorPool", "ExecutionEndpointConfig", "JobAttachment", "JobProtocol",
+    "EndpointPool", "ExecutionEndpointConfig", "JobAttachment", "JobProtocol",
     "SubmissionContext", "RunEndpoint", "ReopenableRunEndpoint", "LocalTransport",
-    "SshTransport", "Transport", "default_executor_pool",
+    "SshTransport", "Transport", "default_endpoint_pool",
 ]
 
 
@@ -28,7 +28,7 @@ def __getattr__(name):
         value = getattr(contracts, name)
     elif name == "ExecutionEndpointConfig":
         from .endpoint import ExecutionEndpointConfig as value
-    elif name in ("ExecutorPool", "default_executor_pool"):
+    elif name in ("EndpointPool", "default_endpoint_pool"):
         from . import pool
         value = getattr(pool, name)
     elif name in ("LocalTransport", "SshTransport", "Transport"):

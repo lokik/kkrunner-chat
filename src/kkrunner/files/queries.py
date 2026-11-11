@@ -2,33 +2,13 @@
 
 import errno
 import os
-import stat
 from pathlib import Path
-
-from kkrunner.files.paths import expand_local_candidates
 
 
 def _sources(sources):
     if isinstance(sources, (str, bytes, os.PathLike)):
         return (sources,)
     return tuple(sources)
-
-
-def _local_pattern(source, root):
-    root = Path(os.path.abspath(os.path.expanduser(root)))
-    source = os.fspath(source)
-    path = Path(source).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    pattern = os.path.abspath(os.fspath(path))
-    try:
-        os.path.relpath(pattern, root)
-    except ValueError as exc:
-        raise ValueError(f"File pattern {source!r} is outside source root {root}") from exc
-    relative = os.path.relpath(pattern, root)
-    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
-        raise ValueError(f"File pattern {source!r} is outside source root {root}")
-    return root, pattern
 
 
 def query_files(sources, *, root=None, digest=False):

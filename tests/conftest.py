@@ -6,14 +6,14 @@ from kkrunner.client import pool
 
 
 @pytest.fixture(autouse=True)
-def isolated_default_executor_pool():
-    previous = pool._DEFAULT_EXECUTOR_POOL
-    pool._DEFAULT_EXECUTOR_POOL = pool.ExecutorPool()
+def isolated_default_endpoint_pool():
+    previous = pool._DEFAULT_ENDPOINT_POOL
+    pool._DEFAULT_ENDPOINT_POOL = pool.EndpointPool()
     try:
         yield
     finally:
-        pool._DEFAULT_EXECUTOR_POOL.close()
-        pool._DEFAULT_EXECUTOR_POOL = previous
+        pool._DEFAULT_ENDPOINT_POOL.close()
+        pool._DEFAULT_ENDPOINT_POOL = previous
 
 
 @pytest.fixture(scope="session")

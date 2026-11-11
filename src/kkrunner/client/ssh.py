@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
-from kkrunner.client.endpoint import endpoint_config_for_executor
+from kkrunner.client.endpoint import describe_endpoint
 from kkrunner.files.manifest import FileMapping
 from kkrunner.backends import backend_class
 from kkrunner.client.operations import BackendOperation
@@ -156,8 +156,8 @@ class SshRunEndpoint(ReopenableRunEndpoint):
         return {
             **prepared_files,
             "id": submission_key,
-            "executor": self.backend.name,
-            "executor_options": dict(self.backend_options),
+            "backend": self.backend.name,
+            "backend_options": dict(self.backend_options),
             "detached": self.backend.default_detached,
         }
 
@@ -175,7 +175,7 @@ class SshRunEndpoint(ReopenableRunEndpoint):
         return _SshRunContext(endpoint, launch)
 
     def _validate_run(self, run):
-        if run.execution.endpoint != endpoint_config_for_executor(self):
+        if run.execution.endpoint != describe_endpoint(self):
             raise ValueError("Run belongs to a different remote endpoint")
         if not run.execution.directory.remote:
             raise ValueError("Remote run lacks a target working directory")
@@ -347,7 +347,7 @@ class SshRunEndpoint(ReopenableRunEndpoint):
         state = await self._invoke(
             "recover",
             run_id,
-            {"executor": self.backend.name, "executor_options": self.backend_options,
+            {"backend": self.backend.name, "backend_options": self.backend_options,
              "directory": directory},
             submitted_at=submitted_at,
         )

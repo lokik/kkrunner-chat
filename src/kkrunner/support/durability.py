@@ -129,9 +129,3 @@ def sync_file(path):
     finally:
         os.close(descriptor)
     fsync_directory(path.parent)
-
-
-def sync_stream(stream):
-    """Synchronize data written through an already open stream."""
-    stream.flush()
-    os.fsync(stream.fileno())

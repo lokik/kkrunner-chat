@@ -15,78 +15,79 @@ from kkrunner.runs.states import RunState
 from kkrunner.support.growing_file_tail import follow_growing_files
 from .executor import PsijExecutor
 from .submission import psij_state
-from .slurm import status_native
+from . import slurm
 
-def _psij_executor(options={}):
-    return PsijExecutor(options.get("backend") or "slurm", url=options.get("url"))
+def _create_executor(options=None):
+    options = options or {}
+    return PsijExecutor(options.get("executor_name") or "slurm", url=options.get("url"))
 
-def _submit_impl(request: ExecutionRequest) -> SubmissionReply:
-    executor = _psij_executor(request.get("executor_options"))
+def submit(request: ExecutionRequest) -> SubmissionReply:
+    executor = _create_executor(request.get("backend_options"))
     spec = request_to_spec(request)
-    runner = executor.create_native_job(spec, submission_key=request.get("id"))
+    submission = executor.create_submission(spec, submission_key=request.get("id"))
     # PSI/J's _prepare_io() owns cleanup of its complete declared manifest.
     # Running a second cleanup here would duplicate it and risk wildcard caches.
-    runner.submit_native()
-    backend_id = runner.backend_id
-    if backend_id is None:
-        raise RuntimeError("PSI/J submission did not return a backend id")
+    submission.submit()
+    native_id = submission.native_id
+    if native_id is None:
+        raise RuntimeError("PSI/J submission did not return a native job id")
     remote_id = encode_handle(
         {
             "kind": "psij",
-            "backend": executor.backend,
+            "executor_name": executor.executor_name,
             "url": executor.url,
-            "native_id": backend_id,
+            "native_id": native_id,
         }
     )
     return {
         "remote_id": remote_id,
-        **status_reply(runner.state, runner.return_code, failure_phase=runner.failure_phase),
+        **status_reply(submission.state, submission.return_code, failure_phase=submission.failure_phase),
         "directory": request["directory"],
         "input_file": request.get("input_file"),
-        "output_file": runner.result.output_file,
-        "error_file": runner.result.error_file,
+        "output_file": submission.result.output_file,
+        "error_file": submission.result.error_file,
     }
 
 
 
-def _status_impl(remote_id: str) -> StatusReply:
+def status(remote_id: str) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
-    if str(handle["backend"]).lower() == "slurm" and handle.get("url") is None:
-        status = status_native(handle["native_id"])
+    if str(handle["executor_name"]).lower() == "slurm" and handle.get("url") is None:
+        facts = slurm.status(handle["native_id"])
     else:
-        executor = _psij_executor(handle)
-        status = executor.status_native(handle["native_id"])
+        executor = _create_executor(handle)
+        facts = executor.status(handle["native_id"])
     return status_reply(
-        status.state, status.return_code,
-        failure_phase=status.failure_phase, error=status.message,
+        facts.state, facts.return_code,
+        failure_phase=facts.failure_phase, error=facts.message,
     )
 
 
-def _cancel_impl(remote_id: str) -> StatusReply:
+def cancel(remote_id: str) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "psij":
         raise ValueError("Not a PSI/J job reference")
-    executor = _psij_executor(handle)
-    job = executor.attach_native_job(handle["native_id"])
+    executor = _create_executor(handle)
+    job = executor.attach_job(handle["native_id"])
     job.cancel()
-    return _status_impl(remote_id)
+    return status(remote_id)
 
 
-def _acknowledge_impl(remote_id: str) -> AcknowledgeReply:
+def acknowledge(remote_id: str) -> AcknowledgeReply:
     return {"acknowledged": False}
 
 
-def _acknowledge_submission_impl(run_id: str) -> AcknowledgeReply:
+def acknowledge_submission(run_id: str) -> AcknowledgeReply:
     return {"acknowledged": False}
 
 
-def _recover_impl(
+def recover(
     run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
 ) -> RecoveryReply:
-    backend = _psij_executor(request.get("executor_options"))
-    facts = backend.recover_native(
+    executor = _create_executor(request.get("backend_options"))
+    facts = executor.recover(
         run_id, request["directory"], submitted_at=submitted_at,
     )
     if facts is None:
@@ -95,8 +96,8 @@ def _recover_impl(
     remote_id = encode_handle(
         {
             "kind": "psij",
-            "backend": backend.backend,
-            "url": backend.url,
+            "executor_name": executor.executor_name,
+            "url": executor.url,
             "native_id": native_id,
         }
     )
@@ -111,12 +112,12 @@ def _recover_impl(
     }
 
 
-async def _follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval):
+async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
     """Follow scheduler-owned files while PSI/J waits for terminal completion."""
 
     handle = decode_handle(remote_id)
-    executor = _psij_executor(handle)
-    job = executor.attach_native_job(handle["native_id"])
+    executor = _create_executor(handle)
+    job = executor.attach_job(handle["native_id"])
 
     def emit(kind, data):
         streams[kind].write(data)
@@ -176,4 +177,4 @@ async def follow(
     offsets = {"out": stdout_offset, "err": stderr_offset}
     paths = {"out": stdout_path, "err": stderr_path}
     streams = {"out": stdout, "err": stderr}
-    return await _follow_scheduler_async(remote_id, streams, paths, offsets, poll_interval)
+    return await _follow_scheduler(remote_id, streams, paths, offsets, poll_interval)

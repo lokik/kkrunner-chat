@@ -24,7 +24,7 @@ class Run:
     """
 
     def __init__(
-        self, job, *, backend=None, manager=None, record=None,
+        self, job, *, endpoint=None, manager=None, record=None,
         process_result=None, callback=None, file_session=None, parts=None,
         local_files=None,
     ):
@@ -40,7 +40,7 @@ class Run:
             None if self._file_session is not None else
             record.files if record is not None else local_files
         )
-        self.backend = backend
+        self.endpoint = endpoint
         self.manager = manager
         self._record = record
         self._process_result = process_result
@@ -64,14 +64,14 @@ class Run:
 
     @classmethod
     def create(
-        cls, backend, spec, *, persistent=None, detached=None,
+        cls, endpoint, spec, *, persistent=None, detached=None,
         process_result=None, callback=None, **record_options,
     ):
         """Create one Run; persistence never selects its execution mechanism."""
         from kkrunner.runs.manager import RunManager
 
         if persistent is None:
-            persistent = getattr(backend, "default_persistent", False)
+            persistent = getattr(endpoint, "default_persistent", False)
         if isinstance(persistent, RunManager):
             manager = persistent
         elif persistent is True:
@@ -82,33 +82,33 @@ class Run:
             raise TypeError("persistent must be None, bool, or a RunManager")
 
         if detached is None:
-            detached = getattr(backend, "default_detached", False)
+            detached = getattr(endpoint, "default_detached", False)
         if type(detached) is not bool:
             raise TypeError("detached must be None or bool")
 
         if manager is not None:
             return manager.create_run(
-                backend, spec, process_result=process_result,
+                endpoint, spec, process_result=process_result,
                 callback=callback, detached=detached, **record_options,
             )
         if record_options:
             raise ValueError("Record metadata requires a persistent RunManager")
-        return cls.direct(backend, spec, process_result=process_result,
+        return cls.direct(endpoint, spec, process_result=process_result,
                           callback=callback, detached=detached)
 
     @classmethod
-    def direct(cls, backend, spec, *, process_result=None, callback=None, detached=None):
+    def direct(cls, endpoint, spec, *, process_result=None, callback=None, detached=None):
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
-        parts = backend.create_run_parts(spec)
+        parts = endpoint.create_run_parts(spec)
         parts.configure_detached(
-            getattr(backend, "default_detached", False) if detached is None else detached,
-            default=getattr(backend, "default_detached", False),
+            getattr(endpoint, "default_detached", False) if detached is None else detached,
+            default=getattr(endpoint, "default_detached", False),
         )
         from kkrunner.files.manifest import FileManifest
         local_files = None if parts.files is not None or not isinstance(spec, ExecutionSpec) else FileManifest.from_spec(spec)
-        return cls(parts.job, backend=backend, parts=parts, local_files=local_files,
+        return cls(parts.job, endpoint=endpoint, parts=parts, local_files=local_files,
                    process_result=process_result, callback=callback)
 
     @property
@@ -410,7 +410,7 @@ class Run:
         if manager is not None:
             if self._record.state != RunState.NEW:
                 raise RuntimeError(f"Run is already {self._record.state.value}")
-            resolve = getattr(self.backend, "resolve_submission", None)
+            resolve = getattr(self.endpoint, "resolve_submission", None)
             if resolve is not None:
                 self._record = resolve(self._record, self.spec)
             # Reservation and duplicate-submit checks are atomic at the store.
@@ -437,7 +437,7 @@ class Run:
             submitted = True
             self._job.submit()
             if manager is not None:
-                if self.backend_id is None and getattr(self.backend, "requires_backend_identity", True):
+                if self.backend_id is None and getattr(self.endpoint, "requires_backend_identity", True):
                     # An attached-only direct Job may have no durable ID.
                     # Every other tracked backend must confirm an identity
                     # before the completion monitor can claim its resources.
@@ -485,7 +485,7 @@ class Run:
             raise
 
         if manager is not None:
-            manager.register_executor(self.backend, self._record.execution.endpoint)
+            manager.register_endpoint(self.endpoint, self._record.execution.endpoint)
             with self._completion_lock:
                 if not self._completion_persisted:
                     from kkrunner.runs.manager import _UNCHANGED
@@ -497,7 +497,7 @@ class Run:
                         files=self.files if self.files is not None else _UNCHANGED,
                     )
                     self._monitor_record_version = self._record.updated_at
-            manager._acknowledge_submission(self.backend, self._record)
+            manager._acknowledge_submission(self.endpoint, self._record)
 
     def start(self):
         if self._started:

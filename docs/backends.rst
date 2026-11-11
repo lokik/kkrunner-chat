@@ -24,7 +24,7 @@ invokes the selected namespace locally; ``SshRunEndpoint(transport,
 backend=BackendClass)`` invokes it over SSH. Both accept all three classes
 above and default to ``DirectBackend``. A backend determines execution lifetime,
 reattachment support and its ``SshHelper``; location never selects supervision.
-The persisted descriptor stores ``executor="local"`` or ``"ssh"`` separately
+The persisted descriptor stores ``location="local"`` or ``"ssh"`` separately
 from ``backend="direct"``, ``"process"`` or ``"psij"`` and backend options.
 
 
@@ -110,16 +110,16 @@ Local and scheduler execution
 Use ``Run.direct(LocalRunEndpoint(DirectBackend), spec)`` for an untracked run. Use
 ``RunManager.create_run(LocalRunEndpoint(SupervisedBackend), spec)`` for durable local
 supervision; the execution mode does not depend on whether a submission key
-was supplied. The same manager interface accepts a scheduler executor:
+was supplied. The same manager interface accepts a scheduler endpoint:
 
 .. code-block:: python
 
    from kkrunner.backends import PsijBackend
    from kkrunner.client import LocalRunEndpoint
 
-   executor = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"})
+   endpoint = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "slurm"})
    # manager and spec are created as in the persistent-run example.
-   run = manager.create_run(executor, spec)
+   run = manager.create_run(endpoint, spec)
    run.submit()
 
 Backend classes and configured endpoints can be created without PSI/J
@@ -130,9 +130,9 @@ Endpoint identity and reuse
 -----------------------------
 
 :class:`~kkrunner.client.ExecutionEndpointConfig` contains backend and connection identity.
-It is serializable and hashable; :class:`~kkrunner.client.ExecutorPool` reuses instances
+It is serializable and hashable; :class:`~kkrunner.client.EndpointPool` reuses instances
 for identical endpoints and can reconstruct them after restart. Per-run launch
-policy belongs in ``LaunchSpec`` and must not split the executor's identity.
+policy belongs in ``LaunchSpec`` and must not split the endpoint's identity.
 Close explicitly owned pools when their application scope ends.
 
 .. _backend-recovery:
@@ -214,7 +214,7 @@ holds the selected backend class and calls its methods directly. SSH selects
 creates the client ``Job`` and composes it with a file session as ``RunParts``.
 
 The file session prepares mapped paths and a manifest, but does not decide
-which executor runs or whether the submission is detached. The endpoint builds
+which backend runs or whether the submission is detached. The endpoint builds
 the backend request and selects durability policy. ``Run`` owns completion,
 synchronization and application artifact verification; ``RunManager`` persists
 durable state and history.

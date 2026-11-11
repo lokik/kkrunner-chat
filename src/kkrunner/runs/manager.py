@@ -14,8 +14,8 @@ from uuid import uuid4
 
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_config_for_executor
-from kkrunner.client.pool import default_executor_pool
+from kkrunner.client.endpoint import ExecutionEndpointConfig, describe_endpoint
+from kkrunner.client.pool import default_endpoint_pool
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus, SubmissionNotStarted
@@ -103,22 +103,22 @@ class RunManager(RunFileHistory):
         finally:
             RunManager._default_override.reset(token)
 
-    def __init__(self, store=None, *, executor_pool=None, submitting_grace=60.0):
+    def __init__(self, store=None, *, endpoint_pool=None, submitting_grace=60.0):
         if submitting_grace < 0:
             raise ValueError("submitting_grace must be non-negative")
         self.store = store
-        self.executor_pool = executor_pool if executor_pool is not None else default_executor_pool()
+        self.endpoint_pool = endpoint_pool if endpoint_pool is not None else default_endpoint_pool()
         self._ack_lock = Lock()
         self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
 
-    def register_executor(self, backend, endpoint=None):
-        endpoint = endpoint or endpoint_config_for_executor(backend)
-        self.executor_pool.get(endpoint, lambda: backend)
-        return endpoint
+    def register_endpoint(self, endpoint, config=None):
+        config = config or describe_endpoint(endpoint)
+        self.endpoint_pool.get(config, lambda: endpoint)
+        return config
 
-    def executor_for(self, record):
-        return self.executor_pool.for_endpoint(record.execution.endpoint)
+    def endpoint_for(self, record):
+        return self.endpoint_pool.for_config(record.execution.endpoint)
 
     def new_record(
         self,
@@ -262,8 +262,8 @@ class RunManager(RunFileHistory):
         record = self.store.get(record.id)
         if not self._is_stale_submitting(record):
             return record
-        executor = self.executor_for(record)
-        if not hasattr(executor, "recover_submission"):
+        endpoint = self.endpoint_for(record)
+        if not hasattr(endpoint, "recover_submission"):
             # A tracked direct process has no durable backend identity. Keep
             # uncertainty rather than claiming that no process was launched.
             return self.transition(
@@ -273,7 +273,7 @@ class RunManager(RunFileHistory):
         from kkrunner.runs.model import WorkingDirectory
         try:
             from kkrunner.client.contracts import SubmissionContext
-            recovery = executor.recover_submission(
+            recovery = endpoint.recover_submission(
                 record.execution.submission_key or record.id,
                 SubmissionContext(record.execution),
                 submitted_at=record.updated_at,
@@ -281,8 +281,8 @@ class RunManager(RunFileHistory):
         except NotImplementedError:
             return record
         if recovery.disposition is RecoveryDisposition.FOUND:
-            endpoint = record.execution.endpoint
-            if recovery.ref.backend != endpoint.backend:
+            config = record.execution.endpoint
+            if recovery.ref.backend != config.backend:
                 raise ValueError("Recovered job belongs to a different backend")
             execution = record.execution.submitted(recovery.ref.token)
             if recovery.directory is not None and recovery.directory != execution.directory.target:
@@ -291,7 +291,7 @@ class RunManager(RunFileHistory):
                     directory=WorkingDirectory(execution.directory.local, recovery.directory),
                 )
             files = record.files
-            if endpoint.executor == "ssh":
+            if config.location == "ssh":
                 files = files.with_remote_stream_paths(
                     stdout=recovery.output_file, stderr=recovery.error_file,
                 )
@@ -300,7 +300,7 @@ class RunManager(RunFileHistory):
             attached = self.transition(record, execution=execution, files=files)
             return self.update(
                 attached,
-                executor.status(JobAttachment(attached.execution, attached.files))[0],
+                endpoint.status(JobAttachment(attached.execution, attached.files))[0],
             )
         if recovery.disposition is RecoveryDisposition.UNSUPPORTED:
             return self.transition(
@@ -392,7 +392,7 @@ class RunManager(RunFileHistory):
             return latest
         record = latest
         if (
-            record.execution.endpoint.executor == "local"
+            record.execution.endpoint.location == "local"
             and status.state.is_terminal and status.files is None
         ):
             # Backend status contains execution facts only. The client-side
@@ -439,7 +439,7 @@ class RunManager(RunFileHistory):
                 message=status.message,
                 failure_phase=phase,
             )
-        self._acknowledge_submission(self.executor_for(updated), updated)
+        self._acknowledge_submission(self.endpoint_for(updated), updated)
         self._acknowledge_result(updated)
         return updated
 
@@ -673,8 +673,8 @@ class RunManager(RunFileHistory):
             if key in self._acknowledged_results:
                 return True
             try:
-                executor = self.executor_for(record)
-                acknowledge = getattr(executor, "acknowledge", None)
+                endpoint = self.endpoint_for(record)
+                acknowledge = getattr(endpoint, "acknowledge", None)
                 if acknowledge is not None:
                     acknowledge(record)
             except (OSError, RuntimeError, ValueError, NotImplementedError):
@@ -687,11 +687,11 @@ class RunManager(RunFileHistory):
         return tuple(record.id for record in self.store.runs(active=False) if self._acknowledge_result(record))
 
     @staticmethod
-    def _acknowledge_submission(executor, record):
+    def _acknowledge_submission(endpoint, record):
         """Discard the temporary backend PID only after RunStore is durable."""
         if record.execution.backend_id is None:
             return
-        acknowledge = getattr(executor, "acknowledge_submission", None)
+        acknowledge = getattr(endpoint, "acknowledge_submission", None)
         if acknowledge is not None:
             try:
                 acknowledge(record)
@@ -700,36 +700,36 @@ class RunManager(RunFileHistory):
                 pass
 
     def create_run(
-        self, backend, spec, *, process_result=None, metadata=None,
+        self, endpoint, spec, *, process_result=None, metadata=None,
         processing_required=None, callback=None, run_id=None, detached=None,
     ):
-        """Create one tracked Run; backend owns raw execution only."""
+        """Create one tracked Run through the configured client endpoint."""
         from kkrunner.runs.run import Run
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
-        endpoint = endpoint_config_for_executor(backend)
+        config = describe_endpoint(endpoint)
         record = self.new_record(
             metadata=metadata,
             processing_required=(process_result is not None if processing_required is None else processing_required),
             directory=spec.directory,
-            endpoint=endpoint,
-            remote_directory=(backend.submission_directory(spec) if endpoint.executor == "ssh" else None),
+            endpoint=config,
+            remote_directory=(endpoint.submission_directory(spec) if config.location == "ssh" else None),
             files=FileManifest.from_spec(spec),
             run_id=run_id,
             submission_key=uuid4().hex,
         )
-        self.register_executor(backend, endpoint)
-        parts = backend.create_run_parts(
+        self.register_endpoint(endpoint, config)
+        parts = endpoint.create_run_parts(
             spec, submission_key=record.execution.submission_key,
         )
         parts.configure_detached(
-            getattr(backend, "default_detached", False) if detached is None else detached,
-            default=getattr(backend, "default_detached", False),
+            getattr(endpoint, "default_detached", False) if detached is None else detached,
+            default=getattr(endpoint, "default_detached", False),
         )
         return Run(
-            parts.job, backend=backend, manager=self, record=record,
+            parts.job, endpoint=endpoint, manager=self, record=record,
             process_result=process_result, callback=callback, parts=parts,
         )
 
@@ -751,11 +751,11 @@ class RunManager(RunFileHistory):
                 # processing attempt. Re-querying backend status could
                 # overwrite local processing state with a stale failure.
                 continue
-            executor = self.executor_for(record)
-            groups.setdefault(executor, []).append(record)
+            endpoint = self.endpoint_for(record)
+            groups.setdefault(endpoint, []).append(record)
 
-        for executor, group in groups.items():
-            if not hasattr(executor, "status"):
+        for endpoint, group in groups.items():
+            if not hasattr(endpoint, "status"):
                 # Direct Jobs have no independently queryable durable status.
                 # Their client-side completion thread remains authoritative;
                 # never infer FINISHED from a PID or a closed SSH channel.
@@ -765,17 +765,17 @@ class RunManager(RunFileHistory):
                         message="Direct execution has no independent recovery status",
                     )
                 continue
-            statuses = executor.status(
+            statuses = endpoint.status(
                 *(JobAttachment(record.execution, record.files) for record in group)
             )
             if len(statuses) != len(group):
-                raise RuntimeError("Executor returned wrong number of run statuses")
+                raise RuntimeError("Endpoint returned wrong number of run statuses")
             for record, status in zip(group, statuses):
                 current[record.id] = self.update(record, status)
         return tuple(current[record.id] for record in records)
 
     def attach(
-        self, run, *, process_result=None, backend=None,
+        self, run, *, process_result=None, endpoint=None,
         callback=None, output_listener=None,
     ):
         """Open a tracked Run without resubmitting its backend job."""
@@ -787,18 +787,18 @@ class RunManager(RunFileHistory):
             raise ValueError("This Run did not request postprocessing")
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has no backend reference")
-        backend = self.executor_for(record) if backend is None else backend
-        self.register_executor(backend, record.execution.endpoint)
-        if not getattr(backend, "supports_reattachment", False):
+        endpoint = self.endpoint_for(record) if endpoint is None else endpoint
+        self.register_endpoint(endpoint, record.execution.endpoint)
+        if not getattr(endpoint, "supports_reattachment", False):
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("This endpoint does not support reattachment")
-        parts = backend.open_run_parts(
+        parts = endpoint.open_run_parts(
             JobAttachment(record.execution, record.files),
             output_listener=output_listener,
         )
         try:
             attached = Run(
-                parts.job, backend=backend, manager=self, record=record,
+                parts.job, endpoint=endpoint, manager=self, record=record,
                 process_result=process_result, callback=callback, parts=parts,
             )
             attached.start()

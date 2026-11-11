@@ -22,18 +22,12 @@ from kkrunner.backends.messages import (
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.support.process_identity import ProcessIdentity
-from kkrunner.native.supervised.mailbox import (
-    publish_submission as _mailbox_publish_submission,
-    recover_submission as _mailbox_recover_submission,
-    acknowledge_submission as _mailbox_acknowledge_submission,
-    read_outcome as _mailbox_read_outcome,
-    acknowledge_outcome as _mailbox_acknowledge_outcome,
-)
+from kkrunner.native.supervised import mailbox
 from kkrunner.native.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.native.supervised.streams import follow_socket, SupervisorClosedBeforeFollow
 
-def _acknowledge_submission_impl(run_id: str) -> AcknowledgeReply:
-    return {"acknowledged": _mailbox_acknowledge_submission(run_id)}
+def acknowledge_submission(run_id: str) -> AcknowledgeReply:
+    return {"acknowledged": mailbox.acknowledge_submission(run_id)}
 
 
 def _absolute(directory, value):
@@ -61,7 +55,8 @@ def _clean_request_outputs(spec, directory, output_path=None, error_path=None):
         },
     })
 
-def _local_submit(request: ExecutionRequest) -> SubmissionReply:
+def submit(request: ExecutionRequest) -> SubmissionReply:
+    """Submit one process job, preserving the atomic release barrier."""
     if os.name != "posix":
         raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
     from kkrunner.backends.support import materialize_local_spec
@@ -152,7 +147,7 @@ def _local_submit(request: ExecutionRequest) -> SubmissionReply:
         # Durable identity precedes releasing the supervisor. Until this
         # receipt is safely stored, the child cannot launch a calculation.
         if request.get("detached"):
-            _mailbox_publish_submission(run_id, {
+            mailbox.publish_submission(run_id, {
                 "remote_id": remote_id,
                 "directory": os.fspath(directory),
                 "output_file": output_path,
@@ -193,7 +188,7 @@ def _local_submit(request: ExecutionRequest) -> SubmissionReply:
     return reply
 
 def _process_outcome(receipt_id):
-    data = _mailbox_read_outcome(receipt_id)
+    data = mailbox.read_outcome(receipt_id)
     if data is None:
         return None
     try:
@@ -205,12 +200,7 @@ def _process_outcome(receipt_id):
         raise RuntimeError("Invalid remote process outcome artifact") from exc
     return state, return_code, failure_phase, data.get("error")
 
-def _submit_impl(request: ExecutionRequest) -> SubmissionReply:
-    """Submit one process job, preserving the atomic release barrier."""
-    return _local_submit(request)
-
-
-def _status_impl(remote_id: str) -> StatusReply:
+def status(remote_id: str) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
@@ -225,13 +215,13 @@ def _status_impl(remote_id: str) -> StatusReply:
     return status_reply(state, return_code, failure_phase=failure_phase, error=error)
 
 
-def _cancel_impl(remote_id: str, timeout: float = 1.0) -> StatusReply:
+def cancel(remote_id: str, timeout: float = 1.0) -> StatusReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
     outcome = _process_outcome(handle["receipt_id"])
     if outcome is not None:
-        return _status_impl(remote_id)
+        return status(remote_id)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             conn.settimeout(timeout)
@@ -241,25 +231,25 @@ def _cancel_impl(remote_id: str, timeout: float = 1.0) -> StatusReply:
             if b'"accepted":true' not in reply:
                 raise RuntimeError("Supervisor rejected cancellation")
     except (FileNotFoundError, ConnectionRefusedError):
-        return _status_impl(remote_id)
-    return _status_impl(remote_id)
+        return status(remote_id)
+    return status(remote_id)
 
 
-def _acknowledge_impl(remote_id: str) -> AcknowledgeReply:
+def acknowledge(remote_id: str) -> AcknowledgeReply:
     handle = decode_handle(remote_id)
     if handle["kind"] != "process":
         raise ValueError("Not a process job reference")
-    return {"acknowledged": _mailbox_acknowledge_outcome(handle["receipt_id"])}
+    return {"acknowledged": mailbox.acknowledge_outcome(handle["receipt_id"])}
 
 
-def _recover_impl(
+def recover(
     run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
 ) -> RecoveryReply:
-    reply = _mailbox_recover_submission(run_id)
+    reply = mailbox.recover_submission(run_id)
     if reply is None:
         return None
     return {
-        **_status_impl(reply["remote_id"]),
+        **status(reply["remote_id"]),
         "remote_id": reply["remote_id"], "directory": request["directory"],
         "output_file": reply.get("output_file"), "error_file": reply.get("error_file"),
     }
@@ -314,15 +304,15 @@ async def follow(
         # partial magic, truncated frames and other states remain errors.
         if any(offset is not None and (type(offset) is not int or offset != 0) for offset in offsets.values()):
             raise
-        status = _status_impl(remote_id)
-        if status["state"] != RunState.FAILED.value or status.get("failure_phase") != FailurePhase.LAUNCH.value:
+        facts = status(remote_id)
+        if facts["state"] != RunState.FAILED.value or facts.get("failure_phase") != FailurePhase.LAUNCH.value:
             raise
-        return status
+        return facts
     except (FileNotFoundError, ConnectionRefusedError):
         # A completed supervisor has removed its transient socket. Replay
         # declared spools once, without the historical polling lifecycle.
-        status = _status_impl(remote_id)
-        if not RunState(status["state"]).is_terminal:
+        facts = status(remote_id)
+        if not RunState(facts["state"]).is_terminal:
             raise
         if not any(path is not None for path in paths.values()):
             raise ValueError("Output was live-only and cannot be reattached")
@@ -344,4 +334,4 @@ async def follow(
                     streams[kind].write(data)
                     streams[kind].flush()
                     await asyncio.sleep(0)
-        return status
+        return facts

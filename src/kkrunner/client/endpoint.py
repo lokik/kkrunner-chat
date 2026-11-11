@@ -10,13 +10,13 @@ from typing import Any
 class ExecutionEndpointConfig:
     """Hashable location, backend and connection configuration.
 
-    ``executor`` selects local or SSH invocation; ``backend`` selects target
+    ``location`` selects local or SSH invocation; ``backend`` selects target
     execution. Backend options are stored as sorted immutable key/value pairs
-    so the same configuration can serve as an ExecutorPool key and JSON data.
+    so the same configuration can serve as an EndpointPool key and JSON data.
     Per-run paths, MPI intent and file policy belong to the execution request.
     """
 
-    executor: str = "local"
+    location: str = "local"
     backend: str = "direct"
     backend_options: Any = ()
     host: str | None = None
@@ -26,8 +26,8 @@ class ExecutionEndpointConfig:
     filesystem_id: str | None = None
 
     def __post_init__(self):
-        if self.executor not in ("local", "ssh") and not self.executor.startswith("custom:"):
-            raise ValueError(f"Unsupported execution location: {self.executor!r}")
+        if self.location not in ("local", "ssh") and not self.location.startswith("custom:"):
+            raise ValueError(f"Unsupported execution location: {self.location!r}")
         from kkrunner.backends import backend_class
         backend = backend_class(self.backend)
         options = dict(backend.default_options)
@@ -52,61 +52,61 @@ class ExecutionEndpointConfig:
             raise TypeError("ExecutionEndpointConfig.ssh_zstd must be a bool")
         if not self.python_command:
             raise ValueError("ExecutionEndpointConfig.python_command must not be empty")
-        if self.executor == "local":
+        if self.location == "local":
             for name, value in (("host", None), ("ssh_options", ()),
                                 ("python_command", ("python3",)), ("ssh_zstd", False)):
                 object.__setattr__(self, name, value)
 
 
-def endpoint_config_for_executor(executor) -> ExecutionEndpointConfig:
+def describe_endpoint(endpoint) -> ExecutionEndpointConfig:
     """Describe a configured client endpoint without per-run launch policy."""
     from kkrunner.client.local import LocalRunEndpoint
     from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.client.transport import SshTransport
 
-    if isinstance(executor, LocalRunEndpoint):
+    if isinstance(endpoint, LocalRunEndpoint):
         return ExecutionEndpointConfig(
-            executor="local", backend=executor.backend.name,
-            backend_options=executor.backend_options,
+            location="local", backend=endpoint.backend.name,
+            backend_options=endpoint.backend_options,
         )
-    if isinstance(executor, SshRunEndpoint):
-        transport = executor.transport
+    if isinstance(endpoint, SshRunEndpoint):
+        transport = endpoint.transport
         location = "ssh" if isinstance(transport, SshTransport) else (
-            f"custom:{type(executor).__module__}.{type(executor).__qualname__}"
+            f"custom:{type(endpoint).__module__}.{type(endpoint).__qualname__}"
         )
         return ExecutionEndpointConfig(
-            executor=location, backend=executor.backend.name,
-            backend_options=executor.backend_options,
+            location=location, backend=endpoint.backend.name,
+            backend_options=endpoint.backend_options,
             host=getattr(transport, "host", None),
             ssh_options=getattr(transport, "options", ()),
             python_command=getattr(transport, "python_command", ("python3",)),
             ssh_zstd=getattr(transport, "zstd", False),
-            filesystem_id=executor.filesystem_id,
+            filesystem_id=endpoint.filesystem_id,
         )
     return ExecutionEndpointConfig(
-        executor=f"custom:{type(executor).__module__}.{type(executor).__qualname__}",
+        location=f"custom:{type(endpoint).__module__}.{type(endpoint).__qualname__}",
     )
 
 
-def executor_from_endpoint(endpoint: ExecutionEndpointConfig):
+def endpoint_from_config(config: ExecutionEndpointConfig):
     """Reconstruct the two independent choices from a persisted descriptor."""
     from kkrunner.backends import backend_class
     from kkrunner.client.local import LocalRunEndpoint
     from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.client.transport import SshTransport
 
-    if isinstance(endpoint, dict):
-        endpoint = ExecutionEndpointConfig(**endpoint)
-    backend = backend_class(endpoint.backend)
-    options = dict(endpoint.backend_options)
-    if endpoint.executor == "local":
+    if isinstance(config, dict):
+        config = ExecutionEndpointConfig(**config)
+    backend = backend_class(config.backend)
+    options = dict(config.backend_options)
+    if config.location == "local":
         return LocalRunEndpoint(backend, backend_options=options)
-    if endpoint.executor == "ssh":
-        if not endpoint.host:
+    if config.location == "ssh":
+        if not config.host:
             raise ValueError("SSH execution endpoint requires 'host'")
         return SshRunEndpoint(
-            SshTransport(endpoint.host, options=endpoint.ssh_options,
-                         zstd=endpoint.ssh_zstd, python_command=endpoint.python_command),
-            backend=backend, backend_options=options, filesystem_id=endpoint.filesystem_id,
+            SshTransport(config.host, options=config.ssh_options,
+                         zstd=config.ssh_zstd, python_command=config.python_command),
+            backend=backend, backend_options=options, filesystem_id=config.filesystem_id,
         )
-    raise ValueError(f"Cannot reconstruct custom execution endpoint {endpoint.executor!r}")
+    raise ValueError(f"Cannot reconstruct custom execution endpoint {config.location!r}")

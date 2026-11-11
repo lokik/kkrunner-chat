@@ -10,7 +10,7 @@ from kkrunner.files.streams import close_output_files
 from kkrunner.backends.contracts import JobFailurePhase
 from kkrunner.runs.base import ExecutionOutcome, SubmissionNotStarted
 from kkrunner.runs.states import RunState
-from . import slurm
+from .slurm import submission_marker
 
 _STATE_MAP = {
     "NEW": RunState.NEW,
@@ -69,7 +69,7 @@ class PsijSubmission:
         self._job = self._create_job()
 
     @property
-    def backend_id(self):
+    def native_id(self):
         identity = self._job.native_id
         return None if identity is None else str(identity)
 
@@ -79,7 +79,7 @@ class PsijSubmission:
 
     @property
     def state(self):
-        if self._submission_attempted and self.backend_id is None:
+        if self._submission_attempted and self.native_id is None:
             return RunState.UNKNOWN
         return psij_state(self._job.status)
 
@@ -93,7 +93,7 @@ class PsijSubmission:
         resources = None
         if mpi.process_count is not None:
             resources = self._psij.ResourceSpecV1(process_count=mpi.process_count)
-        launcher = "srun" if self.executor.backend.lower() == "slurm" else "mpirun"
+        launcher = "srun" if self.executor.executor_name.lower() == "slurm" else "mpirun"
         return tuple(self.spec.mpi_argv), resources, launcher
 
     def _project_metadata(self):
@@ -101,8 +101,8 @@ class PsijSubmission:
             return None, None
         environment = {"KKRunner_RUN_ID": self._run_id}
         attributes = None
-        if self.executor.backend.lower() == "slurm":
-            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": slurm.submission_marker(self._run_id)})
+        if self.executor.executor_name.lower() == "slurm":
+            attributes = self._psij.JobAttributes(custom_attributes={"slurm.comment": submission_marker(self._run_id)})
         return environment, attributes
 
     def _create_job(self):
@@ -154,7 +154,7 @@ class PsijSubmission:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"")
 
-    def submit_native(self):
+    def submit(self):
         """Prepare before crossing the scheduler's uncertain submission boundary."""
         with self._submit_lock:
             if self._submission_attempted:

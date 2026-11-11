@@ -34,10 +34,6 @@ class LocalRunEndpoint(RunEndpoint):
         self.transport = LocalTransport()
 
     @property
-    def name(self):
-        return self.backend.name
-
-    @property
     def default_persistent(self):
         return self.backend.default_persistent
 
@@ -60,8 +56,8 @@ class LocalRunEndpoint(RunEndpoint):
         def request():
             return {
                 **execution_request(spec),
-                "executor": self.name,
-                "executor_options": dict(self.backend_options),
+                "backend": self.backend.name,
+                "backend_options": dict(self.backend_options),
                 "id": submission_key or uuid4().hex,
                 "detached": True,
             }
@@ -109,8 +105,8 @@ class LocalRunEndpoint(RunEndpoint):
             raise UnsupportedCapability("Direct execution has no durable identity or reattachment")
 
     def _validate_run(self, run):
-        from kkrunner.client.endpoint import endpoint_config_for_executor
-        if run.execution.endpoint != endpoint_config_for_executor(self):
+        from kkrunner.client.endpoint import describe_endpoint
+        if run.execution.endpoint != describe_endpoint(self):
             raise ValueError("Run does not belong to this local endpoint")
         if not run.execution.backend_id:
             raise ValueError("Run lacks a backend identity")
@@ -155,7 +151,7 @@ class LocalRunEndpoint(RunEndpoint):
             return RecoveryResult.unsupported("Direct execution has no submission recovery")
         reply = run_coro_sync(self.transport.call(
             self._operation("recover"), submission_key,
-            {"executor": self.name, "executor_options": self.backend_options,
+            {"backend": self.backend.name, "backend_options": self.backend_options,
              "directory": submission.execution.directory.target},
             submitted_at=submitted_at,
         ))
@@ -165,7 +161,7 @@ class LocalRunEndpoint(RunEndpoint):
             return RecoveryResult.unsupported(reply.get("error"))
         identity = reply["remote_id"]
         return RecoveryResult.found(
-            JobRef(self.name, identity), directory=reply.get("directory"),
+            JobRef(self.backend.name, identity), directory=reply.get("directory"),
             output_file=reply.get("output_file"), error_file=reply.get("error_file"),
         )
 

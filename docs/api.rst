@@ -107,8 +107,8 @@ Client endpoints, transport and pooling
    ReopenableRunEndpoint
    JobAttachment
    ExecutionEndpointConfig
-   ExecutorPool
-   default_executor_pool
+   EndpointPool
+   default_endpoint_pool
    Transport
    LocalTransport
    SshTransport

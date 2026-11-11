@@ -81,12 +81,12 @@ def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
             return "local"
         if endpoint.filesystem_id is not None:
             return ("filesystem", endpoint.filesystem_id)
-        if endpoint.executor == "ssh":
+        if endpoint.location == "ssh":
             # Connection flags, commands and scheduler choices do not partition
             # the host's filesystem. Host aliases/shared mounts use filesystem_id.
             return ("ssh", str(endpoint.host).rsplit("@", 1)[-1].lower())
         if endpoint.host is None:
-            return "local"  # e.g. RemoteEndpointExecutor(LocalTransport()).
+            return "local"  # e.g. a custom endpoint using local transport.
         return ("host", str(endpoint.host))
 
     return namespace(a) == namespace(b) and overlaps(_manifest_accesses(left), _manifest_accesses(right))

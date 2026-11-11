@@ -16,7 +16,7 @@ def _backend_for_kind(kind):
 
 
 def _backend_for_request(request):
-    return _backend_for_kind(request.get("executor", "process"))
+    return _backend_for_kind(request.get("backend", "process"))
 
 
 def _backend_for_ref(ref):

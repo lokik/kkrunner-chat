@@ -135,7 +135,7 @@ def _slurm_accounting_matches(run_id, submitted_at):
     return tuple(matches)
 
 
-def status_native(native_id: str) -> JobStatus:
+def status(native_id: str) -> JobStatus:
     """Read scheduler facts for a local Slurm job without initializing PSI/J."""
     native_id = str(native_id)
     # A PSI/J attach initially reports NEW; short-lived remote commands
@@ -186,7 +186,7 @@ def status_native(native_id: str) -> JobStatus:
     )
 
 
-def recover_native(run_id, directory, *, submitted_at=None):
+def recover(run_id, directory, *, submitted_at=None):
     """Recover an uncertain local Slurm submission from scheduler facts."""
     matches = _slurm_current_matches(run_id)
     if len(matches) > 1:

@@ -28,35 +28,35 @@ class SupervisedBackend(Backend, ManagedOperations):
 
     @staticmethod
     def submit(request: ExecutionRequest) -> SubmissionReply:
-        from kkrunner.native.supervised.operations import _submit_impl
-        return _submit_impl(request)
+        from kkrunner.native.supervised.operations import submit
+        return submit(request)
 
     @staticmethod
     def status(job_ref: str) -> StatusReply:
-        from kkrunner.native.supervised.operations import _status_impl
-        return _status_impl(job_ref)
+        from kkrunner.native.supervised.operations import status
+        return status(job_ref)
 
     @staticmethod
     def cancel(job_ref: str) -> StatusReply:
-        from kkrunner.native.supervised.operations import _cancel_impl
-        return _cancel_impl(job_ref)
+        from kkrunner.native.supervised.operations import cancel
+        return cancel(job_ref)
 
     @staticmethod
     def recover(
         submission_key: str, request: RecoveryRequest, *, submitted_at: Optional[str] = None,
     ) -> RecoveryReply:
-        from kkrunner.native.supervised.operations import _recover_impl
-        return _recover_impl(submission_key, request, submitted_at=submitted_at)
+        from kkrunner.native.supervised.operations import recover
+        return recover(submission_key, request, submitted_at=submitted_at)
 
     @staticmethod
     def acknowledge(job_ref: str) -> AcknowledgeReply:
-        from kkrunner.native.supervised.operations import _acknowledge_impl
-        return _acknowledge_impl(job_ref)
+        from kkrunner.native.supervised.operations import acknowledge
+        return acknowledge(job_ref)
 
     @staticmethod
     def acknowledge_submission(submission_key: str) -> AcknowledgeReply:
-        from kkrunner.native.supervised.operations import _acknowledge_submission_impl
-        return _acknowledge_submission_impl(submission_key)
+        from kkrunner.native.supervised.operations import acknowledge_submission
+        return acknowledge_submission(submission_key)
 
     @staticmethod
     async def follow(

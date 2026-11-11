@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 from kkrunner.runs.states import RunState
 
 
-class ExecutorOptions(TypedDict, total=False):
-    backend: str
+class BackendOptions(TypedDict, total=False):
+    executor_name: str
     url: Optional[str]
 
 
@@ -64,8 +64,8 @@ class _DirectoryRequest(TypedDict):
 
 
 class RecoveryRequest(_DirectoryRequest, total=False):
-    executor: str
-    executor_options: ExecutorOptions
+    backend: str
+    backend_options: BackendOptions
 
 
 class _CommandRequest(RecoveryRequest):
