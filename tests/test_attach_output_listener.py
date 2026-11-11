@@ -94,7 +94,7 @@ def _remote_context(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpointConfig(executor="ssh", host="host"),
+            ExecutionEndpointConfig(location="ssh", host="host"),
             WorkingDirectory(str(tmp_path / "work"), "/remote/work"),
             "run",
         ),
@@ -171,7 +171,7 @@ def _psij_run(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpointConfig(executor="psij", psij_backend="slurm"), WorkingDirectory(str(tmp_path)), "42"
+            ExecutionEndpointConfig(backend="psij", backend_options={"executor_name": "slurm"}), WorkingDirectory(str(tmp_path)), "42"
         ),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "output.out")),
