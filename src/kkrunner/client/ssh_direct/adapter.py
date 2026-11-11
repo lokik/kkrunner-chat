@@ -1,4 +1,9 @@
-"""Direct SSH transport adapter; native Job and filesystem mapping stay client-side."""
+"""Client adapter between DirectSession and a remotely launched SSH command.
+
+The shared DirectSession handles lifecycle and stream observation. This adapter
+only stages the request, starts the portable worker through the SSH transport,
+requests remote cancellation and classifies lost SSH connections.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +13,7 @@ from kkrunner.runs.base import RunState
 from kkrunner.native.direct.worker import DIRECT_BOOTSTRAP_SOURCE
 
 
-class SshProcessAdapter:
+class SshDirectProcessAdapter:
     expose_pid = False
     uncertain_after_launch = True
 

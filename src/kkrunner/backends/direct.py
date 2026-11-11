@@ -3,37 +3,9 @@
 SSH direct ships a standalone Python worker, not an installed backend.
 """
 from __future__ import annotations
-from typing import Protocol
 from kkrunner.runs.base import ExecutionSpec
 from kkrunner.backends.contracts import Backend
-from kkrunner.native.direct.local_adapter import LocalProcessAdapter
-from kkrunner.native.direct.ssh_adapter import SshProcessAdapter
-from kkrunner.native.direct.worker import WORKER_SOURCE, DIRECT_LIBRARY_SOURCE
-
-class DirectProcessAdapter(Protocol):
-    """Process mechanism, not a second Job lifecycle or state owner."""
-
-    expose_pid: bool
-    uncertain_after_launch: bool
-    detached: bool
-
-    def prepare(self, spec: ExecutionSpec) -> None: ...
-
-    async def launch(self, spec: ExecutionSpec): ...
-
-    async def stop(self, process) -> bool: ...
-
-    def output(self, data: bytes, kind: str): ...
-
-    def detached_output_paths(self, spec: ExecutionSpec) -> dict: ...
-
-    def exit_status(self, code: int): ...
-
-    def close(self, process) -> None: ...
-
-
-from kkrunner.backends.contracts import Backend
-from kkrunner.runs.base import ExecutionSpec
+from kkrunner.native.direct.worker import WORKER_SOURCE, DIRECT_LIBRARY_SOURCE, execute
 
 class DirectProcessBackend(Backend):
     """Create direct process Jobs, locally or using an internal transport adapter."""
@@ -58,8 +30,6 @@ class DirectProcessBackend(Backend):
 
 
 
-
-from kkrunner.native.direct.worker import execute
 
 
 class DirectBackend:

@@ -158,7 +158,6 @@ def test_protocol_definitions_are_independent_of_implementations():
     import kkrunner.client as client
     from kkrunner.backends.contracts import Backend, JobProtocol, RecoverableBackend
     from kkrunner.client.contracts import RunEndpoint, ReopenableRunEndpoint, RunningCommand
-    from kkrunner.backends.direct import DirectProcessAdapter
 
     assert Backend.__module__ == "kkrunner.backends.contracts"
     assert RecoverableBackend.__module__ == "kkrunner.backends.contracts"
@@ -166,7 +165,6 @@ def test_protocol_definitions_are_independent_of_implementations():
     assert RunEndpoint.__module__ == "kkrunner.client.contracts"
     assert ReopenableRunEndpoint.__module__ == "kkrunner.client.contracts"
     assert RunningCommand.__module__ == "kkrunner.client.contracts"
-    assert DirectProcessAdapter.__module__ == "kkrunner.backends.direct"
     assert not hasattr(backends, "ProcessBackend")
     assert not hasattr(backends, "ProtocolBackend")
     assert not hasattr(client, "BackendPool")

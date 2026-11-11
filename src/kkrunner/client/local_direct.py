@@ -1,4 +1,8 @@
-"""Local direct process adapter: process launch and named output streams."""
+"""Client adapter for a locally started direct subprocess.
+
+This is the same DirectSession lifecycle used by SSH. Only process launching
+and local output stream ownership differ from the SSH transport.
+"""
 from __future__ import annotations
 
 from kkrunner.backends.support import materialize_local_spec, start_local_process, stop_local_process
