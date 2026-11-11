@@ -235,12 +235,12 @@ class ManagedOperations(Protocol):
 class Backend:
     """Namespace contract for stateless target operations.
 
-    Every backend implements stream(subject, **options). Session-bound
+    Every backend implements ``stream(subject, **options)``. Session-bound
     backends receive an execution request and return an exit code. Durable
     backends receive a job reference and return authoritative terminal facts;
     they also declare submit, status, cancel, recover and acknowledgement.
     Short operations are synchronous and exchange JSON-compatible values.
-    follow(ref, stdout, stderr, **options) is asynchronous and borrows its
+    ``follow(ref, stdout, stderr, **options)`` is asynchronous and borrows its
     sinks; cancelling it releases observation without cancelling execution.
     stream is asynchronous too, using interpreter streams at the SSH boundary.
     recover(key, request, submitted_at=...) returns a receipt, None when
