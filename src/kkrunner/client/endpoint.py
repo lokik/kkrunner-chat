@@ -29,15 +29,8 @@ class ExecutionEndpointConfig:
         if self.location not in ("local", "ssh") and not self.location.startswith("custom:"):
             raise ValueError(f"Unsupported execution location: {self.location!r}")
         from kkrunner.backends import backend_class
-        backend = backend_class(self.backend)
-        options = dict(backend.default_options)
-        options.update(dict(self.backend_options))
-        if any(not isinstance(key, str) or not isinstance(value, (str, int, float, bool, type(None)))
-               for key, value in options.items()):
-            raise TypeError("Backend options must have string keys and scalar JSON values")
-        import json
-        json.dumps(options, allow_nan=False)
-        object.__setattr__(self, "backend_options", tuple(sorted(options.items())))
+        backend = backend_class(self.backend)(**dict(self.backend_options))
+        object.__setattr__(self, "backend_options", tuple(sorted(backend.options.items())))
         for name in ("ssh_options", "python_command"):
             value = getattr(self, name)
             value = () if value is None else (value,) if isinstance(value, str) else tuple(value)
@@ -67,7 +60,7 @@ def describe_endpoint(endpoint) -> ExecutionEndpointConfig:
     if isinstance(endpoint, LocalRunEndpoint):
         return ExecutionEndpointConfig(
             location="local", backend=endpoint.backend.name,
-            backend_options=endpoint.backend_options,
+            backend_options=endpoint.backend.options,
         )
     if isinstance(endpoint, SshRunEndpoint):
         transport = endpoint.transport
@@ -76,7 +69,7 @@ def describe_endpoint(endpoint) -> ExecutionEndpointConfig:
         )
         return ExecutionEndpointConfig(
             location=location, backend=endpoint.backend.name,
-            backend_options=endpoint.backend_options,
+            backend_options=endpoint.backend.options,
             host=getattr(transport, "host", None),
             ssh_options=getattr(transport, "options", ()),
             python_command=getattr(transport, "python_command", ("python3",)),
@@ -97,16 +90,15 @@ def endpoint_from_config(config: ExecutionEndpointConfig):
 
     if isinstance(config, dict):
         config = ExecutionEndpointConfig(**config)
-    backend = backend_class(config.backend)
-    options = dict(config.backend_options)
+    backend = backend_class(config.backend)(**dict(config.backend_options))
     if config.location == "local":
-        return LocalRunEndpoint(backend, backend_options=options)
+        return LocalRunEndpoint(backend)
     if config.location == "ssh":
         if not config.host:
             raise ValueError("SSH execution endpoint requires 'host'")
         return SshRunEndpoint(
             SshTransport(config.host, options=config.ssh_options,
                          zstd=config.ssh_zstd, python_command=config.python_command),
-            backend=backend, backend_options=options, filesystem_id=config.filesystem_id,
+            backend=backend, filesystem_id=config.filesystem_id,
         )
     raise ValueError(f"Cannot reconstruct custom execution endpoint {config.location!r}")

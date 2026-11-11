@@ -6,23 +6,34 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.backends import SupervisedBackend
+from kkrunner.client.transport import SshTransport
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, LaunchSpec, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
 
-class _SpyTransport(LocalTransport):
+class _OperationLoopbackTransport(LocalTransport):
+    """Local file transfer with the real framed backend-operation subprocess."""
+
+    host = "loopback"
+    python_command = (sys.executable,)
+    start_operation = SshTransport.start_operation
+
+
+class _SpyTransport(_OperationLoopbackTransport):
     def __init__(self):
-        self.put_files = []
-        self.get_files = []
+        super().__init__()
+        self.uploads = []
+        self.downloads = []
 
     async def put_file(self, source, destination):
-        self.put_files.append((Path(source), Path(destination)))
+        self.uploads.append((Path(source), Path(destination)))
         await super().put_file(source, destination)
 
     async def get_file(self, source, destination):
-        self.get_files.append((Path(source), Path(destination)))
+        self.downloads.append((Path(source), Path(destination)))
         await super().get_file(source, destination)
 
 
@@ -38,9 +49,8 @@ def _processed_run(executor, spec):
 
 
 def _executor(transport=None, **kwargs):
-    return AgentRunEndpoint(
-        transport or LocalTransport(), command=(sys.executable, "-m", "kkrunner_cli"), **kwargs
-    )
+    backend = kwargs.pop("backend", SupervisedBackend)
+    return SshRunEndpoint(transport or _OperationLoopbackTransport(), backend=backend, **kwargs)
 
 
 def _launch(local_root, remote_root, *, input_files=FileSyncPolicy.CHANGED, output_files=FileSyncPolicy.CHANGED):
@@ -131,7 +141,7 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
         directory = await runner._file_session.context.map_directory(spec.directory)
         from kkrunner.files.manifest import FileManifest
 
-        return await runner._file_session._prepare_request("one-run", directory, FileManifest.from_spec(spec))
+        return await runner._file_session._prepare_request(directory, FileManifest.from_spec(spec))
 
     try:
         request = asyncio.run(prepare())
@@ -139,7 +149,7 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
         assert request["input_file"] == str(target)
         assert request["stdin"] == str(target)
         assert request["input_files"] == [str(target)]
-        assert [destination for _, destination in transport.put_files] == [target]
+        assert [destination for _, destination in transport.uploads] == [target]
     finally:
         spec.input_file.close()
         spec.output_file.close()
@@ -192,7 +202,7 @@ def test_remote_executor_uses_remote_only_input(tmp_path):
     result = _processed_run(executor, spec).run()
     assert result.output == b"remote\n"
     assert not remote_only.exists()
-    assert all((dst != remote_file for _, dst in transport.put_files))
+    assert all((dst != remote_file for _, dst in transport.uploads))
 
 
 @pytest.mark.parametrize(
@@ -226,7 +236,7 @@ def test_remote_input_file_policies(tmp_path, policy, local_value, remote_value,
         _expose_shared_input(remote_root, "input.txt", b"hello")
     result = _processed_run(executor, spec).run()
     assert result.output == (expected + "\n").encode()
-    assert sum((dst == remote_artifact for _, dst in transport.put_files)) == uploads
+    assert sum((dst == remote_artifact for _, dst in transport.uploads)) == uploads
 
 
 @pytest.mark.parametrize("direction", ("input", "output"))
@@ -245,9 +255,9 @@ def test_remote_never_policy_ignores_missing_declared_file(tmp_path, direction):
     assert result.return_code == 0
     assert not missing.exists()
     if direction == "input":
-        assert all((src != missing for src, _ in transport.put_files))
+        assert all((src != missing for src, _ in transport.uploads))
     else:
-        assert all((dst != missing for _, dst in transport.get_files))
+        assert all((dst != missing for _, dst in transport.downloads))
 
 
 def test_remote_input_policy_always_requires_local_file(tmp_path):
@@ -288,7 +298,7 @@ def test_remote_output_file_policies(tmp_path, policy, local_value, generated_va
     remote_artifact = remote_root / "calculation" / "artifact.dat"
     assert result.return_code == 0
     assert artifact.read_text() == expected
-    assert transport.get_files == ([(remote_artifact, artifact)] if downloads else [])
+    assert transport.downloads == ([(remote_artifact, artifact)] if downloads else [])
 
 
 def test_remote_executor_does_not_reuse_stale_output(tmp_path):
@@ -333,12 +343,12 @@ def test_remote_cache_creation_content_and_mtime_changes_in_one_run(tmp_path):
     assert touched.read_text() == "same"
     for path in (changed, unchanged, touched):
         remote_path = remote_directory / path.name
-        assert sum((dst == remote_path for _, dst in transport.put_files)) == 1
-    assert all((dst != remote_directory / created.name for _, dst in transport.put_files))
+        assert sum((dst == remote_path for _, dst in transport.uploads)) == 1
+    assert all((dst != remote_directory / created.name for _, dst in transport.uploads))
     for path in (changed, created, touched):
         remote_path = remote_directory / path.name
-        assert sum(((src, dst) == (remote_path, path) for src, dst in transport.get_files)) == 1
-    assert all((src != remote_directory / unchanged.name for src, _ in transport.get_files))
+        assert sum(((src, dst) == (remote_path, path) for src, dst in transport.downloads)) == 1
+    assert all((src != remote_directory / unchanged.name for src, _ in transport.downloads))
 
 
 @pytest.mark.parametrize("direction", ("input", "output"))
@@ -362,12 +372,12 @@ def test_remote_cache_never_policy_skips_only_requested_direction(tmp_path, dire
     result = _processed_run(executor, spec).run()
     assert result.return_code == 0
     if direction == "input":
-        assert all((dst != remote_cache for _, dst in transport.put_files))
+        assert all((dst != remote_cache for _, dst in transport.uploads))
         assert cache.read_text() == "remote"
-        assert (remote_cache, cache) in transport.get_files
+        assert (remote_cache, cache) in transport.downloads
     else:
         assert cache.read_text() == "local"
-        assert all((src != remote_cache for src, _ in transport.get_files))
+        assert all((src != remote_cache for src, _ in transport.downloads))
 
 
 def test_remote_sync_policy_rejects_unknown_value(tmp_path):
@@ -409,7 +419,9 @@ def test_remote_directory_mapping_rejects_path_outside_local_root(tmp_path):
 def test_remote_none_stream_files_are_live_only(tmp_path):
     workdir = tmp_path / "calculation"
     workdir.mkdir()
-    executor = _executor()
+    # Direct SSH owns the live pipes for this attachment. A detached supervisor
+    # with no named stream files cannot replay bytes after a fast completion.
+    executor = _executor(backend="direct")
     spec = ExecutionSpec(
         argv=(
             sys.executable,
@@ -487,7 +499,7 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote"), input_sync="always"),
     )
-    runner = Run.direct(AgentRunEndpoint(LocalTransport()), spec)
+    runner = Run.direct(_executor(), spec)
     if preflight:
         with pytest.raises(SubmissionNotStarted, match="Local input file"):
             runner._file_session.prepare_submission()
@@ -518,7 +530,7 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         output_file=None,
         launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    executor = AgentRunEndpoint(LocalTransport())
+    executor = _executor()
     runner = Run.direct(executor, spec)
 
     async def fail_after_preparation(_request):

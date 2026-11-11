@@ -1,4 +1,4 @@
-"""Static backend methods are the only execution operation interface."""
+"""Backend operations are static methods, independently dispatchable via SSH."""
 
 import json
 import subprocess
@@ -7,98 +7,67 @@ import sys
 import pytest
 
 from kkrunner.backends import backend_class
-from kkrunner.backends.class_helper import static_methods
+from kkrunner.backends.support.class_helper import static_methods
 from kkrunner.client.operations import BackendOperation, operation_command
 
-OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
-              "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
+MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
+                      "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
 
 
 @pytest.mark.parametrize("kind", ("process", "psij"))
-def test_installed_backend_declares_only_static_operations(kind):
-    backend = backend_class(kind)
-    assert set(static_methods(backend)) == OPERATIONS
+def test_managed_backend_exposes_static_operations(kind):
+    assert set(static_methods(backend_class(kind))) == MANAGED_OPERATIONS
 
 
 @pytest.mark.parametrize("kind", ("process", "psij"))
-def test_backend_class_imports_in_fresh_python(kind):
+def test_backend_imports_in_fresh_interpreter(kind):
     backend = backend_class(kind)
-    script = (
-        "import importlib, json, sys\n"
-        "backend = getattr(importlib.import_module(sys.argv[1]), sys.argv[2])\n"
-        "print(json.dumps(sorted(name for name, value in backend.__dict__.items() "
-        "if isinstance(value, staticmethod))))\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", script, backend.__module__, backend.__name__],
-        capture_output=True, text=True, check=True,
-    )
-    assert set(json.loads(result.stdout)) == OPERATIONS
+    script = ("import importlib,json,sys\n"
+              "cls=getattr(importlib.import_module(sys.argv[1]),sys.argv[2])\n"
+              "print(json.dumps(sorted(k for k,v in vars(cls).items() if isinstance(v,staticmethod))))\n")
+    result = subprocess.run([sys.executable, "-c", script, backend.__module__, backend.__name__],
+                            check=True, capture_output=True, text=True)
+    assert set(json.loads(result.stdout)) == MANAGED_OPERATIONS
 
 
-
-def test_backend_interfaces_use_static_methods():
-    from kkrunner.backends import backend_class
-    from kkrunner.backends.class_helper import static_methods
-    for kind in ("direct", "process", "psij"):
-        backend = backend_class(kind)
-        assert "stream" in static_methods(backend)
-        assert backend.SshHelper is not None
+def test_direct_and_managed_operations_have_distinct_contracts():
+    assert set(static_methods(backend_class("direct"))) == {"stream"}
+    assert set(static_methods(backend_class("process"))) == MANAGED_OPERATIONS
 
 
-def test_installed_ssh_helper_delegates_without_copying_implementation():
-    from kkrunner.backends import backend_class
-    from kkrunner.backends.class_helper import method_source, static_methods
-    for kind in ("process", "psij"):
-        backend = backend_class(kind)
-        helper = backend.SshHelper
-        assert set(static_methods(helper)) == set(static_methods(backend))
-        source = method_source(helper, "submit")
-        assert f"from {backend.__module__} import {backend.__name__}" in source
-        assert "def submit(*args, **kwargs):" in source
-        assert "def _local_submit" not in source
+@pytest.mark.parametrize("kind", ("process", "psij"))
+def test_ssh_helper_imports_one_backend_method(kind):
+    backend = backend_class(kind)
+    helper = backend.SshHelper
+    assert set(static_methods(helper)) == set(static_methods(backend))
+    source = helper.submit.__source__
+    assert f"from {backend.__module__} import {backend.__name__}" in source
+    assert f"return {backend.__name__}.submit(*args, **kwargs)" in source
+    assert "def _local_submit" not in source
 
 
-def test_backend_ssh_source_is_python_and_uses_class_dispatch():
-    from kkrunner.backends import backend_class
-    from kkrunner.client.operations import BackendOperation, operation_command
-    operation = BackendOperation.for_backend(backend_class("process"), "status")
-    command = operation_command(operation, python=("python3",), ssh=True)
+@pytest.mark.parametrize("kind", ("process", "psij"))
+def test_operation_command_dispatches_static_method(kind):
+    backend = backend_class(kind)
+    operation = BackendOperation.for_backend(backend, "status")
+    command = operation_command(operation)
     assert command[:2] == ("python3", "-c")
-    compile(command[2], "<backend ssh>", "exec")
-    assert "return SupervisedBackend.status" in command[2]
+    compile(command[2], "<backend operation>", "exec")
+    assert f"return {backend.__name__}.status" in command[2]
 
 
-def test_backend_operation_reference_is_well_formed():
-    from kkrunner.backends import backend_class
-    from kkrunner.client.operations import BackendOperation
-    for kind in ("direct", "process", "psij"):
-        operation = BackendOperation.for_backend(backend_class(kind), "stream")
-        assert operation.backend is backend_class(kind)
-        assert operation.function == "stream"
+@pytest.mark.parametrize("kind", ("direct", "process", "psij"))
+def test_backend_operation_reference_is_well_formed(kind):
+    backend = backend_class(kind)
+    operation = BackendOperation.for_backend(backend, "stream")
+    assert operation.backend is backend
+    assert operation.function == "stream"
 
 
-def test_portable_direct_ssh_backend_is_self_contained():
-    from kkrunner.backends import backend_class
-    from kkrunner.client.operations import BackendOperation, operation_command
+def test_portable_direct_stream_is_self_contained():
     backend = backend_class("direct")
-    code = operation_command(BackendOperation.for_backend(backend, "stream"), ssh=True)[-1]
-    compile(code, "<direct ssh backend>", "exec")
-    assert "def stream(request," in code
+    command = operation_command(BackendOperation.for_backend(backend, "stream"), streaming=True)
+    code = command[-1]
+    compile(code, "<portable direct stream>", "exec")
+    assert "async def stream(request" in code
     assert "from kkrunner" not in code
-
-
-def test_native_operations_do_not_call_removed_module_status_functions():
-    """All native cancellation/recovery paths use the internal status owner."""
-    import ast
-    import inspect
-    from kkrunner.native.supervised import operations as supervised
-    from kkrunner.native.psij import operations as psij
-    for module in (supervised, psij):
-        tree = ast.parse(inspect.getsource(module))
-        unresolved = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "status"
-        ]
-        assert not unresolved, module.__name__

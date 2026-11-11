@@ -9,7 +9,7 @@ from kkrunner.backends.contracts import Backend, DirectOperations
 if TYPE_CHECKING:
     from typing import BinaryIO, Callable, Mapping, Optional, Union
     from kkrunner.backends.contracts import AsyncByteSink, ByteSink, ControlReader
-    from kkrunner.backends.messages import ExecutionRequest
+    from kkrunner.backends.support.messages import ExecutionRequest
 
 
 class DirectBackend(Backend, DirectOperations):

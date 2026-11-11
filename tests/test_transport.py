@@ -164,7 +164,7 @@ class _LoopbackSshTransport(SshTransport):
     """Exercise the real SSH transfer implementation without an SSH server."""
 
     def __init__(self, *, zstd=False):
-        super().__init__("local-test", zstd=zstd, command=(sys.executable, "-m", "kkrunner_cli"))
+        super().__init__("local-test", zstd=zstd, python_command=(sys.executable,))
 
     def _command(self, argv, cwd=None):
         assert cwd is None
@@ -364,14 +364,15 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
             asyncio.run(query(path))
     else:
         assert asyncio.run(query(path)) == (None if status == "missing" else expected)
-    assert calls == [
-        (
-            ("kkrunner-agent", "--protocol-version", "1", "query-files"),
-            {"paths": [path], "root": None, "digest": method == "file_digest"},
-            True,
-        )
-    ]
-
+    assert len(calls) == 1
+    command, payload, checked = calls[0]
+    assert command[:2] == ("python3", "-c")
+    assert "def query_files(" in command[2]
+    assert payload == {
+        "args": [[path]],
+        "kwargs": {"root": None, "digest": method == "file_digest"},
+    }
+    assert checked is True
 
 def test_ssh_file_query_preserves_command_errors():
     class Failed(SshTransport):
@@ -413,13 +414,13 @@ def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd)
 
 
 def test_ssh_endpoint_compression_roundtrips_from_transport():
-    from kkrunner.client.endpoint import executor_from_endpoint, endpoint_config_for_executor
-    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
+    from kkrunner.client.ssh import SshRunEndpoint
 
     for compressed in (False, True):
-        endpoint = endpoint_config_for_executor(AgentRunEndpoint(SshTransport("cluster", zstd=compressed)))
+        endpoint = describe_endpoint(SshRunEndpoint(SshTransport("cluster", zstd=compressed)))
         assert endpoint.ssh_zstd is compressed
-        restored = executor_from_endpoint(endpoint)
+        restored = endpoint_from_config(endpoint)
         assert restored.transport.zstd is compressed
 
 
@@ -489,7 +490,7 @@ def test_ssh_upload_preserves_original_error_when_remote_cleanup_fails(tmp_path)
 
 
 def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, monkeypatch):
-    from kkrunner.remote import transport as module
+    from kkrunner.client import transport as module
 
     transport = SshTransport("unused", ssh="/missing-kkrunner-ssh-executable")
 
@@ -545,12 +546,12 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
 
 
 def test_agent_endpoint_retains_target_python_configuration():
-    from kkrunner.client.agent import AgentRunEndpoint
-    from kkrunner.client.endpoint import endpoint_config_for_executor, executor_from_endpoint
+    from kkrunner.client.ssh import SshRunEndpoint
+    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
 
-    backend = AgentRunEndpoint(
+    backend = SshRunEndpoint(
         SshTransport("cluster", python_command=("python3.12",))
     )
-    endpoint = endpoint_config_for_executor(backend)
+    endpoint = describe_endpoint(backend)
     assert endpoint.python_command == ("python3.12",)
-    assert endpoint_config_for_executor(executor_from_endpoint(endpoint)) == endpoint
+    assert describe_endpoint(endpoint_from_config(endpoint)) == endpoint

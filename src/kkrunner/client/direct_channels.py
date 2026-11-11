@@ -11,7 +11,7 @@ import os
 from dataclasses import replace
 
 from kkrunner.backends.direct import DirectBackend
-from kkrunner.backends.support import resolve_mpi_options
+from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client.execution_request import execution_request
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.transport import LocalTransport
@@ -253,7 +253,7 @@ class SshDirectChannel:
         request, _ = await prepare_direct_request(self.context.transport, request)
         request["detached"] = self.detached
         return await self.context.transport.start_operation(
-            BackendOperation.for_backend(self.context.endpoint.backend, "stream"), request,
+            BackendOperation.for_backend(type(self.context.endpoint.backend), "stream"), request,
         )
 
     async def stop(self, process, *, discard_output=False):

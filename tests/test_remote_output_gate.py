@@ -32,7 +32,7 @@ class _Follow:
 
 
 class _Context:
-    backend = "process"
+    backend = SimpleNamespace(name="process")
     output_files = FileSyncPolicy.NEVER
 
     def __init__(self, state=RunState.FINISHED):
@@ -46,7 +46,8 @@ class _Context:
         self.follow_calls += 1
         if self.follow_error is not None:
             raise self.follow_error
-        return _Follow()
+        kwargs["on_output"](b"streamed\n", "out")
+        return await self._status()
 
     async def _status(self, *args, **kwargs):
         if self.status_error is not None:
@@ -72,6 +73,9 @@ def _run(tmp_path, state=RunState.FINISHED):
     ).initialize_availability()
     context = _Context(state)
     session = RemoteFileSession(context, spec, files=files, remote_directory="/work/case")
+    from kkrunner.files.streams import OutputStreams
+    session._streams = OutputStreams(output_file=output)
+    session._stream_positions = {"out": 0, "err": 0}
     job = Job(
         context, spec, backend_id="opaque-handle", remote_directory="/work/case",
         status={"state": "running"},
@@ -133,11 +137,14 @@ def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
     destination = tmp_path / "output"
     destination.write_bytes(b"abc")
     context = _Context(RunState.RUNNING)
+    from kkrunner.files.streams import OutputStreams
     a_stream = destination.open("ab")
     b_stream = destination.open("ab")
     try:
         a = RemoteFileSession(context, ExecutionSpec(argv=(), output_file=a_stream, directory=tmp_path))
         b = RemoteFileSession(context, ExecutionSpec(argv=(), output_file=b_stream, directory=tmp_path))
+        a._streams = OutputStreams(output_file=a_stream)
+        b._streams = OutputStreams(output_file=b_stream)
         a._stream_positions = {"out": 3}
         b._stream_positions = {"out": 3}
         a._write_output(b"def", "out")
@@ -182,7 +189,7 @@ def test_unframed_backend_follow_failure_does_not_disguise_client_failure(tmp_pa
 
     context = _Context(RunState.FINISHED)
     async def follow(*args, **kwargs):
-        return BrokenFollow(b"partial output")
+        raise subprocess.CalledProcessError(17, "follow", stderr=b"helper failed")
 
     context._follow = follow
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))

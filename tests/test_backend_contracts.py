@@ -7,6 +7,7 @@ import pytest
 from kkrunner.runs.states import RunState
 
 from kkrunner.backends.contracts import (
+    BackendCapability,
     JobFailurePhase,
     JobRef,
     JobStatus,
@@ -64,24 +65,26 @@ def test_status_validates_execution_facts_without_client_phases():
 
 def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
-    from kkrunner.backends.contracts import Backend, InstalledBackend, JobProtocol
+    from kkrunner.backends.contracts import Backend
     from kkrunner.client import LocalRunEndpoint
     from kkrunner.client.job import Job
-    from kkrunner.client.contracts import RunEndpoint
     from kkrunner.runs.base import ExecutionSpec
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert issubclass(backend, Backend)
         assert not hasattr(backend, "create_job")
         assert not hasattr(backend, "create_run_parts")
         endpoint = LocalRunEndpoint(backend)
-        assert isinstance(endpoint, RunEndpoint)
+        assert callable(endpoint.create_run_parts)
         job = endpoint.create_run_parts(ExecutionSpec(("true",), directory=str(tmp_path))).job
         assert type(job) is Job
-        assert isinstance(job, JobProtocol)
+        assert all(hasattr(job, name) for name in ("submit", "wait", "cancel", "status", "ref"))
     assert DirectBackend.session_bound
     assert not SupervisedBackend.session_bound
-    assert issubclass(SupervisedBackend, InstalledBackend)
-    assert issubclass(PsijBackend, InstalledBackend)
+    assert not PsijBackend.session_bound
+    expected = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+    assert DirectBackend().supports == frozenset()
+    assert SupervisedBackend().supports == expected
+    assert PsijBackend().supports == expected
 
 
 def test_direct_rejects_reattachment_without_resubmission(tmp_path):
@@ -91,16 +94,16 @@ def test_direct_rejects_reattachment_without_resubmission(tmp_path):
         LocalRunEndpoint().open_run_parts(object())
 
 
-def test_supervised_and_agent_use_one_client_job_class(tmp_path):
+def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):
     from kkrunner.backends import SupervisedBackend
-    from kkrunner.client import LocalRunEndpoint, AgentRunEndpoint, LocalTransport
+    from kkrunner.client import LocalRunEndpoint, SshRunEndpoint, SshTransport
     from kkrunner.client.job import Job
-    from kkrunner.runs.base import ExecutionSpec
-    spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    local = LocalRunEndpoint(SupervisedBackend).create_job(spec)
-    remote = AgentRunEndpoint(LocalTransport()).create_run_parts(spec).job
-    assert type(local) is type(remote) is Job
+    from kkrunner.runs.base import ExecutionSpec, LaunchSpec
 
+    spec = ExecutionSpec(("true",), directory=str(tmp_path), launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / 'remote')))
+    local = LocalRunEndpoint(SupervisedBackend).create_run_parts(spec).job
+    remote = SshRunEndpoint(SshTransport("example"), backend=SupervisedBackend).create_run_parts(spec).job
+    assert type(local) is type(remote) is Job
 
 def test_managed_job_does_not_expose_direct_detached_configuration(tmp_path):
     from kkrunner.client.job import Job
@@ -114,11 +117,12 @@ def test_managed_job_does_not_expose_direct_detached_configuration(tmp_path):
         RunParts(managed).configure_detached(False, default=True)
 
 
-def test_agent_context_provides_backend_identity_for_job_ref(tmp_path):
+def test_client_context_provides_backend_identity_for_job_ref(tmp_path):
     from types import SimpleNamespace
-    from kkrunner.client.agent import _AgentRunContext
+    from kkrunner.backends import PsijBackend
     from kkrunner.client.job import Job
-    from kkrunner.runs.base import ExecutionSpec, LaunchSpec
-    context = _AgentRunContext(SimpleNamespace(backend="psij", transport=object()), LaunchSpec())
+    from kkrunner.runs.base import ExecutionSpec
+
+    context = SimpleNamespace(backend=PsijBackend())
     job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)), backend_id="opaque-id")
     assert job.ref == JobRef("psij", "opaque-id")

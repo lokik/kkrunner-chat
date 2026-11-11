@@ -1,4 +1,5 @@
-from kkrunner.native.psij.submission import psij_state
+from kkrunner.remote.handles import decode_handle
+from kkrunner.backends.psij.submission import psij_state
 import asyncio
 
 
@@ -29,7 +30,7 @@ from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.client.contracts import JobAttachment
 
 
-from kkrunner.backends.contracts import SubmissionContext
+from kkrunner.client.contracts import SubmissionContext
 
 
 
@@ -37,10 +38,10 @@ from kkrunner.backends.contracts import SubmissionContext
 from kkrunner.files import FileEntry, FileManifest
 
 
-import kkrunner.native.psij.executor as psij_backend
+import kkrunner.backends.psij.executor as psij_backend
 
 
-from kkrunner.native.psij import slurm as psij_slurm
+from kkrunner.backends.psij import slurm as psij_slurm
 
 
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
@@ -195,7 +196,7 @@ def _psij_run(directory, backend_id=None):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=Execution(
-            ExecutionEndpointConfig(executor="psij", psij_backend="slurm"), WorkingDirectory(str(directory)), backend_id
+            ExecutionEndpointConfig(backend="psij", backend_options={"executor_name": "slurm"}), WorkingDirectory(str(directory)), backend_id
         ),
         files=FileManifest(
             inputs=(FileEntry(local_path=str(directory / "run.inp")),),
@@ -228,7 +229,7 @@ def test_native_psij_state_normalization(native_name, return_code, attached, exp
 
 def test_psij_non_slurm_status_uses_shared_normalization(monkeypatch):
     executor = _executor(monkeypatch, _Backend())
-    executor.backend = "pbs"
+    executor.executor_name = "pbs"
     executor.url = "remote-pbs"
 
     class Job:
@@ -241,16 +242,16 @@ def test_psij_non_slurm_status_uses_shared_normalization(monkeypatch):
 
     executor._psij = SimpleNamespace(Job=Job)
     executor._job_executor = Backend()
-    result = executor.status_native("pbs-123")
+    result = executor.status("pbs-123")
     assert result.state == RunState.FAILED
     assert result.return_code == 9
-    assert result.failure_phase == psij_backend.FailurePhase.EXECUTION
+    assert result.failure_phase == psij_backend.JobFailurePhase.EXECUTION
 
 
 def test_psij_nonzero_completed_job_is_failed(monkeypatch, tmp_path):
     backend = _Backend()
     executor = _executor(monkeypatch, backend)
-    runner = executor.create_native_job(
+    runner = executor.create_submission(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         )
@@ -263,10 +264,10 @@ def test_psij_slurm_nonzero_accounted_job_is_failed(monkeypatch):
     executor = _executor(monkeypatch, _Backend())
     monkeypatch.setattr(psij_slurm, "_slurm_details", lambda native_id: {})
     monkeypatch.setattr(psij_slurm, "_scheduler_output", lambda argv: "123|COMPLETED|7:0|\\n".replace("\\n", "\n"))
-    status = executor.status_native("123")
+    status = executor.status("123")
     assert status.state == RunState.FAILED
     assert status.return_code == 7
-    assert status.failure_phase == psij_backend.FailurePhase.EXECUTION
+    assert status.failure_phase == psij_backend.JobFailurePhase.EXECUTION
 
 
 @pytest.mark.parametrize("mpi, process_count", [(16, 16), ("auto", None)])
@@ -283,7 +284,7 @@ def test_psij_mpi_job_uses_mpi_executable_and_requested_resources(monkeypatch, t
             directory=str(tmp_path),
             stdin=input_file,
         )
-        runner = executor.create_native_job(spec)
+        runner = executor.create_submission(spec)
         job_spec = runner._job.spec
         assert job_spec.executable == "programMPI"
         assert job_spec.arguments == [str(input_path)]
@@ -295,93 +296,55 @@ def test_psij_mpi_job_uses_mpi_executable_and_requested_resources(monkeypatch, t
             assert job_spec.resources.process_count == process_count
 
 
-def test_psij_status_is_nonblocking_and_explicit_wait_synchronizes(monkeypatch):
+def test_psij_status_is_nonblocking_and_does_not_wait(monkeypatch):
     executor = _executor(monkeypatch, _Backend())
-    executor.backend = "pbs"
+    executor.executor_name = "pbs"
     executor.url = "remote-pbs"
-    observed = []
+    calls = []
+
+    class Job:
+        status = _Status("NEW")
+
+        def wait(self, **kwargs):
+            raise AssertionError("A status query must not block on PSI/J")
+
+    class Backend:
+        def attach(self, job, native_id):
+            calls.append(native_id)
+
+    executor._psij = SimpleNamespace(Job=Job)
+    executor._job_executor = Backend()
+    assert executor.status("native-42").state == RunState.UNKNOWN
+    assert executor.status("native-42").state == RunState.UNKNOWN
+    # No cached target Job is retained between independent observations.
+    assert calls == ["native-42", "native-42"]
+
+
+def test_psij_explicit_native_wait_is_separate_from_status(monkeypatch):
+    executor = _executor(monkeypatch, _Backend())
+    executor.executor_name = "pbs"
+    executor.url = "remote-pbs"
+    calls = []
 
     class Job:
         def __init__(self):
             self.status = _Status("NEW")
 
-        def wait(self, *, timeout, target_states):
-            observed.append((timeout, target_states))
+        def wait(self, *, timeout=None, target_states=None):
+            calls.append((timeout, target_states))
             self.status = _Status("ACTIVE")
             return self.status
 
     class Backend:
         def attach(self, job, native_id):
-            observed.append(native_id)
+            calls.append(native_id)
 
+    executor._psij = SimpleNamespace(Job=Job)
     executor._job_executor = Backend()
-    executor._psij = SimpleNamespace(Job=Job, JobState=SimpleNamespace(QUEUED="QUEUED"))
-    status = executor.status_native("native-42")
-    assert status.state == RunState.UNKNOWN
-    assert observed == ["native-42"]
-    status = executor.wait_status_native("native-42", timeout=2.5)
-    assert status.state == RunState.RUNNING
-    assert observed == ["native-42", (timedelta(seconds=2.5), ["QUEUED"])]
-    assert executor.status_native("native-42").state == RunState.RUNNING
-    assert len(observed) == 2
-
-
-def test_psij_explicit_wait_timeout_keeps_cached_new_unknown(monkeypatch):
-    executor = _executor(monkeypatch, _Backend())
-    executor.backend = "pbs"
-    executor.url = "remote-pbs"
-    observed = []
-
-    class Job:
-        def __init__(self):
-            self.status = _Status("NEW")
-
-        def wait(self, *, timeout, target_states):
-            observed.append((timeout, target_states))
-            return None
-
-    class Backend:
-        def attach(self, job, native_id):
-            observed.append(native_id)
-
-    executor._job_executor = Backend()
-    executor._psij = SimpleNamespace(Job=Job, JobState=SimpleNamespace(QUEUED="QUEUED"))
-    first = executor.status_native("native-42")
-    assert first.state == RunState.UNKNOWN
-    assert observed == ["native-42"]
-    status = executor.wait_status_native("native-42", timeout=0.05)
-    assert status.state == RunState.UNKNOWN
-    assert status.backend_id == "native-42"
-    assert executor.status_native("native-42").state == RunState.UNKNOWN
-    assert observed == ["native-42", (timedelta(seconds=0.05), ["QUEUED"])]
-    assert executor.wait_status_native("native-42", timeout=0).state == RunState.UNKNOWN
-    assert len(observed) == 2
-    with pytest.raises(ValueError, match="negative"):
-        executor.wait_status_native("native-42", timeout=-1)
-
-
-def test_psij_local_slurm_explicit_wait_uses_native_job_wait(monkeypatch):
-    executor = _executor(monkeypatch, _Backend())
-    observed = []
-
-    class Job:
-        def wait(self, **kwargs):
-            observed.append(("wait", kwargs))
-
-    class Backend:
-        def attach(self, job, native_id):
-            observed.append(("attach", native_id))
-
-    executor._psij = SimpleNamespace(Job=Job, JobState=SimpleNamespace(QUEUED="QUEUED"))
-    executor._job_executor = Backend()
-    states = [RunState.UNKNOWN, RunState.UNKNOWN, RunState.RUNNING]
-    monkeypatch.setattr(
-        executor, "status_native", lambda native_id: psij_backend.RunStatus(states.pop(0), backend_id=native_id)
-    )
-    assert executor.wait_status_native("slurm-123", timeout=0).state == RunState.UNKNOWN
-    assert executor.wait_status_native("slurm-123", timeout=0.1).state == RunState.RUNNING
-    assert observed[0] == ("attach", "slurm-123")
-    assert observed[1][0] == "wait"
+    job = executor.attach_job("native-42")
+    assert psij_state(job.status, attached=True) == RunState.UNKNOWN
+    assert psij_state(job.wait(timeout=timedelta(seconds=2.5)), attached=True) == RunState.RUNNING
+    assert calls == ["native-42", (timedelta(seconds=2.5), None)]
 
 
 def test_psij_uncertain_submit_without_native_id_stays_recoverable(monkeypatch, tmp_path):
@@ -392,16 +355,16 @@ def test_psij_uncertain_submit_without_native_id_stays_recoverable(monkeypatch, 
             raise OSError("scheduler reply lost")
 
     executor = _executor(monkeypatch, FailingBackend())
-    runner = executor.create_native_job(
+    runner = executor.create_submission(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         ),
         submission_key="run-123",
     )
     with pytest.raises(OSError, match="scheduler reply lost") as caught:
-        runner.submit_native()
+        runner.submit()
     assert not isinstance(caught.value, SubmissionNotStarted)
-    assert runner.backend_id is None
+    assert runner.native_id is None
     assert runner.failure_phase is None
 
 
@@ -409,7 +372,7 @@ def test_psij_preparation_failure_is_definitively_not_submitted(monkeypatch, tmp
     from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
 
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_native_job(
+    runner = executor.create_submission(
         ExecutionSpec(
             argv=("program",), directory=str(tmp_path), input_file=None, output_file=str(tmp_path / "run.out")
         ),
@@ -421,13 +384,12 @@ def test_psij_preparation_failure_is_definitively_not_submitted(monkeypatch, tmp
 
     monkeypatch.setattr(runner, "_prepare_io", fail_preparation)
     with pytest.raises(SubmissionNotStarted, match="cannot prepare output"):
-        runner.submit_native()
+        runner.submit()
     assert executor._job_executor.submitted is None
     assert runner.failure_phase == FailurePhase.SUBMISSION
 
 
-def test_psij_native_attachment_and_status_share_one_job(monkeypatch):
-
+def test_psij_native_attachment_does_not_cache_native_jobs(monkeypatch):
     class Backend:
         def __init__(self):
             self.attaches = []
@@ -439,14 +401,15 @@ def test_psij_native_attachment_and_status_share_one_job(monkeypatch):
 
     backend = Backend()
     executor = _executor(monkeypatch, backend)
-    executor.backend = "pbs"
+    executor.executor_name = "pbs"
     executor.url = "remote-pbs"
-    first = executor.attach_native_job("native-42")
-    second = executor.attach_native_job("native-42")
-    assert first is second
-    assert executor.status_native("native-42").state == RunState.RUNNING
-    assert executor.attach_native_job("native-42") is first
-    assert backend.attaches == [(first, "native-42")]
+    first = executor.attach_job("native-42")
+    second = executor.attach_job("native-42")
+    assert first is not second
+    assert executor.status("native-42").state == RunState.RUNNING
+    assert len(backend.attaches) == 3
+    assert all(native_id == "native-42" for _, native_id in backend.attaches)
+
 
 
 def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):
@@ -464,7 +427,7 @@ def test_psij_recovers_live_slurm_submission_by_run_id(monkeypatch, tmp_path):
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     status = _recovery_endpoint(executor, monkeypatch).recover_submission("run-1", SubmissionContext(_psij_run(tmp_path).execution))
     assert status.ref.backend == "psij"
-    assert status.ref.token == "123"
+    assert decode_handle(status.ref.token)["native_id"] == "123"
     assert status.directory == str(tmp_path)
     assert status.output_file == str(tmp_path / "run.out")
     assert status.error_file == str(tmp_path / "run.err")
@@ -496,9 +459,9 @@ def test_psij_recovers_completed_slurm_submission_from_accounting(
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
     status = _recovery_endpoint(executor, monkeypatch).recover_submission("run-2", SubmissionContext(_psij_run(tmp_path).execution), submitted_at="2026-10-13T08:00:00+02:00")
-    assert status.ref.token == "456"
+    assert decode_handle(status.ref.token)["native_id"] == "456"
     assert status.directory == (str(tmp_path) if use_workdir_paths else "/tmp")
-    facts = executor.recover_native(
+    facts = executor.recover(
         "run-2", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00",
     )
     assert facts["state"] == expected_state
@@ -526,8 +489,13 @@ def test_psij_unavailable_accounting_keeps_submission_uncertain(
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
-    with pytest.raises(NotImplementedError, match=expected_error):
-        _recovery_endpoint(executor, monkeypatch).recover_submission(run_id, SubmissionContext(_psij_run(tmp_path).execution), submitted_at="2026-10-13T08:00:00+02:00")
+    from kkrunner.backends.contracts import RecoveryDisposition
+    recovery = _recovery_endpoint(executor, monkeypatch).recover_submission(
+        run_id, SubmissionContext(_psij_run(tmp_path).execution),
+        submitted_at="2026-10-13T08:00:00+02:00",
+    )
+    assert recovery.disposition is RecoveryDisposition.UNSUPPORTED
+    assert expected_error in recovery.message
 
 
 def test_psij_remote_url_does_not_search_local_scheduler(monkeypatch, tmp_path):
@@ -535,7 +503,7 @@ def test_psij_remote_url_does_not_search_local_scheduler(monkeypatch, tmp_path):
     executor.url = "ssh://other-cluster"
     monkeypatch.setattr(psij_slurm, "_scheduler_output", lambda argv: pytest.fail("must not search local Slurm"))
     with pytest.raises(NotImplementedError, match="local Slurm"):
-        executor.recover_native("run-remote", str(tmp_path))
+        executor.recover("run-remote", str(tmp_path))
 
 
 def test_psij_recovery_handles_job_disappearing_between_queries(monkeypatch, tmp_path):
@@ -553,7 +521,7 @@ def test_psij_recovery_handles_job_disappearing_between_queries(monkeypatch, tmp
         raise AssertionError(argv)
 
     monkeypatch.setattr(psij_slurm, "_scheduler_output", scheduler_output)
-    facts = executor.recover_native("run-race", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00")
+    facts = executor.recover("run-race", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00")
     assert facts["native_id"] == "123"
     assert facts["state"] == RunState.FINISHED
     assert facts["return_code"] == 0
@@ -597,12 +565,12 @@ def test_psij_submit_is_serialized_across_threads(monkeypatch, tmp_path):
     spec = ExecutionSpec(
         argv=("program",), input_file=input_file, output_file=output_file, directory=str(tmp_path), stdin=input_file
     )
-    runner = executor.create_native_job(spec)
+    runner = executor.create_submission(spec)
     errors = []
 
     def submit():
         try:
-            runner.submit_native()
+            runner.submit()
         except RuntimeError as exc:
             errors.append(exc)
 
@@ -619,7 +587,7 @@ def test_psij_submit_is_serialized_across_threads(monkeypatch, tmp_path):
     assert not second.is_alive()
     assert backend.calls == 1
     assert len(errors) == 1
-    runner.wait()
+    assert runner.native_id is not None
     input_file.close()
 
 
@@ -636,7 +604,7 @@ def test_psij_mpi_respects_explicit_stdin_policy(monkeypatch, tmp_path):
         stdin=str(tmp_path / "stdin.dat"),
         mpi_uses_stdin=False,
     )
-    runner = executor.create_native_job(spec)
+    runner = executor.create_submission(spec)
     assert runner._job.spec.stdin_path is None
     assert replace(spec, mpi_uses_stdin=True).mpi_uses_stdin
 
@@ -661,7 +629,7 @@ def test_psij_preparation_closes_each_output_handle_once(monkeypatch, tmp_path, 
     executor = _executor(monkeypatch, _Backend())
     output = NamedOutput(tmp_path / "run.out")
     error = output if merged else NamedOutput(tmp_path / "run.err")
-    runner = executor.create_native_job(
+    runner = executor.create_submission(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=output, error_file=error)
     )
     runner._prepare_io()
@@ -676,7 +644,7 @@ def test_psij_preparation_closes_each_output_handle_once(monkeypatch, tmp_path, 
 
 def test_psij_active_job_stays_active_without_blocking_wait(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_native_job(
+    runner = executor.create_submission(
         ExecutionSpec(argv=("program",), directory=str(tmp_path), input_file=None, output_file=None)
     )
     runner._job.status = _Status("ACTIVE")
@@ -702,14 +670,16 @@ def test_psij_confirmed_completion_is_not_undone_by_unknown_refresh(monkeypatch,
     assert older.message is None
 
 
-def test_psij_status_only_cache_is_bounded(monkeypatch):
+def test_psij_status_queries_do_not_retain_native_job_cache(monkeypatch):
     backend = _Backend()
     executor = _executor(monkeypatch, backend)
-    executor.backend = "pbs"
+    executor.executor_name = "pbs"
     executor.url = "remote-pbs"
     for number in range(90):
-        executor.attach_native_job(str(number))
-    assert len(executor._jobs) <= executor._max_idle_jobs
+        job = executor.attach_job(str(number))
+        assert job.native_id == str(number)
+    assert not hasattr(executor, "_jobs")
+
 
 
 def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypatch, tmp_path):
@@ -722,7 +692,7 @@ def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypa
     for path in (input_file, cache_file, output_file, error_file, extra_output):
         path.write_bytes(b"previous contents")
     executor = _executor(monkeypatch, _Backend())
-    runner = executor.create_native_job(
+    runner = executor.create_submission(
         ExecutionSpec(
             argv=("program",),
             directory=str(tmp_path),
@@ -742,41 +712,42 @@ def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypa
 
 
 def test_remote_psij_submit_does_not_start_client_monitor(monkeypatch, tmp_path):
-    from kkrunner.native.psij import operations as agent
+    from kkrunner.backends import PsijBackend
+    from kkrunner.backends.psij import backend as operations
 
     calls = []
-    class FakeRunner:
-        backend_id = "123"
+
+    class FakeSubmission:
+        native_id = "123"
         state = RunState.RUNNING
         result = SimpleNamespace(output_file="out", error_file="err")
         return_code = None
         failure_phase = None
 
-        def submit_native(self):
-            calls.append("submit-native")
-
         def submit(self):
-            raise AssertionError("The target must not create a client monitor")
+            calls.append("submit")
 
     class FakeExecutor:
-        backend = "slurm"
+        executor_name = "slurm"
         url = None
-        def create_native_job(self, spec, *, submission_key=None):
-            return FakeRunner()
 
-    monkeypatch.setattr(agent, "_psij_executor", lambda opts: FakeExecutor())
+        def create_submission(self, spec, *, submission_key=None):
+            assert submission_key == "test"
+            return FakeSubmission()
+
+    monkeypatch.setattr(operations, "_create_executor", lambda opts: FakeExecutor())
     request = {
-        "argv": ["true"], "directory": str(tmp_path), "executor": "psij",
-        "executor_options": {"backend": "slurm"}, "id": "test",
+        "argv": ["true"], "directory": str(tmp_path), "backend": "psij",
+        "backend_options": {"executor_name": "slurm"}, "id": "test",
     }
-    result = agent._submit_impl(request)
-    assert calls == ["submit-native"]
+    result = PsijBackend.submit(request)
+    assert calls == ["submit"]
     assert result["state"] == "running"
 
 
 def _recovery_endpoint(executor, monkeypatch):
     from kkrunner.backends import PsijBackend
     from kkrunner.client.local import LocalRunEndpoint
-    from kkrunner.native.psij import operations
-    monkeypatch.setattr(operations, "_psij_executor", lambda options: executor)
-    return LocalRunEndpoint(PsijBackend, backend_options={"backend": executor.backend, "url": executor.url})
+    from kkrunner.backends.psij import backend as operations
+    monkeypatch.setattr(operations, "_create_executor", lambda options: executor)
+    return LocalRunEndpoint(PsijBackend, backend_options={"executor_name": executor.executor_name, "url": executor.url})

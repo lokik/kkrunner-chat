@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from threading import Event, Lock, Thread
 
+from kkrunner.backends.contracts import BackendCapability
 from kkrunner.runs.base import (
     ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted, finish_monitor, wait_for_monitor,
 )
@@ -437,7 +438,7 @@ class Run:
             submitted = True
             self._job.submit()
             if manager is not None:
-                if self.backend_id is None and getattr(self.endpoint, "requires_backend_identity", True):
+                if self.backend_id is None and BackendCapability.REATTACH in self.endpoint.backend.supports:
                     # An attached-only direct Job may have no durable ID.
                     # Every other tracked backend must confirm an identity
                     # before the completion monitor can claim its resources.

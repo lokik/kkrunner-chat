@@ -27,7 +27,7 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
             assert manager.store.get(record.id).state == terminal_state
             calls.append(record.id)
 
-    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
+    monkeypatch.setattr(manager, "endpoint_for", lambda record: Backend())
     record = manager.new_record(directory=tmp_path)
     manager.store.save(record)
     finished = manager.update(record, RunStatus(terminal_state, backend_id="receipt", return_code=0))
@@ -64,7 +64,7 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
             if len(calls) == 1:
                 raise OSError("temporarily disconnected")
 
-    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
+    monkeypatch.setattr(manager, "endpoint_for", lambda record: Backend())
     record = manager.new_record(directory=tmp_path)
     record = manager.complete(
         record, state=RunState.FINISHED, return_code=0, execution=record.execution.submitted("receipt")
@@ -102,7 +102,7 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
     manager = RunManager(RunStore(tmp_path / "runs"))
     acknowledgements = []
     backend = type("Backend", (), {"acknowledge": lambda self, record: acknowledgements.append(record.id)})()
-    monkeypatch.setattr(manager, "executor_for", lambda record: backend)
+    monkeypatch.setattr(manager, "endpoint_for", lambda record: backend)
     path = tmp_path / "out"
     record = manager.new_record(
         directory=tmp_path,
@@ -199,9 +199,9 @@ def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, mon
             record, state=RunState.RUNNING,
             execution=record.execution.submitted(job.backend_id),
         )
-    manager.register_executor(backend, record.execution.endpoint)
+    manager.register_endpoint(backend, record.execution.endpoint)
     run = Run(
-        job, backend=backend, manager=manager, record=record,
+        job, endpoint=backend, manager=manager, record=record,
         process_result=lambda outcome: outcome,
     )
     # Freeze the monitor at the point where its creation normally races with
@@ -223,8 +223,8 @@ def test_confirmed_identity_is_durable_before_client_monitor_starts(tmp_path, mo
     backend = Backend()
     job = _ImmediatelyFinishedJob()
     record = manager.new_record(directory=tmp_path)
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(job, backend=backend, manager=manager, record=record)
+    manager.register_endpoint(backend, record.execution.endpoint)
+    run = Run(job, endpoint=backend, manager=manager, record=record)
     seen = []
 
     def start_monitor():
@@ -244,6 +244,9 @@ def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch
 
     class Backend:
         name = "unconfirmed"
+        from kkrunner.backends.contracts import BackendCapability
+        from types import SimpleNamespace
+        backend = SimpleNamespace(supports=frozenset({BackendCapability.REATTACH}))
 
     class Job:
         state = RunState.NEW
@@ -258,8 +261,8 @@ def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
     record = manager.new_record(directory=tmp_path)
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(Job(), backend=backend, manager=manager, record=record)
+    manager.register_endpoint(backend, record.execution.endpoint)
+    run = Run(Job(), endpoint=backend, manager=manager, record=record)
     monkeypatch.setattr(
         run, "_start_completion",
         lambda: pytest.fail("Completion must not start without a job identity"),
@@ -288,8 +291,8 @@ def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypa
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
     record = manager.new_record(directory=tmp_path)
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(_ImmediatelyFinishedJob(), backend=backend, manager=manager, record=record)
+    manager.register_endpoint(backend, record.execution.endpoint)
+    run = Run(_ImmediatelyFinishedJob(), endpoint=backend, manager=manager, record=record)
 
     monkeypatch.setattr("kkrunner.runs.run.Thread", FailingThread)
     with pytest.raises(RuntimeError, match="client thread unavailable"):
@@ -321,9 +324,9 @@ def test_known_backend_identity_survives_failed_client_submission(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
-    manager.register_executor(backend)
+    manager.register_endpoint(backend)
     record = manager.new_record(directory=tmp_path)
-    run = Run(Job(), backend=backend, manager=manager, record=record)
+    run = Run(Job(), endpoint=backend, manager=manager, record=record)
     with pytest.raises(ConnectionError, match="could not start observer"):
         run.submit()
     saved = manager.store.get(record.id)
@@ -379,10 +382,10 @@ def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persist
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     backend = Backend()
-    manager.register_executor(backend)
+    manager.register_endpoint(backend)
     record = manager.new_record(directory=tmp_path)
     files = Files()
-    run = Run(Job(), backend=backend, manager=manager, record=record, file_session=files)
+    run = Run(Job(), endpoint=backend, manager=manager, record=record, file_session=files)
 
     with pytest.raises(SubmissionNotStarted) as caught:
         run.submit()

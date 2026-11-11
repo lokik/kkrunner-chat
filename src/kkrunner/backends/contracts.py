@@ -9,19 +9,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
+import json
 from typing import (
     TYPE_CHECKING, Awaitable, BinaryIO, Callable, ClassVar, Mapping, Optional, Protocol, Tuple, Union,
 )
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
-    from kkrunner.backends.messages import (
+    from kkrunner.backends.support.messages import (
         AcknowledgeReply, ExecutionRequest, FollowOptions, RecoveryReply, RecoveryRequest,
         StatusReply, SubmissionReply,
     )
 
 from kkrunner.runs.states import RunState
 from kkrunner.support.decorators import class_property
+
+
+class BackendCapability(str, Enum):
+    """Native backend guarantees, independent of client transport."""
+
+    REATTACH = "reattach"
+    RECOVER = "recover"
 
 
 class JobFailurePhase(str, Enum):
@@ -226,18 +235,20 @@ class ManagedOperations(Protocol):
 
 
 class Backend:
-    """Namespace contract for stateless target operations.
+    """Configured native backend with a class-level static-operation interface.
 
-    Every backend implements stream(subject, **options). Session-bound
+    Every backend implements ``stream(subject, **options)``. Session-bound
     backends receive an execution request and return an exit code. Durable
     backends receive a job reference and return authoritative terminal facts;
     they also declare submit, status, cancel, recover and acknowledgement.
     Short operations are synchronous and exchange JSON-compatible values.
-    follow(ref, stdout, stderr, **options) is asynchronous and borrows its
+    ``follow(ref, stdout, stderr, **options)`` is asynchronous and borrows its
     sinks; cancelling it releases observation without cancelling execution.
     stream is asynchronous too, using interpreter streams at the SSH boundary.
     recover(key, request, submitted_at=...) returns a receipt, None when
     indeterminate, or an explicit unsupported reply. It never resubmits.
+    Each instance owns validated immutable options and its actual capabilities.
+    Static native operations and SSH helpers remain methods of its class.
     The endpoint supplies location, transport and client resources.
     """
 
@@ -245,8 +256,24 @@ class Backend:
     default_options: ClassVar[Tuple[Tuple[str, Optional[str]], ...]] = ()
     resolves_mpi_launcher = False
     session_bound = True
+    supports: frozenset[BackendCapability]
+    options: Mapping[str, object]
     default_persistent = False
     default_detached = False
+
+    def __init__(self, **options):
+        """Keep backend configuration in one immutable, instance-owned place."""
+        defaults = dict(self.default_options)
+        unexpected = options.keys() - defaults.keys()
+        if unexpected:
+            raise ValueError(f"Unknown {self.name} backend options: {sorted(unexpected)}")
+        defaults.update(options)
+        if any(not isinstance(key, str) or not isinstance(value, (str, int, float, bool, type(None)))
+               for key, value in defaults.items()):
+            raise TypeError("Backend options require string keys and scalar JSON values")
+        json.dumps(defaults, allow_nan=False)
+        self.options = MappingProxyType(defaults)
+        self.supports = frozenset()
 
     @class_property
     def SshHelper(cls):
@@ -255,7 +282,7 @@ class Backend:
 
 
 __all__ = [
-    "Backend", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
+    "Backend", "BackendCapability", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoveryDisposition", "RecoveryResult",
     "UnsupportedCapability", "job_status_from_facts",
 ]

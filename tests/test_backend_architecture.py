@@ -43,10 +43,10 @@ def test_backend_and_location_round_trip_independently(backend, location):
     assert config.location == location
     assert config.backend == backend.name
     assert hash(config) == hash(loaded)
-    assert restored.backend is backend
+    assert isinstance(restored.backend, backend)
     assert restored.default_detached == backend.default_detached
     assert restored.default_persistent == backend.default_persistent
-    assert restored.supports_reattachment == (not backend.session_bound)
+    assert restored.backend.supports == backend().supports
 
 
 @pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend))
@@ -140,7 +140,7 @@ def test_cancel_stops_calculation_while_remote_output_is_blocked(tmp_path, descr
 
 def test_native_scheduler_status_contains_only_execution_facts(monkeypatch):
     from kkrunner.backends.contracts import JobStatus
-    from kkrunner.native.psij import slurm
+    from kkrunner.backends.psij import slurm
 
     monkeypatch.setattr(slurm, "_slurm_details", lambda identity: {"JobState": "COMPLETED", "ExitCode": "7:0"})
     status = slurm.status("42")
@@ -171,7 +171,7 @@ def test_local_direct_preserves_client_streams_and_working_directory(tmp_path):
 def test_native_psij_status_contains_only_execution_facts(monkeypatch):
     from types import SimpleNamespace
     from kkrunner.backends.contracts import JobStatus
-    from kkrunner.native.psij import executor
+    from kkrunner.backends.psij import executor
 
     native_status = SimpleNamespace(state=SimpleNamespace(name="COMPLETED"), exit_code=7, message="native")
     job = SimpleNamespace(status=native_status)

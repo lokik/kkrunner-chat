@@ -26,7 +26,7 @@ class BackendOperation:
             from kkrunner.client.portable_functions import function_definition
             function_definition(self.portable)
         else:
-            from kkrunner.backends.class_helper import static_methods
+            from kkrunner.backends.support.class_helper import static_methods
             if self.function not in static_methods(self.backend):
                 raise ValueError(f"{self.backend.__name__}.{self.function} is not a static backend operation")
 

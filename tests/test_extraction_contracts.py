@@ -139,8 +139,8 @@ def test_cancel_and_failed_submit_do_not_deadlock(tmp_path):
 @pytest.mark.parametrize(
     "other_endpoint",
     [
-        ExecutionEndpointConfig(executor="psij"),
-        ExecutionEndpointConfig(executor="ssh", host="other-host"),
+        ExecutionEndpointConfig(backend="psij"),
+        ExecutionEndpointConfig(location="ssh", host="other-host"),
     ],
 )
 def test_local_publication_conflict_is_independent_of_backend(tmp_path, other_endpoint):
@@ -151,7 +151,7 @@ def test_local_publication_conflict_is_independent_of_backend(tmp_path, other_en
         directory=tmp_path,
         files=files,
         endpoint=other_endpoint,
-        remote_directory="/remote" if other_endpoint.executor == "ssh" else None,
+        remote_directory="/remote" if other_endpoint.location == "ssh" else None,
     )
     assert submission_conflicts(first, second)
 
@@ -167,12 +167,15 @@ def test_stdin_is_part_of_read_manifest(tmp_path):
 
 
 def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch):
-    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.client.remote_files import RemoteFileSession
     from kkrunner.client.transport import LocalTransport
 
-    executor = AgentRunEndpoint(LocalTransport())
-    raw = Run.direct(executor, ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "stdout"))
+    from kkrunner.backends import SupervisedBackend
+
+    executor = SshRunEndpoint(LocalTransport(), backend=SupervisedBackend)
+    output = (tmp_path / "stdout").open("wb")
+    raw = Run.direct(executor, ExecutionSpec(["unused"], directory=tmp_path, output_file=output))
 
     async def prepared(self):
         return {"directory": "/remote"}, FileManifest.from_spec(self.spec)
@@ -185,9 +188,9 @@ def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch)
     try:
         with pytest.raises(RuntimeError, match="lost submit response"):
             raw.submit()
-        assert raw.spec.output_file.closed
+        assert output.closed
     finally:
-        raw.spec.output_file.close()
+        output.close()
 
 
 def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):

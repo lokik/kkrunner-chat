@@ -54,6 +54,10 @@ def prepare_target_outputs(request):
     for path in streams:
         if is_protected(path):
             raise ValueError("Output stream conflicts with input/cache: " + path)
+    # Validate the complete cleanup set before touching any file. An
+    # explicit output/cache collision discovered after another output must
+    # not leave a partially cleared directory on pre-submission failure.
+    removable = []
     for declaration in dict.fromkeys(patterns):
         wildcard = glob.has_magic(declaration)
         matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]
@@ -64,10 +68,15 @@ def prepare_target_outputs(request):
                 if wildcard:
                     continue
                 raise ValueError("Explicit output conflicts with input/cache: " + path)
-            if os.path.islink(path) or os.path.isfile(path):
-                os.unlink(path)
-            elif os.path.exists(path) and not wildcard:
+            if os.path.exists(path) and not wildcard and not (
+                os.path.islink(path) or os.path.isfile(path)
+            ):
                 raise IsADirectoryError(path)
+            removable.append(path)
+
+    for path in dict.fromkeys(removable):
+        if os.path.islink(path) or os.path.isfile(path):
+            os.unlink(path)
 
 
 def discover_local_files(files, *, include_streams=True, require_outputs=True):
@@ -113,15 +122,16 @@ def local_manifest(files, status):
     execution failure do not retract already written bytes.
     """
     import os
-    from kkrunner.runs.base import FailurePhase, RunState
-
-    published = status.state in (RunState.FINISHED, RunState.CANCELLED) or (
-        status.state == RunState.FAILED and status.failure_phase == FailurePhase.EXECUTION
+    # The file layer consumes status facts without importing run orchestration.
+    state_value = getattr(status.state, "value", status.state)
+    phase_value = getattr(status.failure_phase, "value", status.failure_phase)
+    published = state_value in ("finished", "cancelled") or (
+        state_value == "failed" and phase_value == "execution"
     )
     for entry in (files.stdout, files.stderr):
         if entry is None or entry.local_path is None:
             continue
-        if status.failure_phase == FailurePhase.ARTIFACTS:
+        if phase_value == "artifacts":
             state, message = "failed", status.message or "Output publication failed"
         elif published:
             exists = os.path.isfile(entry.local_path)
@@ -137,8 +147,8 @@ def local_manifest(files, status):
             state, message = "skipped", None
         files = files.with_file_availability(entry.local_path, state, message)
 
-    if status.failure_phase in (FailurePhase.LAUNCH, FailurePhase.SUBMISSION):
+    if phase_value in ("launch", "submission"):
         return files
-    return discover_local_files(files, include_streams=False, require_outputs=status.state == RunState.FINISHED)
+    return discover_local_files(files, include_streams=False, require_outputs=state_value == "finished")
 
 

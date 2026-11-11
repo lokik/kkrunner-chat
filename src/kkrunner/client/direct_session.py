@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from threading import Event
 from typing import Callable
 
-from kkrunner.backends.support import pump_stream
+from kkrunner.backends.support.process import pump_stream
 from kkrunner.support.growing_file_tail import follow_growing_files
 from kkrunner.runs.base import FailurePhase, RunState
 

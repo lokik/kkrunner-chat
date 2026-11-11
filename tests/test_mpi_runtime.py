@@ -6,9 +6,11 @@ from dataclasses import asdict
 import pytest
 
 from kkrunner import ExecutionSpec
-from kkrunner.backends import support as mpi_runtime
-from kkrunner.backends.support import materialize_local_spec
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.backends.support import process as mpi_runtime
+import shutil
+from kkrunner.backends.support.process import materialize_local_spec
+from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.backends import SupervisedBackend
 from kkrunner.runs.base import LaunchSpec, MpiNotFoundWarning, MpiSpec
 
 
@@ -31,8 +33,8 @@ def test_mpi_launcher_selection_and_probe_order(monkeypatch, slurm, available, e
         seen.append(name)
         return f"/usr/bin/{name}" if name == available else None
 
-    monkeypatch.setattr(mpi_runtime.shutil, "which", which)
-    assert mpi_runtime.find_default_mpi_launcher() == expected
+    monkeypatch.setattr(shutil, "which", which)
+    assert mpi_runtime.resolve_mpi_options({"required": True, "autodetect": True}) == expected
     assert seen == list(probed)
 
 
@@ -116,7 +118,7 @@ def test_mpi_process_count_is_portable_launch_intent():
 
 def test_local_executor_materializes_mpi_on_execution_host(monkeypatch, tmp_path):
     monkeypatch.setenv("SLURM_NODELIST", "node")
-    monkeypatch.setattr(mpi_runtime.shutil, "which", lambda name: "/bin/srun" if name == "srun" else None)
+    monkeypatch.setattr(shutil, "which", lambda name: "/bin/srun" if name == "srun" else None)
     input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
         argv=("serial-program",),
@@ -134,7 +136,7 @@ def test_local_executor_materializes_mpi_on_execution_host(monkeypatch, tmp_path
 
 
 def test_required_local_mpi_without_launcher_fails(monkeypatch, tmp_path):
-    monkeypatch.setattr(mpi_runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
         argv=("serial-program",),
@@ -152,7 +154,7 @@ def test_required_local_mpi_without_launcher_fails(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("warn", (True, False), ids=("warn", "silent"))
 def test_local_auto_mpi_fallback_respects_warning_option(monkeypatch, tmp_path, warn):
-    monkeypatch.setattr("kkrunner.backends.support.resolve_mpi_command", lambda mpi: None)
+    monkeypatch.setattr("kkrunner.backends.support.process.resolve_mpi_command", lambda mpi: None)
     input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
         argv=("serial-program",),
@@ -179,14 +181,13 @@ def test_local_auto_mpi_fallback_respects_warning_option(monkeypatch, tmp_path, 
 
 @pytest.mark.parametrize("warn", (True, False), ids=("warn", "silent"))
 def test_remote_endpoint_mpi_warning_probe_respects_option(monkeypatch, warn):
-    endpoint = object.__new__(AgentRunEndpoint)
-    endpoint.backend = "process"
+    endpoint = object.__new__(SshRunEndpoint)
+    endpoint.backend = SupervisedBackend
     calls = []
 
     class Transport:
         async def call(self, operation, *args):
-            assert operation.module == "kkrunner.backends.support"
-            assert operation.function == "resolve_mpi_options"
+            assert operation.portable is mpi_runtime.resolve_mpi_options
             calls.append(("resolve-mpi", args))
             return None
 
@@ -213,7 +214,7 @@ def test_remote_endpoint_mpi_warning_probe_respects_option(monkeypatch, warn):
 
 
 def test_mpi_stdin_is_explicit_and_serial_fallback_is_unchanged(monkeypatch, tmp_path):
-    monkeypatch.setattr("kkrunner.backends.support.resolve_mpi_command", lambda mpi: ("mpirun",))
+    monkeypatch.setattr("kkrunner.backends.support.process.resolve_mpi_command", lambda mpi: ("mpirun",))
     spec = ExecutionSpec(
         argv=("serial",),
         mpi_argv=("parallel",),

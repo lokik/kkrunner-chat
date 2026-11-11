@@ -17,7 +17,7 @@ from kkrunner.runs.model import Execution, WorkingDirectory
 
 def test_execution_roundtrip_includes_backend_and_both_directories():
     original = Execution(
-        ExecutionEndpointConfig(executor="ssh", host="cluster"),
+        ExecutionEndpointConfig(location="ssh", host="cluster"),
         WorkingDirectory("/local/case", "/scratch/case"),
         backend_id="slurm-42",
     )

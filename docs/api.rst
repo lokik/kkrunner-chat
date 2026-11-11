@@ -36,7 +36,6 @@ Execution and durable records
    MpiNotFoundWarning
    RunStatus
    FailurePhase
-   Run
    RunRecord
    CorruptRunRecord
    DuplicateSubmissionError
@@ -81,6 +80,7 @@ Backends and their execution contracts
    :toctree: _generated
 
    Backend
+   BackendCapability
    DirectOperations
    ManagedOperations
    JobRef
@@ -104,7 +104,6 @@ Client endpoints, transport and pooling
    JobProtocol
    SubmissionContext
    RunEndpoint
-   ReopenableRunEndpoint
    JobAttachment
    ExecutionEndpointConfig
    EndpointPool
@@ -141,7 +140,5 @@ helpers. They are not re-exported by the public facades.
    :toctree: _generated
 
    client.job.Job
-   client.job.Job
-   backends.psij.PsijJob
    client.remote_files.RemoteFileSession
 

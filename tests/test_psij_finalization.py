@@ -9,6 +9,8 @@ from kkrunner.runs.base import OutputObservers
 def test_psij_observer_failure_is_uncertain_not_a_proven_backend_failure():
     runner = object.__new__(Job)
     runner._direct_session = None
+    runner._thread = object()  # Existing observer keeps state local; no backend status query
+    runner._output_error = None
     runner._backend_id = "native-job"
     runner._state = RunState.RUNNING
     runner._completion_cleanup = None

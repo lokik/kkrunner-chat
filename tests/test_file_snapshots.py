@@ -9,9 +9,9 @@ import pytest
 from kkrunner import RunState, RunStore
 from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client.endpoint import endpoint_config_for_executor
+from kkrunner.client.endpoint import describe_endpoint
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
 from kkrunner.client.transport import LocalTransport
 from kkrunner.runs import RunManager
 
@@ -24,13 +24,13 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     local.mkdir(parents=True)
     if remote:
         target.mkdir(parents=True)
-        executor = AgentRunEndpoint(LocalTransport())
+        executor = SshRunEndpoint(LocalTransport())
         mapping = FileMapping(str(local.parent), str(target.parent))
     else:
         executor = LocalRunEndpoint()
         mapping = None
     manager = RunManager(RunStore(tmp_path / "history"))
-    manager.register_executor(executor)
+    manager.register_endpoint(executor)
     files = FileManifest(
         outputs=(FileEntry(str(local / output), str(target / output) if remote else None),),
         caches=(CacheEntry(FileEntry(str(local / "cache.bin"), str(target / "cache.bin") if remote else None)),),
@@ -39,7 +39,7 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     )
     record = manager.new_record(
         directory=local, remote_directory=str(target) if remote else None,
-        endpoint=endpoint_config_for_executor(executor), files=files,
+        endpoint=describe_endpoint(executor), files=files,
     )
     record = replace(record, state=RunState.RUNNING, execution=record.execution.submitted("job-123"))
     manager.store.save(record)

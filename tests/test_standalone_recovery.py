@@ -228,7 +228,9 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
 
 def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase, LaunchSpec
-    from kkrunner.client.agent import AgentRunEndpoint
+    from kkrunner.client.ssh import SshRunEndpoint
+    from kkrunner.backends import SupervisedBackend
+    from .test_remote import _OperationLoopbackTransport
     from kkrunner.client.transport import LocalTransport
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -236,7 +238,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     local.mkdir()
     remote.mkdir()
 
-    class Transport(LocalTransport):
+    class Transport(_OperationLoopbackTransport):
         fail = True
 
         async def get_file(self, source, destination):
@@ -245,7 +247,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             return await super().get_file(source, destination)
 
     transport = Transport()
-    executor = AgentRunEndpoint(transport, command=(sys.executable, "-m", "kkrunner"))
+    executor = SshRunEndpoint(transport, backend=SupervisedBackend)
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
         executor,
@@ -264,7 +266,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     assert failed.return_code == 0
     transport.fail = False
     manager.resume_download(failed)
-    attached = manager.attach(run.id, backend=executor)
+    attached = manager.attach(run.id, endpoint=executor)
     assert attached.wait().return_code == 0
     assert manager.store.get(run.id).state == RunState.FINISHED
     assert (local / "answer.txt").read_text() == "42"

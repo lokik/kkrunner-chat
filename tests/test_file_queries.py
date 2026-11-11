@@ -100,7 +100,9 @@ def test_ssh_combines_globs_and_metadata_in_one_request(tmp_path):
     assert len(items) == 3
     assert all(item["mtime_ns"] == os.stat(item["path"]).st_mtime_ns for item in items)
     assert len(calls) == 1
-    assert calls[0][-1] == "query-files"
+    assert calls[0][0] == sys.executable
+    assert calls[0][1] == "-c"
+    assert "def query_files(" in calls[0][2]
 
 
 @pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
@@ -136,17 +138,17 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
     asyncio.run(check())
 
 
-def test_remote_endpoint_reuses_configured_file_service_command():
-    from kkrunner.client.endpoint import executor_from_endpoint, endpoint_config_for_executor
-    from kkrunner.client.agent import AgentRunEndpoint
+def test_remote_endpoint_reuses_configured_target_python_command():
+    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
+    from kkrunner.client.ssh import SshRunEndpoint
     from kkrunner.client.transport import SshTransport
 
-    command = (sys.executable, "-m", "kkrunner")
-    transport = SshTransport("host")
-    executor = AgentRunEndpoint(transport, command=command)
-    assert transport.command == executor.command == command
-    restored = executor_from_endpoint(endpoint_config_for_executor(executor))
-    assert restored.transport.command == restored.command == command
+    command = (sys.executable,)
+    transport = SshTransport("host", python_command=command)
+    endpoint = SshRunEndpoint(transport)
+    assert endpoint.transport.python_command == command
+    restored = endpoint_from_config(describe_endpoint(endpoint))
+    assert restored.transport.python_command == command
 
 
 def test_special_file_metadata_does_not_open_fifo(tmp_path):

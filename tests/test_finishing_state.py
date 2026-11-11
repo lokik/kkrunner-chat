@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase, RunStatus
-from kkrunner.client.pool import ExecutorPool
+from kkrunner.client.pool import EndpointPool
 from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
@@ -60,8 +60,8 @@ class _RawRunner:
 
 
 def _record(tmp_path, executor, state=RunState.RUNNING):
-    manager = RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool())
-    endpoint = manager.register_executor(executor)
+    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool())
+    endpoint = manager.register_endpoint(executor)
     record = manager.new_record(
         directory=str(tmp_path), endpoint=endpoint, metadata={"test": {"task": "DOS"}}, processing_required=True
     )

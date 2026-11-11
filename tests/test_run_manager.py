@@ -7,7 +7,7 @@ from kkrunner.runs import DuplicateSubmissionError, FailurePhase, RunStatus
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
 from kkrunner import ExecutionOutcome, RunState, RunStore
-from kkrunner.client.pool import ExecutorPool
+from kkrunner.client.pool import EndpointPool
 from kkrunner.runs.manager import RunManager
 
 
@@ -89,7 +89,7 @@ def _spec(tmp_path, *, dataset="case"):
 
 
 def _manager(tmp_path):
-    return RunManager(RunStore(tmp_path / "runs"), executor_pool=ExecutorPool())
+    return RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool())
 
 
 def test_submit_persists_submitting_before_backend_call(tmp_path):
@@ -149,7 +149,7 @@ def test_completion_postprocesses_only_successful_execution(tmp_path, return_cod
 def test_refresh_batches_status_queries(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
-    endpoint = manager.register_executor(executor)
+    endpoint = manager.register_endpoint(executor)
     records = []
     for index in range(2):
         record = manager.new_record(

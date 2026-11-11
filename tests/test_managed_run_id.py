@@ -1,6 +1,6 @@
 from kkrunner import ExecutionSpec
 from kkrunner.runs import LaunchSpec
-from kkrunner.client.agent import AgentRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
 
 
 class _Transport:
@@ -8,7 +8,7 @@ class _Transport:
 
 
 def test_remote_project_run_parts_retain_manager_run_id(tmp_path):
-    backend = AgentRunEndpoint(_Transport())
+    backend = SshRunEndpoint(_Transport())
     spec = ExecutionSpec(
         argv=("true",),
         input_file=None,
@@ -17,5 +17,7 @@ def test_remote_project_run_parts_retain_manager_run_id(tmp_path):
         launch=LaunchSpec(local_root=tmp_path, remote_root="/scratch/work"),
     )
     parts = backend.create_run_parts(spec, submission_key="kkrunner-run-id")
-    assert parts.files._run_id == "kkrunner-run-id"
+    request = parts.submission_builder({"directory": "/scratch/work"})
+    assert request["id"] == "kkrunner-run-id"
+    assert request["backend"] == backend.backend.name
     assert parts.job.backend_id is None

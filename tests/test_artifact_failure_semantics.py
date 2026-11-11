@@ -17,7 +17,7 @@ def _record(tmp_path):
         metadata={"test": {"task": "DOS"}},
         processing_required=True,
     )
-    record = manager.transition(record, state=RunState.POSTPROCESSING)
+    record = manager.transition(record, state=RunState.DOWNLOADING)
     return (manager, record)
 
 
