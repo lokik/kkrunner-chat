@@ -6,7 +6,22 @@ from threading import Event
 
 import pytest
 
-from kkrunner.support.growing_file_tail import GrowingFileTail, follow_growing_files, follow_job_files
+from kkrunner.support.growing_file_tail import GrowingFileTail, follow_growing_files
+
+
+async def _follow_with_mock_scheduler(paths, on_chunk, wait, *, terminal=None, poll_interval=1.0):
+    """Exercise file observation against an independent native scheduler wait."""
+    finished = asyncio.create_task(asyncio.to_thread(wait))
+
+    async def terminal_result():
+        if not finished.done():
+            return None
+        native_status = finished.result()
+        return await terminal(native_status) if terminal is not None else native_status
+
+    return await follow_growing_files(
+        paths, on_chunk, terminal_result, poll_interval=poll_interval, wakeup=finished,
+    )
 
 
 def test_append_and_eof(tmp_path):
@@ -163,7 +178,7 @@ def test_follow_job_files_drains_output_created_at_completion(tmp_path):
             return "done"
 
         following = asyncio.create_task(
-            follow_job_files({"out": path}, lambda kind, data: seen.append((kind, data)), wait, poll_interval=0.01)
+            _follow_with_mock_scheduler({"out": path}, lambda kind, data: seen.append((kind, data)), wait, poll_interval=0.01)
         )
         try:
             assert await asyncio.to_thread(entered.wait, 2)
@@ -185,7 +200,7 @@ def test_follow_job_files_maps_terminal_status(tmp_path):
             observed.append(native_status)
             return {"state": "finished", "return_code": native_status}
 
-        return_value = await follow_job_files(
+        return_value = await _follow_with_mock_scheduler(
             {"out": tmp_path / "missing"}, lambda *_: None, lambda: 42, terminal=terminal, poll_interval=0.01
         )
         assert return_value == {"state": "finished", "return_code": 42}
@@ -202,7 +217,7 @@ def test_follow_job_files_propagates_wait_errors(tmp_path):
     async def check():
         with pytest.raises(RuntimeError, match="scheduler wait failed"):
             await asyncio.wait_for(
-                follow_job_files({"out": tmp_path / "missing"}, lambda *_: None, wait, poll_interval=0.01), 3
+                _follow_with_mock_scheduler({"out": tmp_path / "missing"}, lambda *_: None, wait, poll_interval=0.01), 3
             )
 
     asyncio.run(check())
@@ -220,7 +235,7 @@ def test_follow_job_files_cancelled_observation_does_not_cancel_job(tmp_path):
             return "finished"
 
         follower = asyncio.create_task(
-            follow_job_files({"out": tmp_path / "missing"}, lambda *_: None, wait, poll_interval=0.01)
+            _follow_with_mock_scheduler({"out": tmp_path / "missing"}, lambda *_: None, wait, poll_interval=0.01)
         )
         try:
             assert await asyncio.to_thread(entered.wait, 2)
@@ -278,7 +293,7 @@ def test_read_error_does_not_wait_for_scheduler_job_to_end(tmp_path, monkeypatch
     async def check():
         with pytest.raises(PermissionError, match="inaccessible"):
             await asyncio.wait_for(
-                follow_job_files({"out": tmp_path / "job.out"}, lambda *_: None, wait, poll_interval=0.01), 2
+                _follow_with_mock_scheduler({"out": tmp_path / "job.out"}, lambda *_: None, wait, poll_interval=0.01), 2
             )
         assert await asyncio.to_thread(entered.wait, 1)
         assert not release.is_set()

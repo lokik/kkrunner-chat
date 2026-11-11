@@ -14,7 +14,7 @@ from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.direct import DirectBackend
 from kkrunner.client.operations import BackendOperation, operation_command
-WORKER_SOURCE = operation_command(BackendOperation.for_backend(DirectBackend, "stream"), ssh=True, streaming=True)[-1]
+WORKER_SOURCE = operation_command(BackendOperation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
 
 
 def test_explicit_and_contextual_persistence(tmp_path):
