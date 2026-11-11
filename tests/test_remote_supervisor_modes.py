@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from kkrunner.backends.process.supervised import worker as remote_process_worker
+from kkrunner.backends import supervised as remote_process_worker
 
 
 def _spec(tmp_path, socket_fd, *, detached, argv=None):
@@ -26,7 +26,7 @@ def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch):
     async def check():
         captured = []
         monkeypatch.setattr(
-            remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append((args, kwargs))
+            remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: captured.append((args, kwargs))
         )
         rd, wr = os.pipe()
         task = asyncio.create_task(remote_process_worker._run(_spec(tmp_path, wr, detached=False)))
@@ -50,7 +50,7 @@ def test_detached_run_survives_follow_disconnect(tmp_path, monkeypatch):
     async def check():
         captured = []
         monkeypatch.setattr(
-            remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append((args, kwargs))
+            remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: captured.append((args, kwargs))
         )
         rd, wr = os.pipe()
         spec = _spec(
@@ -84,7 +84,7 @@ def test_cancel_is_delivered_to_supervisor_not_just_supervisor_pid(tmp_path, mon
 
     async def check():
         captured = []
-        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append(args))
+        monkeypatch.setattr(remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: captured.append(args))
         rd, wr = os.pipe()
         task = asyncio.create_task(remote_process_worker._run(_spec(tmp_path, wr, detached=True)))
         with os.fdopen(rd, "rb") as pipe:
@@ -105,7 +105,7 @@ def test_failed_detached_launch_clears_previous_output(tmp_path, monkeypatch):
 
     async def check():
         captured = []
-        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append(args))
+        monkeypatch.setattr(remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: captured.append(args))
         (tmp_path / "stdout").write_bytes(b"previous")
         rd, wr = os.pipe()
         spec = _spec(tmp_path, wr, detached=True, argv=[str(tmp_path / "missing-command")])
@@ -132,12 +132,12 @@ def test_failed_detached_launch_clears_previous_output(tmp_path, monkeypatch):
 def test_supervisor_output_failure_is_reported_without_losing_diagnosis(
     tmp_path, monkeypatch, failure, expected_phase, expected_message
 ):
-    from kkrunner.backends.process.supervised.streams import SupervisorStreams
+    from kkrunner.backends.supervised import SupervisorStreams
     from kkrunner.runs.base import FailurePhase, RunState
 
     reported = []
     monkeypatch.setattr(
-        remote_process_worker, "publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
+        remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
     )
 
     def raise_failure(*args, **kwargs):
@@ -167,7 +167,7 @@ def test_supervisor_output_failure_is_reported_without_losing_diagnosis(
 
 
 def test_receipt_write_failure_never_emits_durable_terminal_claim(tmp_path, monkeypatch):
-    from kkrunner.backends.process.supervised.streams import SupervisorStreams
+    from kkrunner.backends.supervised import SupervisorStreams
 
     observed = []
     original_terminal = SupervisorStreams.terminal
@@ -181,7 +181,7 @@ def test_receipt_write_failure_never_emits_durable_terminal_claim(tmp_path, monk
     def fail_receipt(*args, **kwargs):
         raise OSError("mailbox fsync failed")
 
-    monkeypatch.setattr(remote_process_worker, "publish_outcome", fail_receipt)
+    monkeypatch.setattr(remote_process_worker, "_mailbox_publish_outcome", fail_receipt)
 
     async def check():
         rd, wr = os.pipe()
@@ -205,7 +205,7 @@ def test_receipt_write_failure_never_emits_durable_terminal_claim(tmp_path, monk
 def test_supervisor_pumps_both_binary_channels_to_separate_files(tmp_path, monkeypatch):
     reported = []
     monkeypatch.setattr(
-        remote_process_worker, "publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
+        remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
     )
 
     async def run():
@@ -242,7 +242,7 @@ def test_unexpected_child_spawn_failure_is_classified_as_launch(tmp_path, monkey
 
     monkeypatch.setattr(remote_process_worker.asyncio, "create_subprocess_exec", broken_spawn)
     monkeypatch.setattr(
-        remote_process_worker, "publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
+        remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
     )
 
     async def check():

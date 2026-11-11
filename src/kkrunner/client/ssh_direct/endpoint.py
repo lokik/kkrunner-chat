@@ -36,8 +36,8 @@ class SshDirectRunEndpoint(RunEndpoint):
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         spec.require_complete()
-        from kkrunner.backends.process.backend import DirectProcessBackend
-        from .runtime import SshProcessAdapter
+        from kkrunner.backends.direct import DirectProcessBackend
+        from kkrunner.backends.direct import SshProcessAdapter
         context = RemotePathContext(self, spec.launch)
         backend = DirectProcessBackend(adapter_factory=lambda: SshProcessAdapter(context))
         return RunParts(

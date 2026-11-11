@@ -4,9 +4,9 @@ import sys
 
 import pytest
 
-import kkrunner.client.direct_session as direct_session
-import kkrunner.backends.process.direct.local as local
-from kkrunner.backends.process.backend import DirectProcessBackend
+import kkrunner.backends.direct as direct_session
+import kkrunner.backends.direct as local
+from kkrunner.backends import DirectProcessBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
 
@@ -137,7 +137,7 @@ def test_local_direct_mpi_resolution_does_not_replace_declaration(tmp_path, monk
     from kkrunner.runs import LaunchSpec
 
     monkeypatch.setattr(
-        "kkrunner.backends.process.primitives.resolve_mpi_command",
+        "kkrunner.backends.support.resolve_mpi_command",
         lambda mpi: (sys.executable, "-c"),
     )
     spec = ExecutionSpec(

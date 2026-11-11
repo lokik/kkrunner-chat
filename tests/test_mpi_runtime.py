@@ -7,7 +7,7 @@ import pytest
 
 from kkrunner import ExecutionSpec
 from kkrunner.backends import mpi as mpi_runtime
-from kkrunner.backends.process.primitives import materialize_local_spec
+from kkrunner.backends.support import materialize_local_spec
 from kkrunner.client.agent import AgentRunEndpoint
 from kkrunner.runs.base import LaunchSpec, MpiNotFoundWarning, MpiSpec
 
@@ -152,7 +152,7 @@ def test_required_local_mpi_without_launcher_fails(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("warn", (True, False), ids=("warn", "silent"))
 def test_local_auto_mpi_fallback_respects_warning_option(monkeypatch, tmp_path, warn):
-    monkeypatch.setattr("kkrunner.backends.process.primitives.resolve_mpi_command", lambda mpi: None)
+    monkeypatch.setattr("kkrunner.backends.support.resolve_mpi_command", lambda mpi: None)
     input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
         argv=("serial-program",),
@@ -207,7 +207,7 @@ def test_remote_endpoint_mpi_warning_probe_respects_option(monkeypatch, warn):
 
 
 def test_mpi_stdin_is_explicit_and_serial_fallback_is_unchanged(monkeypatch, tmp_path):
-    monkeypatch.setattr("kkrunner.backends.process.primitives.resolve_mpi_command", lambda mpi: ("mpirun",))
+    monkeypatch.setattr("kkrunner.backends.support.resolve_mpi_command", lambda mpi: ("mpirun",))
     spec = ExecutionSpec(
         argv=("serial",),
         mpi_argv=("parallel",),

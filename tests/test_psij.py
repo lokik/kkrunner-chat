@@ -13,8 +13,8 @@ from kkrunner.client.contracts import JobAttachment
 from kkrunner.backends.contracts import SubmissionContext
 from kkrunner.client.run_parts import backend_job_context
 from kkrunner.files import FileEntry, FileManifest
-import kkrunner.backends.psij.backend as psij_backend
-from kkrunner.backends.psij import slurm as psij_slurm
+import kkrunner.backends.psij as psij_backend
+from kkrunner.backends import psij as psij_slurm
 from kkrunner.runs.base import ExecutionSpec, LaunchSpec, RunState
 
 
@@ -1290,7 +1290,7 @@ def test_psij_preparation_reuses_declared_outputs_for_check_and_cleanup(monkeypa
 
 
 def test_remote_psij_submit_does_not_start_client_monitor(monkeypatch, tmp_path):
-    from kkrunner.backends.psij import agent
+    from kkrunner.backends import psij as agent
 
     calls = []
     class FakeRunner:
@@ -1317,6 +1317,6 @@ def test_remote_psij_submit_does_not_start_client_monitor(monkeypatch, tmp_path)
         "argv": ["true"], "directory": str(tmp_path), "executor": "psij",
         "executor_options": {"backend": "slurm"}, "id": "test",
     }
-    result = agent.submit_remote(request)
+    result = agent.submit(request)
     assert calls == ["submit-native"]
     assert result["state"] == "running"

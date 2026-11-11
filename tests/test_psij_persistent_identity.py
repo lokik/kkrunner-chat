@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionSpec
-import kkrunner.backends.psij.backend as psij_backend
-from kkrunner.backends.psij import slurm as psij_slurm
+import kkrunner.backends.psij as psij_backend
+from kkrunner.backends import psij as psij_slurm
 
 
 class _JobSpec:
@@ -46,7 +46,7 @@ def _spec(tmp_path):
 @pytest.mark.parametrize("backend", ("slurm", "pbs"))
 def test_project_job_carries_kkrunner_identity(monkeypatch, tmp_path, backend):
     executor = _executor(monkeypatch, backend)
-    runner = executor.create_job(_spec(tmp_path), submission_key="run-123")
+    runner = executor.create_native_job(_spec(tmp_path), submission_key="run-123")
     job_spec = runner._job.spec
     assert job_spec.environment == {"KKRunner_RUN_ID": "run-123"}
     if backend == "slurm":
@@ -59,7 +59,7 @@ def test_project_job_carries_kkrunner_identity(monkeypatch, tmp_path, backend):
 
 def test_nonpersistent_psij_job_has_independent_recovery_key(monkeypatch, tmp_path):
     executor = _executor(monkeypatch, "slurm")
-    runner = executor.create_job(_spec(tmp_path))
+    runner = executor.create_native_job(_spec(tmp_path))
     job_spec = runner._job.spec
     key = job_spec.environment["KKRunner_RUN_ID"]
     assert key and key == runner._run_id

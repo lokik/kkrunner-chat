@@ -137,7 +137,7 @@ def run(args, global_args=None):
     elif args.remote_action == "ack":
         _print_json(acknowledge_remote(args.remote_id))
     elif args.remote_action == "resolve-mpi":
-        from kkrunner.backends.mpi import resolve_mpi_command
+        from kkrunner.backends.support import resolve_mpi_command
         from kkrunner.runs.base import LaunchSpec
 
         request = json.load(sys.stdin)

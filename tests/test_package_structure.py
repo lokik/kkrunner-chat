@@ -107,33 +107,32 @@ from kkrunner import ExecutionSpec, RunStore
 from kkrunner import backends
 assert 'DirectProcessBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.process.backend',
-    'kkrunner.backends.psij.backend',
+    'kkrunner.backends.psij',
     'kkrunner.client.agent', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import DirectProcessBackend
-from kkrunner.backends.process.backend import DirectProcessBackend as implementation
+from kkrunner.backends import DirectProcessBackend as implementation
 assert DirectProcessBackend is implementation
 assert backends.DirectProcessBackend is DirectProcessBackend
-assert 'kkrunner.backends.psij.backend' not in sys.modules
+assert 'kkrunner.backends.psij' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
 
 
 def test_process_strategies_have_distinct_implementations():
-    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
+    from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
     from kkrunner.client.job import Job
     from kkrunner.client.job import Job
-    assert DirectProcessBackend.__module__ == "kkrunner.backends.process.backend"
-    assert SupervisedProcessBackend.__module__ == "kkrunner.backends.process.backend"
+    assert DirectProcessBackend.__module__ == "kkrunner.backends.direct"
+    assert SupervisedProcessBackend.__module__ == "kkrunner.backends.supervised"
     assert Job.__module__ == "kkrunner.client.job"
     assert Job.__module__ == "kkrunner.client.job"
 
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
+    from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
     from kkrunner.client.job import Job
     from kkrunner.client.job import Job
 
@@ -145,8 +144,8 @@ def test_local_process_backend_selects_one_execution_strategy(tmp_path):
 
 
 def test_remote_process_service_reuses_supervised_backend_operations():
-    from kkrunner.backends.registry import operation_module
-    from kkrunner.backends.process.supervised import functions
+    from kkrunner.backends import operation_module
+    from kkrunner.backends import supervised as functions
     from kkrunner.remote import service
 
     assert operation_module("process") == functions.__name__
@@ -157,8 +156,7 @@ def test_direct_process_import_does_not_load_supervisor():
     code = """
 import sys
 from kkrunner.client.job import Job
-assert 'kkrunner.backends.process.supervised.operations' not in sys.modules
-assert 'kkrunner.backends.process.supervised.worker' not in sys.modules
+assert 'kkrunner.backends.supervised' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -166,11 +164,10 @@ assert 'kkrunner.backends.process.supervised.worker' not in sys.modules
 def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
-from kkrunner.backends.psij import slurm
+from kkrunner.backends import psij as slurm
 assert callable(slurm.status_native)
 assert 'psij' not in sys.modules
-assert 'kkrunner.backends.psij.backend' not in sys.modules
-assert 'kkrunner.backends.psij.job' not in sys.modules
+assert 'kkrunner.backends.psij' in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -180,9 +177,9 @@ def test_psij_agent_import_does_not_load_executor_implementation():
     # the reusable PSI/J executor; it is only needed on actual submission.
     code = """
 import sys
-from kkrunner.backends.psij import agent
-assert callable(agent.follow_remote)
-assert 'kkrunner.backends.psij.backend' not in sys.modules
+from kkrunner.backends import psij as agent
+assert callable(agent.follow)
+assert 'kkrunner.backends.psij' in sys.modules
 assert 'psij' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
@@ -245,3 +242,25 @@ finally:
     package.__getattr__ = original
 """
     subprocess.run([sys.executable, "-c", code, module_name], check=True, timeout=10)
+
+
+def test_all_backend_implementations_are_flat_modules():
+    """Prevent reintroducing nested per-backend packages or a registry."""
+    from pathlib import Path
+    import kkrunner.backends
+
+    root = Path(kkrunner.backends.__file__).parent
+    assert {path.name for path in root.glob("*.py")} == {
+        "__init__.py", "contracts.py", "direct.py",
+        "supervised.py", "psij.py", "support.py",
+    }
+    assert not any(
+        child.is_dir() and child.name != "__pycache__"
+        for child in root.iterdir()
+    )
+
+
+def test_agent_and_direct_have_distinct_supported_operations():
+    from kkrunner.backends import available_backend_names, installed_backend_names
+    assert available_backend_names() == {"direct", "process", "psij"}
+    assert installed_backend_names() == {"process", "psij"}
