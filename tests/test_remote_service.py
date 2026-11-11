@@ -7,11 +7,11 @@ from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner import RunState
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.backends.supervised import mailbox as remote_mailbox
-from kkrunner.backends.supervised import operations as process_operations
+from kkrunner.backends.supervised import support as process_operations
 from kkrunner.backends.supervised import streams as supervisor
 from kkrunner.backends.supervised import worker as remote_process_worker
 from kkrunner.backends.psij import slurm as psij_slurm
-from kkrunner.backends.psij import operations as scheduler_operations
+from kkrunner.backends.psij import support as scheduler_operations
 from kkrunner.backends.support import messages
 from kkrunner.remote import service as remote_service
 
@@ -68,7 +68,7 @@ def test_remote_status_wire_reply_is_shared_between_process_and_psij(
     monkeypatch.setattr(process_operations, "_process_outcome", lambda receipt_id: (state, return_code, phase, error))
     monkeypatch.setattr(
         psij_slurm,
-        "status_native",
+        "status",
         lambda native_id: RunStatus(
             state, backend_id=native_id, return_code=return_code, failure_phase=phase, message=error
         ),
@@ -154,7 +154,7 @@ def test_status_distinguishes_launch_and_execution_failure(tmp_path, monkeypatch
 def test_slurm_status_is_native_and_does_not_use_psij_job_cache(tmp_path, monkeypatch):
     _, remote_id = _psij_handle(tmp_path)
     monkeypatch.setattr(
-        scheduler_operations, "_psij_executor", lambda opts: pytest.fail("local Slurm status must not initialize PSI/J")
+        scheduler_operations, "_create_executor", lambda opts: pytest.fail("local Slurm status must not initialize PSI/J")
     )
     monkeypatch.setattr(psij_slurm, "_slurm_details", lambda native_id: {"JobState": "RUNNING", "ExitCode": "0:0"})
     status = remote_service.status_remote(remote_id)
