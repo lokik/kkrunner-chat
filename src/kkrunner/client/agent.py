@@ -28,7 +28,7 @@ from kkrunner.runs.base import (
 )
 from kkrunner.runs.model import WorkingDirectory
 
-from kkrunner.backends.registry import installed_backend_names
+from kkrunner.backends import installed_backend_names
 
 
 def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):

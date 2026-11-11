@@ -9,8 +9,8 @@ import sys
 import pytest
 
 from kkrunner.backends.contracts import Backend
-from kkrunner.backends.mpi import resolve_mpi_options
-from kkrunner.backends.process.backend import DirectProcessBackend
+from kkrunner.backends.support import resolve_mpi_options
+from kkrunner.backends import DirectProcessBackend
 from kkrunner.client.run_parts import BackendRunEndpoint, run_endpoint_for_executor
 from kkrunner.client.portable_functions import function_source
 from kkrunner.files.availability import prepare_target_outputs

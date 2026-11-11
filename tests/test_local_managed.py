@@ -15,11 +15,10 @@ from kkrunner.client.run_parts import backend_job_context
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
-from kkrunner.backends.process.supervised.mailbox import recover_submission
+from kkrunner.backends.supervised import _mailbox_recover_submission as recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.backends.process.supervised.operations import (
-    _process_running, acknowledge_submission, status_remote,
-)
+from kkrunner.backends.supervised import acknowledge_submission, status as status_remote
+from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.runs.base import FailurePhase, RunStatus
 
 RUN_ID = "b" * 32
@@ -72,9 +71,7 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     assert recover_submission(RUN_ID)["remote_id"] == handle
     assert runner.wait().return_code == 0
     assert runner.state == RunState.FINISHED
-    assert not _process_running(
-        {**decode_handle(handle), "identity": {"pid": 1, "start_time": 0, "time_basis": "epoch"}}
-    )
+    assert not ProcessIdentity.from_dict({"pid": 1, "start_time": 0, "time_basis": "epoch"}).is_running()
     assert (tmp_path / "out.txt").read_text() == "output\n"
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
     assert executor.recover_submission(RUN_ID, SubmissionContext(_record(tmp_path, None).execution)).ref.token == handle
@@ -197,7 +194,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.backends.process.supervised import operations as process_operations
+    from kkrunner.backends import supervised as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):
@@ -223,7 +220,7 @@ def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
 
 
 def test_terminal_local_runner_never_regresses_to_running(tmp_path, monkeypatch):
-    from kkrunner.backends.process.supervised import local as local_project
+    from kkrunner.client import local_supervised as local_project
 
     runner = SupervisedProcessBackend().create_job(_spec(tmp_path), submission_key=RUN_ID)
     runner._backend_id = "opaque-handle"
@@ -264,7 +261,7 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.backends.process.supervised.operations import _clean_request_outputs
+    from kkrunner.backends.supervised import _clean_request_outputs
     from kkrunner.remote.messages import request_to_spec
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
@@ -314,7 +311,7 @@ def test_terminal_project_runner_does_not_query_backend(monkeypatch, tmp_path):
         status={"state": "finished", "return_code": 0},
     )
     monkeypatch.setattr(
-        "kkrunner.backends.process.supervised.local.local_status",
+        "kkrunner.client.local_supervised.local_status",
         lambda *args: pytest.fail("Terminal runner must not query backend"),
     )
     assert runner.state is RunState.FINISHED
@@ -457,7 +454,7 @@ def test_local_follow_uses_backend_operation_and_psij_wire_identity(tmp_path):
         stdout_path=str(tmp_path / "run.out"),
     ))
     operation, args, kwargs = calls[0]
-    assert operation.module == "kkrunner.backends.psij.functions"
+    assert operation.module == "kkrunner.backends.psij"
     assert operation.function == "stream"
     assert decode_handle(args[0]) == {
         "kind": "psij", "backend": "pbs", "url": "local", "native_id": "native-id",
@@ -466,3 +463,38 @@ def test_local_follow_uses_backend_operation_and_psij_wire_identity(tmp_path):
         "stdout_offset": 4, "stderr_offset": None,
         "stdout_path": str(tmp_path / "run.out"), "stderr_path": None,
     }
+
+
+def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_path, monkeypatch):
+    import asyncio
+    from kkrunner.client.job import Job
+
+    job = local_managed_job(_spec(tmp_path))
+    job._backend_id = "opaque-psij-id"
+    job._remote_directory = str(tmp_path)
+
+    class CompletedFollow:
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.terminal = {"state": "finished", "return_code": 0}
+
+        async def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    async def follow(*args, **kwargs):
+        return CompletedFollow()
+
+    async def never_poll(*args, **kwargs):
+        raise AssertionError("FOLLOW already supplied authoritative terminal facts")
+
+    monkeypatch.setattr(job.context, "_follow", follow)
+    monkeypatch.setattr(job.context, "_status", never_poll)
+    asyncio.run(job._monitor())
+    assert job.state is RunState.FINISHED
+    assert job.return_code == 0

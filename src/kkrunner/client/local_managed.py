@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from kkrunner.backends.registry import operation_ref
+from kkrunner.backends import operation_ref
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.transport import LocalTransport
 from kkrunner.client.execution_request import execution_request

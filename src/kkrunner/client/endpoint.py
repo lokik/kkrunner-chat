@@ -84,8 +84,9 @@ class ExecutionEndpointConfig:
 
 def endpoint_config_for_executor(executor) -> ExecutionEndpointConfig:
     """Describe a live executor without persisting launch/staging policy."""
-    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
-    from kkrunner.backends.psij.backend import PsijBackend
+    from kkrunner.backends.direct import DirectProcessBackend
+    from kkrunner.backends.supervised import SupervisedProcessBackend
+    from kkrunner.backends.psij import PsijBackend
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import SshTransport
@@ -165,8 +166,9 @@ def endpoint_config_for_executor(executor) -> ExecutionEndpointConfig:
 
 def executor_from_endpoint(endpoint: ExecutionEndpointConfig):
     """Reconstruct a standard executor from persisted endpoint identity."""
-    from kkrunner.backends.process.backend import DirectProcessBackend, SupervisedProcessBackend
-    from kkrunner.backends.psij.backend import PsijBackend
+    from kkrunner.backends.direct import DirectProcessBackend
+    from kkrunner.backends.supervised import SupervisedProcessBackend
+    from kkrunner.backends.psij import PsijBackend
     from kkrunner.client.agent import AgentRunEndpoint
     from kkrunner.client.ssh_direct import SshDirectRunEndpoint, SshDirectTransport
     from kkrunner.client.transport import SshTransport

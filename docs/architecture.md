@@ -156,7 +156,7 @@ clock change that reverses entirely between sampled reads can evade detection.
 | Package | Responsibility |
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
-| `kkrunner.backends` | Process and PSI/J Job implementations, submission/recovery contracts, MPI launch, supervisor and scheduler operations. |
+| `kkrunner.backends` | Flat direct/supervised/PSI-J functional implementations, common process/MPI support, and backend contracts. |
 | `kkrunner.client` | AgentRunEndpoint, connection/endpoint identity, backend pools, transport, remote Job and remote file sessions. |
 | `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
@@ -176,20 +176,15 @@ are loaded only when requested from `kkrunner.backends`: run contracts depend on
 endpoint metadata, so loading implementations while initializing that package
 would reverse the dependency and create an import cycle. The root import does
 not load local/PSI/J implementations, projects or the remote client/service.
-Direct execution uses one client `Job`, with process resources isolated in
-`kkrunner.client.direct_session.DirectSession`. The `supervised` package contains
-the reusable supervisor, durable receipts and FOLLOW logic used by both managed-local
-execution and remote agents. Direct SSH uses that same client `Job` and
-`DirectSession` with `SshProcessAdapter`, without depending on the supervisor.
-Within the PSI/J backend, `backends.psij.job` owns a live job's submission
-and observation, `backends.psij.backend` owns the reusable executor,
-native job cache and callback subscriptions, and `backends.psij.slurm`
-contains Slurm-native status/accounting queries without loading PSI/J.
-Stateless target dispatch and its backend registry live in `remote.service`;
-`remote.handles` and `remote.messages` own protocol identity and payload
-conversion. The process mailbox owns submission tickets and terminal receipts.
-Target-side PSI/J operations live in `backends.psij.agent`;
-it does not own a client `RunRecord` or file synchronization.
+The three backend implementations are flat modules: `backends.direct`,
+`backends.supervised` and `backends.psij`. Shared process and MPI
+primitives live in `backends.support`. Direct local and SSH use the
+same direct execution implementation and the private `DirectSession`;
+supervised uses its own durable supervisor and FOLLOW; PSI/J uses native
+scheduler callbacks and recovery. No backend implementation is hidden
+inside a client transport directory or nested backend package.
+Target dispatch imports the named module; no plugin registration framework
+or long-lived module-global backend instance is required.
 
 `files` and `support` do not import the run lifecycle, projects, backends or
 remote service. File reservations use generic local path expansion without
@@ -308,7 +303,7 @@ mechanisms (`DirectProcessBackend`, `SupervisedProcessBackend`, `PsijBackend`).
 The `RunEndpoint` protocol and the client-only `JobAttachment` live in
 `kkrunner.client.contracts`, not in a concrete endpoint implementation.
 `DirectProcessAdapter` is private to the direct Job implementation and its
-protocol is isolated in `kkrunner.backends.process.direct.contracts`.
+protocol is defined in `kkrunner.backends.direct`.
 
 Local direct and SSH direct use the same `DirectProcessBackend.create_job()`
 factory. A transport-specific, private `DirectProcessAdapter` factory supplies
@@ -352,7 +347,7 @@ Managed (supervisor and PSI/J) executions use context-independent operations
 Local managed and agent SSH use the same `Job` and differ only in how the
 endpoint invokes those operations. Direct local and raw SSH use the same
 `Job` in session mode, with process/SSH control mechanics implemented by
-one private `client.direct_session.DirectSession` and transport-specific adapters.
+one private `backends.direct.DirectSession` and transport-specific adapters.
 There is no agent-specific, supervised-specific or direct-specific client
 Job class. PSI/J's native backend helper still manages PSI/J library objects
 internally, not as the public client Job.

@@ -28,7 +28,7 @@ class Job:
         output_listener=None, request_factory=None, completion_cleanup=None, adapter=None,
     ):
         self.context = context
-        from kkrunner.client.direct_session import DirectSession
+        from kkrunner.backends.direct import DirectSession
         self._direct_session = None if adapter is None else DirectSession(adapter)
         self._started = Event()
         self.spec = spec
@@ -69,7 +69,7 @@ class Job:
     def direct(cls, spec, *, callback=None, adapter=None):
         """Create the direct session variant of the same client Job type."""
         if adapter is None:
-            from kkrunner.backends.process.direct.local import LocalProcessAdapter
+            from kkrunner.backends.direct import LocalProcessAdapter
             adapter = LocalProcessAdapter()
         return cls(None, spec, callback=callback, adapter=adapter)
 

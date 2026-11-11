@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from kkrunner.backends.registry import installed_backend_names, operation_module
+from kkrunner.backends import installed_backend_names, operation_module
 from kkrunner.client.operations import BackendOperation
 from kkrunner.client.transport import LocalTransport
 
@@ -44,3 +44,11 @@ print(json.dumps(sorted(name for name in
         "acknowledge", "acknowledge_submission", "cancel", "follow",
         "recover", "status", "stream", "submit",
     ]
+
+
+
+def test_direct_backend_exposes_one_portable_execution_entry():
+    module = importlib.import_module(operation_module("direct"))
+    assert callable(module.stream)
+    assert callable(module.resolve_mpi_options)
+    assert "def execute(request):" in module.WORKER_SOURCE

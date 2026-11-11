@@ -9,8 +9,8 @@ from kkrunner.backends import SupervisedProcessBackend
 from kkrunner.backends.contracts import RecoveryDisposition, SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
-from kkrunner.backends.process.supervised import local as local_project
-from kkrunner.backends.process.supervised import operations as process_operations
+from kkrunner.client import local_supervised as local_project
+from kkrunner.backends import supervised as process_operations
 from kkrunner.client.endpoint import ExecutionEndpointConfig
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
@@ -80,7 +80,7 @@ def test_local_status_projection_and_identity_recovery_are_independent(
     from kkrunner.files.availability import local_manifest
     projected = local_manifest(files, queried) if state.is_terminal else None
     monkeypatch.setattr(
-        process_operations, "recover_remote",
+        process_operations, "_recover_impl",
         lambda run_id, request: (
             {"remote_id": backend_id, "directory": str(tmp_path)}
             if run_id == "test-run" and request == {"executor": "process", "directory": str(tmp_path)}

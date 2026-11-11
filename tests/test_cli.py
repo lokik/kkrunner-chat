@@ -60,7 +60,7 @@ def test_submit_command_passes_complete_request_to_stateless_service(monkeypatch
 
 def test_resolve_mpi_command_preserves_integer_process_count(monkeypatch):
     monkeypatch.setattr(
-        "kkrunner.backends.mpi.find_default_mpi_launcher",
+        "kkrunner.backends.support.find_default_mpi_launcher",
         lambda: ("mpirun",),
     )
     monkeypatch.setattr(remote_command.sys, "stdin", io.StringIO('{"mpi": 4}'))

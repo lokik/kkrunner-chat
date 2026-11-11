@@ -11,7 +11,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunManager, RunState, RunStore
 from kkrunner.backends import DirectProcessBackend, SupervisedProcessBackend
-from kkrunner.client.ssh_direct.worker import WORKER_SOURCE
+from kkrunner.backends.direct import WORKER_SOURCE
 
 
 def test_explicit_and_contextual_persistence(tmp_path):

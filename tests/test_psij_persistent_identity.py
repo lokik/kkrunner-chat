@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner import ExecutionSpec
-import kkrunner.backends.psij.backend as psij_backend
-from kkrunner.backends.psij import slurm as psij_slurm
+import kkrunner.backends.psij as psij_backend
+from kkrunner.backends import psij as psij_slurm
 
 
 class _JobSpec:
