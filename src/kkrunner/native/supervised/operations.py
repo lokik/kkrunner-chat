@@ -225,7 +225,7 @@ def _cancel_impl(remote_id, timeout=1.0):
         raise ValueError("Not a process job reference")
     outcome = _process_outcome(handle["receipt_id"])
     if outcome is not None:
-        return status(remote_id)
+        return _status_impl(remote_id)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             conn.settimeout(timeout)
@@ -235,8 +235,8 @@ def _cancel_impl(remote_id, timeout=1.0):
             if b'"accepted":true' not in reply:
                 raise RuntimeError("Supervisor rejected cancellation")
     except (FileNotFoundError, ConnectionRefusedError):
-        return status(remote_id)
-    return status(remote_id)
+        return _status_impl(remote_id)
+    return _status_impl(remote_id)
 
 
 def _acknowledge_impl(remote_id):
@@ -250,7 +250,7 @@ def _recover_impl(run_id, request, *, submitted_at=None):
     reply = _mailbox_recover_submission(run_id)
     if reply is None:
         return None
-    return dict(reply, directory=request["directory"], **status(reply["remote_id"]))
+    return dict(reply, directory=request["directory"], **_status_impl(reply["remote_id"]))
 
 
 def _follow_impl(
@@ -308,14 +308,14 @@ def _follow_impl(
         # partial magic, truncated frames and other states remain errors.
         if any(offset is not None and (type(offset) is not int or offset != 0) for offset in offsets.values()):
             raise
-        status = status(remote_id)
+        status = _status_impl(remote_id)
         if status["state"] != RunState.FAILED.value or status.get("failure_phase") != FailurePhase.LAUNCH.value:
             raise
         return status
     except (FileNotFoundError, ConnectionRefusedError):
         # A completed supervisor has removed its transient socket. Replay
         # declared spools once, without the historical polling lifecycle.
-        status = status(remote_id)
+        status = _status_impl(remote_id)
         if not RunState(status["state"]).is_terminal:
             raise
         if not any(path is not None for path in paths.values()):

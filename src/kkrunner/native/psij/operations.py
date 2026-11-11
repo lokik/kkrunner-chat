@@ -68,7 +68,7 @@ def _cancel_impl(remote_id):
     executor = _psij_executor(handle)
     job = executor.attach_native_job(handle["native_id"])
     job.cancel()
-    return status(remote_id)
+    return _status_impl(remote_id)
 
 
 def _acknowledge_impl(remote_id):

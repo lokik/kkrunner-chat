@@ -86,3 +86,19 @@ def test_portable_direct_ssh_backend_is_self_contained():
     compile(code, "<direct ssh backend>", "exec")
     assert "def execute(request):" in code
     assert "from kkrunner" not in code
+
+
+def test_native_operations_do_not_call_removed_module_status_functions():
+    """All native cancellation/recovery paths use the internal status owner."""
+    import ast
+    import inspect
+    from kkrunner.native.supervised import operations as supervised
+    from kkrunner.native.psij import operations as psij
+    for module in (supervised, psij):
+        tree = ast.parse(inspect.getsource(module))
+        unresolved = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "status"
+        ]
+        assert not unresolved, module.__name__
