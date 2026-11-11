@@ -5,7 +5,8 @@ import asyncio
 import pytest
 
 from kkrunner.client.job import Job
-from kkrunner.client.local_managed import local_managed_job
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.backends import SupervisedBackend
 from kkrunner.client.remote_files import RemoteFileSession
 from kkrunner.runs.base import ExecutionSpec, RunState, close_output_files
 
@@ -41,7 +42,7 @@ def test_local_runners_close_unique_output_handles(monkeypatch, tmp_path, backen
             asyncio.run(runner._execute())
         assert runner.state == RunState.FAILED
     else:
-        runner = local_managed_job(spec)
+        runner = LocalRunEndpoint(SupervisedBackend).create_job(spec)
         async def no_observation():
             return runner.result
         monkeypatch.setattr(runner, "_monitor", no_observation)
@@ -124,7 +125,7 @@ def test_local_project_cleanup_attempts_all_stages(tmp_path, monkeypatch, monito
             if close_fails:
                 raise errors[2]
 
-    runner = local_managed_job(
+    runner = LocalRunEndpoint(SupervisedBackend).create_job(
         ExecutionSpec(argv=("true",), input_file=None, directory=str(tmp_path), output_file=Output()),
         callback=lambda result: callbacks.append(result),
     )
@@ -163,7 +164,7 @@ def test_local_managed_cleanup_does_not_reclassify_backend_execution(tmp_path, m
             raise OSError("close failed")
 
     output = BrokenOutput(str(tmp_path / "result.out"))
-    runner = local_managed_job(ExecutionSpec(
+    runner = LocalRunEndpoint(SupervisedBackend).create_job(ExecutionSpec(
         argv=("true",), input_file=None, directory=str(tmp_path), output_file=output,
     ))
     async def confirmed_completion():
@@ -191,7 +192,7 @@ def test_confirmed_job_output_cleanup_error_is_reported_by_run(tmp_path, monkeyp
             raise OSError("cannot close output")
 
     output = BrokenOutput(str(tmp_path / "run.out"))
-    job = local_managed_job(ExecutionSpec(
+    job = LocalRunEndpoint(SupervisedBackend).create_job(ExecutionSpec(
         argv=("true",), directory=str(tmp_path), output_file=output,
     ))
 

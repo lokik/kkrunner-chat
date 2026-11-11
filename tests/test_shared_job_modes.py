@@ -10,14 +10,13 @@ from kkrunner.client.local import LocalRunEndpoint
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client.job import Job
 from kkrunner.client.transport import LocalTransport
-from kkrunner.client.agent import AgentRunEndpoint
-from kkrunner.client.ssh_direct.endpoint import SshDirectRunEndpoint
+from kkrunner.client.ssh import SshRunEndpoint
 
 
 def test_direct_local_and_direct_ssh_create_the_same_job_class(tmp_path):
     spec = ExecutionSpec((sys.executable, "-c", "print('ready')"), directory=str(tmp_path))
     local = LocalRunEndpoint().create_job(spec)
-    remote = SshDirectRunEndpoint(LocalTransport()).create_run_parts(spec).job
+    remote = SshRunEndpoint(LocalTransport()).create_run_parts(spec).job
     assert type(local) is type(remote) is Job
     assert local.adapter.expose_pid
     assert not remote.adapter.expose_pid
@@ -27,7 +26,7 @@ def test_direct_local_and_direct_ssh_create_the_same_job_class(tmp_path):
 def test_supervised_and_remote_agent_create_the_same_job_class(tmp_path):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
     supervised = LocalRunEndpoint(SupervisedBackend).create_job(spec)
-    agent = AgentRunEndpoint(LocalTransport()).create_run_parts(spec).job
+    agent = SshRunEndpoint(LocalTransport()).create_run_parts(spec).job
     assert type(supervised) is type(agent) is Job
     assert not supervised._direct
     assert not agent._direct
@@ -39,7 +38,7 @@ def test_psij_client_uses_the_same_job_class(monkeypatch, tmp_path):
     from kkrunner.client.local import LocalRunEndpoint
     from kkrunner.backends import PsijBackend
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    job = LocalRunEndpoint(PsijBackend, backend_options={"backend": "slurm"}).create_job(spec, submission_key="key")
+    job = LocalRunEndpoint(PsijBackend, backend_options={"executor_name": "slurm"}).create_job(spec, submission_key="key")
     assert type(job) is Job
     assert job.context.backend == "psij"
     assert job.state is RunState.NEW
