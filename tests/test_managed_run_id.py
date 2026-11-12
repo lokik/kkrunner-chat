@@ -1,6 +1,6 @@
 from kkrunner import ExecutionSpec
-from kkrunner.runs import LaunchSpec
-from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.client import RunClient, StagingSpec, SshTransport
+from kkrunner.backends import SupervisedBackend
 
 
 class _Transport:
@@ -8,14 +8,14 @@ class _Transport:
 
 
 def test_remote_project_run_parts_retain_manager_run_id(tmp_path):
-    backend = SshRunEndpoint(_Transport())
+    backend = RunClient(SupervisedBackend, transport=SshTransport("cluster"))
     spec = ExecutionSpec(
         argv=("true",),
         input_file=None,
         output_file=None,
         directory=str(tmp_path),
-        launch=LaunchSpec(local_root=tmp_path, remote_root="/scratch/work"),
+        staging=StagingSpec(local_root=tmp_path, remote_root="/scratch/work"),
     )
     parts = backend.create_run_parts(spec, submission_key="kkrunner-run-id")
-    assert parts.files._run_id == "kkrunner-run-id"
+    assert parts.submission_builder({"directory": "/scratch/work"})["submission_key"] == "kkrunner-run-id"
     assert parts.job.backend_id is None

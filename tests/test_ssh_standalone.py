@@ -8,8 +8,9 @@ from threading import Event
 import pytest
 
 from kkrunner import ExecutionSpec, RunState, RunStore
-from kkrunner.runs import LaunchSpec
-from kkrunner.client import SshRunEndpoint, SshTransport
+from kkrunner.client import StagingSpec, RunClient
+from kkrunner.client import SshTransport
+from kkrunner.backends import SupervisedBackend
 from kkrunner.runs.manager import RunManager
 
 pytestmark = pytest.mark.skipif(
@@ -75,7 +76,7 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
         local = tmp_path / "work"
         local.mkdir()
         manager = RunManager(RunStore(tmp_path / "runs"))
-        executor = SshRunEndpoint(SshTransport("tester@127.0.0.1", options=options))
+        executor = RunClient(SupervisedBackend, transport=SshTransport("tester@127.0.0.1", options=options))
         spec = ExecutionSpec(
             [
                 "/opt/venv/bin/python",
@@ -85,7 +86,7 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
             directory=local,
             output_file=local / "stdout.txt",
             output_files=(local / "answer.txt",),
-            launch=LaunchSpec(local_root=local, remote_root="/home/tester/jobs"),
+            staging=StagingSpec(local_root=local, remote_root="/home/tester/jobs"),
         )
         run = manager.create_run(executor, spec)
         first_output = Event()

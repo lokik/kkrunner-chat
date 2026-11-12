@@ -8,7 +8,7 @@ from threading import Event
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
-from kkrunner.client import LocalTransport, SshRunEndpoint, SshTransport
+from kkrunner.client import LocalTransport, RunClient, SshTransport, StagingSpec
 from kkrunner.files.queries import finalize_upload, query_files
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
@@ -28,7 +28,6 @@ class LoopbackSshTransport(SshTransport):
     def _command(self, argv, cwd=None):
         assert cwd is None
         return tuple(argv)
-from kkrunner.runs import LaunchSpec
 
 
 def test_remote_helper_sources_are_valid_python():
@@ -54,9 +53,9 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
         output_file=str(directory / "stdout.txt"),
         error_file=str(directory / "stderr.txt"),
         output_files=(str(directory / "answer.dat"),),
-        launch=LaunchSpec(local_root=str(local), remote_root=str(remote)),
+        staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.direct(SshRunEndpoint(LoopbackSshTransport()), spec)
+    run = Run.untracked(RunClient(DirectBackend, transport=LoopbackSshTransport()), spec)
     assert run.spec is spec
     observed = []
     run.add_output_listener(lambda data, kind: observed.append((kind, data)))
@@ -77,7 +76,7 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
 
 def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
-    backend = SshRunEndpoint(LoopbackSshTransport())
+    backend = RunClient(DirectBackend, transport=LoopbackSshTransport())
     parts = backend.create_run_parts(spec, submission_key="client-submission-key")
     from kkrunner.client.job import Job
     assert type(parts.job) is Job
@@ -94,9 +93,9 @@ def test_direct_ssh_cancellation_stops_remote_process(tmp_path):
               "import time; print('ready', flush=True); time.sleep(30)"),
         directory=str(local),
         output_file=str(local / "stdout.txt"),
-        launch=LaunchSpec(local_root=str(local), remote_root=str(remote)),
+        staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.direct(SshRunEndpoint(LoopbackSshTransport()), spec)
+    run = Run.untracked(RunClient(DirectBackend, transport=LoopbackSshTransport()), spec)
     ready = Event()
     run.add_output_listener(lambda data, kind: ready.set() if "ready" in data else None)
     run.submit()
@@ -120,10 +119,10 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
 
 
 def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
-    from kkrunner.client.local import LocalRunEndpoint
+    from kkrunner.client import RunClient
     from kkrunner.client.job import Job
-    local = LocalRunEndpoint().create_job(ExecutionSpec(argv=("true",), directory=str(tmp_path)))
-    remote = SshRunEndpoint(LoopbackSshTransport()).create_run_parts(
+    local = RunClient(DirectBackend).create_run_parts(ExecutionSpec(argv=("true",), directory=str(tmp_path))).job
+    remote = RunClient(DirectBackend, transport=LoopbackSshTransport()).create_run_parts(
         ExecutionSpec(argv=("true",), directory=str(tmp_path))
     ).job
     assert type(local) is Job
@@ -139,9 +138,9 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
         directory=root,
         output_file=str(root / "combined.log"),
         error_file=str(root / "combined.log"),
-        launch=LaunchSpec(local_root=str(root), remote_root=str(tmp_path / "remote")),
+        staging=StagingSpec(local_root=str(root), remote_root=str(tmp_path / "remote")),
     )
-    run = Run.direct(SshRunEndpoint(LoopbackSshTransport()), spec)
+    run = Run.untracked(RunClient(DirectBackend, transport=LoopbackSshTransport()), spec)
     with pytest.raises(Exception, match="distinct output files"):
         run.submit()
     assert not (root / "combined.log").exists()
@@ -224,7 +223,7 @@ def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
     from kkrunner.client.remote_paths import RemotePathContext
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)
-    backend = SshRunEndpoint(LoopbackSshTransport())
+    backend = RunClient(DirectBackend, transport=LoopbackSshTransport())
     adapter = SshDirectChannel(RemotePathContext(backend, spec.launch))
     with pytest.raises(ValueError, match="staged request"):
         adapter.prepare(spec)
