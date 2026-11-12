@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files.versions import FileVersion, file_digest
-from kkrunner.client.transport import LocalTransport, SshTransport
+from kkrunner.client.transports import LocalTransport, SshTransport
 
 
 def test_local_transport_run_start_and_files(tmp_path):
@@ -144,7 +144,7 @@ def test_strict_transfer_refuses_wildcard_symlink_outside_source_root(tmp_path):
     import pytest
 
     from kkrunner.files.paths import expand_local_candidates
-    from kkrunner.client.transport import expand_local_files
+    from kkrunner.files.queries import expand_local_files
 
     root = tmp_path / "root"
     root.mkdir()
