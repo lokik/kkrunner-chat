@@ -69,14 +69,20 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
                 "/opt/venv/bin/python",
                 "-c",
                 "\"import importlib.util; assert importlib.util.find_spec('ase') is None; "
-                "assert importlib.util.find_spec('ase2sprkkr') is None\"",
+                "assert importlib.util.find_spec('ase2sprkkr') is None; assert importlib.util.find_spec('kkrunner') is not None\"",
             ],
             check=True,
         )
         local = tmp_path / "work"
         local.mkdir()
         manager = RunManager(RunStore(tmp_path / "runs"))
-        executor = EndpointClient(SupervisedBackend, transport=SshTransport("tester@127.0.0.1", options=options))
+        executor = EndpointClient(
+            SupervisedBackend,
+            transport=SshTransport(
+                "tester@127.0.0.1", options=options,
+                python_command=("/opt/venv/bin/python",),
+            ),
+        )
         spec = ExecutionSpec(
             [
                 "/opt/venv/bin/python",
