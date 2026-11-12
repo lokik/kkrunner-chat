@@ -176,10 +176,8 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
     request = {
         "directory": str(root),
         "argv": [sys.executable, "-c", "print('done')"],
-        "client_sync": {
-            "output_patterns": [str(root / "*.pot")],
-            "cache_patterns": [str(root / "restart*.pot")],
-        },
+        "output_files": [str(root / "*.pot")],
+        "cache_files": [str(root / "restart*.pot")],
     }
     from kkrunner.files.availability import prepare_target_outputs
     prepare_target_outputs(request)
@@ -210,28 +208,23 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
 
 
 def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path):
-    from kkrunner.client.local import LocalRunEndpoint
-    job = LocalRunEndpoint().create_job(
-        ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path))
+    run = Run.untracked(
+        EndpointClient(DirectBackend),
+        ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path)),
     )
-    assert job.run().return_code == 0
-    job.cancel()
-    assert job.state == RunState.FINISHED
+    assert run.run().return_code == 0
+    run.cancel()
+    assert run.state is RunState.FINISHED
 
-def test_direct_ssh_adapter_preparation_keeps_spec(tmp_path):
-    """Direct adapters return the command specification, never mutate Job state."""
-    from kkrunner.client.direct_channels import SshDirectChannel
-    from kkrunner.client.remote_paths import RemotePathContext
+
+def test_direct_ssh_preparation_preserves_spec(tmp_path):
+    """Binding a direct backend to SSH never mutates the user's declaration."""
+    from kkrunner.client.backend_execution import DirectExecution
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)
-    backend = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
-    adapter = SshDirectChannel(RemotePathContext(backend, spec.launch))
-    with pytest.raises(ValueError, match="staged request"):
-        adapter.prepare(spec)
-    adapter.configure_submission(
-        {"directory": str(tmp_path)},
-        stream_offsets={"out": None, "err": None},
-        stream_writer=lambda data, kind: None,
-        stream_paths=(None, None),
-    )
-    assert adapter.prepare(spec) is None
+    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    parts = client.create_run_parts(spec)
+    assert isinstance(parts.job.execution, DirectExecution)
+    assert parts.job.spec is spec
+    assert parts.files.spec is spec
+    assert parts.job.execution.transport is client.transport
