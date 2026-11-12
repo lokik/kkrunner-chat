@@ -1,6 +1,6 @@
 """Process backend status and recoverable submission identity."""
 
-from kkrunner.client import RunClient, LocalTransport
+from kkrunner.client import EndpointClient, LocalTransport
 from kkrunner.backends.config import BackendConfig
 from types import SimpleNamespace
 
@@ -18,7 +18,7 @@ from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
 
 def test_disappeared_local_process_is_unknown(monkeypatch):
-    executor = RunClient(SupervisedBackend)
+    executor = EndpointClient(SupervisedBackend)
     handle = encode_handle({
         "kind": "process",
         "identity": {"pid": 12345, "start_time": 0, "time_basis": "linux-boot"},
@@ -76,7 +76,7 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         "status",
         staticmethod(lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity")),
     )
-    endpoint = RunClient(SupervisedBackend)
+    endpoint = EndpointClient(SupervisedBackend)
     queried = endpoint.status(JobAttachment(
         Execution(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("process")), files,
     ))[0]
@@ -96,7 +96,7 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         Execution(LocalTransport(), WorkingDirectory(str(tmp_path)), backend=BackendConfig("process")),
         files,
     )
-    recovered = RunClient(SupervisedBackend).recover_submission(
+    recovered = EndpointClient(SupervisedBackend).recover_submission(
         "test-run", SubmissionContext(submission.execution),
     )
     assert recovered.disposition is RecoveryDisposition.FOUND
@@ -121,7 +121,7 @@ def test_local_status_without_manifest_keeps_backend_facts(monkeypatch, tmp_path
         Execution(LocalTransport(), WorkingDirectory(str(tmp_path)), "opaque", backend=BackendConfig("process")),
         FileManifest(),
     )
-    status = RunClient(SupervisedBackend).status(attachment)[0]
+    status = EndpointClient(SupervisedBackend).status(attachment)[0]
     assert status.state == RunState.FINISHED
     assert status.backend_id == "opaque"
     assert status.files is None

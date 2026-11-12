@@ -414,13 +414,13 @@ def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd)
 
 
 def test_ssh_client_compression_roundtrips_from_transport():
-    from kkrunner.client import RunClient
+    from kkrunner.client import EndpointClient
     from kkrunner.backends import DirectBackend
 
     for compressed in (False, True):
-        client = RunClient(DirectBackend, transport=SshTransport("cluster", zstd=compressed))
+        client = EndpointClient(DirectBackend, transport=SshTransport("cluster", zstd=compressed))
         assert client.transport.zstd is compressed
-        restored = RunClient.from_config(client.transport.to_dict(), client.backend_config)
+        restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
         assert restored.transport == client.transport
         assert restored.transport.zstd is compressed
 
@@ -545,12 +545,12 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
 
 
 def test_ssh_client_retains_target_python_configuration():
-    from kkrunner.client import RunClient
+    from kkrunner.client import EndpointClient
     from kkrunner.backends import DirectBackend
 
-    client = RunClient(
+    client = EndpointClient(
         DirectBackend, transport=SshTransport("cluster", python_command=("python3.12",)),
     )
     assert client.transport.python_command == ("python3.12",)
-    restored = RunClient.from_config(client.transport.to_dict(), client.backend_config)
+    restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
     assert restored.transport == client.transport

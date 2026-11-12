@@ -138,14 +138,14 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
 
 
 def test_remote_endpoint_reuses_configured_target_python_command():
-    from kkrunner.client import RunClient, SshTransport
+    from kkrunner.client import EndpointClient, SshTransport
     from kkrunner.backends.config import BackendConfig
 
     command = (sys.executable,)
     transport = SshTransport("host", python_command=command)
-    client = RunClient(transport=transport)
+    client = EndpointClient(transport=transport)
     assert client.transport.python_command == command
-    restored = RunClient.from_config(transport.to_dict(), client.backend_config)
+    restored = EndpointClient.from_config(transport.to_dict(), client.backend_config)
     assert restored.transport.python_command == command
 
 
