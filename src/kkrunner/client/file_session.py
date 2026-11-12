@@ -40,6 +40,7 @@ class FileSession:
         self._remote_directory = remote_directory
         self._prepared = None
         self._streams = None
+        self._closed = False
         self._staging = {} if files is None else None
         self._stream_positions = {}
         self._retrieve_primary_streams = False
@@ -819,7 +820,10 @@ class FileSession:
         return self._files
 
     def close(self):
-        """Release runtime streams; leave ExecutionSpec unchanged."""
+        """Release owned streams once, even if cleanup itself raises."""
+        if self._closed:
+            return
+        self._closed = True
         streams, self._streams = self._streams, None
         if streams is not None:
             streams.close()

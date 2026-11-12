@@ -162,5 +162,5 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     assert job.return_code == 0
     assert job.failure_phase is None
     assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.OUTPUT
+    assert run.failure_phase is FailurePhase.ARTIFACTS
     assert output.close_calls == 1
