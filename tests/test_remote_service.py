@@ -883,7 +883,7 @@ def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_p
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
         process_operations.SupervisedBackend, "status",
-        lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH),
+        staticmethod(lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH)),
     )
 
     async def malformed_socket(*args):
@@ -904,7 +904,7 @@ def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, m
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
         process_operations.SupervisedBackend, "status",
-        lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH),
+        staticmethod(lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH)),
     )
 
     async def closed_socket(*args):
