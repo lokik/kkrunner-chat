@@ -8,6 +8,8 @@ import pytest
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client import EndpointClient, StagingSpec, SshTransport, LocalTransport
+from kkrunner.client.file_context import FileContext
+from kkrunner.client.file_session import FileSession
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
@@ -128,8 +130,10 @@ def test_remote_executor_local_transport_streams_output(tmp_path):
     assert result.error == b""
     assert seen == [("HELLO\n", "out")]
     assert runner.backend_id is not None
-    assert runner.execution.endpoint is not None
-    assert Path(runner.execution.directory.remote) == remote_root
+    # An untracked loopback transport is intentionally not persistable;
+    # inspect the runtime binding and mapped workspace, not a RunRecord.
+    assert runner._job.execution.transport is executor.transport
+    assert Path(runner._file_session.remote_directory) == remote_root
 
 
 def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
@@ -141,7 +145,7 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
         directory = await runner._file_session.context.map_directory(spec.directory)
         from kkrunner.files.manifest import FileManifest
 
-        return await runner._file_session._prepare_request("one-run", directory, FileManifest.from_spec(spec))
+        return await runner._file_session._prepare_request(directory, FileManifest.from_spec(spec))
 
     try:
         request = asyncio.run(prepare())
@@ -381,9 +385,8 @@ def test_remote_cache_never_policy_skips_only_requested_direction(tmp_path, dire
 
 
 def test_remote_sync_policy_rejects_unknown_value(tmp_path):
-    endpoint = _executor()
-    with pytest.raises(ValueError):
-        endpoint._context(endpoint, _launch(tmp_path, tmp_path / "remote", input_files="sometimes"))
+    with pytest.raises(ValueError, match="input_sync"):
+        _launch(tmp_path, tmp_path / "remote", input_files="sometimes")
 
 
 @pytest.mark.parametrize(
@@ -403,7 +406,7 @@ def test_remote_directory_mapping(tmp_path, root_mode, remote_root, expected):
     else:
         local = Path.home() / "calculations" / "Fe"
         launch = StagingSpec() if remote_root is None else StagingSpec(remote_root=remote_root)
-    context = endpoint._context(endpoint, launch)
+    context = FileContext(endpoint, launch)
     mapped = asyncio.run(context.map_directory(local))
     assert mapped == expected
 
@@ -411,7 +414,7 @@ def test_remote_directory_mapping(tmp_path, root_mode, remote_root, expected):
 def test_remote_directory_mapping_rejects_path_outside_local_root(tmp_path):
     local_root = tmp_path / "local"
     endpoint = _executor()
-    context = endpoint._context(endpoint, StagingSpec(local_root=local_root, remote_root="/scratch/tester"))
+    context = FileContext(endpoint, StagingSpec(local_root=local_root, remote_root="/scratch/tester"))
     with pytest.raises(ValueError, match="outside mapped root"):
         asyncio.run(context.map_directory(tmp_path / "elsewhere"))
 
@@ -468,12 +471,12 @@ def test_file_sync_transfer_decision_is_direction_independent(policy, source, de
 
 def test_remote_argv_reuses_staged_path_identity(tmp_path):
     """Relative, absolute and Path arguments share the staging resolver."""
-    from kkrunner.client.remote_files import RemoteFileSession
-
     work = tmp_path / "work"
     source = work / "input.dat"
-    runner = object.__new__(RemoteFileSession)
-    runner.spec = SimpleNamespace(directory=str(work))
+    runner = _executor().create_run_parts(
+        ExecutionSpec(("program",), directory=str(work))
+    ).files
+    assert isinstance(runner, FileSession)
     arguments = ("program", "input.dat", source, "--verbose", "./missing.dat")
     staged = {str(source): "/remote/work/input.dat"}
     assert runner._remote_argv(arguments, staged) == [
@@ -531,10 +534,11 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
     executor = EndpointClient(SupervisedBackend, transport=_OperationLoopbackTransport())
     runner = Run.untracked(executor, spec)
 
-    async def fail_after_preparation(_request):
+    def fail_after_preparation(_request):
         raise OSError("backend submission uncertain")
 
-    monkeypatch.setattr(executor, "_submit", fail_after_preparation)
+    # Submission now belongs to the selected backend, not EndpointClient.
+    monkeypatch.setattr(SupervisedBackend, "submit", staticmethod(fail_after_preparation))
     if preflight:
         runner._file_session.prepare_submission()
     with pytest.raises(OSError, match="backend submission uncertain"):
