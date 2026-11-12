@@ -204,4 +204,8 @@ async def follow_growing_files(paths, on_chunk, terminal, *, offsets=None, poll_
                 # synchronously: explicitly let scheduler callbacks run.
                 await asyncio.sleep(0)
             else:
-                await tail.wait_for_change(wakeup=wakeup)
+                # A resolved callback is a one-shot wakeup, not a reason to
+                # busy-spin when backend confirmation is still pending.
+                await tail.wait_for_change(
+                    wakeup=wakeup if wakeup is None or not wakeup.done() else None,
+                )

@@ -132,7 +132,7 @@ def test_status_uses_native_attach_for_non_slurm_scheduler(monkeypatch):
         calls.append(ref)
         return native
 
-    monkeypatch.setattr(operations, "_attach_job", attach)
+    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", attach)
     facts = PsijBackend.status(handle("pbs-123", "pbs"))
     assert calls == [{
         "kind": "psij", "native_id": "pbs-123",
@@ -416,15 +416,15 @@ def test_target_follow_writes_output_from_scheduler_owned_file(monkeypatch, tmp_
     monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
     out, err = io.BytesIO(), io.BytesIO()
     facts = asyncio.run(PsijBackend.follow(
-        handle(), out, err, stdout_path=str(stdout), stderr_path=None,
+        handle(executor_name="pbs"), out, err, stdout_path=str(stdout), stderr_path=None,
     ))
     assert out.getvalue() == b"hello\n"
     assert err.getvalue() == b""
     assert facts["state"] == "finished"
 
 
-def test_slurm_follow_gets_missing_exit_code_from_authoritative_scheduler(monkeypatch, tmp_path):
-    """PSI/J may signal COMPLETED while its exit_code is still unavailable."""
+def test_slurm_follow_uses_scheduler_facts_when_native_exit_code_is_missing(monkeypatch, tmp_path):
+    """PSI/J supplies the notification; Slurm supplies the job facts."""
     stdout = tmp_path / "stdout.txt"
     stdout.write_bytes(b"hello\n")
     native = NativeJob()
@@ -447,9 +447,9 @@ def test_slurm_follow_gets_missing_exit_code_from_authoritative_scheduler(monkey
     assert out.getvalue() == b"hello\n"
 
 
-def test_slurm_follow_does_not_hide_scheduler_execution_failure(monkeypatch, tmp_path):
+def test_slurm_follow_prefers_authoritative_failure_to_native_success(monkeypatch, tmp_path):
     native = NativeJob()
-    native.update("COMPLETED")
+    native.update("COMPLETED", 0)
     monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
     monkeypatch.setattr(
         slurm, "status",
@@ -459,6 +459,42 @@ def test_slurm_follow_does_not_hide_scheduler_execution_failure(monkeypatch, tmp
     assert facts["state"] == "failed"
     assert facts["return_code"] == 7
     assert facts["failure_phase"] == "execution"
+
+
+def test_slurm_follow_waits_for_authoritative_terminal_state(monkeypatch):
+    """PSI/J completion may precede the scheduler's terminal record."""
+    native = NativeJob()
+    native.update("COMPLETED")
+    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
+    states = iter((JobStatus(RunState.RUNNING), JobStatus(RunState.FINISHED, return_code=0)))
+    queries = []
+
+    def scheduler_status(native_id):
+        queries.append(native_id)
+        return next(states)
+
+    monkeypatch.setattr(slurm, "status", scheduler_status)
+    facts = asyncio.run(PsijBackend.follow(
+        handle(), io.BytesIO(), io.BytesIO(), poll_interval=0.01,
+    ))
+    assert facts == {
+        "state": "finished", "return_code": 0, "failure_phase": None, "error": None,
+    }
+    assert queries == ["123", "123"]
+
+
+def test_slurm_status_uses_same_authority_as_follow(monkeypatch):
+    queried = []
+
+    def scheduler_status(native_id):
+        queried.append(native_id)
+        return JobStatus(RunState.FINISHED, return_code=0)
+
+    monkeypatch.setattr(slurm, "status", scheduler_status)
+    assert PsijBackend.status(handle()) == {
+        "state": "finished", "return_code": 0, "failure_phase": None, "error": None,
+    }
+    assert queried == ["123"]
 
 
 def test_psij_backend_is_not_a_client_session():

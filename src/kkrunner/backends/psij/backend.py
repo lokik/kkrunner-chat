@@ -31,6 +31,7 @@ from .support import (
     _attach_job,
     _create_executor,
     _follow_scheduler,
+    job_status,
     psij_state,
     supports_recovery,
 )
@@ -101,17 +102,7 @@ class PsijBackend(Backend, ManagedOperations):
         handle = decode_handle(remote_id)
         if handle["kind"] != "psij":
             raise ValueError("Not a PSI/J job reference")
-        if str(handle["executor_name"]).lower() == "slurm" and handle.get("url") is None:
-            facts = slurm.status(handle["native_id"])
-        else:
-            from kkrunner.backends.contracts import job_status_from_facts
-            job = _attach_job(handle)
-            native = job.status
-            state = psij_state(native, attached=True)
-            facts = job_status_from_facts(state,
-                                          failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
-                                          return_code=getattr(native, "exit_code", None),
-                                          message=getattr(native, "message", None))
+        facts = job_status(handle, attached=True)
         return status_reply(
             facts.state, facts.return_code,
             failure_phase=facts.failure_phase, error=facts.message,

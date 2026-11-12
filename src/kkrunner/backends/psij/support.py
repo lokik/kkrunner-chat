@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from kkrunner.backends.contracts import JobFailurePhase
+from kkrunner.backends.contracts import JobFailurePhase, JobStatus
 from kkrunner.backends.support.messages import (
     status_reply,
 )
@@ -44,8 +44,12 @@ def psij_state(status, *, attached=False, return_code=None):
     return state
 
 
-def supports_recovery(options):
+def _local_slurm(options):
     return options.get("executor_name", "slurm").lower() == "slurm" and options.get("url") is None
+
+
+def supports_recovery(options):
+    return _local_slurm(options)
 
 
 def _load_psij():
@@ -67,6 +71,25 @@ def _attach_job(handle):
     job = psij.Job()
     executor.attach(job, str(handle["native_id"]))
     return job
+
+
+def job_status(handle, *, native=None, attached=False):
+    """Resolve the authoritative status for both STATUS and FOLLOW.
+
+    For local Slurm use scheduler facts. PSI/J attachment callbacks only
+    signal that terminal status may now be available; for other executors
+    PSI/J itself provides the status.
+    """
+    if _local_slurm(handle):
+        return slurm.status(str(handle["native_id"]))
+    if native is None:
+        native = _attach_job(handle).status
+    state = psij_state(native, attached=attached)
+    return JobStatus(
+        state, return_code=getattr(native, "exit_code", None),
+        failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
+        message=getattr(native, "message", None),
+    )
 
 
 async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
@@ -97,26 +120,16 @@ async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
     async def terminal():
         if not finished.done():
             return None
-        native = finished.result()
-        state = psij_state(native)
-        code = getattr(native, "exit_code", None)
-        # PSI/J can report terminal completion before its attached JobStatus
-        # carries an exit code. For local Slurm, recover the authoritative
-        # scheduler outcome rather than treating a successful job as code=None.
-        if (
-            code is None and state.is_terminal
-            and str(handle["executor_name"]).lower() == "slurm" and handle.get("url") is None
-        ):
-            scheduler = await asyncio.to_thread(slurm.status, str(handle["native_id"]))
-            if scheduler.state.is_terminal and scheduler.return_code is not None:
-                return status_reply(
-                    scheduler.state, scheduler.return_code,
-                    failure_phase=scheduler.failure_phase, error=scheduler.message,
-                )
+        facts = await asyncio.to_thread(
+            job_status, handle, native=finished.result(), attached=True,
+        )
+        if not facts.state.is_terminal:
+            # The callback is a wakeup, not an alternate status authority.
+            # The scheduler may still be updating its terminal record.
+            return None
         return status_reply(
-            state, code,
-            failure_phase=(JobFailurePhase.EXECUTION if state == RunState.FAILED else None),
-            error=getattr(native, "message", None),
+            facts.state, facts.return_code,
+            failure_phase=facts.failure_phase, error=facts.message,
         )
 
     try:

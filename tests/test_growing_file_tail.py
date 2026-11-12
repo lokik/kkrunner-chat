@@ -395,6 +395,36 @@ def test_continuous_output_yields_to_scheduler_completion(tmp_path):
     asyncio.run(check())
 
 
+def test_completed_wakeup_does_not_spin_while_confirmation_lags(tmp_path):
+    """A one-shot notification must not trigger a busy loop."""
+    import time
+
+    async def check():
+        wakeup = asyncio.get_running_loop().create_future()
+        wakeup.set_result(True)
+        queries = []
+
+        async def terminal():
+            queries.append(time.monotonic())
+            return "finished" if len(queries) == 2 else None
+
+        result = await asyncio.wait_for(
+            follow_growing_files(
+                {"out": tmp_path / "missing"},
+                lambda *_: None,
+                terminal,
+                poll_interval=0.03,
+                wakeup=wakeup,
+            ),
+            2,
+        )
+        assert result == "finished"
+        assert len(queries) == 2
+        assert queries[1] - queries[0] >= 0.01
+
+    asyncio.run(check())
+
+
 def test_callback_wakes_silent_file_follower_without_poll_timeout(tmp_path):
 
     async def check():
