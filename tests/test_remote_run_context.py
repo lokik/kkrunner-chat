@@ -16,7 +16,7 @@ class _Transport:
 
 def test_run_context_is_staging_policy_not_executor(tmp_path):
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=tmp_path, remote_root="/scratch/a", input_sync="always", output_sync="missing")
+    context = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/a", input_sync="always", output_sync="missing")
     )
     assert not hasattr(context, 'create_job')
     assert context.client is endpoint
@@ -27,8 +27,8 @@ def test_run_context_is_staging_policy_not_executor(tmp_path):
 
 def test_different_run_staging_policies_share_one_endpoint(tmp_path):
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    first = FileContext(StagingSpec(local_root=tmp_path, remote_root="/scratch/one"))
-    second = FileContext(StagingSpec(local_root=tmp_path, remote_root="/scratch/two"))
+    first = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/one"))
+    second = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/two"))
     assert first is not second
     assert first.client is endpoint
     assert second.client is endpoint
@@ -68,7 +68,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
         ),
     )
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=local, remote_root=remote))
+    context = FileContext(endpoint, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="test-manifest",
         state=RunState.RUNNING,
@@ -96,7 +96,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
 
 def test_absolute_remote_root_needs_no_remote_home_query(tmp_path, monkeypatch):
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=tmp_path, remote_root="/scratch/../work"))
+    context = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/../work"))
     calls = []
 
     async def remote_home():
@@ -124,7 +124,7 @@ def test_absolute_remote_root_needs_no_remote_home_query(tmp_path, monkeypatch):
 )
 def test_home_relative_remote_root_still_resolves_home_once(tmp_path, monkeypatch, root, expected):
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=tmp_path, remote_root=root))
+    context = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root=root))
     calls = []
 
     async def remote_home():
@@ -152,7 +152,7 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
     stdout = local / "stdout.txt"
     stderr = local / "stderr.txt"
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=local, remote_root=remote))
+    context = FileContext(endpoint, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="stream-open-failure",
         state=RunState.RUNNING,
@@ -196,7 +196,7 @@ def test_unmap_rejects_symlink_parent_outside_local_root(tmp_path):
     outside.mkdir()
     (root / "redirect").symlink_to(outside, target_is_directory=True)
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=root, remote_root="/remote"))
+    context = FileContext(endpoint, StagingSpec(local_root=root, remote_root="/remote"))
     with pytest.raises(ValueError, match="outside mapped root"):
         asyncio.run(context.unmap_path("/remote/redirect/output.dat"))
 
@@ -207,5 +207,5 @@ def test_unmap_preserves_internal_symlink_spelling(tmp_path):
     actual.mkdir(parents=True)
     (root / "alias").symlink_to(actual, target_is_directory=True)
     endpoint = EndpointClient(transport=SshTransport("cluster"))
-    context = FileContext(StagingSpec(local_root=root, remote_root="/remote"))
+    context = FileContext(endpoint, StagingSpec(local_root=root, remote_root="/remote"))
     assert asyncio.run(context.unmap_path("/remote/alias/output.dat")) == root / "alias" / "output.dat"

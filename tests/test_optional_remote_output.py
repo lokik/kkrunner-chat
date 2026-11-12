@@ -16,7 +16,7 @@ def _runner(tmp_path):
     remote = str(tmp_path / "remote-optional.out")
     manifest = FileManifest(outputs=(FileEntry(local_path=local, remote_path=remote, availability_state="pending"),))
     client = EndpointClient()
-    context = FileContext(StagingSpec())
+    context = FileContext(client, StagingSpec())
     runner = FileSession(
         context,
         ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path)),
