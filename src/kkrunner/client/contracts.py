@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from kkrunner.backends.contracts import JobRef, JobStatus
     from kkrunner.files.manifest import FileManifest
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
-    from kkrunner.runs.model import Execution
+    from kkrunner.runs.model import ExecutionMetadata
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class Operation:
 class JobAttachment:
     """Client-only snapshot for rebuilding a Job and its FileSession."""
 
-    execution: Execution
+    execution: ExecutionMetadata
     files: FileManifest
 
 
@@ -76,7 +76,7 @@ class RunningCommand(Protocol):
 class SubmissionContext:
     """Original submitted execution context, before its JobRef was known."""
 
-    execution: Execution
+    execution: ExecutionMetadata
 
 
 class BackendExecution(Protocol):

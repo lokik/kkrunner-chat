@@ -39,7 +39,7 @@ Execution and durable records
    CorruptRunRecord
    DuplicateSubmissionError
    HistoricalFileMismatchError
-   Execution
+   ExecutionMetadata
    WorkingDirectory
 
 Declared files

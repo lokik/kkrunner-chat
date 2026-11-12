@@ -27,7 +27,7 @@ An interrupted transport remains uncertain and is never retried as a new job.
 
 Transports live under ``kkrunner.client.transports``. ``LocalTransport`` and
 ``SshTransport`` combine immutable connection settings with the actual calls;
-there is no separate endpoint type. ``Execution.transport`` stores the transport,
+there is no separate endpoint type. ``ExecutionMetadata.transport`` stores the transport,
 whose dataclass fields serialize to JSON, including an explicit ``kind`` tag.
 ``Transport.to_dict()`` exposes the same connection settings.
 ``EndpointClient.from_config(transport, backend)`` reconstructs supported clients from

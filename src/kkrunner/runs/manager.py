@@ -24,8 +24,8 @@ from kkrunner.files.manifest import FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import submission_conflicts
-from kkrunner.runs.file_history import RunFileHistory, _now
-from kkrunner.runs.model import Execution, WorkingDirectory
+from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current, sync_result_files
+from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
 
@@ -48,6 +48,10 @@ _NO_ARTIFACTS_FAILURES = {
     FailurePhase.ARTIFACTS,
     FailurePhase.DOWNLOAD,
 }
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _timestamp(value):
@@ -74,7 +78,7 @@ class DuplicateSubmissionError(RuntimeError):
         )
 
 
-class RunManager(RunFileHistory):
+class RunManager:
     """Persist public run lifecycle without task-specific knowledge."""
 
     _default_override = ContextVar("kkrunner_default_run_manager", default=None)
@@ -111,6 +115,7 @@ class RunManager(RunFileHistory):
             raise ValueError("submitting_grace must be non-negative")
         self.store = store
         self.client_pool = client_pool if client_pool is not None else default_client_pool()
+        self._files = RunFiles(store=self.store, client_pool=self.client_pool)
         self._ack_lock = Lock()
         self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
@@ -122,6 +127,26 @@ class RunManager(RunFileHistory):
 
     def client_for(self, record):
         return self.client_pool.for_config(record.execution.transport, record.execution.backend)
+
+    def input_file_is_current(self, run):
+        """Whether the local primary input matches its captured version."""
+        return self._files.input_file_is_current(run)
+
+    def output_file_is_current(self, run):
+        """Whether the local primary output matches its captured version."""
+        return self._files.output_file_is_current(run)
+
+    def update_artifact_availability(self, record, path, state, message=None):
+        """Persist artifact availability independently of the run outcome."""
+        return self._files.update_artifact_availability(record, path, state, message)
+
+    def snapshot_file(self, run, file, *, destination=None):
+        """Copy a declared output or cache as currently visible, without updating history."""
+        return self._files.snapshot_file(run, file, destination=destination)
+
+    def retrieve_result_files(self, run):
+        """Restore missing results, verifying captured digests before replacement."""
+        return self._files.retrieve_result_files(run)
 
     def new_record(
         self,
@@ -146,9 +171,12 @@ class RunManager(RunFileHistory):
             updated_at=now,
             metadata={} if metadata is None else metadata,
             processing_required=processing_required,
-            execution=Execution(LocalTransport() if transport is None else transport,
-                                 WorkingDirectory(local, remote_directory),
-                                 submission_key=submission_key, backend=backend or BackendConfig()),
+            execution=ExecutionMetadata(
+                LocalTransport() if transport is None else transport,
+                WorkingDirectory(local, remote_directory),
+                submission_key=submission_key,
+                backend=backend or BackendConfig(),
+            ),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
         )
@@ -347,7 +375,7 @@ class RunManager(RunFileHistory):
                 )
                 if not conflicts:
                     if record.files is not None:
-                        self._sync_result_files(record.files.input_files)
+                        sync_result_files(record.files.input_files)
                     return self.transition(
                         record,
                         state=RunState.SUBMITTING,
@@ -467,7 +495,7 @@ class RunManager(RunFileHistory):
 
         if artifacts_available and result_files is not None:
             try:
-                result_files = self._capture_result_files(result_files)
+                result_files = capture_result_files(result_files)
             except OSError as exc:
                 state = RunState.FAILED
                 phase = FailurePhase.ARTIFACTS
@@ -572,7 +600,7 @@ class RunManager(RunFileHistory):
             manifest = latest.files if files is None else files
             if latest.files.captured_at is not None:
                 manifest = latest.files
-            manifest = self._capture_result_files(manifest)
+            manifest = capture_result_files(manifest)
             if manifest.failed_artifacts:
                 raise OSError(manifest.availability_message or "Output artifacts unavailable")
             if any(v.state() is not FileState.CURRENT for v in manifest.output_versions):
@@ -645,7 +673,7 @@ class RunManager(RunFileHistory):
             raise ValueError("Postprocessing retry requires captured artifacts")
         outcome = ExecutionOutcome(
             input_file=(
-                files.input_file if self._file_is_current(files, files.input_file, files.input_versions) else None
+                files.input_file if file_is_current(files, files.input_file, files.input_versions) else None
             ),
             output_file=files.output_file,
             error_file=None if files.stderr is None else files.stderr.local_path,
@@ -691,6 +719,7 @@ class RunManager(RunFileHistory):
     def create_run(
         self, client, spec, *, process_result=None, metadata=None,
         processing_required=None, callback=None, run_id=None, detached=None,
+        owned_resources=None,
     ):
         """Create one tracked Run through the configured client."""
         from kkrunner.runs.run import Run
@@ -719,7 +748,7 @@ class RunManager(RunFileHistory):
         )
         return Run(
             parts.job, client=client, manager=self, record=record,
-            process_result=process_result, callback=callback, parts=parts,
+            process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
         )
 
     def refresh(self, records=None):
@@ -765,7 +794,7 @@ class RunManager(RunFileHistory):
 
     def attach(
         self, run, *, process_result=None, client=None,
-        callback=None, output_listener=None,
+        callback=None, output_listener=None, owned_resources=None,
     ):
         """Open a tracked Run without resubmitting its backend job."""
         from kkrunner.runs.run import Run
@@ -788,7 +817,7 @@ class RunManager(RunFileHistory):
         try:
             attached = Run(
                 parts.job, client=client, manager=self, record=record,
-                process_result=process_result, callback=callback, parts=parts,
+                process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
             )
             attached.start()
         except BaseException:

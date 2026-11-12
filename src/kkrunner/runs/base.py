@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import codecs
 import os
 import warnings
 from concurrent.futures import Future
 from dataclasses import dataclass
-from threading import Event, Lock, Thread, current_thread
+from threading import Lock, Thread, current_thread
 from typing import Any, Optional, Sequence
 
 from kkrunner.backends.contracts import SubmissionNotStarted as SubmissionNotStarted
@@ -16,7 +15,7 @@ from kkrunner.client.staging import StagingSpec
 from kkrunner.execution import FailurePhase, MpiSpec, RunState
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.streams import _close_distinct
-from kkrunner.runs.model import Execution
+from kkrunner.runs.model import ExecutionMetadata
 
 
 def dispatch_cancellation(action):
@@ -190,139 +189,13 @@ class ExecutionResources:
         _close_distinct(resources, suppress_errors=suppress_errors)
 
 
-class ResourceOwnedRunner:
-    """Runner proxy owning resources and the public submit/cancel boundary."""
-
-    def __init__(self, runner, resources: ExecutionResources):
-        self._runner = runner
-        self._resources = resources
-        self._submission_lock = Lock()
-        self._cancel_requested = Event()
-        self._submitted = runner.state != RunState.NEW
-        self._cancel_dispatched = False
-
-    def __getattr__(self, name):
-        return getattr(self._runner, name)
-
-    @property
-    def result(self):
-        return self._runner.result
-
-    @property
-    def state(self):
-        if self._cancel_requested.is_set():
-            with self._submission_lock:
-                if not self._submitted:
-                    return RunState.CANCELLED
-        return self._runner.state
-
-    @property
-    def backend_id(self):
-        return self._runner.backend_id
-
-    @property
-    def exception(self):
-        return self._runner.exception
-
-    def _release_after_failure(self):
-        # submit() calls this while holding _submission_lock. Read backend
-        # state directly: our public state property takes that same lock when
-        # cancellation has arrived, and would deadlock the submission thread.
-        state = self._runner.state
-        if state == RunState.NEW or state.is_terminal:
-            self._resources.close(suppress_errors=True)
-
-    def _raise_if_cancelled_before_submit(self):
-        if not self._cancel_requested.is_set():
-            return
-        with self._submission_lock:
-            if not self._submitted:
-                raise asyncio.CancelledError("Run was cancelled before submission")
-
-    def submit(self):
-        with self._submission_lock:
-            if self._cancel_requested.is_set():
-                self._resources.close()
-                raise asyncio.CancelledError("Run was cancelled before submission")
-            try:
-                result = self._runner.submit()
-            except BaseException:
-                self._release_after_failure()
-                raise
-            self._submitted = True
-            cancel_after_submit = self._cancel_requested.is_set()
-        if cancel_after_submit:
-            self.cancel()
-        return result
-
-    def wait(self):
-        self._raise_if_cancelled_before_submit()
-        try:
-            result = self._runner.wait()
-        except BaseException:
-            self._release_after_failure()
-            raise
-        if self.state.is_terminal:
-            self._resources.close()
-        return result
-
-    def run(self):
-        self._raise_if_cancelled_before_submit()
-        if self.state == RunState.NEW:
-            self.submit()
-        return self.wait()
-
-    async def run_async(self):
-        self._raise_if_cancelled_before_submit()
-        if self.state == RunState.NEW:
-            self.submit()
-        try:
-            run_async = getattr(self._runner, "run_async", None)
-            if run_async is not None:
-                result = await run_async()
-            else:
-                result = await asyncio.to_thread(self._runner.wait)
-        except BaseException:
-            self._release_after_failure()
-            raise
-        if self.state.is_terminal:
-            self._resources.close()
-        return result
-
-    def cancel(self):
-        self._cancel_requested.set()
-        with self._submission_lock:
-            if not self._submitted:
-                self._resources.close()
-                return None
-            if self._cancel_dispatched:
-                return None
-            result = self._runner.cancel()
-            self._cancel_dispatched = True
-            return result
-
-    def close(self):
-        if self._resources.closed:
-            return
-        state = self.state
-        if state != RunState.NEW and not state.is_terminal:
-            raise RuntimeError(f"Cannot close execution resources while run is {state.value}")
-        self._resources.close()
-
-    def add_output_listener(self, callback):
-        return self._runner.add_output_listener(callback)
-
-    def add_output_error_listener(self, callback):
-        return self._runner.add_output_error_listener(callback)
-
-
 @dataclass(frozen=True)
 class RunStatus:
     """Client projection of execution facts, identity and file availability."""
 
     state: RunState
     backend_id: Optional[str] = None
-    execution: Optional[Execution] = None
+    execution: Optional[ExecutionMetadata] = None
     files: Optional[FileManifest] = None
     return_code: Optional[int] = None
     message: Optional[str] = None

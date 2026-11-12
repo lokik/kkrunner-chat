@@ -155,6 +155,8 @@ class Job:
 
     def submit(self):
         with self._lock:
+            if self._state == RunState.CANCELLED and self._thread is None:
+                raise SubmissionNotStarted("Job was cancelled before submission")
             if self._state != RunState.NEW or self._request is None:
                 raise RuntimeError("Job is not prepared for submission")
             self._state = RunState.SUBMITTING

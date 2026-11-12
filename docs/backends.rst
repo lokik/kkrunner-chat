@@ -26,8 +26,8 @@ instances; both also accept an already configured instance. They default to
 ``options`` and ``supports`` are computed when constructed; the backend class
 still supplies the static native operations and ``SshHelper``. Location never
 selects supervision.
-``Execution.transport`` is an immutable ``LocalTransport`` or ``SshTransport``
-combining connection settings with the operations that use them. ``Execution.backend`` separately stores a
+``ExecutionMetadata.transport`` is an immutable ``LocalTransport`` or ``SshTransport``
+combining connection settings with the operations that use them. ``ExecutionMetadata.backend`` separately stores a
 ``BackendConfig`` with an allowed name and immutable options. Neither field
 contains a Python class name.
 

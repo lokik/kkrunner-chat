@@ -1,9 +1,9 @@
 # Execution boundary and public contract
 
 KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, EndpointClient,
-RunState/FailurePhase, Execution/WorkingDirectory, RunRecord/RunStore,
+RunState/FailurePhase, ExecutionMetadata/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
-ExecutionResources and ResourceOwnedRunner. The root `kkrunner` package exports
+ExecutionResources. The root `kkrunner` package exports
 the small, backend-independent API; specialized types live in `kkrunner.runs`,
 `kkrunner.backends`, `kkrunner.client` and `kkrunner.files`.
 `RunManager` tracks runs in an explicit RunStore without requiring a project.
@@ -63,8 +63,9 @@ without exposing a durable record to a backend. An untracked or managed
 client `Run` owns execution completion, transfers and optional result processing.
 An SSH `Job` owns FOLLOW observation, while its separate
 `FileSession` owns staging, output persistence, synchronization and
-verification. The client creates these parts through `RunParts`; only
-`RunManager` mutates persistent records. A terminal backend fact must never
+verification. The client creates these parts through `RunParts`;
+`RunManager` owns persisted lifecycle transitions and `RunFiles` updates file
+availability in the same store. A terminal backend fact must never
 be published directly as a terminal client Run before these phases settle.
 
 Backend facts and durable submission/outcome receipts are not a second run
@@ -76,10 +77,15 @@ finishes; otherwise a later attach would lose authoritative backend completion. 
 fsync on POSIX; portable Windows directory durability is weaker as documented
 in `kkrunner.support.durability`. Invalid records raise errors, including during enumeration.
 
-Callers own the streams and resources they supply. To transfer their lifetime
-to a run, wrap its runner in ResourceOwnedRunner with ExecutionResources. The
-wrapper closes owned resources on completion and when submission is cancelled
-before launch. Borrowed handles retain their existing ownership semantics.
+Run accepts an explicit owned_resources=ExecutionResources(...) argument for
+additional application resources. It releases them after output finalization,
+postprocessing and durable completion, or when launch is definitively prevented.
+The same lifecycle handles cancellation during staging and submission; there is
+no outer runner proxy. FileSession retains ownership of its streams and closes
+them before postprocessing. Additional owned resources remain available through
+postprocessing and survive uncertain execution or pending processing. An unstarted
+Run can be closed explicitly; closing prevents later submission. The resource
+ownership is process-local and is not stored in RunRecord.
 Managed execution uses file paths on the execution host; the supervisor owns
 process lifetime beyond client detach.
 Temporary directories must remain available for backend execution and processing;
@@ -366,15 +372,22 @@ PSI/J client Job, or process-based local FOLLOW fallback.
 
 `EndpointClient(BackendClass, transport=...)` is the sole standard execution client.
 LocalTransport calls the selected static operation directly; SshTransport delivers
-its actual portable method or import-only helper. Execution.transport holds the
+its actual portable method or import-only helper. ExecutionMetadata.transport holds the
 immutable LocalTransport or SshTransport under client/transports; these serialize
-their connection settings directly. Execution.backend is a separate BackendConfig. Persistent custom transports without a supported reconstruction
+their connection settings directly. ExecutionMetadata.backend is a separate BackendConfig. Persistent custom transports without a supported reconstruction
 are rejected before creating a Run.
 
 Every Run has one FileSession. It stages files when needed, owns client streams,
 and finalizes the FileManifest after native execution. Local finalization does
 not copy files. Transfer indexes are derived from the staged manifest; temporary
 staging data is discarded when ownership moves to that manifest.
+
+RunManager composes a RunFiles service with the same RunStore and client pool.
+The service checks captured versions, reads live snapshots, restores missing
+historical files with digest verification, and persists artifact availability.
+It neither changes run lifecycle state nor calls back into RunManager. Stateless
+manifest capture and file checks are module functions in runs/files.py;
+RunManager retains its public file methods as explicit delegates.
 
 A direct execution receives an opaque session identity from its backend;
 the client Job never reads or serializes a PID. STATUS, REATTACH and RECOVER capabilities are independent

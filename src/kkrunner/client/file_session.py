@@ -653,8 +653,8 @@ class FileSession:
         if backend_id is None and self._remote_directory is None:
             return None
         from kkrunner.client.transports import require_persistable_transport
-        from kkrunner.runs.model import Execution
-        return Execution(
+        from kkrunner.runs.model import ExecutionMetadata
+        return ExecutionMetadata(
             require_persistable_transport(self.context.transport),
             self._working_directory(self._remote_directory),
             backend=self.context.client.backend_config,

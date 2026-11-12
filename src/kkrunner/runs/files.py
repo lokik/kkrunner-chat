@@ -1,8 +1,8 @@
-"""File history, artifact snapshots and result-file retrieval for tracked runs.
+"""File versions, snapshots and verified retrieval for tracked runs.
 
-The run lifecycle, backend scheduling and recovery remain in RunManager.
-File history uses the same RunStore and backend pool through its owner, without
-maintaining a second copy of run state or historical manifests.
+RunFiles receives the authoritative RunStore and client pool explicitly.
+It updates file availability, while RunManager owns run lifecycle transitions.
+Manifest capture and local file checks are independent of either service.
 """
 
 from __future__ import annotations
@@ -23,91 +23,98 @@ class HistoricalFileMismatchError(OSError):
     """Restored contents differ from a run's captured SHA-256 digest."""
 
 
-def _now():
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _unique(values):
     return tuple(dict.fromkeys(value for value in values if value is not None))
 
 
-class RunFileHistory:
-    """File-specific operations on the RunManager's authoritative RunStore."""
+def _concrete_result_files(manifests):
+    paths = []
+    seen = set()
+    for manifest in manifests:
+        for path in expand_local_candidates(manifest):
+            path = os.path.abspath(path)
+            if path in seen or not os.path.isfile(path):
+                continue
+            seen.add(path)
+            paths.append(path)
+    return tuple(paths)
 
-    @staticmethod
-    def _concrete_result_files(manifests):
-        paths = []
-        seen = set()
-        for manifest in manifests:
-            for path in expand_local_candidates(manifest):
-                path = os.path.abspath(path)
-                if path in seen or not os.path.isfile(path):
-                    continue
-                seen.add(path)
-                paths.append(path)
-        return tuple(paths)
 
-    @classmethod
-    def _result_files_snapshot(cls, manifests, *, sync=False):
-        versions = []
-        for path in cls._concrete_result_files(manifests):
-            if sync:
-                sync_file(path)
-            versions.append(FileVersion.capture(path, require_digest=True))
-        return tuple(sorted(versions, key=lambda value: os.fspath(value.path)))
-
-    @classmethod
-    def _sync_result_files(cls, manifests):
-        for path in cls._concrete_result_files(manifests):
+def _result_files_snapshot(manifests, *, sync=False):
+    versions = []
+    for path in _concrete_result_files(manifests):
+        if sync:
             sync_file(path)
+        versions.append(FileVersion.capture(path, require_digest=True))
+    return tuple(sorted(versions, key=lambda value: os.fspath(value.path)))
 
-    @classmethod
-    def _file_is_current(cls, result_files, path, versions):
-        if result_files is None or path is None:
-            return False
-        path = os.path.abspath(path)
-        if result_files.captured_at is None:
-            return os.path.isfile(path)
-        for version in versions:
-            if os.path.abspath(os.fspath(version.path)) == path:
-                return version.is_current()
+
+def sync_result_files(manifests):
+    """Flush existing files selected by manifest paths before submission."""
+    for path in _concrete_result_files(manifests):
+        sync_file(path)
+
+
+def file_is_current(result_files, path, versions):
+    """Check a local file against captured versions, or existence before capture."""
+    if result_files is None or path is None:
         return False
+    path = os.path.abspath(path)
+    if result_files.captured_at is None:
+        return os.path.isfile(path)
+    for version in versions:
+        if os.path.abspath(os.fspath(version.path)) == path:
+            return version.is_current()
+    return False
 
-    @staticmethod
-    def _missing_result_files(result_files):
-        if result_files is None:
-            return ()
-        if result_files.captured_at is not None:
-            return tuple(
-                os.fspath(item.path) for item in result_files.all_versions if item.state() is FileState.MISSING
-            )
 
-        missing = []
-        for manifest in result_files.manifests:
-            if has_file_magic(manifest):
-                if not expand_local_candidates(manifest):
-                    missing.append(manifest)
-            elif not os.path.isfile(manifest):
-                missing.append(manifest)
-        return _unique(missing)
-
-    def _capture_result_files(self, result_files):
-        if result_files is None or result_files.captured_at is not None:
-            return result_files
-        from kkrunner.files.availability import discover_local_files
-
-        captured = replace(
-            result_files,
-            input_versions=self._result_files_snapshot(result_files.input_files),
-            output_versions=self._result_files_snapshot(result_files.output_files, sync=True),
-            captured_at=_now(),
+def _missing_result_files(result_files):
+    if result_files is None:
+        return ()
+    if result_files.captured_at is not None:
+        return tuple(
+            os.fspath(item.path) for item in result_files.all_versions if item.state() is FileState.MISSING
         )
-        return discover_local_files(captured)
+
+    missing = []
+    for manifest in result_files.manifests:
+        if has_file_magic(manifest):
+            if not expand_local_candidates(manifest):
+                missing.append(manifest)
+        elif not os.path.isfile(manifest):
+            missing.append(manifest)
+    return _unique(missing)
+
+
+def capture_result_files(result_files):
+    """Capture local versions once, flushing outputs before recording their digests."""
+    if result_files is None or result_files.captured_at is not None:
+        return result_files
+    from kkrunner.files.availability import discover_local_files
+
+    captured = replace(
+        result_files,
+        input_versions=_result_files_snapshot(result_files.input_files),
+        output_versions=_result_files_snapshot(result_files.output_files, sync=True),
+        captured_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return discover_local_files(captured)
+
+
+class RunFiles:
+    """File operations on tracked runs, independent of lifecycle orchestration."""
+
+    def __init__(self, *, store, client_pool):
+        self.store = store
+        self.client_pool = client_pool
+
+    def _client_for(self, record):
+        return self.client_pool.for_config(record.execution.transport, record.execution.backend)
 
     def input_file_is_current(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
         result_files = record.files
-        return self._file_is_current(
+        return file_is_current(
             result_files,
             None if result_files is None else result_files.input_file,
             () if result_files is None else result_files.input_versions,
@@ -116,7 +123,7 @@ class RunFileHistory:
     def output_file_is_current(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
         result_files = record.files
-        return self._file_is_current(
+        return file_is_current(
             result_files,
             None if result_files is None else result_files.output_file,
             () if result_files is None else result_files.output_versions,
@@ -129,7 +136,7 @@ class RunFileHistory:
         def update(latest):
             return replace(
                 latest,
-                updated_at=_now(),
+                updated_at=datetime.now(timezone.utc).isoformat(),
                 files=latest.files.with_file_availability(path, state.value, message),
             )
 
@@ -160,18 +167,18 @@ class RunFileHistory:
         if record.execution.directory.remote is None:
             from kkrunner.files.snapshots import local_snapshot
             return local_snapshot(path, destination=destination)
-        return self.client_for(record).snapshot_file(record, path, destination=destination)
+        return self._client_for(record).snapshot_file(record, path, destination=destination)
 
     def retrieve_result_files(self, run):
         record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
-        missing = self._missing_result_files(record.files)
+        missing = _missing_result_files(record.files)
         if not missing or record.execution.backend_id is None:
             return record
 
-        client = self.client_for(record)
+        client = self._client_for(record)
         if not client.supports_result_file_retrieval:
             return record
 
@@ -213,7 +220,7 @@ class RunFileHistory:
                 if staged is not None:
                     staged.unlink(missing_ok=True)
             refreshed = self.store.get(record.id)
-            if path in self._missing_result_files(refreshed.files):
+            if path in _missing_result_files(refreshed.files):
                 record = self.update_artifact_availability(
                     refreshed,
                     path,

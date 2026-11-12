@@ -1,4 +1,4 @@
-"""Serializable execution identity and working directories."""
+"""Serializable execution metadata and working directories."""
 
 from __future__ import annotations
 
@@ -29,8 +29,11 @@ class WorkingDirectory:
 
 
 @dataclass(frozen=True)
-class Execution:
-    """Backend identity plus the directory in which the job executes."""
+class ExecutionMetadata:
+    """Immutable execution configuration, directories and submission identifiers.
+
+    A serializable component of a run, without live backend control or state.
+    """
 
     transport: Transport
     directory: WorkingDirectory
@@ -47,9 +50,9 @@ class Execution:
         if isinstance(self.backend, dict):
             object.__setattr__(self, "backend", BackendConfig(**self.backend))
         if not isinstance(self.backend, BackendConfig):
-            raise TypeError("Execution.backend must be a BackendConfig")
+            raise TypeError("ExecutionMetadata.backend must be a BackendConfig")
         if not isinstance(self.directory, WorkingDirectory):
-            raise TypeError("Execution.directory must be a WorkingDirectory")
+            raise TypeError("ExecutionMetadata.directory must be a WorkingDirectory")
         if self.submission_key is not None:
             if not isinstance(self.submission_key, str) or not self.submission_key:
                 raise ValueError("submission_key must be a nonempty string or None")
@@ -60,7 +63,7 @@ class Execution:
             object.__setattr__(self, "backend_id", identifier)
 
     def submitted(self, backend_id: str):
-        """Return the execution bound to its immutable backend identity."""
+        """Return metadata bound to its immutable backend identity."""
         submitted = replace(self, backend_id=backend_id)
         if self.backend_id is not None and self.backend_id != submitted.backend_id:
             raise ValueError("Cannot replace an assigned backend identity")

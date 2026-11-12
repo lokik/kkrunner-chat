@@ -47,9 +47,19 @@ outputs must exist after a successful command; declare optional outputs with
 :class:`~kkrunner.TaskFile` as described in :doc:`files`.
 
 ``Run.untracked()`` alone does not submit the program. Output paths are opened at
-submission. Supplied streams remain the caller's responsibility unless ownership
-is explicitly transferred with :class:`~kkrunner.runs.base.ExecutionResources` and
-:class:`~kkrunner.runs.base.ResourceOwnedRunner`.
+submission. To transfer additional resources to the Run, pass
+``owned_resources=ExecutionResources(...)`` to ``Run.create()``,
+``Run.untracked()`` or ``RunManager.create_run()``. Ownership transfers when
+the factory returns successfully; the caller cleans up if construction fails.
+Run releases these resources after execution, output synchronization and
+postprocessing have settled, including when nobody calls ``wait()``.
+An unstarted Run can release its resources with ``close()`` or ``cancel()``.
+Resources remain owned when observation ends with an uncertain outcome or
+postprocessing is still pending; ``close()`` rejects those states. Ownership
+is local to this Run object and is not serialized into a persistent record.
+After reconnection completes a tracked run, ``refresh()`` followed by ``close()``
+can release resources retained by the original observer.
+Supplied streams retain their existing ownership rules; see :doc:`files`.
 
 For progress notifications, register ``runner.add_output_listener(callback)``
 before submission. The callback receives ``(text, kind)``, where ``kind`` is
