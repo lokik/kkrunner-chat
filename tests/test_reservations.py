@@ -30,7 +30,8 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
         staging=StagingSpec(local_root=tmp_path),
     )
     first = manager.create_run(client, spec)
-    resolved = client.resolve_submission(first.record, spec)
+    directory, files = first._file_session.submission_footprint(first.record.files)
+    resolved = replace(first.record, execution=replace(first.record.execution, directory=directory), files=files)
     manager.reserve(resolved)
 
     second = manager.create_run(client, spec)
