@@ -1,144 +1,128 @@
-"""Endpoint persistence and reconstruction without application adapters."""
+"""Transport/backend persistence and reconstruction without application adapters."""
 
-from threading import Event
-
-from kkrunner import RunState, RunStore
-from kkrunner.client.endpoint import ExecutionEndpointConfig, describe_endpoint
-from kkrunner.client.pool import EndpointPool
-from kkrunner.backends import SupervisedBackend, PsijBackend
+from kkrunner import ExecutionSpec, RunState, RunStore
+from kkrunner.backends import PsijBackend, SupervisedBackend
+from kkrunner.backends.config import BackendConfig
+from kkrunner.client import RunClient, LocalTransport, SshTransport
 from kkrunner.client.contracts import JobAttachment
+from kkrunner.client.job import Job
+from kkrunner.client.pool import ClientPool
 from kkrunner.client.run_parts import RunParts
-from kkrunner.client import SshRunEndpoint, SshTransport
 from kkrunner.runs.manager import RunManager
+from kkrunner.runs.run import Run
 
 
-def test_run_store_roundtrips_endpoint(tmp_path):
+def test_run_store_roundtrips_transport_and_backend_independently(tmp_path):
     store = RunStore(tmp_path / "runs")
-    manager = RunManager(store, endpoint_pool=EndpointPool())
-    endpoint = ExecutionEndpointConfig(location="ssh", host="cluster", ssh_options=("-v",), ssh_zstd=True)
+    manager = RunManager(store, client_pool=ClientPool())
+    transport = SshTransport("cluster", options=("-v",), zstd=True)
+    backend = BackendConfig("psij", {"executor_name": "slurm"})
     record = manager.new_record(
-        directory=tmp_path,
-        endpoint=endpoint,
-        metadata={"example": {"task": "DOS".upper(), "dataset": "case"}},
-        processing_required=True,
-    )
-    stored = store.save(record)
-    loaded = store.get(stored.id)
-    assert loaded.execution.endpoint == endpoint
-    assert isinstance(loaded.execution.endpoint, ExecutionEndpointConfig)
-
-
-def test_manager_reconstructs_local_executor_after_restart(tmp_path):
-    store = RunStore(tmp_path / "runs")
-    endpoint = ExecutionEndpointConfig(location="local", backend="process")
-    first = RunManager(store, endpoint_pool=EndpointPool())
-    record = first.new_record(
-        directory=tmp_path,
-        endpoint=endpoint,
-        metadata={"example": {"task": "DOS".upper()}},
+        directory=tmp_path, transport=transport, backend=backend,
+        metadata={"example": {"task": "DOS", "dataset": "case"}},
         processing_required=True,
     )
     store.save(record)
-    restarted = RunManager(store, endpoint_pool=EndpointPool())
-    executor = restarted.endpoint_for(store.get(record.id))
-    assert isinstance(executor.backend, SupervisedBackend)
+    loaded = store.get(record.id)
+    assert loaded.execution.transport == transport
+    assert loaded.execution.backend == backend
+    assert isinstance(loaded.execution.transport, SshTransport)
 
 
-def test_attach_reconstructs_persisted_endpoint_without_task_reader(tmp_path):
+def test_manager_reconstructs_local_supervised_client_after_restart(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    manager = RunManager(store, client_pool=ClientPool())
+    record = manager.new_record(
+        directory=tmp_path, transport=LocalTransport(), backend=BackendConfig("process"),
+        metadata={"example": {"task": "DOS"}}, processing_required=True,
+    )
+    store.save(record)
+    restarted = RunManager(store, client_pool=ClientPool())
+    client = restarted.client_for(store.get(record.id))
+    assert isinstance(client, RunClient)
+    assert client.transport == LocalTransport()
+    assert isinstance(client.backend, SupervisedBackend)
 
-    class AttachedRunner:
-        def __init__(self, run):
-            self.backend_id = run.execution.backend_id
-            self.state = RunState.RUNNING
-            self.result = None
-            self.exception = None
-            self.failure_phase = None
-            self.failure_message = None
-            self._done = Event()
 
-        def start(self):
-            pass
-
-        def wait(self):
-            self._done.wait()
-
-        def cancel(self):
-            self.state = RunState.CANCELLED
-            self._done.set()
-
-        def add_output_listener(self, callback):
-            pass
-
-        def add_output_error_listener(self, callback):
-            pass
-
-    class ReconstructedExecutor:
+def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, monkeypatch):
+    class RecordingPool(ClientPool):
         def __init__(self):
-            self.calls = []
+            super().__init__()
+            self.lookups = []
 
-        def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-            self.calls.append((attachment, callback, output_listener))
-            return RunParts(AttachedRunner(attachment))
-
-    class RecordingPool:
-        def __init__(self, executor):
-            self.executor = executor
-            self.endpoints = []
-
-        def for_config(self, endpoint):
-            self.endpoints.append(endpoint)
-            return self.executor
-
-        def get(self, endpoint, factory):
-            return self.executor
+        def for_config(self, transport, backend):
+            self.lookups.append((transport, backend))
+            return super().for_config(transport, backend)
 
     store = RunStore(tmp_path / "runs")
-    endpoint = ExecutionEndpointConfig(location="ssh", host="cluster")
-    first = RunManager(store, endpoint_pool=EndpointPool())
-    record = first.new_record(
-        directory=tmp_path,
-        endpoint=endpoint,
-        metadata={"example": {"task": "DOS".upper()}},
-        processing_required=True,
+    transport = SshTransport("cluster")
+    backend = BackendConfig("process")
+    manager = RunManager(store, client_pool=ClientPool())
+    record = manager.new_record(
+        directory=tmp_path, transport=transport, backend=backend,
+        metadata={"example": {"task": "DOS"}}, processing_required=True,
     )
     store.save(record)
-    record = first.transition(record, state=RunState.RUNNING, execution=record.execution.submitted("42"))
-    executor = ReconstructedExecutor()
-    pool = RecordingPool(executor)
-    restarted = RunManager(store, endpoint_pool=pool)
-    attached = restarted.attach(record.id, process_result=lambda outcome: outcome)
-    assert pool.endpoints == [endpoint]
-    assert attached.endpoint is executor
-    assert executor.calls == [(JobAttachment(record.execution, record.files), None, None)]
-    attached.cancel()
-
-
-def test_pool_reconstructs_and_reuses_ssh_endpoint():
-    endpoint = ExecutionEndpointConfig(
-        location="ssh", backend="psij",
-        host="cluster",
-        ssh_options=("-p", "2222"),
-        ssh_zstd=True,
-        backend_options={"executor_name": "slurm", "url": "local://slurm"},
+    record = manager.transition(
+        record, state=RunState.RUNNING,
+        execution=record.execution.submitted("native-job-42"),
     )
-    pool = EndpointPool()
-    first = pool.for_config(endpoint)
-    second = pool.for_config(endpoint)
+
+    openings = []
+    starts = []
+
+    def fake_open(client, attachment, *, callback=None, output_listener=None):
+        openings.append((client, attachment, callback, output_listener))
+        spec = ExecutionSpec(argv=None, directory=str(tmp_path))
+        files = client.file_session(spec)
+        context = client._context(client, spec.staging)
+        job = Job(
+            context, spec, backend_id=attachment.execution.backend_id,
+            remote_directory=attachment.execution.directory.target,
+            status={"state": "running"},
+        )
+        return RunParts(job, files)
+
+    monkeypatch.setattr(RunClient, "open_run_parts", fake_open)
+    monkeypatch.setattr(Run, "start", lambda self: starts.append(self))
+    pool = RecordingPool()
+    restarted = RunManager(store, client_pool=pool)
+    attached = restarted.attach(record.id, process_result=lambda outcome: outcome)
+    try:
+        assert pool.lookups == [(transport, backend)]
+        assert attached.client is openings[0][0]
+        assert openings[0][1] == JobAttachment(record.execution, record.files)
+        assert openings[0][2:] == (None, None)
+        assert attached._job.backend_id == "native-job-42"
+        assert starts == [attached]
+    finally:
+        attached._parts.close()
+        pool.close()
+
+
+def test_pool_reconstructs_and_reuses_same_ssh_client():
+    transport = SshTransport("cluster", options=("-p", "2222"), zstd=True)
+    backend = BackendConfig("psij", {"executor_name": "slurm", "url": "local://slurm"})
+    pool = ClientPool()
+    first = pool.for_config(transport, backend)
+    second = pool.for_config(transport.to_dict(), {
+        "name": backend.name, "options": dict(backend.options),
+    })
     assert first is second
-    assert isinstance(first, SshRunEndpoint)
-    assert isinstance(first.transport, SshTransport)
-    assert first.transport.host == "cluster"
+    assert isinstance(first, RunClient)
+    assert first.transport == transport
     assert first.transport.options == ("-p", "2222")
     assert first.transport.zstd is True
     assert isinstance(first.backend, PsijBackend)
     assert dict(first.backend.options) == {"executor_name": "slurm", "url": "local://slurm"}
+    pool.close()
 
 
-def test_default_remote_psij_endpoint_survives_restart():
-    live = SshRunEndpoint(SshTransport("cluster"), backend=PsijBackend)
-    endpoint = describe_endpoint(live)
-    restored = EndpointPool().for_config(endpoint)
-    assert endpoint.backend == "psij"
-    assert isinstance(restored, SshRunEndpoint)
+def test_default_psij_configuration_survives_client_reconstruction():
+    live = RunClient(PsijBackend, transport=SshTransport("cluster"))
+    restored = ClientPool().for_config(live.transport.to_dict(), live.backend_config)
+    assert live.backend_config.name == "psij"
+    assert isinstance(restored, RunClient)
     assert isinstance(restored.backend, PsijBackend)
+    assert restored.transport == live.transport
     assert dict(restored.backend.options) == {"executor_name": "slurm", "url": None}
