@@ -66,8 +66,11 @@ def test_reject_nonportable_operation_before_submission():
     captured = 10
     def nested(value):
         return captured + value
-    with pytest.raises(TypeError):
-        Operation.standalone(nested)
+    # Portability is validated when preparing target source, not when creating
+    # the client-side operation descriptor (local calls need no source).
+    from kkrunner.client.transports.rpc import operation_command
+    with pytest.raises(TypeError, match="top-level Python function"):
+        operation_command(Operation.standalone(nested))
     from kkrunner.backends import SupervisedBackend
     with pytest.raises(ValueError, match="static backend operation"):
         Operation.for_backend(SupervisedBackend, "not-an-operation")
@@ -77,14 +80,17 @@ def test_reject_nonportable_operation_before_submission():
 def test_installed_backend_operation_receives_only_explicit_json_arguments(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
-        from kkrunner.backends.support.process import resolve_mpi_options
-        operation = Operation.standalone(resolve_mpi_options)
-        # Explicit launcher avoids dependence on target environment/MPI.
-        result = await endpoint.call(
-            operation,
-            {"required": True, "launcher": ["mpiexec", "--bind"], "process_count": 2},
-        )
-        assert list(result) == ["mpiexec", "--bind", "-np", "2"]
+        from kkrunner.backends import DirectBackend
+        operation = Operation.for_backend(DirectBackend, "prepare_mpi")
+        # The installed target operation has the same explicit JSON arguments
+        # locally and over SSH, without shipping a function's module globals.
+        request = {
+            "argv": [], "mpi_argv": [],
+            "mpi": {"required": True, "launcher": ["mpiexec", "--bind"], "process_count": 2},
+        }
+        result = await endpoint.call(operation, request, resolve_only=True)
+        assert result["launcher"] == ["mpiexec", "--bind", "-np", "2"]
+        assert result["request"]["argv"] == ["mpiexec", "--bind", "-np", "2"]
     asyncio.run(verify())
 
 
@@ -106,7 +112,6 @@ def test_ssh_loopback_streaming_operation_preserves_live_output():
 def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_path, monkeypatch):
     """The generated import-only helper must execute a real installed backend."""
     from kkrunner.backends import backend_class
-    from kkrunner.client.operations import BackendOperation
 
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "mailbox"))
     operation = Operation.for_backend(
@@ -122,7 +127,7 @@ def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_p
 
 def test_installed_class_helper_source_never_contains_supervisor_implementation():
     from kkrunner.backends import backend_class
-    from kkrunner.client.operations import BackendOperation, operation_command
+    from kkrunner.client.transports.rpc import operation_command
 
     op = Operation.for_backend(backend_class("process"), "submit")
     command = operation_command(op, python=(sys.executable,))
