@@ -162,7 +162,7 @@ def test_local_direct_preserves_client_streams_and_working_directory(tmp_path):
             stdout=output, stderr=error, control=asyncio.StreamReader(),
         )
 
-    assert asyncio.run(execute()) == 0
+    assert asyncio.run(execute())["state"] == "finished"
     assert output.getvalue() == b"local\n"
     assert (os.getcwd(), sys.stdout, sys.stderr, os.get_blocking(1), os.get_blocking(2)) == before
 
