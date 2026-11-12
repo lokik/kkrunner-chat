@@ -443,52 +443,40 @@ def test_direct_follow_without_stream_files_is_live_only(tmp_path, monkeypatch):
 
 
 def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monkeypatch):
-    from kkrunner.remote import service as remote_service
+    """The PSI/J target must protect caches and clear stale outputs before submit."""
+    from types import SimpleNamespace
 
     output = tmp_path / "previous.dat"
     kept = tmp_path / "cache.pot"
     output.write_bytes(b"stale")
     kept.write_bytes(b"restart")
-    from kkrunner.backends.psij.submission import PsijSubmission
-    from kkrunner.backends.psij import operations as scheduler_operations
 
-    class Runner(PsijSubmission):
-        def __init__(self, spec):
-            self.spec = spec
-            self._stdout_path = None
-            self._stderr_path = None
+    job = SimpleNamespace(
+        native_id="native-123",
+        status=SimpleNamespace(state=SimpleNamespace(name="ACTIVE"), exit_code=None),
+    )
+    submitted = []
 
-        backend_id = "native-123"
-        state = RunState.RUNNING
-        return_code = None
-        failure_phase = None
-        result = type("Result", (), {"output_file": None, "error_file": None})()
-
-        def submit_native(self):
-            self._prepare_io()
+    class Executor:
+        def submit(self, candidate):
+            assert candidate is job
             assert not output.exists()
             assert kept.read_bytes() == b"restart"
+            submitted.append(candidate)
 
-    class Backend:
-        backend = "slurm"
-        url = None
-
-        def create_native_job(self, spec, *, submission_key=None):
-            return Runner(spec)
-
-    monkeypatch.setattr(scheduler_operations, "_psij_executor", lambda options: Backend())
+    monkeypatch.setattr(scheduler_operations, "_create_executor", lambda options: (object(), Executor()))
+    monkeypatch.setattr(scheduler_operations, "prepare_job", lambda *args, **kwargs: job)
     request = {
-        "id": "d" * 32,
-        "executor": "psij",
+        "submission_key": "d" * 32,
+        "backend": "psij",
         "directory": str(tmp_path),
         "argv": ["true"],
         "output_files": [str(output)],
         "cache_files": [str(kept)],
-        "input_file": None,
-        "output_file": None,
     }
     response = remote_service.submit_remote(request)
     assert response["remote_id"]
+    assert submitted == [job]
 
 
 def test_scheduler_request_protects_remote_cache_wildcards(tmp_path):
