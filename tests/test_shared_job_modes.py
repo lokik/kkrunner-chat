@@ -6,14 +6,14 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
-from kkrunner.client import RunClient, LocalTransport, SshTransport
+from kkrunner.client import EndpointClient, LocalTransport, SshTransport
 from kkrunner.client.job import Job
 
 
 def test_direct_local_and_direct_remote_share_job_class(tmp_path):
     spec = ExecutionSpec((sys.executable, "-c", "print('ready')"), directory=str(tmp_path))
-    local = RunClient(DirectBackend).create_run_parts(spec).job
-    remote = RunClient(DirectBackend, transport=SshTransport("cluster")).create_run_parts(spec).job
+    local = EndpointClient(DirectBackend).create_run_parts(spec).job
+    remote = EndpointClient(DirectBackend, transport=SshTransport("cluster")).create_run_parts(spec).job
     assert type(local) is type(remote) is Job
     assert local.state is remote.state is RunState.NEW
     assert local.adapter.expose_pid
@@ -22,15 +22,15 @@ def test_direct_local_and_direct_remote_share_job_class(tmp_path):
 
 def test_supervised_local_and_remote_share_managed_job_class(tmp_path):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    local = RunClient(SupervisedBackend).create_run_parts(spec).job
-    remote = RunClient(SupervisedBackend, transport=SshTransport("cluster")).create_run_parts(spec).job
+    local = EndpointClient(SupervisedBackend).create_run_parts(spec).job
+    remote = EndpointClient(SupervisedBackend, transport=SshTransport("cluster")).create_run_parts(spec).job
     assert type(local) is type(remote) is Job
     assert not local._direct and not remote._direct
 
 
 def test_psij_uses_shared_job_without_constructing_native_scheduler(tmp_path):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
-    client = RunClient(PsijBackend, backend_options={"executor_name": "slurm"})
+    client = EndpointClient(PsijBackend, backend_options={"executor_name": "slurm"})
     job = client.create_run_parts(spec, submission_key="key").job
     assert type(job) is Job
     assert isinstance(job.context.backend, PsijBackend)
@@ -40,7 +40,7 @@ def test_psij_uses_shared_job_without_constructing_native_scheduler(tmp_path):
 
 def test_direct_cancel_before_submit_is_final(tmp_path):
     spec = ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path))
-    job = RunClient(DirectBackend).create_run_parts(spec).job
+    job = EndpointClient(DirectBackend).create_run_parts(spec).job
     job.cancel()
     assert job.state is RunState.CANCELLED
     assert job.wait().return_code is None
@@ -51,7 +51,7 @@ def test_direct_cancel_before_submit_is_final(tmp_path):
 def test_direct_failed_launch_retains_launch_failure(tmp_path):
     from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
     spec = ExecutionSpec(("this-command-does-not-exist-kkrunner",), directory=str(tmp_path))
-    job = RunClient(DirectBackend).create_run_parts(spec).job
+    job = EndpointClient(DirectBackend).create_run_parts(spec).job
     with pytest.raises(SubmissionNotStarted):
         job.submit()
     assert job.state is RunState.FAILED

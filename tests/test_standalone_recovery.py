@@ -1,6 +1,6 @@
 """Behavioral contracts introduced by the extraction, without application imports."""
 
-from kkrunner.client import RunClient, StagingSpec
+from kkrunner.client import EndpointClient, StagingSpec
 import json
 import subprocess
 import sys
@@ -129,7 +129,7 @@ def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        RunClient(SupervisedBackend),
+        EndpointClient(SupervisedBackend),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -146,7 +146,7 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        RunClient(SupervisedBackend),
+        EndpointClient(SupervisedBackend),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -167,7 +167,7 @@ def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypat
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        RunClient(SupervisedBackend),
+        EndpointClient(SupervisedBackend),
         ExecutionSpec(
             [sys.executable, "-c", "import time; time.sleep(.4); print(42)"],
             directory=tmp_path,
@@ -245,7 +245,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             return await super().get_file(source, destination)
 
     transport = Transport()
-    executor = RunClient(SupervisedBackend, transport=transport)
+    executor = EndpointClient(SupervisedBackend, transport=transport)
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
         executor,
