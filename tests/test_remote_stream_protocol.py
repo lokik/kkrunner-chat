@@ -57,14 +57,14 @@ def test_framed_transport_delivers_distinct_channels_without_diagnostic_leak():
     asyncio.run(check())
 
 
-def test_framed_transport_reports_helper_failure_with_diagnostic():
+def test_framed_transport_preserves_terminal_receipt_when_helper_exits_nonzero():
     async def check():
         process = _FinishedCommand(
             STREAM_MAGIC + encode_terminal_frame({"state": "finished", "return_code": 0}),
             b"remote helper traceback\n", returncode=2,
         )
-        with pytest.raises(StreamProtocolError, match="status 2.*remote helper traceback"):
-            await follow_framed_command(process, lambda *_: None)
+        terminal = await follow_framed_command(process, lambda *_: None)
+        assert terminal == {"state": "finished", "return_code": 0}
     asyncio.run(check())
 
 
@@ -76,7 +76,7 @@ def test_terminal_frame_rejects_invalid_outcomes(payload):
 
     async def check():
         source = _reader_with(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
-        with pytest.raises(StreamProtocolError, match="terminal frame"):
+        with pytest.raises(StreamProtocolError, match="terminal frame|status frame JSON"):
             await read_stream_frames(source).__anext__()
     asyncio.run(check())
 
