@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.client.transport import LocalTransport
+from kkrunner.client.transports import LocalTransport
 from kkrunner.runs.base import SubmissionNotStarted
 
 from .test_remote import _processed_run, _text_run

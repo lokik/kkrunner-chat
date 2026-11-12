@@ -5,36 +5,35 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.runs import DuplicateSubmissionError, LaunchSpec
+from kkrunner.runs import DuplicateSubmissionError
 from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.client.endpoint import ExecutionEndpointConfig
-from kkrunner.files import FileEntry, FileManifest
-from kkrunner.client import SshRunEndpoint, SshTransport
+from kkrunner.files import FileEntry, FileManifest, FileMapping
+from kkrunner.client import RunClient, SshTransport, StagingSpec
 from kkrunner.runs.conflicts import submission_conflicts
 
 
-def test_default_remote_root_resolves_before_reservation_without_staging(tmp_path):
+def test_default_remote_root_resolves_before_reservation_without_staging(tmp_path, monkeypatch):
     calls = []
 
-    class Transport(SshTransport):
-        async def run(self, command, **kwargs):
-            calls.append(command)
-            assert command == ("sh", "-c", 'printf "%s" "$HOME"')
-            return SimpleNamespace(stdout=b"/home/tester\n")
+    async def fake_run(self, command, **kwargs):
+        calls.append(command)
+        assert command == ("sh", "-c", 'printf "%s" "$HOME"')
+        return SimpleNamespace(stdout=b"/home/tester\n")
 
-    executor = SshRunEndpoint(Transport("cluster"))
+    monkeypatch.setattr(SshTransport, "run", fake_run)
+    client = RunClient(transport=SshTransport("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     spec = ExecutionSpec(
         ["unused"],
         directory=tmp_path / "case",
         output_file=tmp_path / "case/stdout",
-        launch=LaunchSpec(local_root=tmp_path),
+        staging=StagingSpec(local_root=tmp_path),
     )
-    first = manager.create_run(executor, spec)
-    resolved = executor.resolve_submission(first.record, spec)
+    first = manager.create_run(client, spec)
+    resolved = client.resolve_submission(first.record, spec)
     manager.reserve(resolved)
 
-    second = manager.create_run(executor, spec)
+    second = manager.create_run(client, spec)
     with pytest.raises(DuplicateSubmissionError):
         second.submit()
     assert resolved.execution.directory.remote == "/home/tester/case"
@@ -48,24 +47,27 @@ def test_explicit_shared_filesystem_connects_different_host_aliases(tmp_path):
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/shared/work",
-        endpoint=ExecutionEndpointConfig(location="ssh", host="host-a", filesystem_id="shared"),
-        files=FileManifest(stdout=FileEntry(str(tmp_path / "one/out"), "/shared/work/out")),
+        transport=SshTransport("host-a"),
+        files=FileManifest(
+            stdout=FileEntry(str(tmp_path / "one/out"), "/shared/work/out"),
+            mapping=FileMapping(str(tmp_path / "one"), "/shared/work", filesystem_id="shared"),
+        ),
     )
     second = manager.new_record(
         directory=tmp_path / "two",
         remote_directory="/shared/work",
-        endpoint=ExecutionEndpointConfig(location="ssh", host="host-b", filesystem_id="shared"),
-        files=FileManifest(stdout=FileEntry(str(tmp_path / "two/out"), "/shared/work/out")),
+        transport=SshTransport("host-b"),
+        files=FileManifest(
+            stdout=FileEntry(str(tmp_path / "two/out"), "/shared/work/out"),
+            mapping=FileMapping(str(tmp_path / "two"), "/shared/work", filesystem_id="shared"),
+        ),
     )
     assert submission_conflicts(first, second)
     other = replace(
         second,
-        execution=replace(
-            second.execution,
-            endpoint=replace(
-                second.execution.endpoint,
-                filesystem_id="separate",
-            ),
+        files=replace(
+            second.files,
+            mapping=replace(second.files.mapping, filesystem_id="separate"),
         ),
     )
     assert not submission_conflicts(first, other)
