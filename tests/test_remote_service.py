@@ -796,7 +796,7 @@ def test_remote_submit_json_setup_failure_cleans_pipes_and_directory(tmp_path, m
     monkeypatch.setattr(
         process_operations.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("supervisor must not start")
     )
-    with pytest.raises(TypeError, match="invalid worker specification"):
+    with pytest.raises(SubmissionNotStarted, match="invalid worker specification"):
         process_operations.SupervisedBackend.submit({"argv": ("never-executed",), "directory": str(tmp_path), "detached": True})
     assert not directory.exists()
     assert len(created) == 4
