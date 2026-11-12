@@ -1,6 +1,17 @@
 """Contracts shared by local project and PSI/J artifact discovery."""
 
-from kkrunner.files.availability import discover_local_files
+from kkrunner.files.availability import discover_local_files, prepare_target_outputs
+
+
+def _prepare_outputs(outputs=(), *, protected_paths=(), stdout=None):
+    """Invoke the single target-side operation used by every backend."""
+    return prepare_target_outputs({
+        "output_file": None if stdout is None else str(stdout),
+        "error_file": None,
+        "output_files": [str(p) for p in outputs],
+        "cache_files": [str(p) for p in protected_paths],
+        "input_files": [], "stdin": None, "input_file": None,
+    })
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest
 
 
@@ -42,7 +53,6 @@ def test_local_supervisor_discovery_does_not_override_stream_publication(tmp_pat
 
 
 def test_clear_outputs_preserves_inputs_and_cache(tmp_path):
-    from kkrunner.files.availability import clear_declared_outputs
 
     input_file = tmp_path / "input.dat"
     cache_file = tmp_path / "cache.dat"
@@ -50,7 +60,7 @@ def test_clear_outputs_preserves_inputs_and_cache(tmp_path):
     other = tmp_path / "result-2.dat"
     for path in (input_file, cache_file, output_file, other):
         path.write_text("old")
-    clear_declared_outputs((str(tmp_path / "*.dat"),), protected=(input_file, cache_file))
+    _prepare_outputs((tmp_path / "*.dat",), protected_paths=(input_file, cache_file))
     assert input_file.read_text() == "old"
     assert cache_file.read_text() == "old"
     assert not output_file.exists()
@@ -58,13 +68,12 @@ def test_clear_outputs_preserves_inputs_and_cache(tmp_path):
 
 
 def test_clear_outputs_preserves_wildcard_cache_matches(tmp_path):
-    from kkrunner.files.availability import clear_declared_outputs
 
     cache = tmp_path / "restart-1.pot"
     output = tmp_path / "result-1.pot"
     cache.write_bytes(b"restart state")
     output.write_bytes(b"stale result")
-    clear_declared_outputs([str(tmp_path / "*.pot")], protected=[str(tmp_path / "restart-*.pot")])
+    _prepare_outputs((tmp_path / "*.pot",), protected_paths=(tmp_path / "restart-*.pot",))
     assert cache.read_bytes() == b"restart state"
     assert not output.exists()
 
@@ -86,7 +95,6 @@ def test_local_wildcard_discovery_uses_same_glob_semantics_as_transport(tmp_path
 
 
 def test_cleanup_unlinks_symlink_without_deleting_its_target(tmp_path):
-    from kkrunner.files.availability import clear_declared_outputs
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -96,7 +104,7 @@ def test_cleanup_unlinks_symlink_without_deleting_its_target(tmp_path):
     working.mkdir()
     link = working / "result.dat"
     link.symlink_to(original)
-    clear_declared_outputs((str(working / "*.dat"),))
+    _prepare_outputs((working / "*.dat",))
     assert not link.is_symlink()
     assert original.read_text() == "important"
 
@@ -104,35 +112,32 @@ def test_cleanup_unlinks_symlink_without_deleting_its_target(tmp_path):
 def test_protected_output_stream_matches_cache_glob(tmp_path):
     import pytest
 
-    from kkrunner.files.availability import validate_output_collisions
 
     protected = tmp_path / "restart-1.pot"
     protected.write_text("density")
-    with pytest.raises(ValueError, match="overlaps protected"):
-        validate_output_collisions((protected,), protected=(tmp_path / "restart-*.pot",))
+    with pytest.raises(ValueError, match="conflicts with input/cache"):
+        _prepare_outputs(protected_paths=(tmp_path / "restart-*.pot",), stdout=protected)
 
 
 def test_explicit_output_collision_preserves_protected_file(tmp_path):
     import pytest
 
-    from kkrunner.files.availability import validate_output_collisions
 
     input_path = tmp_path / "input.dat"
     input_path.write_bytes(b"input")
-    with pytest.raises(ValueError, match="overlaps protected"):
-        validate_output_collisions((input_path,), protected=(input_path,))
+    with pytest.raises(ValueError, match="conflicts with input/cache"):
+        _prepare_outputs(protected_paths=(input_path,), stdout=input_path)
     assert input_path.read_bytes() == b"input"
 
 
 def test_output_pattern_can_skip_protected_files(tmp_path):
-    from kkrunner.files.availability import clear_declared_outputs, validate_output_collisions
 
     keep = tmp_path / "restart.pot"
     drop = tmp_path / "old.pot"
     keep.write_text("restart")
     drop.write_text("old")
-    validate_output_collisions((tmp_path / "*.pot",), protected=(keep,))
-    clear_declared_outputs((tmp_path / "*.pot",), protected=(keep,))
+    _prepare_outputs((tmp_path / "*.pot",), protected_paths=(keep,))
+    _prepare_outputs((tmp_path / "*.pot",), protected_paths=(keep,))
     assert keep.read_text() == "restart"
     assert not drop.exists()
 
@@ -140,14 +145,13 @@ def test_output_pattern_can_skip_protected_files(tmp_path):
 def test_protected_output_rejects_symlink_alias(tmp_path):
     import pytest
 
-    from kkrunner.files.availability import validate_output_collisions
 
     source = tmp_path / "source.dat"
     source.write_bytes(b"density")
     alias = tmp_path / "alias.out"
     alias.symlink_to(source)
-    with pytest.raises(ValueError, match="overlaps protected"):
-        validate_output_collisions((alias,), protected=(source,))
+    with pytest.raises(ValueError, match="conflicts with input/cache"):
+        _prepare_outputs((alias,), protected_paths=(source,))
     assert source.read_bytes() == b"density"
 
 
@@ -156,13 +160,12 @@ def test_protected_output_rejects_hardlink_alias(tmp_path):
 
     import pytest
 
-    from kkrunner.files.availability import validate_output_collisions
 
     source = tmp_path / "source.dat"
     source.write_bytes(b"density")
     alias = tmp_path / "alias.out"
     os.link(source, alias)
-    with pytest.raises(ValueError, match="overlaps protected"):
+    with pytest.raises(ValueError, match="conflicts with input/cache"):
         validate_output_collisions((alias,), protected=(source,))
     assert source.read_bytes() == b"density"
 
@@ -172,8 +175,7 @@ def test_collision_expands_protected_wildcard_once_for_multiple_outputs(tmp_path
 
     import pytest
 
-    from kkrunner.files import availability as file_availability
-
+    
     protected_file = tmp_path / "restart-1.pot"
     protected_file.write_bytes(b"restart")
     harmless_output = tmp_path / "output-1.dat"
@@ -181,15 +183,16 @@ def test_collision_expands_protected_wildcard_once_for_multiple_outputs(tmp_path
     alias_output = tmp_path / "output-2.dat"
     os.link(protected_file, alias_output)
     pattern = tmp_path / "restart-*.pot"
-    real_expand = file_availability.expand_local_candidates
+    import glob
+    real_expand = glob.glob
     expanded = []
 
-    def observe_expand(path):
+    def observe_expand(path, *args, **kwargs):
         expanded.append(os.fspath(path))
-        return real_expand(path)
+        return real_expand(path, *args, **kwargs)
 
-    monkeypatch.setattr(file_availability, "expand_local_candidates", observe_expand)
-    with pytest.raises(ValueError, match="overlaps protected"):
-        file_availability.validate_output_collisions((harmless_output, alias_output), protected=(pattern,))
+    monkeypatch.setattr(glob, "glob", observe_expand)
+    with pytest.raises(ValueError, match="conflicts with input/cache"):
+        _prepare_outputs((harmless_output, alias_output), protected_paths=(pattern,))
     assert expanded == [os.path.abspath(pattern)]
     assert protected_file.read_bytes() == b"restart"
