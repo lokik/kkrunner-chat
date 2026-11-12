@@ -7,7 +7,7 @@ import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import RunClient, StagingSpec, SshTransport, LocalTransport
+from kkrunner.client import EndpointClient, StagingSpec, SshTransport, LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
@@ -50,7 +50,7 @@ def _processed_run(executor, spec):
 
 def _executor(transport=None, **kwargs):
     backend = kwargs.pop("backend", SupervisedBackend)
-    return RunClient(backend, transport=transport or _OperationLoopbackTransport(), **kwargs)
+    return EndpointClient(backend, transport=transport or _OperationLoopbackTransport(), **kwargs)
 
 
 def _launch(local_root, remote_root, *, input_files=FileSyncPolicy.CHANGED, output_files=FileSyncPolicy.CHANGED):
@@ -528,7 +528,7 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         output_file=None,
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    executor = RunClient(SupervisedBackend, transport=_OperationLoopbackTransport())
+    executor = EndpointClient(SupervisedBackend, transport=_OperationLoopbackTransport())
     runner = Run.untracked(executor, spec)
 
     async def fail_after_preparation(_request):
