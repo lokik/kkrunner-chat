@@ -75,12 +75,15 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
         openings.append((client, attachment, callback, output_listener))
         spec = ExecutionSpec(argv=None, directory=str(tmp_path))
         files = client.file_session(spec)
-        context = client._context(client, spec.staging)
-        job = Job(
-            context, spec, backend_id=attachment.execution.backend_id,
-            remote_directory=attachment.execution.directory.target,
+        from kkrunner.backends.contracts import JobRef
+        from kkrunner.client.backend_execution import bind_execution
+
+        binding = bind_execution(
+            client.backend, client.transport,
+            ref=JobRef(client.backend.name, attachment.execution.backend_id),
             status={"state": "running"},
         )
+        job = Job(binding, spec)
         return RunParts(job, files)
 
     monkeypatch.setattr(EndpointClient, "open_run_parts", fake_open)
