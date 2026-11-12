@@ -15,7 +15,7 @@ class FileAccess:
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
         self.client._validate_run(run)
-        context = self.client._context(self.client, self.client._launch_from_manifest(run.files))
+        context = self.client._context(self.client, self.client._staging_from_manifest(run.files))
         _relative_local_path(file, context.local_root)
         entry = next(
             (item for item in (
@@ -45,7 +45,7 @@ class FileAccess:
 
     async def _fetch_result_files(self, run, files, *, destinations=None):
         self.client._validate_run(run)
-        context = self.client._context(self.client, self.client._launch_from_manifest(run.files))
+        context = self.client._context(self.client, self.client._staging_from_manifest(run.files))
         remote_root = await context._resolved_remote_root()
         destinations = (
             {}
