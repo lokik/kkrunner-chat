@@ -1,13 +1,13 @@
 """Byte-output decoding and delivery for local, remote and PSI/J execution."""
 
-import asyncio
-from io import BytesIO
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from kkrunner.client.job import Job
+from kkrunner.client.backend_execution import DirectExecution
+from kkrunner.client.transports import LocalTransport
+from kkrunner.backends import DirectBackend
+from kkrunner.runs.base import ExecutionSpec
 from kkrunner.runs.base import OutputObservers
 
 
@@ -28,47 +28,26 @@ def test_emit_bytes_decodes_nonempty_chunks(data, expected):
 
 
 @pytest.mark.parametrize("kind", ("out", "err"))
-def test_local_forward_output_persists_and_observes_bytes(kind):
-    received = []
-    output = BytesIO()
-    def collect_output(data, stream):
-        if stream == "out":
-            output.write(data)
-        return None
-
-    from kkrunner.runs.base import ExecutionSpec
-    runner = Job.direct(
-        ExecutionSpec(("true",), output_file=output),
-        adapter=SimpleNamespace(output=collect_output),
+def test_observed_output_delivers_bytes_and_preserves_raw_sink(kind):
+    received, written = [], []
+    job = Job(DirectExecution(DirectBackend(), LocalTransport()), ExecutionSpec(("true",)))
+    job.configure_observation(
+        stream_offsets={"out": 0, "err": 0},
+        stream_writer=lambda data, stream: written.append((data, stream)),
+        stream_paths=(None, None),
     )
-    runner.add_output_listener(lambda text, stream: received.append((text, stream)))
-    runner._forward_output(b"message:\xff", kind)
-    runner._forward_output(b"", kind)
-    assert output.getvalue() == (b"message:\xff" if kind == "out" else b"")
+    job.add_output_listener(lambda text, stream: received.append((text, stream)))
+    job._observed_output(b"message:\\xff", kind)
+    job._observed_output(b"", kind)
+    assert written == [(b"message:\\xff", kind), (b"", kind)]
     assert received == [("message:�", kind)]
 
 
-def test_remote_pump_delivers_bytes_without_runner_decoder():
-    received, written = ([], [])
-    runner = object.__new__(Job)
-    runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
-    runner._stream_writer = lambda data, kind: written.append((data, kind))
-    source = SimpleNamespace(read=AsyncMock(side_effect=[b"remote:\xff", b""]))
-    asyncio.run(runner._pump(source, "out"))
-    assert written == [(b"remote:\xff", "out")]
-    assert received == [("remote:�", "out")]
-
-
-
-
-
-def test_shared_job_decodes_bytes_when_no_client_file_sink():
+def test_observed_output_without_file_sink_decodes_bytes():
     received = []
-    runner = object.__new__(Job)
-    runner._output_observers = OutputObservers(lambda text, kind: received.append((text, kind)))
-    runner._stream_writer = None
-    source = SimpleNamespace(read=AsyncMock(side_effect=["výstup".encode("utf8"), b""]))
-    asyncio.run(runner._pump(source, "out"))
+    job = Job(DirectExecution(DirectBackend(), LocalTransport()), ExecutionSpec(("true",)))
+    job.add_output_listener(lambda text, kind: received.append((text, kind)))
+    job._observed_output("výstup".encode("utf8"), "out")
     assert received == [("výstup", "out")]
 
 
