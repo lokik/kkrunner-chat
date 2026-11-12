@@ -239,7 +239,10 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     # Use a reconstructable, supported SSH transport even though the test
     # executes its remote shell locally. Custom transport subclasses cannot be
     # reattached from durable RunRecords.
-    transport = SshTransport(host="-c", ssh="sh", python_command=(sys.executable,))
+    ssh_stub = tmp_path / "ssh-loopback"
+    ssh_stub.write_text('#!/bin/sh\nshift\nexec /bin/sh -c "$1"\n')
+    ssh_stub.chmod(0o755)
+    transport = SshTransport(host="loopback", ssh=str(ssh_stub), python_command=(sys.executable,))
     original_get_file = SshTransport.get_file
     fail_download = True
 
