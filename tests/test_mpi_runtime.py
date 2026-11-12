@@ -1,17 +1,15 @@
-import asyncio
+"""MPI intent stays in ExecutionSpec; launchers resolve only on the target."""
+
 import json
-import warnings
-from dataclasses import asdict
+import shutil
+from dataclasses import asdict, replace
 
 import pytest
 
 from kkrunner import ExecutionSpec
+from kkrunner.execution import MpiSpec
 from kkrunner.backends.support import process as mpi_runtime
-import shutil
-from kkrunner.backends.support.process import materialize_local_spec
-from kkrunner.client.ssh import SshRunEndpoint
-from kkrunner.backends import SupervisedBackend
-from kkrunner.runs.base import LaunchSpec, MpiNotFoundWarning, MpiSpec
+from kkrunner.client.execution_request import execution_request
 
 
 @pytest.mark.parametrize(
@@ -39,191 +37,112 @@ def test_mpi_launcher_selection_and_probe_order(monkeypatch, slurm, available, e
 
 
 def test_mpi_spec_distinguishes_required_auto_and_explicit_launchers():
-    required = LaunchSpec.from_mpi(True).mpi
-    automatic = LaunchSpec.from_mpi("auto").mpi
-    explicit = LaunchSpec.from_mpi(("custom-mpi", "--bind")).mpi
-    assert required.required is True
-    assert required.autodetect is True
-    assert required.allows_serial_fallback is False
-    assert automatic.required is False
-    assert automatic.autodetect is True
-    assert automatic.allows_serial_fallback is True
-    assert explicit.required is True
-    assert explicit.autodetect is False
+    required = MpiSpec.from_value(True)
+    automatic = MpiSpec.from_value("auto")
+    explicit = MpiSpec.from_value(("custom-mpi", "--bind"))
+    assert required.required and required.autodetect
+    assert not required.allows_serial_fallback
+    assert automatic.autodetect and not automatic.required
+    assert automatic.allows_serial_fallback
+    assert explicit.required and not explicit.autodetect
     assert explicit.launcher == ("custom-mpi", "--bind")
 
 
-def test_launch_spec_json_round_trip_uses_nested_mpi_spec():
-    launch = LaunchSpec.from_mpi(4)
-    encoded = json.loads(json.dumps(asdict(launch)))
-    assert encoded["mpi"] == {"required": True, "autodetect": True, "launcher": [], "process_count": 4, "warning": True}
-    assert "process_count" not in {key for key in encoded if key != "mpi"}
-    assert "mpi_warning" not in encoded
-    assert LaunchSpec(**encoded) == launch
+def test_mpi_spec_json_roundtrip_and_immutable_execution_spec():
+    mpi = MpiSpec.from_value(4)
+    encoded = json.loads(json.dumps(asdict(mpi)))
+    assert encoded == {
+        "required": True, "autodetect": True, "launcher": [],
+        "process_count": 4, "warning": True,
+    }
+    assert MpiSpec(**encoded) == mpi
+    spec = ExecutionSpec(("serial",), mpi_argv=("parallel",), mpi=mpi)
+    before = asdict(spec)
+    request = execution_request(spec)
+    assert request["mpi"] == encoded
+    assert request["mpi_argv"] == ["parallel"]
+    assert asdict(spec) == before
 
 
 def test_auto_disables_mpi_when_only_one_cpu_is_available(monkeypatch):
     monkeypatch.setattr(mpi_runtime.os, "sched_getaffinity", lambda _pid: {3})
-
-    def must_not_probe(_command):
-        raise AssertionError("single-CPU auto mode must not probe MPI launchers")
-
-    monkeypatch.setattr(__import__("shutil"), "which", must_not_probe)
-    spec = LaunchSpec.from_mpi("auto").mpi
-    assert mpi_runtime.resolve_mpi_command(spec) is None
+    monkeypatch.setattr(shutil, "which", lambda _: pytest.fail("single CPU must not probe MPI"))
+    assert mpi_runtime.resolve_mpi_command(MpiSpec.from_value("auto")) is None
 
 
-@pytest.mark.parametrize("affinity", [None, {2, 7}], ids=("no-sched-getaffinity", "multiple-cpus"))
-def test_auto_mpi_probes_host_when_cpu_count_is_not_one(monkeypatch, affinity):
+@pytest.mark.parametrize("affinity", [None, {2, 7}])
+def test_auto_probes_host_when_multiple_cpus_are_available(monkeypatch, affinity):
     if affinity is None:
         monkeypatch.delattr(mpi_runtime.os, "sched_getaffinity", raising=False)
     else:
         monkeypatch.setattr(mpi_runtime.os, "sched_getaffinity", lambda _pid: affinity)
-    monkeypatch.setattr(__import__("shutil"), "which", lambda command: "/bin/mpirun" if command == "mpirun" else None)
-    spec = LaunchSpec.from_mpi("auto").mpi
-    assert mpi_runtime.resolve_mpi_command(spec) == ("mpirun",)
+    monkeypatch.setattr(shutil, "which", lambda n: "/bin/mpirun" if n == "mpirun" else None)
+    assert mpi_runtime.resolve_mpi_command(MpiSpec.from_value("auto")) == ("mpirun",)
 
 
 def test_explicit_mpi_command_does_not_probe_host(monkeypatch):
-
-    def must_not_probe(_command):
-        raise AssertionError("explicit MPI command must not probe the host")
-
-    monkeypatch.setattr(__import__("shutil"), "which", must_not_probe)
-    spec = LaunchSpec.from_mpi(("custom-mpi", "--bind")).mpi
-    assert mpi_runtime.resolve_mpi_command(spec) == ("custom-mpi", "--bind")
+    monkeypatch.setattr(shutil, "which", lambda _: pytest.fail("explicit launcher must not probe host"))
+    mpi = MpiSpec.from_value(("custom-mpi", "--bind"))
+    assert mpi_runtime.resolve_mpi_command(mpi) == ("custom-mpi", "--bind")
 
 
-@pytest.mark.parametrize(("launcher", "count_option"), (("mpirun", "-np"), ("srun", "-n")))
-def test_process_count_is_materialized_for_launcher(monkeypatch, launcher, count_option):
-    monkeypatch.setattr(__import__("shutil"), "which", lambda command: "/bin/" + command if command == launcher else None)
+@pytest.mark.parametrize("launcher,option", [("mpirun", "-np"), ("srun", "-n")])
+def test_process_count_is_materialized_on_execution_host(monkeypatch, launcher, option):
+    monkeypatch.setattr(shutil, "which", lambda n: "/bin/" + n if n == launcher else None)
     if launcher == "srun":
         monkeypatch.setenv("SLURM_NODELIST", "node1")
-    spec = LaunchSpec.from_mpi(4).mpi
-    assert mpi_runtime.resolve_mpi_command(spec) == (launcher, count_option, "4")
-
-
-def test_resolver_rejects_unparsed_mpi_values():
-    try:
-        mpi_runtime.resolve_mpi_command("auto")
-    except TypeError as exc:
-        assert "MpiSpec" in str(exc)
     else:
-        raise AssertionError("raw MPI values must be normalized before resolution")
+        monkeypatch.delenv("SLURM_NODELIST", raising=False)
+    assert mpi_runtime.resolve_mpi_command(MpiSpec.from_value(4)) == (launcher, option, "4")
 
 
-def test_mpi_process_count_is_portable_launch_intent():
-    assert LaunchSpec.from_mpi(16) == LaunchSpec(mpi=MpiSpec(required=True, autodetect=True, process_count=16))
+def test_resolver_requires_validated_mpi_spec():
+    with pytest.raises(TypeError, match="MpiSpec"):
+        mpi_runtime.resolve_mpi_command("auto")
 
 
-def test_local_executor_materializes_mpi_on_execution_host(monkeypatch, tmp_path):
-    monkeypatch.setenv("SLURM_NODELIST", "node")
+def test_target_prepares_serial_or_parallel_command_without_changing_source(monkeypatch, tmp_path):
+    monkeypatch.setenv("SLURM_NODELIST", "node1")
     monkeypatch.setattr(shutil, "which", lambda name: "/bin/srun" if name == "srun" else None)
-    input_file = (tmp_path / "run.inp").open("w+")
     spec = ExecutionSpec(
-        argv=("serial-program",),
-        mpi_argv=("parallel-program", input_file.name),
-        launch=LaunchSpec.from_mpi(16),
-        input_file=input_file,
-        output_file=None,
-        directory=str(tmp_path),
-        stdin=input_file,
+        ("serial-program",), mpi_argv=("parallel-program", "run.inp"),
+        mpi=MpiSpec.from_value(16), stdin="run.inp", directory=str(tmp_path),
     )
-    resolved = materialize_local_spec(spec)
-    assert resolved.argv == ("srun", "-n", "16", "parallel-program", input_file.name)
-    assert resolved.stdin is input_file
-    input_file.close()
+    request = execution_request(spec)
+    outcome = mpi_runtime.prepare_mpi(request)
+    assert outcome["request"]["argv"] == ["srun", "-n", "16", "parallel-program", "run.inp"]
+    assert outcome["request"]["stdin"] == str(tmp_path / "run.inp")
+    assert request["argv"] == ["serial-program"]
+    assert spec.argv == ("serial-program",)
 
 
-def test_required_local_mpi_without_launcher_fails(monkeypatch, tmp_path):
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    input_file = (tmp_path / "run.inp").open("w+")
-    spec = ExecutionSpec(
-        argv=("serial-program",),
-        mpi_argv=("parallel-program", input_file.name),
-        launch=LaunchSpec.from_mpi(True),
-        input_file=input_file,
-        output_file=None,
-        directory=str(tmp_path),
-        stdin=input_file,
-    )
+def test_required_mpi_without_launcher_fails(monkeypatch, tmp_path):
+    monkeypatch.delenv("SLURM_NODELIST", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    spec = ExecutionSpec(("serial",), mpi_argv=("parallel",),
+                         mpi=MpiSpec.from_value(True), directory=str(tmp_path))
     with pytest.raises(FileNotFoundError, match="no MPI launcher"):
-        materialize_local_spec(spec)
-    input_file.close()
+        mpi_runtime.prepare_mpi(execution_request(spec))
 
 
-@pytest.mark.parametrize("warn", (True, False), ids=("warn", "silent"))
-def test_local_auto_mpi_fallback_respects_warning_option(monkeypatch, tmp_path, warn):
-    monkeypatch.setattr("kkrunner.backends.support.process.resolve_mpi_command", lambda mpi: None)
-    input_file = (tmp_path / "run.inp").open("w+")
-    spec = ExecutionSpec(
-        argv=("serial-program",),
-        mpi_argv=("parallel-program", input_file.name),
-        launch=LaunchSpec(mpi=MpiSpec(autodetect=True, warning=warn)),
-        input_file=input_file,
-        output_file=None,
-        directory=str(tmp_path),
-        stdin=input_file,
-    )
-    try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            resolved = materialize_local_spec(spec)
-        assert len(caught) == int(warn)
-        if warn:
-            assert issubclass(caught[0].category, MpiNotFoundWarning)
-            assert "without MPI" in str(caught[0].message)
-        assert resolved.argv == ("serial-program",)
-        assert resolved.stdin is input_file
-    finally:
-        input_file.close()
-
-
-@pytest.mark.parametrize("warn", (True, False), ids=("warn", "silent"))
-def test_remote_endpoint_mpi_warning_probe_respects_option(monkeypatch, warn):
-    endpoint = object.__new__(SshRunEndpoint)
-    endpoint.backend = SupervisedBackend
-    calls = []
-
-    class Transport:
-        async def call(self, operation, *args):
-            assert operation.portable is mpi_runtime.resolve_mpi_options
-            calls.append(("resolve-mpi", args))
-            return None
-
-    async def invoke(action, *args, **kwargs):
-        calls.append((action, args))
-        return {"state": "queued", "directory": "/remote/run"}
-
-    endpoint.transport = Transport()
-    endpoint._invoke = invoke
-    payload = {
-        "directory": "/remote/run",
-        "launch": {
-            "mpi": {"required": False, "autodetect": True, "launcher": [], "process_count": None, "warning": warn}
-        },
-    }
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        asyncio.run(endpoint._submit(payload))
-    assert [call[0] for call in calls] == (["resolve-mpi", "submit"] if warn else ["submit"])
-    assert len(caught) == int(warn)
+@pytest.mark.parametrize("warn", [True, False])
+def test_auto_mpi_fallback_retains_serial_command_and_warning_policy(monkeypatch, warn):
+    monkeypatch.delenv("SLURM_NODELIST", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    spec = ExecutionSpec(("serial",), mpi_argv=("parallel",),
+                         mpi=MpiSpec.from_value("auto", warning=warn))
+    resolved = mpi_runtime.prepare_mpi(execution_request(spec))
+    assert resolved["request"]["argv"] == ["serial"]
+    assert bool(resolved["warning"]) is warn
     if warn:
-        assert issubclass(caught[0].category, MpiNotFoundWarning)
-        assert "remote host" in str(caught[0].message)
+        assert "without MPI" in resolved["warning"]
 
 
-def test_mpi_stdin_is_explicit_and_serial_fallback_is_unchanged(monkeypatch, tmp_path):
-    monkeypatch.setattr("kkrunner.backends.support.process.resolve_mpi_command", lambda mpi: ("mpirun",))
-    spec = ExecutionSpec(
-        argv=("serial",),
-        mpi_argv=("parallel",),
-        launch=LaunchSpec.from_mpi(True),
-        input_file=None,
-        output_file=None,
-        directory=str(tmp_path),
-        stdin=str(tmp_path / "separate-stdin.dat"),
-    )
-    assert materialize_local_spec(spec).stdin == spec.stdin
-    disabled = materialize_local_spec(__import__("dataclasses").replace(spec, mpi_uses_stdin=False))
-    assert disabled.stdin is None
+def test_mpi_stdin_policy_is_explicit_and_serial_fallback_unchanged():
+    spec = ExecutionSpec(("serial",), mpi_argv=("parallel",),
+                         mpi=MpiSpec.from_value(("mpirun",)), stdin="separate.inp")
+    with_stdin = mpi_runtime.prepare_mpi(execution_request(spec))
+    without_stdin = mpi_runtime.prepare_mpi(execution_request(replace(spec, mpi_uses_stdin=False)))
+    assert with_stdin["request"]["stdin"] is not None
+    assert without_stdin["request"]["stdin"] is None
+    assert without_stdin["use_stdin"] is False
