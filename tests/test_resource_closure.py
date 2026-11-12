@@ -2,7 +2,8 @@
 
 import pytest
 
-from kkrunner.runs.base import ExecutionResources, close_output_files
+from kkrunner.runs.base import ExecutionResources
+from kkrunner.files.streams import close_output_files
 
 
 class _Closable:

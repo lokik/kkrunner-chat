@@ -2,7 +2,8 @@ from dataclasses import asdict
 
 import pytest
 
-from kkrunner.client.endpoint import ExecutionEndpointConfig
+from kkrunner.client.transports import LocalTransport, SshTransport
+from kkrunner.backends.config import BackendConfig
 from kkrunner.files.manifest import (
     ArtifactAvailabilityState,
     CacheEntry,
@@ -11,22 +12,24 @@ from kkrunner.files.manifest import (
     FileMapping,
     FileSyncPolicy,
 )
-from kkrunner.runs.base import LaunchSpec
 from kkrunner.runs.model import Execution, WorkingDirectory
 
 
 def test_execution_roundtrip_includes_backend_and_both_directories():
     original = Execution(
-        ExecutionEndpointConfig(location="ssh", host="cluster"),
+        SshTransport("cluster"),
         WorkingDirectory("/local/case", "/scratch/case"),
         backend_id="slurm-42",
+        backend=BackendConfig("psij", {"executor_name": "slurm"}),
     )
     assert Execution(**asdict(original)) == original
     assert original.directory.target == "/scratch/case"
+    assert original.transport == SshTransport("cluster")
+    assert original.backend.name == "psij"
 
 
 def test_local_working_directory_does_not_need_remote_copy():
-    run = Execution(ExecutionEndpointConfig(), WorkingDirectory("/tmp/work"))
+    run = Execution(LocalTransport(), WorkingDirectory("/tmp/work"))
     assert run.backend_id is None
     assert run.directory.target == "/tmp/work"
 
@@ -46,7 +49,7 @@ def test_manifest_roundtrip_includes_streams_and_cache_baseline():
 
 def test_empty_backend_identity_and_pathless_file_are_invalid():
     with pytest.raises(ValueError, match="backend_id"):
-        Execution(ExecutionEndpointConfig(), WorkingDirectory("/tmp"), backend_id="")
+        Execution(LocalTransport(), WorkingDirectory("/tmp"), backend_id="")
     with pytest.raises(ValueError, match="location"):
         FileEntry()
 
@@ -178,7 +181,7 @@ def test_manifest_availability_validation_is_shared_with_file_entry(existing, st
 
 
 def test_submitted_uses_execution_backend_id_validation():
-    execution = Execution(ExecutionEndpointConfig(), WorkingDirectory("/tmp"))
+    execution = Execution(LocalTransport(), WorkingDirectory("/tmp"))
     assert execution.backend_id is None
     with pytest.raises(ValueError, match="backend_id cannot be empty"):
         execution.submitted("")
