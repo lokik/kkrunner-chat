@@ -1,13 +1,15 @@
 from threading import Event
-from types import SimpleNamespace
-
 import pytest
 
 from kkrunner.runs import DuplicateSubmissionError, FailurePhase, RunStatus
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
 from kkrunner import ExecutionOutcome, RunState, RunStore
-from kkrunner.client.pool import EndpointPool
+from kkrunner.backends import SupervisedBackend
+from kkrunner.backends.contracts import JobStatus
+from kkrunner.client import EndpointClient
+from kkrunner.client.pool import ClientPool
+from kkrunner import ExecutionSpec
 from kkrunner.runs.manager import RunManager
 
 
@@ -25,6 +27,20 @@ class _RawRunner:
     @property
     def return_code(self):
         return self.result.return_code
+
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_detached(self, detached):
+        pass
+
+    def configure_submission(self, request, **observation):
+        pass
+
+    def status(self):
+        return JobStatus(self.state, return_code=self.return_code,
+                         failure_phase=self.failure_phase, message=self.failure_message)
 
     def submit(self):
         if self.on_submit:
@@ -59,10 +75,9 @@ class _RawRunner:
         pass
 
 
-class _Executor:
-    name = "test"
-
+class _Executor(EndpointClient):
     def __init__(self):
+        super().__init__(SupervisedBackend)
         self.runners = []
         self.status_calls = []
         self.on_submit = None
@@ -71,7 +86,9 @@ class _Executor:
         runner = _RawRunner(on_submit=self.on_submit)
         runner.spec = spec
         self.runners.append(runner)
-        return RunParts(runner)
+        parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
+        parts.job = runner
+        return parts
 
     def status(self, *runs):
         self.status_calls.append(runs)
@@ -79,17 +96,16 @@ class _Executor:
 
 
 def _spec(tmp_path, *, dataset="case"):
-    return SimpleNamespace(
+    return ExecutionSpec(
+        argv=("test-executable",),
         directory=str(tmp_path),
-        input_file=str(tmp_path / f"{dataset}.inp"),
+        input_file=None,
         output_file=str(tmp_path / f"{dataset}.out"),
-        input_files=(),
-        output_files=(),
     )
 
 
 def _manager(tmp_path):
-    return RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool())
+    return RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
 
 
 def test_submit_persists_submitting_before_backend_call(tmp_path):
@@ -149,12 +165,12 @@ def test_completion_postprocesses_only_successful_execution(tmp_path, return_cod
 def test_refresh_batches_status_queries(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
-    endpoint = manager.register_executor(executor)
+    manager.register_client(executor)
     records = []
     for index in range(2):
         record = manager.new_record(
             directory=tmp_path / str(index),
-            endpoint=endpoint,
+            transport=executor.transport, backend=executor.backend_config,
             metadata={"test": {"task": "DOS"}},
             processing_required=True,
         )
