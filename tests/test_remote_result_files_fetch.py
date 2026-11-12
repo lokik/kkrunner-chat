@@ -4,7 +4,7 @@ from kkrunner import RunState
 from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 from kkrunner.files.manifest import FileMapping
 from kkrunner.client import EndpointClient, SshTransport, LocalTransport
-from kkrunner.runs import Execution, RunRecord, WorkingDirectory
+from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +45,7 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(
+        execution=ExecutionMetadata(
             executor.transport,
             WorkingDirectory(str(local_directory), str(remote_directory)),
             "opaque-historical-handle",
@@ -104,7 +104,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(
+        execution=ExecutionMetadata(
             executor.transport,
             WorkingDirectory(str(local_root / "calc"), str(remote_dir)),
             "opaque-handle",
@@ -141,7 +141,7 @@ def test_remote_staged_result_keeps_canonical_file_absent(tmp_path):
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(
+        execution=ExecutionMetadata(
             executor.transport, WorkingDirectory(str(local_dir), str(remote_dir)), "backend-id"
         ),
         files=FileManifest(
@@ -182,7 +182,7 @@ def test_fetch_rejects_local_symlink_escape(tmp_path, wildcard):
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(
+        execution=ExecutionMetadata(
             executor.transport, WorkingDirectory(str(local_root), str(remote_root)), "backend-id"
         ),
         files=FileManifest(
@@ -217,7 +217,7 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(executor.transport, WorkingDirectory(str(local), str(remote)), "backend-id"),
+        execution=ExecutionMetadata(executor.transport, WorkingDirectory(str(local), str(remote)), "backend-id"),
         files=FileManifest(
             outputs=(FileEntry(str(canonical), str(remote / "bad" / "output.dat")),),
             mapping=FileMapping(str(local), str(remote)),

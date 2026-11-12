@@ -14,13 +14,13 @@ from kkrunner.client.backend_execution import ManagedExecution
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs.manager import RunManager
-from kkrunner.runs.model import Execution, WorkingDirectory
+from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 
 
 def _client_and_attachment(tmp_path, monkeypatch, backend_type=SupervisedBackend):
     client = EndpointClient(backend_type)
     backend_id = "test-backend-id"
-    execution = Execution(
+    execution = ExecutionMetadata(
         client.transport, WorkingDirectory(str(tmp_path)),
         backend_id, backend=client.backend_config,
     )

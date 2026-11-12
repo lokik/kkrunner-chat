@@ -8,7 +8,7 @@ from kkrunner.client.contracts import JobAttachment
 from kkrunner.client import EndpointClient, SshTransport
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files import FileManifest
-from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
+from kkrunner.runs import ExecutionMetadata, FailurePhase, RunRecord, WorkingDirectory
 
 
 def _run(native_id, *, backend="psij"):
@@ -18,7 +18,7 @@ def _run(native_id, *, backend="psij"):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(transport, WorkingDirectory("/local/case", "/work/case"), native_id, backend=BackendConfig(backend)),
+        execution=ExecutionMetadata(transport, WorkingDirectory("/local/case", "/work/case"), native_id, backend=BackendConfig(backend)),
         files=FileManifest(),
         metadata={"test": {"task": "DOS"}},
         processing_required=True,

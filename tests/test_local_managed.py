@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from kkrunner.runs import Execution, RunRecord, WorkingDirectory
+from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import RecoveryDisposition
@@ -51,7 +51,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("process")),
+        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("process")),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "out.txt")) if stdout else None,
             stderr=FileEntry(local_path=str(tmp_path / "err.txt")) if stderr else None,

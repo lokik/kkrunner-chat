@@ -9,7 +9,7 @@ from kkrunner.backends import SupervisedBackend, PsijBackend
 from kkrunner.client import EndpointClient, SshTransport, StagingSpec
 from kkrunner.files.manifest import FileManifest, FileMapping
 from kkrunner.runs.base import ExecutionSpec, RunState
-from kkrunner.runs.model import Execution, WorkingDirectory
+from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.runs.run import Run
 from kkrunner.runs.records import RunRecord
@@ -167,7 +167,7 @@ def test_remote_executor_attach_rejects_reference_for_other_backend(tmp_path):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(
+        execution=ExecutionMetadata(
             executor.transport,
             WorkingDirectory(str(tmp_path), "/remote/calculation"),
             "job",
@@ -196,7 +196,7 @@ def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(
+        execution=ExecutionMetadata(
             endpoint.transport, WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle",
             backend=endpoint.backend_config
         ),
