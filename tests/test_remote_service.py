@@ -13,6 +13,7 @@ from kkrunner.backends.supervised import worker as remote_process_worker
 from kkrunner.backends.psij import slurm as psij_slurm
 from kkrunner.backends.psij import backend as scheduler_operations
 from kkrunner.backends.support import messages
+from kkrunner.backends.contracts import SubmissionNotStarted
 from kkrunner.remote import service as remote_service
 
 
@@ -361,7 +362,7 @@ def test_direct_follow_uses_shared_socket_protocol(tmp_path, monkeypatch):
     import sys
 
     async def exercise():
-        monkeypatch.setattr(remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: None)
+        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
         rd, wr = os.pipe()
         spec = {
             "argv": [
@@ -410,7 +411,7 @@ def test_direct_follow_without_stream_files_is_live_only(tmp_path, monkeypatch):
     import sys
 
     async def exercise():
-        monkeypatch.setattr(remote_process_worker, "_mailbox_publish_outcome", lambda *args, **kwargs: None)
+        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
         rd, wr = os.pipe()
         spec = {
             "argv": [sys.executable, "-c", "import time; time.sleep(.15); print('live', flush=True); time.sleep(.1)"],
@@ -509,12 +510,14 @@ def test_scheduler_request_protects_remote_cache_wildcards(tmp_path):
             "cache_files": [{"path": "external-cache.pot", "before": None}],
         },
     }
-    from kkrunner.remote.messages import request_to_spec
-    spec = request_to_spec(request)
-    assert "restart-*.pot" in spec.cache_files
-    assert "external-cache.pot" in spec.cache_files
-    assert "*.pot" in spec.output_files
-    assert "case.inp" in spec.input_files
+    from kkrunner.backends.support.messages import normalize_request
+    request.pop("client_sync")
+    request["cache_files"].extend(("restart-*.pot", "external-cache.pot"))
+    normalized = normalize_request(request)
+    assert str(tmp_path / "restart-*.pot") in normalized["cache_files"]
+    assert str(tmp_path / "external-cache.pot") in normalized["cache_files"]
+    assert str(tmp_path / "*.pot") in normalized["output_files"]
+    assert str(tmp_path / "case.inp") in normalized["input_files"]
 
 
 @pytest.mark.skipif(__import__("os").name != "posix", reason="Supervisor needs POSIX process groups and Unix sockets")
@@ -566,11 +569,20 @@ def test_remote_cleanup_preserves_cache_matches_while_removing_stale_outputs(tmp
         output_files=("*.out",),
         cache_files=("restart.out",),
     )
-    process_operations._clean_request_outputs(spec, work, str(stdout))
+    from kkrunner.backends.support.messages import normalize_request
+    from kkrunner.files.availability import prepare_target_outputs
+
+    request = normalize_request({
+        "directory": str(work), "argv": ["true"], "input_file": "main.inp",
+        "output_file": "run.log", "output_files": ["*.out"],
+        "cache_files": ["restart.out"],
+    })
+    prepare_target_outputs(request)
     assert cache.read_text() == "restart.out"
     assert input_file.read_text() == "main.inp"
     assert not stale.exists()
-    assert not stdout.exists()
+    # The worker, not pre-submission cleanup, owns truncating stdout.
+    assert stdout.read_text() == "run.log"
 
 
 def test_remote_cleanup_checks_collisions_before_deleting_any_output(tmp_path):
@@ -590,8 +602,15 @@ def test_remote_cleanup_checks_collisions_before_deleting_any_output(tmp_path):
         output_files=("old.dat", "restart.dat"),
         cache_files=("restart.dat",),
     )
-    with pytest.raises(ValueError, match="overlaps protected"):
-        process_operations._clean_request_outputs(spec, work)
+    from kkrunner.backends.support.messages import normalize_request
+    from kkrunner.files.availability import prepare_target_outputs
+
+    request = normalize_request({
+        "directory": str(work), "argv": ["true"],
+        "output_files": ["old.dat", "restart.dat"], "cache_files": ["restart.dat"],
+    })
+    with pytest.raises(ValueError, match="Explicit output conflicts with input/cache"):
+        prepare_target_outputs(request)
     assert stale.read_text() == "old"
     assert cache.read_text() == "restart"
 

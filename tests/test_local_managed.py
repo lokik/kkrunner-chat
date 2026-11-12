@@ -260,19 +260,19 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
         _spec(tmp_path),
         output_files=(None, output, "a.dat"),
         input_files=(None, inp, "b.inp"),
-        cache_files=(None, cache, "restart.pot"),
+        cache_files=(None, cache),
     )
     parts = _managed_parts(spec, submission_key=RUN_ID)
     request = parts.job._request
     assert request["output_files"] == [output.name, str(tmp_path / "a.dat")]
     assert request["input_files"] == [inp.name, str(tmp_path / "b.inp")]
-    assert request["cache_files"] == [cache.name, str(tmp_path / "restart.pot")]
+    assert request["cache_files"] == [cache.name]
     assert (output.flush_count, inp.flush_count, cache.flush_count) == (1, 1, 1)
 
 
 def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
-    from kkrunner.backends.supervised.support import _clean_request_outputs
-    from kkrunner.backends.support.messages import request_to_spec
+    from kkrunner.files.availability import prepare_target_outputs
+    from kkrunner.backends.support.messages import normalize_request
 
     for name in ("stale.dat", "input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
         (tmp_path / name).write_text(name)
@@ -282,11 +282,9 @@ def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
         "input_file": "input.dat",
         "stdin": "stdin.dat",
         "output_files": ["*.dat"],
-        "cache_files": ["cache.dat"],
-        "client_sync": {"cache_files": [{"path": "sync-cache.dat", "before": None}]},
+        "cache_files": ["cache.dat", "sync-cache.dat"],
     }
-    spec = request_to_spec(request)
-    _clean_request_outputs(spec, tmp_path)
+    prepare_target_outputs(normalize_request(request))
     assert not (tmp_path / "stale.dat").exists()
     for name in ("input.dat", "stdin.dat", "cache.dat", "sync-cache.dat"):
         assert (tmp_path / name).read_text() == name
@@ -329,11 +327,8 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     extra.write_text("old output")
     spec = replace(_spec(tmp_path), cache_files=(str(existing),), output_files=(str(extra),))
     client = RunClient(SupervisedBackend)
-    parts = client.create_run_parts(spec, submission_key=RUN_ID)
-    parts.prepare_submission()
-    with pytest.raises(SubmissionNotStarted, match="conflicts with input/cache"):
-        parts.prepare_job()
-    assert parts.job.backend_id is None
+    with pytest.raises(ValueError, match="cache collision"):
+        client.create_run_parts(spec, submission_key=RUN_ID)
     assert existing.read_text() == "restart cache"
     assert extra.read_text() == "old output"
     assert recover_submission(RUN_ID) is None
@@ -418,11 +413,8 @@ def test_unnameable_file_declared_for_local_managed_is_known_prelaunch_error(tmp
     from kkrunner.runs.base import SubmissionNotStarted
 
     spec = replace(_spec(tmp_path), output_files=(object(),))
-    job = _managed_job(spec, submission_key=RUN_ID)
-    with pytest.raises(SubmissionNotStarted, match="named file"):
-        job.submit()
-    assert job.backend_id is None
-    assert job.state is RunState.FAILED
+    with pytest.raises(ValueError, match="named file"):
+        _managed_job(spec, submission_key=RUN_ID)
 
 
 def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, monkeypatch):
