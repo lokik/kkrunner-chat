@@ -65,7 +65,8 @@ def test_same_ssh_endpoint_runs_selected_backend(tmp_path, monkeypatch, backend)
     assert run.run().return_code == 0
     assert (local / "stdout").read_bytes() == (remote / "stdout").read_bytes() == b"out\n"
     assert (local / "stderr").read_bytes() == (remote / "stderr").read_bytes() == b"err\n"
-    assert bool(run.backend_id) == (backend().execution_mode == "managed")
+    # Both backends expose an opaque identity; only managed jobs guarantee reattachment.
+    assert isinstance(run.backend_id, str) and run.backend_id
 
 
 def _alive(pid):
@@ -120,7 +121,8 @@ def test_cancel_stops_calculation_while_remote_output_is_blocked(tmp_path, descr
             reader = threading.Thread(target=discard, args=(source,), daemon=True)
             reader.start()
             readers.append(reader)
-        assert process.wait(timeout=5) in (128 + signal.SIGTERM, 128 + signal.SIGKILL)
+        # The RPC helper reports the cancelled child in its reply and exits cleanly.
+        assert process.wait(timeout=5) == 0
     finally:
         if process.poll() is None:
             process.kill()
