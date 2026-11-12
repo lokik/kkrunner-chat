@@ -9,7 +9,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.backends import DirectBackend
 from kkrunner.client import EndpointClient
-from kkrunner.client.transports.direct import _OutputChannel
+from kkrunner.client.transports.calls import OutputSink
 from kkrunner.execution import MpiSpec
 
 
@@ -69,10 +69,10 @@ def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
 
 
 def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypatch):
-    async def failing_write(self, data):
+    def failing_write(self, data):
         raise RuntimeError("output pump failed")
 
-    monkeypatch.setattr(_OutputChannel, "write", failing_write)
+    monkeypatch.setattr(OutputSink, "write", failing_write)
     run = _run(ExecutionSpec(
         argv=(sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"),
         directory=str(tmp_path), input_file=None, output_file=None,
