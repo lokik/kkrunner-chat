@@ -8,7 +8,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client import EndpointClient, SshTransport, StagingSpec
-from kkrunner.client.transports.streaming import follow_framed_command
+from kkrunner.client.transports.follow import follow_framed_command
 from kkrunner.execution import RunState
 from kkrunner.remote.stream import (
     STREAM_MAGIC, StreamProtocolError, encode_stream_frame, encode_terminal_frame,
