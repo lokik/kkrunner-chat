@@ -5,24 +5,20 @@ import pytest
 from kkrunner import RunState
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client.ssh import SshRunEndpoint
-from kkrunner.client.endpoint import describe_endpoint
+from kkrunner.client import RunClient, SshTransport
+from kkrunner.backends.config import BackendConfig
 from kkrunner.files import FileManifest
 from kkrunner.runs import Execution, FailurePhase, RunRecord, WorkingDirectory
 
 
-class _Transport:
-    host = "cluster"
-
-
 def _run(native_id, *, backend="psij"):
-    endpoint = describe_endpoint(SshRunEndpoint(_Transport(), backend=backend))
+    transport = SshTransport("cluster")
     return RunRecord(
         id=native_id or "unconfirmed",
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(endpoint, WorkingDirectory("/local/case", "/work/case"), native_id),
+        execution=Execution(transport, WorkingDirectory("/local/case", "/work/case"), native_id, backend=BackendConfig(backend)),
         files=FileManifest(),
         metadata={"test": {"task": "DOS"}},
         processing_required=True,
@@ -34,7 +30,7 @@ def _attachment(record):
 
 
 def test_remote_endpoint_status_queries_opaque_handles_individually():
-    executor = SshRunEndpoint(_Transport(), backend="psij")
+    executor = RunClient("psij", transport=SshTransport("cluster"))
     calls = []
     replies = {
         "job-1": {"state": "running", "return_code": None},
@@ -59,7 +55,7 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
 
 
 def test_remote_terminal_status_does_not_claim_client_completion():
-    executor = SshRunEndpoint(_Transport(), backend="process")
+    executor = RunClient("process", transport=SshTransport("cluster"))
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -73,13 +69,13 @@ def test_remote_terminal_status_does_not_claim_client_completion():
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
-    executor = SshRunEndpoint(_Transport(), backend="process")
-    with pytest.raises(ValueError, match="different remote endpoint"):
+    executor = RunClient("process", transport=SshTransport("cluster"))
+    with pytest.raises(ValueError, match="different transport or backend"):
         executor.status(_attachment(_run("job", backend="psij")))
 
 
 def test_recovery_proves_identity_without_claiming_execution_status():
-    executor = SshRunEndpoint(_Transport(), backend="process")
+    executor = RunClient("process", transport=SshTransport("cluster"))
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -96,7 +92,7 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     )
     assert calls == [(
         "recover",
-        ("run-1", {"executor": "process", "executor_options": {}, "directory": "/work/case"}),
+        ("run-1", {"backend": "process", "backend_options": {}, "directory": "/work/case"}),
         {"submitted_at": "2026-10-13T08:00:00+02:00"},
     )]
     assert result.disposition == RecoveryDisposition.FOUND
@@ -116,7 +112,7 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     ],
 )
 def test_remote_recovery_does_not_guess_non_submission(reply, expected):
-    executor = SshRunEndpoint(_Transport(), backend="process")
+    executor = RunClient("process", transport=SshTransport("cluster"))
 
     async def request(action, *args, **kwargs):
         assert action == "recover"
@@ -141,7 +137,7 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     ],
 )
 def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
-    executor = SshRunEndpoint(_Transport(), backend="process")
+    executor = RunClient("process", transport=SshTransport("cluster"))
 
     async def request(action, *args, **kwargs):
         assert action == "status"
