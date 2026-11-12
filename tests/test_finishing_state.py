@@ -3,15 +3,16 @@ from types import SimpleNamespace
 
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase, RunStatus
-from kkrunner.client.pool import EndpointPool
+from kkrunner.client.pool import ClientPool
+from kkrunner.client import RunClient
+from kkrunner.backends import SupervisedBackend
 from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
-class _Executor:
-    name = "postprocessing-test"
-
+class _Executor(RunClient):
     def __init__(self, status):
+        super().__init__(SupervisedBackend)
         self.status_value = status
 
     def status(self, *runs):
@@ -60,10 +61,11 @@ class _RawRunner:
 
 
 def _record(tmp_path, executor, state=RunState.RUNNING):
-    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool())
-    endpoint = manager.register_executor(executor)
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
+    manager.register_client(executor)
     record = manager.new_record(
-        directory=str(tmp_path), endpoint=endpoint, metadata={"test": {"task": "DOS"}}, processing_required=True
+        directory=str(tmp_path), transport=executor.transport, backend=executor.backend_config,
+        metadata={"test": {"task": "DOS"}}, processing_required=True
     )
     record = manager.transition(record, state=state, execution=record.execution.submitted("job-1"))
     return (manager, record)
