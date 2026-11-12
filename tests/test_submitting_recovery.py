@@ -6,7 +6,11 @@ import pytest
 from kkrunner.runs import DuplicateSubmissionError, RunStatus
 from kkrunner.backends.contracts import JobRef, RecoveryResult
 from kkrunner.client.run_parts import RunParts
-from kkrunner.client.pool import EndpointPool
+from kkrunner.client.pool import ClientPool
+from kkrunner.client import EndpointClient
+from kkrunner.backends import SupervisedBackend
+from kkrunner.backends.contracts import JobStatus
+from kkrunner import ExecutionSpec
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
@@ -20,6 +24,19 @@ class _Runner:
         self.failure_phase = None
         self.failure_message = None
         self._done = Event()
+
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_detached(self, detached):
+        pass
+
+    def configure_submission(self, request, **options):
+        pass
+
+    def status(self):
+        return JobStatus(self.state, return_code=self.result.return_code)
 
     def submit(self):
         self.state = RunState.QUEUED
@@ -40,17 +57,18 @@ class _Runner:
         pass
 
 
-class _RecoveringExecutor:
-    name = "recover"
-
+class _RecoveringExecutor(EndpointClient):
     def __init__(self, recovered):
+        super().__init__(SupervisedBackend)
         self.recovered = recovered
         self.recovery_calls = []
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         runner = _Runner()
         runner.spec = spec
-        return RunParts(runner)
+        parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
+        parts.job = runner
+        return parts
 
     def status(self, *attachments):
         return tuple(
@@ -68,7 +86,8 @@ class _RecoveringExecutor:
 def _run(manager, executor, tmp_path):
     return manager.create_run(
         executor,
-        spec=SimpleNamespace(directory=str(tmp_path), output_file=str(tmp_path / "shared.out")),
+        spec=ExecutionSpec(argv=("test-executable",), directory=str(tmp_path),
+                           output_file=str(tmp_path / "shared.out")),
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )
@@ -76,7 +95,7 @@ def _run(manager, executor, tmp_path):
 
 def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
     executor = _RecoveringExecutor(RecoveryResult.absent())
-    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool(), submitting_grace=0)
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool(), submitting_grace=0)
     abandoned = _run(manager, executor, tmp_path)
     manager.reserve(abandoned.record)
     replacement = _run(manager, executor, tmp_path)
