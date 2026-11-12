@@ -1,113 +1,109 @@
+"""Backend selection and file staging have one target-only wire request."""
+
 import asyncio
+from dataclasses import asdict
 
 from kkrunner import ExecutionSpec
+from kkrunner.execution import MpiSpec
+from kkrunner.client import RunClient, StagingSpec
+from kkrunner.backends import PsijBackend, DirectBackend
 from kkrunner.files import FileManifest
-from kkrunner.runs import LaunchSpec, MpiSpec
-from kkrunner.client import LocalTransport, SshRunEndpoint
+
+from .test_transport import _LoopbackSshTransport
 
 
-def test_remote_request_carries_target_executor_options(tmp_path):
-    local_root = tmp_path / "local"
+def test_remote_request_carries_target_backend_options_and_mpi_intent(tmp_path):
+    local_root, remote_root = tmp_path / "local", tmp_path / "remote"
     directory = local_root / "calculation"
     directory.mkdir(parents=True)
-    input_file = (directory / "run.inp").open("w+b")
-    input_file.write(b"input")
-    input_file.flush()
+    remote_root.mkdir()
+    input_file = directory / "run.inp"
+    input_file.write_text("input")
     potential = directory / "start.pot"
     potential.write_text("potential")
-    output_file = (directory / "run.out").open("wb")
-    executor = SshRunEndpoint(
-        LocalTransport(), backend="psij", backend_options={"executor_name": "slurm", "url": None}
-    )
-    launch = LaunchSpec(
-        mpi=MpiSpec(required=True, autodetect=True, process_count=16),
-        local_root=local_root,
-        remote_root=tmp_path / "remote",
+
+    client = RunClient(
+        PsijBackend(executor_name="slurm"),
+        transport=_LoopbackSshTransport(),
     )
     spec = ExecutionSpec(
         argv=("program",),
-        mpi_argv=("programMPI", input_file.name),
-        launch=launch,
+        mpi_argv=("programMPI", str(input_file)),
+        mpi=MpiSpec.from_value(16),
+        staging=StagingSpec(local_root=local_root, remote_root=remote_root),
         input_file=input_file,
-        output_file=output_file,
+        output_file=directory / "run.out",
         directory=str(directory),
         stdin=input_file,
         input_files=(input_file, potential),
     )
-    parts = executor.create_run_parts(spec)
-    files = parts.files
-    context = files.context
-    remote_directory = asyncio.run(context.map_directory(directory))
-    request = asyncio.run(files._prepare_request("test-run", remote_directory, FileManifest.from_spec(spec)))
-    assert request["executor"] == "psij"
-    assert request["executor_options"] == {"backend": "slurm", "url": None}
+    parts = client.create_run_parts(spec, submission_key="test-run")
+    request, manifest = asyncio.run(parts.files._prepare_async())
+    request = parts.submission_builder(request)
+    remote_directory = remote_root / "calculation"
+    assert request["backend"] == "psij"
+    assert request["backend_options"] == {"executor_name": "slurm", "url": None}
+    assert request["submission_key"] == "test-run"
     assert request["argv"] == ["program"]
     assert request["mpi_uses_stdin"] is True
+    assert request["mpi"] == asdict(spec.mpi)
     assert request["mpi_argv"][0] == "programMPI"
-    assert request["mpi_argv"][1].endswith("/calculation/run.inp")
-    assert request["launch"] == {
-        "mpi": {"required": True, "autodetect": True, "launcher": (), "process_count": 16, "warning": True},
-        "local_root": str(local_root),
-        "remote_root": str(tmp_path / "remote"),
-        "input_sync": "changed",
-        "output_sync": "changed",
-    }
-    remote_input = tmp_path / "remote" / "calculation" / "run.inp"
-    remote_potential = tmp_path / "remote" / "calculation" / "start.pot"
-    assert "output_files" not in request
-    assert "cache_files" not in request
-    assert request["client_sync"]["output_files"] == []
-    assert request["client_sync"]["cache_files"] == []
-    assert request["input_file"] == str(remote_input)
-    assert remote_input.read_bytes() == b"input"
-    assert remote_potential.read_text() == "potential"
-    input_file.close()
-    output_file.close()
+    assert request["mpi_argv"][1] == str(remote_directory / "run.inp")
+    assert request["directory"] == str(remote_directory)
+    assert "staging" not in request
+    assert "local_root" not in request
+    assert "client_sync" not in request
+    assert request["input_file"] == str(remote_directory / "run.inp")
+    assert request["stdin"] == str(remote_directory / "run.inp")
+    assert request["output_file"] == str(remote_directory / "run.out")
+    assert request["output_files"] == []
+    assert request["cache_files"] == []
+    assert (remote_directory / "run.inp").read_text() == "input"
+    assert (remote_directory / "start.pot").read_text() == "potential"
+    assert manifest.mapping.local_root == str(local_root)
+    assert manifest.mapping.remote_root == str(remote_root)
+    assert manifest.inputs
 
 
-def test_nonproject_remote_request_does_not_publish_project_identity(tmp_path):
-    root = tmp_path / "local"
+def test_untracked_remote_request_has_its_own_submission_key(tmp_path):
+    root, remote_root = tmp_path / "local", tmp_path / "remote"
     directory = root / "work"
     directory.mkdir(parents=True)
-    executor = SshRunEndpoint(LocalTransport(), backend="psij")
-    files = executor.create_run_parts(
-        ExecutionSpec(
-            argv=("program",),
-            directory=str(directory),
-            input_file=None,
-            output_file=None,
-            launch=LaunchSpec(local_root=root, remote_root=tmp_path / "remote"),
-        )
-    )
-    request, _manifest = asyncio.run(files.files._prepare_async())
-    assert request["id"] is None
+    remote_root.mkdir()
+    client = RunClient(PsijBackend(), transport=_LoopbackSshTransport())
+    parts = client.create_run_parts(ExecutionSpec(
+        argv=("program",), directory=directory,
+        staging=StagingSpec(local_root=root, remote_root=remote_root),
+    ))
+    request, _manifest = asyncio.run(parts.files._prepare_async())
+    complete = parts.submission_builder(request)
+    assert complete["submission_key"]
+    assert complete["backend"] == "psij"
 
 
-def test_remote_sync_declarations_have_one_wire_authority(tmp_path):
-    from kkrunner.remote.messages import request_to_spec
-
-    root = tmp_path / "local"
+def test_remote_file_declarations_are_target_only_and_single_sourced(tmp_path):
+    root, remote_root = tmp_path / "local", tmp_path / "remote"
     directory = root / "work"
     directory.mkdir(parents=True)
-    output = directory / "run.out"
-    auxiliary = directory / "plot-*.dat"
+    remote_root.mkdir()
     cache = directory / "restart.dat"
     cache.write_text("restart")
-    executor = SshRunEndpoint(LocalTransport())
+    client = RunClient(DirectBackend, transport=_LoopbackSshTransport())
     spec = ExecutionSpec(
-        argv=("program",),
-        directory=str(directory),
-        input_file=None,
-        output_file=str(output),
-        output_files=(auxiliary,),
+        argv=("program",), directory=directory,
+        output_file=directory / "run.out",
+        output_files=(directory / "plot-*.dat",),
         cache_files=(cache,),
-        launch=LaunchSpec(local_root=root, remote_root=tmp_path / "remote"),
+        staging=StagingSpec(local_root=root, remote_root=remote_root),
     )
-    files = executor.create_run_parts(spec).files
-    remote_dir = tmp_path / "remote" / "work"
-    request = asyncio.run(files._prepare_request("test-run", str(remote_dir), FileManifest.from_spec(spec)))
-    assert "output_files" not in request
-    assert "cache_files" not in request
-    restored = request_to_spec(request)
-    assert str(remote_dir / "plot-*.dat") in restored.output_files
-    assert str(remote_dir / "restart.dat") in restored.cache_files
+    parts = client.create_run_parts(spec)
+    request, manifest = asyncio.run(parts.files._prepare_async())
+    complete = parts.submission_builder(request)
+    remote_dir = remote_root / "work"
+    assert complete["output_files"] == [str(remote_dir / "plot-*.dat")]
+    assert complete["cache_files"] == [str(remote_dir / "restart.dat")]
+    assert complete["output_file"] == str(remote_dir / "run.out")
+    assert "client_sync" not in complete
+    assert "staging" not in complete
+    assert manifest.outputs[0].remote_path == str(remote_dir / "plot-*.dat")
+    assert manifest.caches[0].file.remote_path == str(remote_dir / "restart.dat")
