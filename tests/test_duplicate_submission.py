@@ -4,7 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.runs import DuplicateSubmissionError
-from kkrunner.client.run_parts import RunParts
+from kkrunner.client import EndpointClient
+from kkrunner.backends import SupervisedBackend
+from kkrunner.backends.contracts import JobStatus
+from kkrunner import ExecutionSpec
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
@@ -18,6 +21,29 @@ class _Runner:
         self._done = Event()
         self.result = SimpleNamespace(return_code=None)
         self.exception = None
+        self.output_error = None
+        self.failure_phase = None
+        self.failure_message = None
+
+    @property
+    def return_code(self):
+        return self.result.return_code
+
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_detached(self, detached):
+        pass
+
+    def configure_submission(self, request, **observation):
+        pass
+
+    def status(self):
+        return JobStatus(self.state, return_code=self.return_code)
+
+    def add_output_error_listener(self, callback):
+        pass
 
     def submit(self):
         self.backend_id = "job"
@@ -46,23 +72,30 @@ class _Runner:
             self.callback(self.result)
 
 
-class _Executor:
-    name = "test"
-
+class _Executor(EndpointClient):
     def __init__(self):
+        super().__init__(SupervisedBackend)
         self.runners = []
 
+    def acknowledge_submission(self, record):
+        pass
+
+    def acknowledge(self, record):
+        pass
+
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
         runner = _Runner(callback)
         runner.spec = spec
         self.runners.append(runner)
-        return RunParts(runner)
+        parts.job = runner
+        return parts
 
 
 def _run(manager, executor, directory, *, task="DOS", dataset="case"):
     return manager.create_run(
         executor,
-        spec=SimpleNamespace(directory=str(directory), output_file=str(directory / f"{dataset}.out")),
+        spec=ExecutionSpec(argv=("unused",), directory=str(directory), output_file=str(directory / f"{dataset}.out")),
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": str(task).upper(), "dataset": dataset}},
     )
