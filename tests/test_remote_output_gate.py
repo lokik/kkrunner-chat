@@ -1,11 +1,14 @@
 """Backend outcome and client file delivery have independent lifecycles."""
 
-import asyncio
-from types import SimpleNamespace
+import subprocess
 
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
+from kkrunner.backends import SupervisedBackend
+from kkrunner.backends.contracts import JobRef, JobStatus
+from kkrunner.client import EndpointClient, StagingSpec
+from kkrunner.client.file_context import FileContext
 from kkrunner.client.job import Job
 from kkrunner.client.file_session import FileSession
 from kkrunner.support.file_locks import FileLock
@@ -14,53 +17,63 @@ from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.runs.base import FailurePhase
 
 
-class _Follow:
-    terminal = None
+class _LoopbackRemoteTransport(LocalTransport):
+    """Use local file primitives while exercising the remote file lifecycle."""
 
-    def __init__(self, output=b"streamed\n"):
-        self.stdout = asyncio.StreamReader()
-        self.stderr = asyncio.StreamReader()
-        self.stdout.feed_data(output)
-        self.stdout.feed_eof()
-        self.stderr.feed_eof()
-
-    async def wait(self):
-        return 0
-
-    def terminate(self):
-        pass
+    is_local = False
 
 
-class _Context:
-    from kkrunner.backends import SupervisedBackend
-    backend = SupervisedBackend()
-    output_files = FileSyncPolicy.NEVER
+def _file_context(tmp_path):
+    client = EndpointClient(SupervisedBackend, transport=_LoopbackRemoteTransport())
+    return FileContext(
+        client,
+        StagingSpec(local_root=tmp_path, remote_root=tmp_path, output_sync=FileSyncPolicy.NEVER),
+    )
+
+
+class _BackendExecution:
+    """An attached backend binding: native state and output are independent."""
 
     def __init__(self, state=RunState.FINISHED):
         self.backend_state = RunState(state)
-        self.transport = LocalTransport()
+        self.ref = JobRef("process", "opaque-handle")
+        self.snapshot = JobStatus(RunState.RUNNING)
         self.status_error = None
         self.follow_error = None
         self.follow_calls = 0
 
-    async def _follow(self, *args, **kwargs):
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_observation(self, *, stream_offsets, stream_paths):
+        self.stream_offsets = stream_offsets
+        self.stream_paths = stream_paths
+
+    async def observe(self, on_output):
         self.follow_calls += 1
         if self.follow_error is not None:
             raise self.follow_error
-        kwargs["on_output"](b"streamed\n", "out")
-        return await self._status()
+        on_output(b"streamed\\n", "out")
+        return await self.status()
 
-    async def _status(self, *args, **kwargs):
+    async def status(self):
         if self.status_error is not None:
             raise self.status_error
-        return {
-            "state": self.backend_state.value,
-            "return_code": 17 if self.backend_state == RunState.FAILED else (
-                0 if self.backend_state == RunState.FINISHED else None
+        return JobStatus(
+            self.backend_state,
+            return_code=17 if self.backend_state is RunState.FAILED else (
+                0 if self.backend_state is RunState.FINISHED else None
             ),
-            "failure_phase": "execution" if self.backend_state == RunState.FAILED else None,
-            "error": "application failed" if self.backend_state == RunState.FAILED else None,
-        }
+            failure_phase="execution" if self.backend_state is RunState.FAILED else None,
+            message="application failed" if self.backend_state is RunState.FAILED else None,
+        )
+
+    async def stop_observation(self):
+        pass
+
+    async def close(self):
+        pass
 
 
 def _run(tmp_path, state=RunState.FINISHED):
@@ -72,16 +85,13 @@ def _run(tmp_path, state=RunState.FINISHED):
     files = FileManifest(
         stdout=FileEntry(str(destination), str(remote)),
     ).initialize_availability()
-    context = _Context(state)
-    session = FileSession(context, spec, files=files, remote_directory="/work/case")
+    execution = _BackendExecution(state)
+    session = FileSession(_file_context(tmp_path), spec, files=files, remote_directory="/work/case")
     from kkrunner.files.streams import OutputStreams
     session._streams = OutputStreams(output, None)
     session._stream_positions = {"out": 0, "err": None}
-    job = Job(
-        context, spec, backend_id="opaque-handle", remote_directory="/work/case",
-        status={"state": "running"},
-    )
-    return Run(job, file_session=session), context, destination, output
+    job = Job(execution, spec)
+    return Run(job, file_session=session), execution, destination, output
 
 
 def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
@@ -99,7 +109,7 @@ def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_
     run, _, destination, output = _run(tmp_path, RunState.UNKNOWN)
     def fail_sync(*args):
         raise AssertionError("Unknown execution must not download results")
-    run._file_session.synchronize = fail_sync
+    run._file_session.finalize = fail_sync
     run.start()
     outcome = run.wait()
     assert outcome.output_file == str(destination)
@@ -120,7 +130,7 @@ def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, ex
     run, _, _, output = _run(tmp_path, state)
     def unavailable(*args):
         raise OSError("download unavailable")
-    run._file_session.synchronize = unavailable
+    run._file_session.finalize = unavailable
     if state == RunState.FINISHED:
         run.start()
         with pytest.raises(OSError, match="download unavailable"):
@@ -137,10 +147,10 @@ def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, ex
 def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
     destination = tmp_path / "output"
     destination.write_bytes(b"abc")
-    context = _Context(RunState.RUNNING)
     a_stream = destination.open("ab")
     b_stream = destination.open("ab")
     try:
+        context = _file_context(tmp_path)
         a = FileSession(context, ExecutionSpec(argv=(), output_file=a_stream, directory=tmp_path))
         b = FileSession(context, ExecutionSpec(argv=(), output_file=b_stream, directory=tmp_path))
         from kkrunner.files.streams import OutputStreams
@@ -181,21 +191,11 @@ def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
 
 
 def test_unframed_backend_follow_failure_does_not_disguise_client_failure(tmp_path):
-    """A failed local stream command can coexist with confirmed native success."""
-    import subprocess
-
-    class BrokenFollow(_Follow):
-        async def wait(self):
-            return 17
-
-    context = _Context(RunState.FINISHED)
-    async def follow(*args, **kwargs):
-        return BrokenFollow(b"partial output")
-
-    context._follow = follow
+    """A failed FOLLOW transport can coexist with confirmed native success."""
+    execution = _BackendExecution(RunState.FINISHED)
+    execution.follow_error = subprocess.CalledProcessError(17, ("ssh", "follow"))
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
-    job = Job(context, spec, backend_id="opaque-handle", remote_directory=str(tmp_path),
-              status={"state": "running"})
+    job = Job(execution, spec)
     run = Run(job)
     run.start()
     with pytest.raises(subprocess.CalledProcessError):
