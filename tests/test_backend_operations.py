@@ -8,7 +8,8 @@ import pytest
 
 from kkrunner.backends import backend_class
 from kkrunner.backends.support.class_helper import static_methods
-from kkrunner.client.operations import BackendOperation, operation_command
+from kkrunner.client.contracts import Operation
+from kkrunner.client.transports.rpc import operation_command
 
 MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
                       "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
@@ -49,7 +50,7 @@ def test_ssh_helper_imports_one_backend_method(kind):
 @pytest.mark.parametrize("kind", ("process", "psij"))
 def test_operation_command_dispatches_static_method(kind):
     backend = backend_class(kind)
-    operation = BackendOperation.for_backend(backend, "status")
+    operation = Operation.for_backend(backend, "status")
     command = operation_command(operation)
     assert command[:2] == ("python3", "-c")
     compile(command[2], "<backend operation>", "exec")
@@ -59,14 +60,14 @@ def test_operation_command_dispatches_static_method(kind):
 @pytest.mark.parametrize("kind", ("direct", "process", "psij"))
 def test_backend_operation_reference_is_well_formed(kind):
     backend = backend_class(kind)
-    operation = BackendOperation.for_backend(backend, "stream")
+    operation = Operation.for_backend(backend, "stream")
     assert operation.backend is backend
     assert operation.function == "stream"
 
 
 def test_portable_direct_stream_is_self_contained():
     backend = backend_class("direct")
-    command = operation_command(BackendOperation.for_backend(backend, "stream"), streaming=True)
+    command = operation_command(Operation.for_backend(backend, "stream"), streaming=True)
     code = command[-1]
     compile(code, "<portable direct stream>", "exec")
     assert "async def stream(request" in code

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from kkrunner.client.operations import BackendOperation
+from kkrunner.client.contracts import Operation
 from kkrunner.client.transports import LocalTransport, SshTransport
 
 
@@ -36,7 +36,7 @@ class LoopbackSshTransport(SshTransport):
 def test_portable_call(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
-        result = await endpoint.call(BackendOperation.standalone(portable_add), 19, 23)
+        result = await endpoint.call(Operation.standalone(portable_add), 19, 23)
         assert result == 42
     asyncio.run(verify())
 
@@ -46,7 +46,7 @@ def test_installed_call(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
         from kkrunner.backends import SupervisedBackend
-        operation = BackendOperation.for_backend(SupervisedBackend, "acknowledge_submission")
+        operation = Operation.for_backend(SupervisedBackend, "acknowledge_submission")
         assert await endpoint.call(operation, "missing-submission") == {"acknowledged": False}
     asyncio.run(verify())
 
@@ -54,7 +54,7 @@ def test_installed_call(endpoint_type):
 def test_portable_stream_on_ssh_transport():
     endpoint = LoopbackSshTransport()
     async def verify():
-        running = await endpoint.start_operation(BackendOperation.standalone(portable_stream), "live\\n")
+        running = await endpoint.start_operation(Operation.standalone(portable_stream), "live\\n")
         out, err = await running.communicate()
         assert out == b"live\\n"
         assert err == b""
@@ -67,10 +67,10 @@ def test_reject_nonportable_operation_before_submission():
     def nested(value):
         return captured + value
     with pytest.raises(TypeError):
-        BackendOperation.standalone(nested)
+        Operation.standalone(nested)
     from kkrunner.backends import SupervisedBackend
     with pytest.raises(ValueError, match="static backend operation"):
-        BackendOperation.for_backend(SupervisedBackend, "not-an-operation")
+        Operation.for_backend(SupervisedBackend, "not-an-operation")
 
 
 @pytest.mark.parametrize("endpoint_type", [LocalTransport, LoopbackSshTransport])
@@ -78,7 +78,7 @@ def test_installed_backend_operation_receives_only_explicit_json_arguments(endpo
     endpoint = endpoint_type()
     async def verify():
         from kkrunner.backends.support.process import resolve_mpi_options
-        operation = BackendOperation.standalone(resolve_mpi_options)
+        operation = Operation.standalone(resolve_mpi_options)
         # Explicit launcher avoids dependence on target environment/MPI.
         result = await endpoint.call(
             operation,
@@ -92,7 +92,7 @@ def test_ssh_loopback_streaming_operation_preserves_live_output():
     """Streaming standalone functions use pipes and a process exit code."""
     async def verify():
         process = await LoopbackSshTransport().start_operation(
-            BackendOperation.standalone(portable_stream), "streamed",
+            Operation.standalone(portable_stream), "streamed",
         )
         out, err = await process.communicate()
         assert out == b"streamed"
@@ -109,7 +109,7 @@ def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_p
     from kkrunner.client.operations import BackendOperation
 
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "mailbox"))
-    operation = BackendOperation.for_backend(
+    operation = Operation.for_backend(
         backend_class("process"), "acknowledge_submission"
     )
 
@@ -124,7 +124,7 @@ def test_installed_class_helper_source_never_contains_supervisor_implementation(
     from kkrunner.backends import backend_class
     from kkrunner.client.operations import BackendOperation, operation_command
 
-    op = BackendOperation.for_backend(backend_class("process"), "submit")
+    op = Operation.for_backend(backend_class("process"), "submit")
     command = operation_command(op, python=(sys.executable,))
     script = command[-1]
     compile(script, "<ssh import-only helper>", "exec")
