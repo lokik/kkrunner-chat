@@ -7,7 +7,10 @@ import pytest
 
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase
-from kkrunner.client.run_parts import RunParts
+from kkrunner.client import EndpointClient
+from kkrunner.backends import SupervisedBackend
+from kkrunner.backends.contracts import JobStatus
+from kkrunner import ExecutionSpec
 from kkrunner.runs.manager import RunManager
 
 
@@ -19,10 +22,24 @@ class _RawRunner:
         self.exception = None
         self.failure_phase = None
         self.failure_message = None
+        self.output_error = None
 
     @property
     def return_code(self):
         return self.result.return_code
+
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_detached(self, detached):
+        pass
+
+    def configure_submission(self, request, **observation):
+        pass
+
+    def status(self):
+        return JobStatus(self.state, return_code=self.return_code)
 
     def submit(self):
         self.backend_id = "job-1"
@@ -41,13 +58,22 @@ class _RawRunner:
         pass
 
 
-class _Executor:
-    name = "test"
+class _Executor(EndpointClient):
+    def __init__(self):
+        super().__init__(SupervisedBackend)
+
+    def acknowledge_submission(self, record):
+        pass
+
+    def acknowledge(self, record):
+        pass
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
         self.runner = _RawRunner()
         self.runner.spec = spec
-        return RunParts(self.runner)
+        parts.job = self.runner
+        return parts
 
 
 def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
@@ -56,7 +82,7 @@ def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
     finished = Event()
     run = manager.create_run(
         _Executor(),
-        SimpleNamespace(directory=str(tmp_path)),
+        ExecutionSpec(argv=("unused",), directory=str(tmp_path)),
         process_result=lambda outcome: outcome,
         callback=lambda result: finished.set(),
         metadata={"example": {"task": "DOS".upper()}},
@@ -78,7 +104,7 @@ def test_result_processor_failure_is_postprocessing_failure(tmp_path):
 
     run = manager.create_run(
         executor,
-        SimpleNamespace(directory=str(tmp_path)),
+        ExecutionSpec(argv=("unused",), directory=str(tmp_path)),
         process_result=fail,
         metadata={"example": {"task": "DOS".upper()}},
     )
