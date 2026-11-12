@@ -52,6 +52,7 @@ __all__ = ["DirectBackend", "SupervisedBackend", "PsijBackend", "BackendConfig"]
 def __getattr__(name):
     if name == "BackendConfig":
         from .config import BackendConfig
+        globals()[name] = BackendConfig
         return BackendConfig
     kinds = {"DirectBackend": "direct", "SupervisedBackend": "process", "PsijBackend": "psij"}
     try:

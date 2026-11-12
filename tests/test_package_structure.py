@@ -17,10 +17,12 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
-    from kkrunner.client.ssh import SshRunEndpoint
+    from kkrunner.client.client import RunClient
+    from kkrunner.client.transports.ssh import SshTransport
     from kkrunner.runs.run import Run
 
-    assert SshRunEndpoint.__module__ == "kkrunner.client.ssh"
+    assert RunClient.__module__ == "kkrunner.client.client"
+    assert SshTransport.__module__ == "kkrunner.client.transports.ssh"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
@@ -30,13 +32,15 @@ def test_public_managers_have_one_unambiguous_name():
 
 def test_run_and_job_ownership_boundaries_are_explicit():
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
-    from kkrunner.client import LocalRunEndpoint
+    from kkrunner.client import RunClient, LocalTransport
+    from kkrunner.backends.contracts import BackendCapability
+
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert not hasattr(backend, "create_job")
-        endpoint = LocalRunEndpoint(backend)
-        assert callable(endpoint.create_run_parts)
-    assert DirectBackend.session_bound
-    assert not SupervisedBackend.session_bound
+        client = RunClient(backend, transport=LocalTransport())
+        assert callable(client.create_run_parts)
+    assert BackendCapability.REATTACH not in DirectBackend().supports
+    assert BackendCapability.REATTACH in SupervisedBackend().supports
 
 
 
@@ -93,7 +97,7 @@ from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore, backends
 assert 'DirectBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.psij', 'kkrunner.client.ssh', 'kkrunner.projects', 'psij',
+    'kkrunner.backends.psij', 'kkrunner.client.transports.ssh', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import DirectBackend
 assert backends.DirectBackend is DirectBackend
@@ -111,15 +115,15 @@ def test_process_strategies_have_distinct_implementations():
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.client.local import LocalRunEndpoint
+    from kkrunner.client import RunClient
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.job import Job
 
-    backend = LocalRunEndpoint()
+    client = RunClient()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
-    assert isinstance(backend.create_job(spec), Job)
-    assert isinstance(backend.create_job(spec, submission_key="run-1"), Job)
-    assert isinstance(LocalRunEndpoint(SupervisedBackend).create_job(spec, submission_key="run-1"), Job)
+    assert isinstance(client.create_run_parts(spec).job, Job)
+    assert isinstance(client.create_run_parts(spec, submission_key="run-1").job, Job)
+    assert isinstance(RunClient(SupervisedBackend).create_run_parts(spec, submission_key="run-1").job, Job)
 
 
 def test_remote_process_service_reuses_supervised_backend_operations():
@@ -212,13 +216,15 @@ for name in package.__all__:
 def forbidden(name):
     raise AssertionError("cached attribute unexpectedly resolved again: " + name)
 
-original = package.__getattr__
-package.__getattr__ = forbidden
+original = getattr(package, "__getattr__", None)
+if original is not None:
+    package.__getattr__ = forbidden
 try:
     for name, value in resolved.items():
         assert getattr(package, name) is value, name
 finally:
-    package.__getattr__ = original
+    if original is not None:
+        package.__getattr__ = original
 """
     subprocess.run([sys.executable, "-c", code, module_name], check=True, timeout=10)
 
