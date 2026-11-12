@@ -131,6 +131,7 @@ class _DiagnosticProcess:
     def __init__(self, process):
         self._process = process
         self.stdin = process.stdin
+        self.pid = process.pid
         self.stdout = process.stdout
         self.stderr = _reader_with(b"Warning: Permanently added test host\n")
 

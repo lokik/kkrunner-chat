@@ -14,6 +14,7 @@ def loopback_file_transport(monkeypatch):
     This test verifies FileAccess path mapping, not the SSH process protocol.
     """
     monkeypatch.setattr(SshTransport, "expand_files", LocalTransport.expand_files)
+    monkeypatch.setattr(SshTransport, "put_file", LocalTransport.put_file)
     monkeypatch.setattr(SshTransport, "get_file", LocalTransport.get_file)
 
 
