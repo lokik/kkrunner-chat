@@ -229,22 +229,26 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
 def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
     from kkrunner.backends import SupervisedBackend
-    from .test_remote import _OperationLoopbackTransport
+    from kkrunner.client import SshTransport
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
     remote.mkdir()
 
-    class Transport(_OperationLoopbackTransport):
-        fail = True
+    # Use a reconstructable, supported SSH transport even though the test
+    # executes its remote shell locally. Custom transport subclasses cannot be
+    # reattached from durable RunRecords.
+    transport = SshTransport(host="-c", ssh="sh", python_command=(sys.executable,))
+    original_get_file = SshTransport.get_file
+    fail_download = True
 
-        async def get_file(self, source, destination):
-            if self.fail and str(source).endswith("answer.txt"):
-                raise OSError("interrupted download")
-            return await super().get_file(source, destination)
+    async def get_file(self, source, destination):
+        if fail_download and str(source).endswith("answer.txt"):
+            raise OSError("interrupted download")
+        return await original_get_file(self, source, destination)
 
-    transport = Transport()
+    monkeypatch.setattr(SshTransport, "get_file", get_file)
     executor = EndpointClient(SupervisedBackend, transport=transport)
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
@@ -262,7 +266,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     failed = manager.store.get(run.id)
     assert failed.failure_phase == FailurePhase.DOWNLOAD
     assert failed.return_code == 0
-    transport.fail = False
+    fail_download = False
     manager.resume_download(failed)
     attached = manager.attach(run.id, client=executor)
     assert attached.wait().return_code == 0
