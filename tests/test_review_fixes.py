@@ -6,7 +6,6 @@ from threading import Event, Thread
 import pytest
 
 from kkrunner.runs import CorruptRunRecord
-from kkrunner.runs.base import ExecutionResources, ResourceOwnedRunner
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
@@ -25,48 +24,32 @@ def test_non_object_json_root_raises_corrupt_record(tmp_path, data):
 
 
 def test_cancel_during_failed_submit_does_not_reenter_submission_lock():
-    entered, release, finished, cancelled = Event(), Event(), Event(), Event()
+    from .test_cancellation import _controlled_job
+
+    job, execution = _controlled_job(fail_submit=True)
+    finished = Event()
     errors = []
-
-    class Raw:
-        state = RunState.NEW
-
-        def submit(self):
-            entered.set()
-            assert release.wait(3)
-            raise RuntimeError("submission rejected")
-
-    resources = ExecutionResources()
-    run = ResourceOwnedRunner(Raw(), resources)
 
     def submit():
         try:
-            run.submit()
+            job.submit()
         except BaseException as exc:
             errors.append(exc)
         finally:
             finished.set()
 
-    def cancel():
-        run.cancel()
-        cancelled.set()
-
     submitting = Thread(target=submit, daemon=True)
-    cancelling = Thread(target=cancel, daemon=True)
     submitting.start()
     try:
-        assert entered.wait(3)
-        cancelling.start()
-        assert run._cancel_requested.wait(3)
+        assert execution.entered.wait(3)
+        future = job.cancel()
     finally:
-        release.set()
+        execution.release.set()
 
     assert finished.wait(3), "failed submission deadlocked"
-    assert cancelled.wait(3), "cancellation deadlocked"
     submitting.join(3)
-    cancelling.join(3)
+    assert not submitting.is_alive()
+    assert future.result(timeout=3) is None
     assert len(errors) == 1
     assert isinstance(errors[0], RuntimeError)
     assert str(errors[0]) == "submission rejected"
-    assert resources.closed
-    assert run.state == RunState.CANCELLED

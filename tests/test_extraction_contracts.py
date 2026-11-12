@@ -8,7 +8,6 @@ import pytest
 
 from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
-from kkrunner.runs.base import ExecutionResources, ResourceOwnedRunner
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
@@ -119,41 +118,34 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
     assert manager.store.get(run.id).state == RunState.FINISHED
 
 
-def test_cancel_and_failed_submit_do_not_deadlock(tmp_path):
-    entered, release, cancelled, finished = Event(), Event(), Event(), Event()
-    resources = ExecutionResources()
+def test_cancel_and_failed_submit_do_not_deadlock():
+    from .test_cancellation import _controlled_job
 
-    class Raw:
-        state = RunState.NEW
-
-        def submit(self):
-            entered.set()
-            assert release.wait(3)
-            raise RuntimeError("submission rejected")
-
-    run = ResourceOwnedRunner(Raw(), resources)
+    job, execution = _controlled_job(fail_submit=True)
+    errors, finished = [], Event()
 
     def submit():
         try:
-            run.submit()
-        except RuntimeError:
-            pass
+            job.submit()
+        except BaseException as exc:
+            errors.append(exc)
         finally:
             finished.set()
 
-    def cancel():
-        run.cancel()
-        cancelled.set()
-
     submitting = Thread(target=submit, daemon=True)
     submitting.start()
-    assert entered.wait(3)
-    Thread(target=cancel, daemon=True).start()
-    assert run._cancel_requested.wait(3)
-    release.set()
-    assert finished.wait(0.5), "submit deadlocked with its own state property"
-    assert cancelled.wait(0.5)
-    assert resources.closed
+    try:
+        assert execution.entered.wait(3)
+        future = job.cancel()
+    finally:
+        execution.release.set()
+    assert finished.wait(3), "submission deadlocked with cancellation"
+    submitting.join(3)
+    assert not submitting.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert str(errors[0]) == "submission rejected"
+    assert future.result(timeout=3) is None
 
 
 @pytest.mark.parametrize(

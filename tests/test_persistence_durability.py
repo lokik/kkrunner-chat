@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import kkrunner.runs.file_history as file_history_module
+import kkrunner.runs.files as run_files_module
 import kkrunner.runs.records as records_module
 import kkrunner.support.durability as durability
 from kkrunner.client import LocalTransport
@@ -103,7 +103,7 @@ def test_reserve_syncs_inputs_before_submitting_record(tmp_path, monkeypatch):
         processing_required=True,
     )
     events = []
-    monkeypatch.setattr(file_history_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
+    monkeypatch.setattr(run_files_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
     real_transition = manager.transition
 
     def tracked_transition(current, **changes):
@@ -131,7 +131,7 @@ def test_artifact_publication_syncs_outputs_before_terminal_record(tmp_path, mon
     store.save(record)
     record = manager.transition(record, state=RunState.RUNNING)
     events = []
-    monkeypatch.setattr(file_history_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
+    monkeypatch.setattr(run_files_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
     real_transition = manager.transition
 
     def tracked_transition(current, **changes):
