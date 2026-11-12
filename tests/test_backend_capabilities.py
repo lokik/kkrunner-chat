@@ -13,7 +13,7 @@ from kkrunner.client.contracts import Operation
 from kkrunner.client.transports.rpc import operation_command
 
 
-MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS})
 
 
 def test_capabilities_are_immutable_and_instance_specific():
@@ -22,7 +22,7 @@ def test_capabilities_are_immutable_and_instance_specific():
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
-        assert PsijBackend(executor_name=name).supports == frozenset({BackendCapability.REATTACH})
+        assert PsijBackend(executor_name=name).supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
     assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == frozenset({BackendCapability.REATTACH})
 
 
@@ -105,8 +105,8 @@ def test_ssh_dispatch_uses_class_and_request_uses_backend_instance_options():
     backend = PsijBackend(executor_name="pbs")
     local = EndpointClient(backend)
     ssh = EndpointClient(backend, transport=SshTransport("example.org"))
-    assert local._operation("status").backend is PsijBackend
-    assert ssh._operation("status").backend is PsijBackend
+    assert Operation.for_backend(type(local.backend), "status").backend is PsijBackend
+    assert Operation.for_backend(type(ssh.backend), "status").backend is PsijBackend
     request = ssh.submission_request({}, submission_key="id")
     assert request["backend"] == "psij"
     assert request["backend_options"] == {"executor_name": "pbs", "url": None}
