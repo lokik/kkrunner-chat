@@ -20,7 +20,7 @@ from kkrunner.backends.supervised.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.runs.base import FailurePhase, RunStatus
-from kkrunner.client import RunClient, LocalTransport, StagingSpec
+from kkrunner.client import EndpointClient, LocalTransport, StagingSpec
 from kkrunner.client.job import Job
 from kkrunner.backends.config import BackendConfig
 
@@ -63,7 +63,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
 
 def _managed_parts(spec, *, submission_key=RUN_ID, backend=SupervisedBackend, backend_options=None):
     """Prepare one client session without introducing an alternate Job implementation."""
-    client = RunClient(backend, backend_options=backend_options)
+    client = EndpointClient(backend, backend_options=backend_options)
     parts = client.create_run_parts(spec, submission_key=submission_key)
     parts.prepare_submission()
     parts.prepare_job()
@@ -80,7 +80,7 @@ def _attachment(record):
 
 
 def test_project_launch_reconnect_and_shared_ticket(tmp_path):
-    executor = RunClient(SupervisedBackend)
+    executor = EndpointClient(SupervisedBackend)
     runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     handle = runner.backend_id
@@ -140,7 +140,7 @@ def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
 
 
 def test_missing_ticket_keeps_submission_uncertain(tmp_path):
-    assert RunClient(SupervisedBackend).recover_submission(
+    assert EndpointClient(SupervisedBackend).recover_submission(
         RUN_ID, SubmissionContext(_record(tmp_path, None).execution)
     ).disposition is RecoveryDisposition.INDETERMINATE
 
@@ -154,7 +154,7 @@ def test_missing_supervisor_outcome_is_unknown(tmp_path):
             "socket_path": "/missing/socket",
         }
     )
-    assert RunClient(SupervisedBackend).status(_attachment(_record(tmp_path, handle)))[0].state == RunState.UNKNOWN
+    assert EndpointClient(SupervisedBackend).status(_attachment(_record(tmp_path, handle)))[0].state == RunState.UNKNOWN
 
 
 def test_wildcards_track_concrete_file_availability(tmp_path):
@@ -187,7 +187,7 @@ def test_none_stream_paths_are_live_only(tmp_path):
     assert runner.wait().return_code == 0
     assert not (tmp_path / "out.txt").exists()
     assert not (tmp_path / "err.txt").exists()
-    attached = open_job(RunClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False)
+    attached = open_job(EndpointClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False)
     assert attached.backend_id == runner.backend_id
     assert attached.result.output_file is None
     assert attached.result.error_file is None
@@ -199,7 +199,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
     runner.submit()
     runner.wait()
     assert SupervisedBackend.acknowledge_submission(RUN_ID)["acknowledged"]
-    assert RunClient(SupervisedBackend).status(
+    assert EndpointClient(SupervisedBackend).status(
         _attachment(_record(tmp_path, runner.backend_id))
     )[0].state == RunState.FINISHED
 
@@ -337,7 +337,7 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     existing.write_text("restart cache")
     extra.write_text("old output")
     spec = replace(_spec(tmp_path), cache_files=(str(existing),), output_files=(str(extra),))
-    client = RunClient(SupervisedBackend)
+    client = EndpointClient(SupervisedBackend)
     with pytest.raises(ValueError, match="cache collision"):
         client.create_run_parts(spec, submission_key=RUN_ID)
     assert existing.read_text() == "restart cache"
@@ -353,7 +353,7 @@ import os, sys
 from pathlib import Path
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 root = Path(sys.argv[1])
 manager = RunManager(RunStore(root / 'runs'))
 command = '''
@@ -366,7 +366,7 @@ while not Path('resume').exists():
     time.sleep(0.01)
 print(42)
 '''
-run = manager.create_run(RunClient(SupervisedBackend), ExecutionSpec(
+run = manager.create_run(EndpointClient(SupervisedBackend), ExecutionSpec(
     [sys.executable, '-c', command], directory=root, output_file='run.out'))
 run.submit()
 print(run.id, flush=True)
@@ -440,7 +440,7 @@ def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, mon
         return {"state": "running", "return_code": None}
 
     monkeypatch.setattr(PsijBackend, "follow", staticmethod(follow))
-    client = RunClient(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
+    client = EndpointClient(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
     identity = encode_handle({"kind": "psij", "executor_name": "pbs", "url": "local", "native_id": "native-id"})
     result = asyncio.run(client.transport.follow(
         Operation.for_backend(PsijBackend, "follow"), identity, lambda *_: None,

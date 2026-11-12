@@ -4,13 +4,13 @@ from types import SimpleNamespace
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner.client.pool import ClientPool
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 from kkrunner.backends import SupervisedBackend
 from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
-class _Executor(RunClient):
+class _Executor(EndpointClient):
     def __init__(self, status):
         super().__init__(SupervisedBackend)
         self.status_value = status

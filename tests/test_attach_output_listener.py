@@ -9,7 +9,7 @@ from kkrunner import RunState, RunStore
 from kkrunner.backends import PsijBackend, SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 from kkrunner.client.backend_execution import ManagedExecution
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest
@@ -18,7 +18,7 @@ from kkrunner.runs.model import Execution, WorkingDirectory
 
 
 def _client_and_attachment(tmp_path, monkeypatch, backend_type=SupervisedBackend):
-    client = RunClient(backend_type)
+    client = EndpointClient(backend_type)
     backend_id = "test-backend-id"
     execution = Execution(
         client.transport, WorkingDirectory(str(tmp_path)),
