@@ -11,7 +11,7 @@ import pytest
 from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client import EndpointClient
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command
+from kkrunner.client.transports.rpc import operation_command, operation_result
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
 
@@ -46,7 +46,7 @@ def test_portable_file_query_matches_native_batch(tmp_path):
         _operation_script(query_files),
         input=json.dumps({"args": [paths], "kwargs": kwargs}),
     )
-    assert json.loads(isolated) == native
+    assert operation_result(isolated) == native
 
 
 def test_portable_file_query_rejects_escaping_symlink(tmp_path):
@@ -59,8 +59,9 @@ def test_portable_file_query_rejects_escaping_symlink(tmp_path):
         (sys.executable, "-I", "-c", _operation_script(query_files)),
         input=payload, text=True, capture_output=True,
     )
-    assert result.returncode != 0
-    assert "outside source root" in result.stderr
+    assert result.returncode == 0
+    with pytest.raises(ValueError, match="outside source root"):
+        operation_result(result.stdout)
 
 
 def test_portable_finalize_upload_preserves_mtime(tmp_path):
@@ -68,7 +69,7 @@ def test_portable_finalize_upload_preserves_mtime(tmp_path):
     temporary.write_text("payload")
     timestamp = 1729000000123456789
     payload = json.dumps({"args": [str(temporary), str(destination), timestamp], "kwargs": {}})
-    assert json.loads(_isolated(_operation_script(finalize_upload), input=payload)) is None
+    assert operation_result(_isolated(_operation_script(finalize_upload), input=payload)) is None
     assert destination.read_text() == "payload"
     assert destination.stat().st_mtime_ns == timestamp
 
@@ -87,7 +88,7 @@ def test_portable_mpi_options_matches_local_resolver(monkeypatch):
         input=json.dumps({"args": [isolated_request], "kwargs": {}}),
     )
     assert native == ("srun", "-n", "3")
-    assert json.loads(result) == ["custom-mpi", "--bind", "-np", "3"]
+    assert operation_result(result) == ["custom-mpi", "--bind", "-np", "3"]
 
 
 def test_portable_output_cleanup_preserves_wildcard_cache(tmp_path):
@@ -102,7 +103,7 @@ def test_portable_output_cleanup_preserves_wildcard_cache(tmp_path):
         },
     }
     payload = json.dumps({"args": [request], "kwargs": {}})
-    assert json.loads(_isolated(_operation_script(prepare_target_outputs), input=payload)) is None
+    assert operation_result(_isolated(_operation_script(prepare_target_outputs), input=payload)) is None
     assert cache.read_text() == "saved"
     assert not stale.exists()
 
