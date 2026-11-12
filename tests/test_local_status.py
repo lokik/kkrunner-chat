@@ -55,7 +55,7 @@ def test_lost_is_not_a_run_state():
         (RunState.CANCELLED, None, "available"),
         (RunState.FAILED, FailurePhase.EXECUTION, "available"),
         (RunState.FAILED, FailurePhase.LAUNCH, "skipped"),
-        (RunState.FAILED, FailurePhase.OUTPUT, "skipped"),
+        (RunState.FAILED, FailurePhase.OUTPUT, "failed"),
         (RunState.FAILED, FailurePhase.ARTIFACTS, "failed"),
     ],
 )
@@ -105,7 +105,8 @@ def test_local_status_projection_and_identity_recovery_are_independent(
     assert recovered.ref.token == backend_id
     assert queried.backend_id == backend_id
     assert queried.message == "backend message"
-    assert queried.failure_phase == phase
+    # Backend status normalizes historical ARTIFACTS to the execution-only OUTPUT phase.
+    assert queried.failure_phase == (FailurePhase.OUTPUT if phase == FailurePhase.ARTIFACTS else phase)
     if stream_state is None:
         assert queried.files is None
         assert files.stdout.availability_state == "pending"

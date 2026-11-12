@@ -16,22 +16,18 @@ def test_direct_remote_process_without_pending_identity_returns_none(tmp_path, m
 def test_psij_recovery_uses_backend_native_identity(monkeypatch):
     calls = []
 
-    class Backend:
-        executor_name = "slurm"
-        url = None
+    def recover(run_id, directory, *, submitted_at=None):
+        calls.append((run_id, directory, submitted_at))
+        return {
+            "native_id": "scheduler-42",
+            "state": RunState.RUNNING,
+            "directory": "/scratch/case",
+            "stdout": "/scratch/case/run.out",
+            "stderr": "/scratch/case/run.err",
+            "return_code": None,
+        }
 
-        def recover(self, run_id, directory, *, submitted_at=None):
-            calls.append((run_id, directory, submitted_at))
-            return {
-                "native_id": "scheduler-42",
-                "state": RunState.RUNNING,
-                "directory": "/scratch/case",
-                "stdout": "/scratch/case/run.out",
-                "stderr": "/scratch/case/run.err",
-                "return_code": None,
-            }
-
-    monkeypatch.setattr(scheduler_operations, "_create_executor", lambda options: Backend())
+    monkeypatch.setattr(scheduler_operations.slurm, "recover", recover)
     recovered = remote_service.recover_remote(
         "client-run",
         {"backend": "psij", "backend_options": {"executor_name": "slurm", "url": None}, "directory": "/scratch/case"},
@@ -47,14 +43,7 @@ def test_psij_recovery_uses_backend_native_identity(monkeypatch):
 
 def test_psij_recovery_returns_none_when_backend_has_no_match(monkeypatch):
 
-    class Backend:
-        backend = "slurm"
-        url = None
-
-        def recover_native(self, run_id, directory, *, submitted_at=None):
-            return None
-
-    monkeypatch.setattr(scheduler_operations, "_psij_executor", lambda options: Backend())
+    monkeypatch.setattr(scheduler_operations.slurm, "recover", lambda *args, **kwargs: None)
     assert (
         remote_service.recover_remote(
             "client-run", {"backend": "psij", "backend_options": {"executor_name": "slurm"}, "directory": "/scratch/case"}
