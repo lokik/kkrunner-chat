@@ -46,7 +46,8 @@ file-access layer, with the client delegating those requests.
 ``Job.state`` and ``Job.status()`` expose cached native facts without I/O.
 ``Job.refresh_status()`` explicitly queries a backend with independent status
 support. PID is available separately as ``Job.pid``; a local direct identity
-uses ``pid:start_time``. STATUS, REATTACH and RECOVER are explicit capabilities.
+uses ``pid:start_time:boot_id`` on Linux; the boot identifier prevents a
+PID/start-time collision across reboots. STATUS, REATTACH and RECOVER are explicit capabilities.
 Direct reattachment is not implemented merely by recording this identity.
 An exited process whose observer was lost has no recoverable return code and
 must not be reported as a successful completed calculation.
@@ -56,7 +57,7 @@ must not be reported as a successful completed calculation.
 client supplies the default tracking policy; native backends do not own it.
 
 Execution intent and staging
-----------------------------
+---------------------------
 
 ``ExecutionSpec.mpi`` is a :class:`~kkrunner.execution.MpiSpec`. File mapping
 and synchronization are a separate :class:`~kkrunner.client.StagingSpec` in

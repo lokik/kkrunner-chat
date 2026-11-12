@@ -131,8 +131,8 @@ groups and Unix sockets. Linux and macOS are covered by CI; Windows-specific
 locking/durability code alone does not provide a managed supervisor on Windows.
 
 `support.process_identity.ProcessIdentity` owns process identity and uses only
-public psutil API. An opaque backend handle stores the PID, creation time and
-time basis. On Linux the creation time is normalized as
+public psutil API. An opaque backend handle stores the PID, creation time,
+time basis and, on Linux, the kernel boot ID. On Linux the creation time is normalized as
 `Process(pid).create_time() - psutil.boot_time()`. Each observation creates a
 fresh `Process` because its creation time is cached. Boot-time reads before and
 after the observation detect a clock adjustment; an inconsistent observation is
@@ -142,8 +142,10 @@ Linux clock tick. No old tick-based handle is interpreted as the new format.
 
 Elsewhere the identity uses the absolute `create_time()`. Its precision and
 behavior under clock adjustments depend on the platform. PID plus creation time
-is not a cryptographic or globally unique identity, especially across host
-reboots. psutil's public `is_running()` checks for PID reuse during observation;
+is not a cryptographic or globally unique identity. Linux also requires an
+identical boot ID, so an identity from another boot cannot establish a match.
+A Linux identity without boot information is unverifiable. Other platforms
+retain their public psutil timestamp guarantees. psutil's public `is_running()` checks for PID reuse during observation;
 zombies, vanished processes, access errors and persistently unstable reads never
 confirm identity. Without a terminal receipt an unverifiable identity produces
 `UNKNOWN`, preserving the run for later recovery. These are non-atomic

@@ -10,8 +10,10 @@ from pathlib import Path
 
 import kkrunner
 from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
-from kkrunner.backends import DirectBackend, SupervisedBackend
-from kkrunner.client import RunClient, SshTransport, StagingSpec
+from kkrunner.runs import LaunchSpec
+from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.backends import SupervisedBackend
+from kkrunner.client import SshRunEndpoint, SshTransport
 from kkrunner.projects import ProjectRunManager, ProjectRepository
 
 assert not os.environ.get("PYTHONPATH")
@@ -23,8 +25,8 @@ for module in pkgutil.walk_packages(kkrunner.__path__, kkrunner.__name__ + "."):
 assert md.version("kkrunner") == kkrunner.__version__
 
 root = Path(tempfile.mkdtemp(prefix="kkrunner-distribution-"))
-raw = Run.untracked(
-    RunClient(DirectBackend),
+raw = Run.direct(
+    LocalRunEndpoint(),
     ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=root,
@@ -38,7 +40,7 @@ projects = ProjectRepository(root / "projects")
 project = projects.create("Wheel review", directory=root)
 manager = ProjectRunManager(project_repository=projects, project=project)
 run = manager.create_run(
-    RunClient(SupervisedBackend),
+    LocalRunEndpoint(SupervisedBackend),
     ExecutionSpec(
         [sys.executable, "-c", "print(43)"],
         directory=root,
@@ -70,13 +72,13 @@ class LoopbackSshTransport(SshTransport):
         return tuple(argv)
 
 
-client = RunClient(DirectBackend, transport=LoopbackSshTransport())
-run = Run.untracked(client,
+executor = SshRunEndpoint(LoopbackSshTransport())
+run = Run.direct(executor,
     ExecutionSpec(
         [sys.executable, "-c", "print(44)"],
         directory=local,
         output_file="remote.out",
-        staging=StagingSpec(local_root=local, remote_root=remote),
+        launch=LaunchSpec(local_root=local, remote_root=remote),
     )
 )
 assert run.run().return_code == 0
