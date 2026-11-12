@@ -4,6 +4,8 @@ from kkrunner.files import FileEntry, FileManifest
 from kkrunner import RunState, RunStore
 from kkrunner.runs import RunStatus
 from kkrunner.runs.manager import RunManager
+from kkrunner.backends import DirectBackend, SupervisedBackend
+from kkrunner.client import EndpointClient
 
 
 @pytest.mark.parametrize("optional", [False, True])
@@ -21,14 +23,17 @@ def test_missing_output_respects_optionality(tmp_path, optional):
 def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatch, terminal_state):
     manager = RunManager(RunStore(tmp_path / "runs"))
     calls = []
+    client = EndpointClient(SupervisedBackend)
 
-    class Backend:
-        def acknowledge(self, record):
-            assert manager.store.get(record.id).state == terminal_state
-            calls.append(record.id)
+    def acknowledge(record):
+        assert manager.store.get(record.id).state == terminal_state
+        calls.append(record.id)
 
-    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
-    record = manager.new_record(directory=tmp_path)
+    monkeypatch.setattr(client, "acknowledge", acknowledge)
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=tmp_path, transport=client.transport, backend=client.backend_config,
+    )
     manager.store.save(record)
     finished = manager.update(record, RunStatus(terminal_state, backend_id="receipt", return_code=0))
     assert finished.state == terminal_state
@@ -39,7 +44,6 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
     from threading import Event
 
     from kkrunner import ExecutionSpec, Run
-    from kkrunner.client.local import LocalRunEndpoint
 
     ended, results = Event(), []
     run = None
@@ -48,7 +52,11 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         results.append(run.wait())
         ended.set()
 
-    run = Run.direct(LocalRunEndpoint(), ExecutionSpec(["true"], directory=tmp_path), callback=completed)
+    run = Run.untracked(
+        EndpointClient(DirectBackend),
+        ExecutionSpec(["true"], directory=tmp_path),
+        callback=completed,
+    )
     run.submit()
     assert ended.wait(3), "completion callback deadlocked waiting for its own completion event"
     assert results == [run.result]
@@ -57,15 +65,18 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
 def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, monkeypatch):
     manager = RunManager(RunStore(tmp_path / "runs"))
     calls = []
+    client = EndpointClient(SupervisedBackend)
 
-    class Backend:
-        def acknowledge(self, record):
-            calls.append(record.id)
-            if len(calls) == 1:
-                raise OSError("temporarily disconnected")
+    def acknowledge(record):
+        calls.append(record.id)
+        if len(calls) == 1:
+            raise OSError("temporarily disconnected")
 
-    monkeypatch.setattr(manager, "executor_for", lambda record: Backend())
-    record = manager.new_record(directory=tmp_path)
+    monkeypatch.setattr(client, "acknowledge", acknowledge)
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=tmp_path, transport=client.transport, backend=client.backend_config,
+    )
     record = manager.complete(
         record, state=RunState.FINISHED, return_code=0, execution=record.execution.submitted("receipt")
     )
@@ -101,11 +112,13 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     acknowledgements = []
-    backend = type("Backend", (), {"acknowledge": lambda self, record: acknowledgements.append(record.id)})()
-    monkeypatch.setattr(manager, "executor_for", lambda record: backend)
+    client = EndpointClient(SupervisedBackend)
+    monkeypatch.setattr(client, "acknowledge", lambda record: acknowledgements.append(record.id))
+    manager.register_client(client)
     path = tmp_path / "out"
     record = manager.new_record(
         directory=tmp_path,
+        transport=client.transport, backend=client.backend_config,
         remote_directory="/remote",
         files=FileManifest(stdout=FileEntry(str(path), "/remote/out", "failed", "download interrupted")),
     )
