@@ -3,7 +3,7 @@ import pytest
 from kkrunner import RunState
 from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 from kkrunner.files.manifest import FileMapping
-from kkrunner.client import RunClient, SshTransport, LocalTransport
+from kkrunner.client import EndpointClient, SshTransport, LocalTransport
 from kkrunner.runs import Execution, RunRecord, WorkingDirectory
 
 
@@ -39,7 +39,7 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
     remote_later.write_text("not part of the historical snapshot")
     local_first = local_directory / "result-1.dat"
     local_first.write_text("keep-local")
-    executor = RunClient(transport=SshTransport("loopback"))
+    executor = EndpointClient(transport=SshTransport("loopback"))
     run = RunRecord(
         id="historical",
         state=RunState.FINISHED,
@@ -98,7 +98,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
     (remote_dir / ".hidden.dat").write_text("hidden")
     existing = local_root / "calc" / "part-a.dat"
     existing.write_text("keep")
-    executor = RunClient(transport=SshTransport("loopback"))
+    executor = EndpointClient(transport=SshTransport("loopback"))
     run = RunRecord(
         id="wildcard-fetch",
         state=RunState.FINISHED,
@@ -135,7 +135,7 @@ def test_remote_staged_result_keeps_canonical_file_absent(tmp_path):
     captured = FileVersion.capture(local, require_digest=True)
     local.unlink()
     (remote_dir / "run.out").write_bytes(b"original result")
-    executor = RunClient(transport=SshTransport("loopback"))
+    executor = EndpointClient(transport=SshTransport("loopback"))
     run = RunRecord(
         id="staged-result",
         state=RunState.FINISHED,
@@ -176,7 +176,7 @@ def test_fetch_rejects_local_symlink_escape(tmp_path, wildcard):
     name = "*.dat" if wildcard else "result.dat"
     local_path = local_root / "alias" / name
     remote_path = remote_dir / name
-    executor = RunClient(transport=SshTransport("loopback"))
+    executor = EndpointClient(transport=SshTransport("loopback"))
     run = RunRecord(
         id="escaped-result",
         state=RunState.FINISHED,
@@ -211,7 +211,7 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     (remote / "bad" / "output.dat").write_bytes(b"remote")
     canonical = local / "bad" / "output.dat"
     staged = local / "staged-output.dat"
-    executor = RunClient(transport=SshTransport("loopback"))
+    executor = EndpointClient(transport=SshTransport("loopback"))
     run = RunRecord(
         id="escaped-staged",
         state=RunState.FINISHED,
