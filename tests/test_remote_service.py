@@ -197,7 +197,7 @@ def test_psij_cancellation_does_not_invent_terminal_state(monkeypatch, tmp_path)
         calls.append(handle["native_id"])
         return Job()
 
-    monkeypatch.setattr(psij_support, "_attach_job", attach)
+    monkeypatch.setattr(scheduler_operations, "_attach_job", attach)
     from kkrunner.backends.contracts import JobStatus
     monkeypatch.setattr(psij_slurm, "status", lambda _: JobStatus(RunState.RUNNING))
     status = remote_service.cancel_remote(remote_id)
@@ -210,6 +210,9 @@ def _stub_terminal_psij_job(monkeypatch, state, return_code, observed):
 
     class Job:
         status = SimpleNamespace(state=SimpleNamespace(name=state), exit_code=return_code, message=None)
+
+        def set_job_status_callback(self, callback):
+            self.callback = callback
 
         def wait(self):
             observed.append("wait")
@@ -802,7 +805,8 @@ def test_remote_submit_json_setup_failure_cleans_pipes_and_directory(tmp_path, m
     with pytest.raises(SubmissionNotStarted, match="invalid worker specification"):
         process_operations.SupervisedBackend.submit({"argv": ("never-executed",), "directory": str(tmp_path), "detached": True})
     assert not directory.exists()
-    assert len(created) == 4
+    # Serialization is validated before allocating IPC descriptors.
+    assert len(created) == 0
     for fd in created:
         with pytest.raises(OSError):
             os.fstat(fd)
