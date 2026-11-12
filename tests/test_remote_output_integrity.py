@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.client.file_session import FileSession
+from kkrunner.client.file_context import FileContext
 from kkrunner.client import EndpointClient, StagingSpec
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.runs.base import ExecutionSpec
@@ -26,7 +27,7 @@ def _session(tmp_path, *, stdout=b"same", stderr=b"error"):
     ).initialize_availability()
     client = EndpointClient()
     session = FileSession(
-        client._context(client, StagingSpec()),
+        FileContext(StagingSpec()),
         ExecutionSpec(argv=(), directory=tmp_path),
         files=manifest,
     )

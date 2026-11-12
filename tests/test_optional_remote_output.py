@@ -6,6 +6,7 @@ import pytest
 
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.client.file_session import FileSession
+from kkrunner.client.file_context import FileContext
 from kkrunner.client import EndpointClient, StagingSpec
 from kkrunner.runs.base import ExecutionSpec
 
@@ -15,7 +16,7 @@ def _runner(tmp_path):
     remote = str(tmp_path / "remote-optional.out")
     manifest = FileManifest(outputs=(FileEntry(local_path=local, remote_path=remote, availability_state="pending"),))
     client = EndpointClient()
-    context = client._context(client, StagingSpec())
+    context = FileContext(StagingSpec())
     runner = FileSession(
         context,
         ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path)),
