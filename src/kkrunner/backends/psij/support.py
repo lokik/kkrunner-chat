@@ -13,6 +13,8 @@ from kkrunner.remote.handles import decode_handle
 from kkrunner.execution import RunState
 from kkrunner.support.growing_file_tail import follow_growing_files
 
+from . import slurm
+
 _STATE_MAP = {
     "NEW": RunState.NEW,
     "STAGE_IN": RunState.QUEUED,
@@ -97,8 +99,22 @@ async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
             return None
         native = finished.result()
         state = psij_state(native)
+        code = getattr(native, "exit_code", None)
+        # PSI/J can report terminal completion before its attached JobStatus
+        # carries an exit code. For local Slurm, recover the authoritative
+        # scheduler outcome rather than treating a successful job as code=None.
+        if (
+            code is None and state.is_terminal
+            and str(handle["executor_name"]).lower() == "slurm" and handle.get("url") is None
+        ):
+            scheduler = await asyncio.to_thread(slurm.status, str(handle["native_id"]))
+            if scheduler.state.is_terminal and scheduler.return_code is not None:
+                return status_reply(
+                    scheduler.state, scheduler.return_code,
+                    failure_phase=scheduler.failure_phase, error=scheduler.message,
+                )
         return status_reply(
-            state, getattr(native, "exit_code", None),
+            state, code,
             failure_phase=(JobFailurePhase.EXECUTION if state == RunState.FAILED else None),
             error=getattr(native, "message", None),
         )

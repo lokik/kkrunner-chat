@@ -87,7 +87,18 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
             [
                 "/opt/venv/bin/python",
                 "-c",
-                "import time; from pathlib import Path; print('started',flush=True); time.sleep(2); Path('answer.txt').write_text('42'); print('done')",
+                # The job cannot finish before the second client attaches.
+                # Timing-only sleeps made the test race with a fast observer.
+                "from pathlib import Path\n"
+                "import time\n"
+                "print('started', flush=True)\n"
+                "deadline = time.monotonic() + 60\n"
+                "while not Path('release.txt').exists():\n"
+                "    if time.monotonic() >= deadline:\n"
+                "        raise RuntimeError('test never released the job')\n"
+                "    time.sleep(0.05)\n"
+                "Path('answer.txt').write_text('42')\n"
+                "print('done')\n",
             ],
             directory=local,
             output_file=local / "stdout.txt",
@@ -103,8 +114,19 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
         backend_id = run.backend_id
         run.stop_observation()
         run.wait()
+        # The job is deliberately blocked until attachment is established.
+        # A terminal RunRecord cannot be reattached, by design.
+        record = manager.store.get(run.id)
+        assert not record.state.is_terminal, record
         other = RunManager(RunStore(manager.store.directory))
-        attached = other.attach(run.id)
+        try:
+            attached = other.attach(run.id)
+        finally:
+            # Also release the waiting job if attachment raises unexpectedly.
+            subprocess.run(
+                ["ssh", *options, "tester@127.0.0.1", "touch /home/tester/jobs/release.txt"],
+                check=True,
+            )
         outcome = attached.wait()
         assert outcome.return_code == 0, (attached.state, attached.failure_message, other.store.get(run.id))
         assert attached.backend_id == backend_id

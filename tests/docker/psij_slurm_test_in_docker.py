@@ -23,7 +23,13 @@ def main():
                 output_files=(directory / "result.txt",),
             ),
         )
-        assert run.run().return_code == 0
+        outcome = run.run()
+        assert outcome.return_code == 0, (
+            f"Run: {run.state.value}, Job: {run._job.status()!r}, "
+            f"message: {run.failure_message!r}, "
+            f"output error: {run._job.output_error!r}, "
+            f"record: {manager.store.get(run.id)!r}"
+        )
         assert manager.store.get(run.id).state == RunState.FINISHED
         assert (directory / "result.txt").read_text() == "42"
         assert (directory / "stdout.txt").read_text().strip() == "done"
