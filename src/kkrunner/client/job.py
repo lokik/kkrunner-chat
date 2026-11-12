@@ -3,7 +3,7 @@
 The Job owns client-side submission state, observation, cancellation and
 listeners, but never owns the backend process or client file synchronization.
 Its controller provides context-independent target operations through the
-selected Endpoint. It works identically with local or remote controllers.
+selected backend through its transport. It works identically with local or remote controllers.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ class Job:
         output_listener=None, request_factory=None, completion_cleanup=None, adapter=None,
     ):
         self.context = context
-        from kkrunner.client.direct_session import DirectSession
-        self._direct_session = None if adapter is None else DirectSession(adapter)
+        from kkrunner.client.direct_observation import DirectObservation
+        self._direct_observation = None if adapter is None else DirectObservation(adapter)
         self._started = Event()
         self.spec = spec
         self.callback = callback
@@ -68,32 +68,41 @@ class Job:
     def direct(cls, spec, *, callback=None, adapter=None):
         """Create the direct session variant of the same client Job type."""
         if adapter is None:
-            from kkrunner.client.direct_channels import LocalDirectChannel
+            from kkrunner.client.transports.direct import LocalDirectChannel
             adapter = LocalDirectChannel()
         return cls(None, spec, callback=callback, adapter=adapter)
 
     @property
     def _direct(self):
-        return self._direct_session is not None
+        return self._direct_observation is not None
 
     @property
     def adapter(self):
         """Direct adapter for mechanism-specific introspection, not Job state."""
-        return None if self._direct_session is None else self._direct_session.adapter
+        return None if self._direct_observation is None else self._direct_observation.adapter
 
     @property
     def backend_id(self):
         if self._direct:
-            session = self._direct_session
-            return str(session.pid) if session.pid is not None and session.adapter.expose_pid else None
+            session = self._direct_observation
+            return session.identity.to_token() if session.identity is not None else None
         return self._backend_id
 
     @property
+    def pid(self):
+        """Local calculation PID, for diagnostics rather than durable identity."""
+        if self._direct and self._direct_observation.adapter.expose_pid:
+            return self._direct_observation.pid
+        return None
+
+    @property
     def ref(self):
-        if self._direct:
-            return None
         from kkrunner.backends.contracts import JobRef
-        return None if self._backend_id is None else JobRef(self.context.backend.name, self._backend_id)
+        identity = self.backend_id
+        if identity is None:
+            return None
+        backend = self.adapter.backend if self._direct else self.context.backend
+        return None if identity is None else JobRef(backend.name, identity)
 
     @property
     def observing(self):
@@ -107,32 +116,22 @@ class Job:
 
     @property
     def state(self):
-        if self._direct:
-            return self._state
-        if self._thread is not None:
-            return self._state
-        if self._backend_id is None or self._state.is_terminal:
-            return self._state
-        facts = _run_sync(self.context._status(self._remote_directory, self._backend_id))
-        self._apply_backend_facts(facts)
+        """Last observed state; inspecting a Job never performs I/O."""
         return self._state
 
     def status(self):
         from kkrunner.backends.contracts import job_status_from_facts
-        if self._direct:
-            return job_status_from_facts(
-                self.state, return_code=self.return_code,
-                failure_phase=self.failure_phase, message=self.failure_message,
-            )
-        if self._backend_id is None:
-            return job_status_from_facts(self._state)
-        facts = _run_sync(self.context._status(self._remote_directory, self._backend_id))
         return job_status_from_facts(
-            facts.get("state", "unknown"),
-            return_code=facts.get("return_code"),
-            failure_phase=facts.get("failure_phase"),
-            message=facts.get("error"),
+            self._state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
         )
+
+    def refresh_status(self):
+        """Explicitly query an independently observable backend execution."""
+        if not self._direct and self._backend_id is not None:
+            facts = _run_sync(self.context._status(self._remote_directory, self._backend_id))
+            self._apply_backend_facts(facts)
+        return self.status()
 
     @property
     def return_code(self):
@@ -165,17 +164,25 @@ class Job:
         self._failure_message = facts.get("error")
 
 
+    @property
+    def requires_stream_retrieval(self):
+        return self._direct and self._direct_observation.detached
+
     def configure_detached(self, detached):
         """Set direct-process lifetime policy independently of Run persistence."""
+        if type(detached) is not bool:
+            raise TypeError("detached must be bool")
         if not self._direct:
-            raise RuntimeError("Detached policy is fixed by the managed backend")
+            if detached != self.context.backend.default_detached:
+                raise ValueError("Detached policy is fixed by the managed backend")
+            return
         if self._state != RunState.NEW:
             raise RuntimeError("Cannot change detached policy after submission")
-        self._direct_session.configure_detached(detached)
+        self._direct_observation.configure_detached(detached)
 
     def _forward_output(self, data, kind):
         if self._output_error is None:
-            self._output_error = self._direct_session.output(data, kind)
+            self._output_error = self._direct_observation.output(data, kind)
         if not self._observation_stopped.is_set():
             self._output_observers.emit_bytes(data, kind)
 
@@ -189,7 +196,7 @@ class Job:
 
     async def _execute(self):
         """Apply native direct execution facts to the single Job state."""
-        session = self._direct_session
+        session = self._direct_observation
         try:
             outcome = await session.execute(
                 self.spec, on_started=self._direct_started,
@@ -222,7 +229,7 @@ class Job:
         if self._direct:
             if self._state != RunState.NEW:
                 raise RuntimeError("Cannot configure a submitted direct job")
-            return self._direct_session.configure_submission(
+            return self._direct_observation.configure_submission(
                 request, stream_offsets=stream_offsets,
                 stream_writer=stream_writer, stream_paths=stream_paths,
             )
@@ -272,7 +279,7 @@ class Job:
                 self._thread = Thread(target=self._thread_main, daemon=True)
                 self._thread.start()
             self._started.wait()
-            if self._direct_session.pid is None and self._state == RunState.FAILED:
+            if self._direct_observation.pid is None and self._state == RunState.FAILED:
                 self._done.wait()
                 error = self._exception or RuntimeError(self._failure_message or "Launch failed")
                 raise SubmissionNotStarted(str(error)) from self._exception
@@ -458,7 +465,7 @@ class Job:
     def cancel(self):
         if self._direct:
             if not self._state.is_terminal:
-                self._direct_session.request_cancel()
+                self._direct_observation.request_cancel()
                 if self._state == RunState.NEW:
                     self._state = RunState.CANCELLED
             return

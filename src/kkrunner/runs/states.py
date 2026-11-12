@@ -1,29 +1,18 @@
-"""Shared lifecycle vocabulary for backend Jobs and client Runs.
+"""Project execution facts into the client Run lifecycle."""
 
-JobStatus validates the subset that describes native execution; the Run
-may additionally be submitting, downloading or postprocessing.
-"""
-
-from enum import Enum
+from kkrunner.execution import RunState
 
 
-class RunState(str, Enum):
-    """Single authoritative lifecycle state of one calculation run."""
-
-    NEW = "new"
-    SUBMITTING = "submitting"
-    QUEUED = "queued"
-    RUNNING = "running"
-    DOWNLOADING = "downloading"
-    POSTPROCESSING = "postprocessing"
-    FINISHED = "finished"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    UNKNOWN = "unknown"
-
-    @property
-    def is_terminal(self):
-        """Whether this run is finished, failed or cancelled (not UNKNOWN)."""
-        return self in (RunState.FINISHED, RunState.FAILED, RunState.CANCELLED)
+def project_run_state(state, *, files_pending=False, processing_pending=False, failure_phase=None):
+    """Project native facts into a client phase without changing any state."""
+    state = RunState(state)
+    phase = getattr(failure_phase, "value", failure_phase)
+    if files_pending and (state == RunState.FINISHED or (
+        state == RunState.FAILED and phase not in ("submission", "launch")
+    )):
+        return RunState.DOWNLOADING
+    if state == RunState.FINISHED and processing_pending:
+        return RunState.POSTPROCESSING
+    return state
 
 

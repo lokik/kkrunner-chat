@@ -2,46 +2,60 @@
 from __future__ import annotations
 
 import asyncio
-import errno
 import os
 import signal
-import warnings
-from dataclasses import replace
 
-from kkrunner.runs.base import ExecutionSpec, MpiNotFoundWarning, MpiSpec
+from kkrunner.execution import MpiSpec
 
 
-def resolve_mpi_options(options):
-    """Resolve JSON-compatible MPI intent on the host performing the execution.
-
-    Standalone stdlib-only function: transported verbatim by SSH-direct.
-    """
+def prepare_mpi(request, *, resolve_only=False):
+    """Materialize MPI on the execution host; standalone for source delivery."""
+    import errno
     import os
     import shutil
 
-    if not (options.get("required") or options.get("autodetect") or options.get("launcher")):
-        return None
-    launcher = tuple(options.get("launcher") or ())
+    prepared = dict(request)
+    result = {"request": prepared, "launcher": None, "warning": None, "use_stdin": True}
+    mpi = request.get("mpi") or {}
+    if request.get("mpi_argv") is None:
+        return result
+    launcher = tuple(mpi.get("launcher") or ())
+    requested = mpi.get("required") or mpi.get("autodetect") or launcher
+    if requested and not launcher:
+        affinity = getattr(os, "sched_getaffinity", None)
+        serial = (mpi.get("autodetect") and not mpi.get("required")
+                  and affinity is not None and len(affinity(0)) == 1)
+        if not serial:
+            if os.environ.get("SLURM_NODELIST") and shutil.which("srun"):
+                launcher = ("srun",)
+            else:
+                for candidate in ("mpirun", "mpirun.opmpirun", "mpirun.mpich", "mpiexec"):
+                    if shutil.which(candidate):
+                        launcher = (candidate,)
+                        break
     if not launcher:
-        if options.get("autodetect") and not options.get("required"):
-            affinity = getattr(os, "sched_getaffinity", None)
-            if affinity is not None and len(affinity(0)) == 1:
-                return None
-        if os.environ.get("SLURM_NODELIST") and shutil.which("srun"):
-            launcher = ("srun",)
-        else:
-            for candidate in ("mpirun", "mpirun.opmpirun", "mpirun.mpich", "mpiexec"):
-                if shutil.which(candidate):
-                    launcher = (candidate,)
-                    break
-        if not launcher:
-            return None
+        if not resolve_only:
+            if mpi.get("required"):
+                raise FileNotFoundError(errno.ENOENT, "MPI was requested but no MPI launcher was found")
+            if mpi.get("autodetect") and mpi.get("warning", True):
+                result["warning"] = "MPI autodetection did not find an MPI launcher; the calculation will run without MPI."
+        return result
+    if mpi.get("process_count") is not None:
+        option = "-n" if os.path.basename(os.fspath(launcher[0])) == "srun" else "-np"
+        launcher = (*launcher, option, str(mpi["process_count"]))
+    result["launcher"] = list(launcher)
+    prepared["argv"] = [*launcher, *request["mpi_argv"]]
+    if not request.get("mpi_uses_stdin", True):
+        prepared["stdin"] = None
+        result["use_stdin"] = False
+    return result
 
-    process_count = options.get("process_count")
-    if process_count is not None:
-        count_option = "-n" if os.path.basename(os.fspath(launcher[0])) == "srun" else "-np"
-        launcher = (*launcher, count_option, str(process_count))
-    return tuple(launcher)
+
+def resolve_mpi_options(options):
+    """Query the same target resolver without requiring an executable command."""
+    reply = prepare_mpi({"argv": [], "mpi_argv": [], "mpi": options}, resolve_only=True)
+    launcher = reply["launcher"]
+    return None if launcher is None else tuple(launcher)
 
 
 def resolve_mpi_command(spec: MpiSpec):
@@ -54,43 +68,6 @@ def resolve_mpi_command(spec: MpiSpec):
         "launcher": spec.launcher,
         "process_count": spec.process_count,
     })
-
-
-def _mpi_command(launch):
-    """Materialize portable MPI intent for this machine."""
-    mpi = launch.mpi
-    command = resolve_mpi_command(mpi)
-    if not command:
-        if mpi.allows_serial_fallback:
-            if mpi.warning:
-                warnings.warn(
-                    "MPI autodetection did not find an MPI launcher; the calculation will run without MPI.",
-                    MpiNotFoundWarning,
-                    stacklevel=3,
-                )
-            return None
-        raise FileNotFoundError(
-            errno.ENOENT,
-            "MPI was requested but no MPI launcher was found",
-        )
-    return command
-
-
-def materialize_local_spec(spec: ExecutionSpec) -> ExecutionSpec:
-    """Choose serial/MPI argv immediately before local process creation."""
-    if not spec.launch or spec.mpi_argv is None:
-        return spec
-
-    launcher = _mpi_command(spec.launch)
-    if launcher is None:
-        # ``auto`` may fall back to the serial command on this machine.
-        return spec
-
-    return replace(
-        spec,
-        argv=(*launcher, *spec.mpi_argv),
-        stdin=spec.stdin if spec.mpi_uses_stdin else None,
-    )
 
 
 async def pump_stream(source, sink, *, eof=None):

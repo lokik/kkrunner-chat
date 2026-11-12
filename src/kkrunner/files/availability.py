@@ -20,15 +20,12 @@ def prepare_target_outputs(request):
     import glob
     import os
 
-    sync = request.get("client_sync") or {}
     streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
     protected_declarations = [
         *request.get("input_files", ()),
         request.get("stdin"),
         request.get("input_file"),
-        *(item["path"] for item in sync.get("cache_files", ())),
-        *sync.get("cache_patterns", ()),
-        *(item["path"] for item in sync.get("cache_before", ())),
+        *request.get("cache_files", ()),
     ]
     protected = set()
     protected_inodes = set()
@@ -50,7 +47,7 @@ def prepare_target_outputs(request):
             return (info.st_dev, info.st_ino) in protected_inodes
         return False
 
-    patterns = [*sync.get("output_files", ()), *sync.get("output_patterns", ())]
+    patterns = request.get("output_files", ())
     for path in streams:
         if is_protected(path):
             raise ValueError("Output stream conflicts with input/cache: " + path)
@@ -113,7 +110,7 @@ def local_manifest(files, status):
     execution failure do not retract already written bytes.
     """
     import os
-    from kkrunner.runs.base import FailurePhase, RunState
+    from kkrunner.execution import FailurePhase, RunState
 
     published = status.state in (RunState.FINISHED, RunState.CANCELLED) or (
         status.state == RunState.FAILED and status.failure_phase == FailurePhase.EXECUTION

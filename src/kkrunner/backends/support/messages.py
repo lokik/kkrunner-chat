@@ -6,13 +6,12 @@ paths and opaque handles, never client file manifests or live I/O objects.
 
 from __future__ import annotations
 
+import os
+from dataclasses import asdict
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypedDict, Union
+from typing import List, Literal, Optional, TypedDict, Union
 
-if TYPE_CHECKING:
-    from kkrunner.runs.base import ExecutionSpec
-
-from kkrunner.runs.states import RunState
+from kkrunner.execution import MpiSpec, RunState
 
 
 class BackendOptions(TypedDict, total=False):
@@ -26,37 +25,6 @@ class MpiOptions(TypedDict, total=False):
     launcher: List[str]
     process_count: Optional[int]
     warning: bool
-
-
-class LaunchOptions(TypedDict, total=False):
-    mpi: MpiOptions
-    local_root: Optional[str]
-    remote_root: Optional[str]
-    input_sync: str
-    output_sync: str
-
-
-class _CachePath(TypedDict):
-    path: str
-
-
-class CacheFile(_CachePath, total=False):
-    before: Optional[List[int]]
-
-
-class CacheBaseline(TypedDict):
-    path: str
-    signature: Optional[List[int]]
-
-
-class ClientSync(TypedDict, total=False):
-    output_file: Optional[str]
-    error_file: Optional[str]
-    output_files: List[str]
-    output_patterns: List[str]
-    cache_files: List[CacheFile]
-    cache_patterns: List[str]
-    cache_before: List[CacheBaseline]
 
 
 class _DirectoryRequest(TypedDict):
@@ -73,11 +41,11 @@ class _CommandRequest(RecoveryRequest):
 
 
 class ExecutionRequest(_CommandRequest, total=False):
-    id: Optional[str]
+    submission_key: Optional[str]
     detached: bool
     mpi_argv: Optional[List[str]]
     mpi_uses_stdin: bool
-    launch: LaunchOptions
+    mpi: MpiOptions
     stdin: Optional[str]
     input_file: Optional[str]
     output_file: Optional[str]
@@ -85,7 +53,13 @@ class ExecutionRequest(_CommandRequest, total=False):
     input_files: List[str]
     output_files: List[str]
     cache_files: List[str]
-    client_sync: ClientSync
+
+
+class PreparedExecution(TypedDict):
+    request: ExecutionRequest
+    launcher: Optional[List[str]]
+    warning: Optional[str]
+    use_stdin: bool
 
 
 class StatusReply(TypedDict):
@@ -128,36 +102,54 @@ class FollowOptions(TypedDict, total=False):
     stderr_path: Optional[str]
 
 
-def request_to_spec(request: ExecutionRequest) -> ExecutionSpec:
-    """Build a native execution declaration from target pathnames."""
-    from kkrunner.runs.base import ExecutionSpec, LaunchSpec, MpiSpec
+def normalize_request(request: ExecutionRequest) -> ExecutionRequest:
+    """Validate target-only values and resolve paths relative to its directory.
 
-    sync = request.get("client_sync") or {}
-    # LaunchSpec validates the decoded fields; its native mpi field remains
-    # an MpiSpec rather than leaking the JSON representation to native code.
-    launch: Dict[str, Any] = dict(request.get("launch") or {})
-    launch["mpi"] = MpiSpec(**launch.get("mpi", {}))
-    return ExecutionSpec(
-        argv=tuple(request["argv"]),
-        directory=request["directory"],
-        input_file=request.get("input_file"),
-        stdin=request.get("stdin"),
-        output_file=request.get("output_file"),
-        error_file=request.get("error_file"),
-        input_files=tuple(request.get("input_files", ())),
-        output_files=tuple(dict.fromkeys((
-            *request.get("output_files", ()),
-            *sync.get("output_files", ()), *sync.get("output_patterns", ()),
-        ))),
-        cache_files=tuple(dict.fromkeys((
-            *request.get("cache_files", ()),
-            *(item["path"] for item in sync.get("cache_files", ())),
-            *sync.get("cache_patterns", ()),
-        ))),
-        mpi_argv=request.get("mpi_argv"),
-        launch=LaunchSpec(**launch),
-        mpi_uses_stdin=request.get("mpi_uses_stdin", True),
-    )
+    This is a JSON request throughout, never a client ExecutionSpec. Validation
+    and normalization do not create directories or modify any target files.
+    """
+    if "launch" in request or "staging" in request:
+        raise ValueError("Target requests accept MPI options, not client staging configuration")
+    result = dict(request)
+    directory = request["directory"]
+    if not isinstance(directory, str) or not directory:
+        raise ValueError("Execution directory must be a nonempty string")
+    directory = os.path.abspath(os.path.expanduser(directory))
+    result["directory"] = directory
+
+    def command(value):
+        if not isinstance(value, (list, tuple)) or any(not isinstance(arg, str) for arg in value):
+            raise TypeError("Execution commands must be lists of strings")
+        if not value or not value[0]:
+            raise ValueError("Execution commands must not be empty")
+        return list(value)
+
+    result["argv"] = command(request["argv"])
+    result["mpi_argv"] = None if request.get("mpi_argv") is None else command(request["mpi_argv"])
+    result["mpi"] = asdict(MpiSpec(**request.get("mpi", {})))
+    for name, default in (("mpi_uses_stdin", True), ("detached", True)):
+        value = request.get(name, default)
+        if type(value) is not bool:
+            raise TypeError(f"{name} must be bool")
+        result[name] = value
+
+    def path(value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise ValueError("Target file paths must be nonempty strings")
+        return os.path.abspath(os.path.join(directory, value))
+
+    for name in ("input_file", "stdin", "output_file", "error_file"):
+        result[name] = path(request.get(name))
+    for name in ("input_files", "output_files", "cache_files"):
+        values = request.get(name, ())
+        if not isinstance(values, (list, tuple)):
+            raise TypeError(f"{name} must be a list of target paths")
+        if any(value is None for value in values):
+            raise ValueError(f"{name} cannot contain null paths")
+        result[name] = list(dict.fromkeys(path(value) for value in values))
+    return result
 
 
 def status_reply(

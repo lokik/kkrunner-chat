@@ -54,7 +54,7 @@ def _direct(args, *, action):
         return follow_remote(args.remote_id, sys.stdout.buffer, sys.stderr.buffer,
                              stdout_offset=offset, stderr_offset=offset,
                              stdout_path=args.stdout_path, stderr_path=args.stderr_path)
-    from kkrunner.client.transport import SshTransport
+    from kkrunner.client.transports import SshTransport
     from kkrunner.remote.protocol import json_request
     transport = SshTransport(args.host, options=args.ssh_option)
     if action != "follow":
@@ -92,11 +92,10 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 
 def _persisted(args):
     from kkrunner.client.contracts import JobAttachment
-    from kkrunner.client.endpoint import endpoint_from_config
-    from kkrunner.remote.service import cancel_remote, follow_remote
+    from kkrunner.client import RunClient
     record = _record(args)
     if args.host:
-        raise ValueError("--host is only for --remote-id; persisted runs use their recorded endpoint")
+        raise ValueError("--host is only for --remote-id; persisted runs use their recorded transport")
     if args.action == "follow" and (args.stdout_path or args.stderr_path):
         raise ValueError("Explicit stream paths require --remote-id")
     if record.state.is_terminal:
@@ -121,36 +120,27 @@ def _persisted(args):
             raise RuntimeError("Run has not been submitted")
         return {"state": record.state.value, "return_code": record.return_code,
                 "error": record.message}
-    endpoint = endpoint_from_config(record.execution.endpoint)
+    client = RunClient.from_config(record.execution.transport, record.execution.backend)
     attachment = JobAttachment(record.execution, record.files)
     if args.action == "status":
-        return _facts(endpoint.status(attachment)[0])
-    if record.execution.endpoint.location == "ssh":
-        if args.action == "cancel":
-            from kkrunner.support.async_utils import run_coro_sync
-            return run_coro_sync(endpoint._cancel(record.execution.directory.remote,
-                                                 record.execution.backend_id))
-        from kkrunner.support.async_utils import run_coro_sync
-        offset = 0 if args.from_start else None
-        def output(data, kind):
-            stream = sys.stderr.buffer if kind == "err" else sys.stdout.buffer
-            stream.write(data)
-            stream.flush()
-        return run_coro_sync(endpoint._follow(
-            record.execution.directory.remote, record.execution.backend_id,
-            on_output=output, offsets={"out": offset, "err": offset},
-            stdout_path=record.files.stdout.remote_path if record.files.stdout else None,
-            stderr_path=record.files.stderr.remote_path if record.files.stderr else None,
-        ))
+        return _facts(client.status(attachment)[0])
+    from kkrunner.support.async_utils import run_coro_sync
     if args.action == "cancel":
-        return cancel_remote(record.execution.backend_id)
+        return run_coro_sync(client._cancel(record.execution.directory.target,
+                                           record.execution.backend_id))
     offset = 0 if args.from_start else None
-    return follow_remote(
-        record.execution.backend_id, sys.stdout.buffer, sys.stderr.buffer,
-        stdout_offset=offset, stderr_offset=offset,
-        stdout_path=record.files.stdout.local_path if record.files.stdout else None,
-        stderr_path=record.files.stderr.local_path if record.files.stderr else None,
-    )
+    def output(data, kind):
+        stream = sys.stderr.buffer if kind == "err" else sys.stdout.buffer
+        stream.write(data)
+        stream.flush()
+    remote = not client.transport.is_local
+    def path(entry):
+        return None if entry is None else entry.remote_path if remote else entry.local_path
+    return run_coro_sync(client._follow(
+        record.execution.directory.target, record.execution.backend_id,
+        on_output=output, offsets={"out": offset, "err": offset},
+        stdout_path=path(record.files.stdout), stderr_path=path(record.files.stderr),
+    ))
 
 
 def run(args):

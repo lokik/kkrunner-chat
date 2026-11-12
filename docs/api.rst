@@ -2,7 +2,7 @@ API reference
 =============
 
 The root package provides backend-independent Run entry points. Execution
-technology lives in :mod:`kkrunner.backends`; SSH transport, endpoint pooling
+technology lives in :mod:`kkrunner.backends`; local/SSH transport, client pooling
 and remote file synchronization belong to :mod:`kkrunner.client`. The remote
 service protocol does not expose a client execution facade.
 
@@ -31,7 +31,6 @@ Execution and durable records
 .. autosummary::
    :toctree: _generated
 
-   LaunchSpec
    MpiSpec
    MpiNotFoundWarning
    RunStatus
@@ -73,6 +72,7 @@ Backends and their execution contracts
    DirectBackend
    SupervisedBackend
    PsijBackend
+   BackendConfig
 
 .. currentmodule:: kkrunner.backends.contracts
 
@@ -91,7 +91,7 @@ Backends and their execution contracts
    ObservationUnavailable
    UnsupportedCapability
 
-Client endpoints, transport and pooling
+Clients, transports and pooling
 ---------------------------------------
 
 .. currentmodule:: kkrunner.client
@@ -99,15 +99,14 @@ Client endpoints, transport and pooling
 .. autosummary::
    :toctree: _generated
 
-   LocalRunEndpoint
-   SshRunEndpoint
+   RunClient
+   StagingSpec
    JobProtocol
    SubmissionContext
-   RunEndpoint
+   RunClientProtocol
    JobAttachment
-   ExecutionEndpointConfig
-   EndpointPool
-   default_endpoint_pool
+   ClientPool
+   default_client_pool
    Transport
    LocalTransport
    SshTransport
@@ -140,5 +139,5 @@ helpers. They are not re-exported by the public facades.
    :toctree: _generated
 
    client.job.Job
-   client.remote_files.RemoteFileSession
+   client.file_session.FileSession
 

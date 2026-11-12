@@ -17,7 +17,7 @@ downloading files or processing results.
 in a directory. Each record contains a stable run ID, backend identity, file
 manifest and lifecycle state. :class:`~kkrunner.RunManager` creates managed
 runs backed by that store and returns a :class:`~kkrunner.Run`.
-Use ``manager.create_run(endpoint, spec)`` and ``run.submit()`` to start one.
+Use ``manager.create_run(client, spec)`` and ``run.submit()`` to start one.
 After restarting the client, reopen the same store and call
 ``manager.attach(run_id)`` to continue a nonterminal run.
 
@@ -45,13 +45,13 @@ its missing result processor. The command is not submitted again:
    from pathlib import Path
    from kkrunner import ExecutionSpec, ProcessingPending, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import LocalRunEndpoint
+   from kkrunner.client import RunClient
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
    manager = RunManager(RunStore(directory / "runs"))
    run = manager.create_run(
-       LocalRunEndpoint(SupervisedBackend),
+       RunClient(SupervisedBackend),
        ExecutionSpec(
            [sys.executable, "-c", "print(43)"],
            directory=directory,

@@ -10,7 +10,7 @@ import sys
 from kkrunner.backends.support.process import pump_stream, stop_local_process
 from kkrunner.backends.supervised.streams import SupervisorStreams
 from kkrunner.backends.supervised.mailbox import publish_outcome
-from kkrunner.runs.base import FailurePhase, RunState
+from kkrunner.execution import FailurePhase, RunState
 
 _SPEC_ENV = "KKRunner_REMOTE_PROCESS_SPEC"
 _START_FD_ENV = "KKRunner_REMOTE_PROCESS_START_FD"

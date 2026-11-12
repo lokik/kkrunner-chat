@@ -19,6 +19,7 @@ Start with :doc:`quickstart`. For restartable calculations, continue with
    projects
    files
    backends
+   client
    remote
    command-line
 

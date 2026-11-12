@@ -1,7 +1,7 @@
 Remote execution
 ==================
 
-``SshRunEndpoint`` selects the execution location. The backend independently
+``RunClient`` uses its transport to select the execution location. The backend independently
 selects direct execution, a KKRunner supervisor or PSI/J. Direct execution
 needs Python on the target. Supervisor and PSI/J helpers import the installed
 KKRunner library there; PSI/J also needs its optional dependency and scheduler.
@@ -12,43 +12,44 @@ No separate agent endpoint or persistent agent service is required.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import SshRunEndpoint, SshTransport
-   from kkrunner.runs import LaunchSpec
+   from kkrunner.client import RunClient, SshTransport
+   from kkrunner.client import StagingSpec
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
    manager = RunManager(RunStore(directory / "runs"))
-   endpoint = SshRunEndpoint(SshTransport("user@cluster"), backend=SupervisedBackend)
+   client = RunClient(SupervisedBackend, transport=SshTransport("user@cluster"))
    spec = ExecutionSpec(
        ["python3", "-c", "print(42)"], directory=directory, output_file="stdout.txt",
-       launch=LaunchSpec(local_root=directory, remote_root="/absolute/remote/work"),
+       staging=StagingSpec(local_root=directory, remote_root="/absolute/remote/work"),
    )
-   run = manager.create_run(endpoint, spec)
+   run = manager.create_run(client, spec)
    run.run()
 
-For a one-shot command use ``backend=DirectBackend`` on the same endpoint.
-For a scheduler use ``backend=PsijBackend`` and
-``backend_options={"executor_name": "slurm"}``. The endpoint type and file-transfer
-mechanism stay the same. A direct backend has no durable identity for reconnect;
-client-side history alone cannot provide recovery after connection loss.
+For a one-shot command use ``RunClient(DirectBackend, transport=transport)``.
+For a scheduler use ``RunClient(PsijBackend(executor_name="slurm"), transport=transport)``.
+The client and file session stay the same. Direct local process identities use
+PID and start time, but direct execution currently offers no independent
+reattachment or authoritative exit status after losing its observer.
 
 Select the target Python environment on the transport:
 
 .. code-block:: python
 
-   endpoint = SshRunEndpoint(
-       SshTransport("user@cluster", python_command=("/opt/kkrunner/bin/python",)),
-       backend=SupervisedBackend, filesystem_id="cluster-home",
+   client = RunClient(
+       SupervisedBackend,
+       transport=SshTransport("user@cluster", python_command=("/opt/kkrunner/bin/python",)),
+       filesystem_id="cluster-home",
    )
 
 A consistent ``filesystem_id`` declares that aliases or shared mounts name the
 same target filesystem, independently of backend and SSH options. Workspace
-mapping belongs to each run's ``LaunchSpec``. The target directory and complete
+mapping belongs to each run's ``StagingSpec``. The target directory and complete
 file footprint are resolved before reservation; uploads, output opening and
 submission start after reservation. Declare every read, write and cache;
 undeclared executable side effects cannot be protected by file reservations.
 
-The SSH endpoint obtains the selected backend's ``SshHelper`` and transfers
+The SSH transport obtains the selected backend's ``SshHelper`` and transfers
 one method definition. Direct uses its own portable method. Supervisor and
 PSI/J use import-only helpers. Local execution calls the original methods,
 without another Python interpreter. ``DirectOperations`` and ``ManagedOperations``

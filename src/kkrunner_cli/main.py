@@ -47,7 +47,7 @@ def _print_json(value):
 
 
 def run(args, global_args=None):
-    from kkrunner.remote.protocol import CONTROL_PROTOCOL_VERSION, check_control_protocol
+    from kkrunner.remote.protocol import check_control_protocol
 
     check_control_protocol(args.protocol_version)
     if args.remote_action == "query-files":
@@ -126,11 +126,11 @@ def run(args, global_args=None):
         _print_json(acknowledge_remote(args.remote_id))
     elif args.remote_action == "resolve-mpi":
         from kkrunner.backends.support.process import resolve_mpi_command
-        from kkrunner.runs.base import LaunchSpec
+        from kkrunner.execution import MpiSpec
 
         request = json.load(sys.stdin)
-        launch = LaunchSpec.from_mpi(request.get("mpi"))
-        _print_json({"mpi": resolve_mpi_command(launch.mpi)})
+        mpi = MpiSpec.from_value(request.get("mpi"))
+        _print_json({"mpi": resolve_mpi_command(mpi)})
     else:
         raise ValueError("Unknown remote action: {}".format(args.remote_action))
 

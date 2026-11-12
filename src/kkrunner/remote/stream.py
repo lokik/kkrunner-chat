@@ -13,7 +13,7 @@ import asyncio
 import json
 import struct
 
-from kkrunner.runs.base import RunState
+from kkrunner.execution import RunState
 
 STREAM_MAGIC = b"A2SSTRM1"
 _HEADER = struct.Struct("!cQ")

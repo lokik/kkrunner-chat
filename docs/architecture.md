@@ -1,6 +1,6 @@
 # Execution boundary and public contract
 
-KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, ExecutionEndpointConfig,
+KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, RunClient,
 RunState/FailurePhase, Execution/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
 ExecutionResources and ResourceOwnedRunner. The root `kkrunner` package exports
@@ -62,8 +62,8 @@ A backend `Job` owns only execution submission, observation and cancellation.
 without exposing a durable record to a backend. An untracked or managed
 client `Run` owns execution completion, transfers and optional result processing.
 An SSH `Job` owns FOLLOW observation, while its separate
-`RemoteFileSession` owns staging, output persistence, synchronization and
-verification. An endpoint creates these parts through `RunParts`; only
+`FileSession` owns staging, output persistence, synchronization and
+verification. The client creates these parts through `RunParts`; only
 `RunManager` mutates persistent records. A terminal backend fact must never
 be published directly as a terminal client Run before these phases settle.
 
@@ -100,9 +100,9 @@ them. See the application guide for its storage policy and temporary-file rules.
 
 For runs managed through the same RunStore, submission reserves declared file
 paths until the run reaches a terminal state. This applies with or without
-projects; untracked `Run.direct()` executions do not take these reservations.
+projects; untracked `Run.untracked()` executions do not take these reservations.
 
-Before reservation the SSH endpoint resolves absolute target paths without
+Before reservation the SSH client resolves absolute target paths without
 staging or opening outputs. Only after the complete footprint has been durably
 reserved may uploads and submission begin. Reservations check local read/write
 paths (including uploads and downloaded/streamed results) independently of the
@@ -110,8 +110,7 @@ backend, and check the target filesystem as well. Local process and local PSI/J
 therefore share the local filesystem namespace. SSH connections to the same
 host share a target namespace regardless of SSH flags, remote command or backend.
 
-For host aliases or shared mounts, pass filesystem_id to SshRunEndpoint
-or ExecutionEndpointConfig. Matching IDs declare one shared target filesystem; distinct
+For host aliases or shared mounts, pass filesystem_id to SshTransport. Matching IDs declare one shared target filesystem; distinct
 IDs declare distinct ones. A client must use the same identity consistently.
 The API does not infer that different host aliases refer to the same mount.
 
@@ -157,7 +156,7 @@ clock change that reverses entirely between sampled reads can evade detection.
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
 | `kkrunner.backends` | Flat direct/supervised/PSI-J functional implementations, common process/MPI support, and backend contracts. |
-| `kkrunner.client` | SshRunEndpoint, connection/endpoint identity, backend pools, transport, remote Job and remote file sessions. |
+| `kkrunner.client` | RunClient, backend composition, client pools, transports, Job and FileSession. |
 | `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
 | `kkrunner.files` | TaskFile, manifests, transfer policy, pathname declarations, captured versions and artifact availability. |
@@ -167,15 +166,15 @@ The root package exports eight backend-independent entry points:
 `ExecutionSpec`, `ExecutionOutcome`, `Run`, `RunManager`, `RunStore`,
 `RunState`, `TaskFile` and `ProcessingPending`. Select a backend class
 (`DirectBackend`, `SupervisedBackend`, `PsijBackend`) from `kkrunner.backends`
-and supply it to `LocalRunEndpoint` or an SSH endpoint. Backend classes are
-namespaces: they are never instantiated or serialized.
+and supply it to `RunClient`. Configured backend instances hold immutable
+options and capabilities; their classes expose the static target operations.
 
-The three classes declare static target operations. A live endpoint retains
-the selected class; only persisted configuration uses a backend name to
-reconstruct it. Client Jobs, staging, file synchronization and attachment
+The three classes declare static target operations. A RunClient retains
+the configured backend instance; persisted BackendConfig uses a whitelisted
+backend name and options to reconstruct it. Client Jobs, staging, file synchronization and attachment
 belong to `kkrunner.client`.
 
-`backends.class_helper.class_helper` builds an import-only namespace with
+`backends.support.class_helper.class_helper` builds an import-only namespace with
 matching static methods, preserving synchronous/asynchronous methods. Each
 backend independently chooses its `SshHelper`: direct uses itself, supervised
 and PSI/J use the generated namespace. SSH transmits **one selected method**,
@@ -185,13 +184,13 @@ Helper selection does not determine persistence or reattachment capability.
 `DirectBackend.stream` is one self-contained asynchronous implementation. Its
 local invocation receives explicit streams and control; its SSH invocation
 uses the remote interpreter's standard streams. Only the target operation
-starts the calculation or terminates its process group. `DirectSession`
+starts the calculation or terminates its process group. `DirectObservation`
 coordinates the client observation tasks and cancellation request; local and
 SSH channels own their client streams and transport resources. No additional
 local interpreter or worker thread runs the direct backend.
 
-Native supervisor and scheduler internals live in `native/supervised` and
-`native/psij`, split into worker, streams, receipts, submission and scheduler
+Native supervisor and scheduler internals live in `backends/supervised` and
+`backends/psij`, split into worker, streams, receipts, submission and scheduler
 operations. The supervisor remains an independent process with its existing
 release barrier. Its output pump publishes synchronously to LIVE followers;
 per-follower asynchronous REPLAY catches up from the spool and returns to LIVE
@@ -205,8 +204,10 @@ only its observation task. The supervisor/calculation survives; `Job.cancel()`
 invokes the separate backend cancellation operation. PSI/J uses native status
 callbacks and growing-file observation, unregistering callbacks on detach.
 
-`files` and `support` do not import the run lifecycle, projects, backends or
-remote service. File reservations use generic local path expansion without
+Generic file operations and shared support do not own the run lifecycle.
+Shared execution vocabulary lives in kkrunner.execution without client
+imports. ExecutionSpec and StagingSpec are client declarations; backends consume
+only the target ExecutionRequest with MPI options and target paths. File reservations use generic local path expansion without
 importing a transport. The manifest and execution identity are separate models.
 `runs` owns persistence and end-to-end completion; backend implementations report
 execution facts. `projects` adds project membership to that existing lifecycle.
@@ -237,7 +238,7 @@ transport, backend, or application code. Local and SSH transports share this
 implementation. Discovery returns metadata in the same response; cache baselines
 query all patterns and exact paths together in one request instead of probing
 each match. File queries and execution share the command configured on the SSH
-transport or its `SshRunEndpoint`, including custom Python environments.
+transport or its `RunClient`, including custom Python environments.
 
 Single-file uploads retain temporary-file staging and atomic replacement. The
 `finalize-upload` operation uses `os.utime(ns=...)` and `os.replace()` to publish
@@ -294,21 +295,21 @@ Explicit `detached=False` cannot change a supervisor or scheduler into a
 client-owned process: such a backend rejects an unsupported policy rather
 than pretending that a lost client will terminate the job.
 
-## Backend identity, client attachments and RunEndpoints
+## Backend identity, client attachments and Run clients
 
 A backend accepts a serializable execution request or an opaque job handle.
 The same handle is used locally and over SSH, including PSI/J; the client does
-not unpack it into a scheduler ID and reconstruct it from endpoint options.
+not unpack it into a scheduler ID and reconstruct it from transport options.
 A client `Job` may expose `JobRef(backend.name, handle)` without interpreting
 the handle. Native scheduler IDs remain native backend facts.
 
 `JobAttachment` and `SubmissionContext` are client snapshots of persisted
-execution and file declarations. Endpoints project the target request and
+execution and file declarations. Clients project the target request and
 stream paths; native operations do not receive a `RunRecord` or `FileManifest`.
-Only a `RunEndpoint` creates or reopens `RunParts` (a Job plus file resources).
+Only a `RunClient` creates or reopens `RunParts` (a Job plus file resources).
 Backends do not manufacture client Jobs.
 
-`supports_reattachment` explicitly describes the configured endpoint. Manager
+`BackendCapability.REATTACH` explicitly describes native reattachment. Manager
 checks this capability rather than inferring support from the presence of a
 method. Recovery returns `RecoveryResult` with found/absent/indeterminate/
 unsupported semantics; having an identity does not imply recovery support.
@@ -320,17 +321,15 @@ recovery never authorizes a duplicate submission.
 | --- | --- |
 | Static target operations | `DirectBackend`, `SupervisedBackend`, `PsijBackend` |
 | Client lifecycle, state, result and listeners | `client.job.Job` |
-| Local invocation and session composition | `LocalRunEndpoint` |
-| SSH invocation and session composition | `SshRunEndpoint` |
-| Direct observation and cancellation requests | `DirectSession`, local/SSH channels |
+| Local and SSH session composition | `RunClient` |
+| Direct observation and cancellation requests | `DirectObservation`, local/SSH channels |
 | Managed output delivery and SSH follower cleanup | `client.observation` |
-| Commands and file transport | `LocalTransport`, `SshTransport` |
+| Immutable connection settings, calls and file transport | `client.transports.LocalTransport`, `client.transports.SshTransport` |
 | Persistence and end-to-end completion | `RunManager`, `Run`, `RunStore` |
-| Serializable endpoint configuration | `ExecutionEndpointConfig` |
-| Reuse of configured client endpoints | `EndpointPool` |
+| Reuse of configured clients | `ClientPool` |
 
 The backend contract and pure identity/status/recovery values live in
-`backends.contracts`. Client Job/endpoint protocols and attachment contexts
+`backends.contracts`. Client Job/composition protocols and attachment contexts
 live in `client.contracts`. Source extraction and the single JSON/streaming
 bootstrap live in `client.portable_functions` and `client.operations`.
 Local short calls invoke the selected method directly; asynchronous methods
@@ -345,23 +344,19 @@ PSI/J client Job, or process-based local FOLLOW fallback.
 
 ## Orthogonal location and backend selection
 
-`LocalRunEndpoint(BackendClass)` and `SshRunEndpoint(transport,
-backend=BackendClass)` are the only standard execution locations. Either can
-use `DirectBackend`, `SupervisedBackend` or `PsijBackend`. Backend metadata
-selects session-bound versus durable behavior, default persistence/detachment
-and SSH deployment. The descriptor stores the location (`location`) and backend
-as separate fields; no `ssh-direct`, `local-supervised` or `psij` location exists.
-Backend options are immutable key/value pairs for serialization and pool keys.
-The old agent endpoint, direct SSH endpoint and direct SSH transport were removed.
+`RunClient(BackendClass, transport=...)` is the sole standard execution client.
+LocalTransport calls the selected static operation directly; SshTransport delivers
+its actual portable method or import-only helper. Execution.transport holds the
+immutable LocalTransport or SshTransport under client/transports; these serialize
+their connection settings directly. Execution.backend is a separate BackendConfig. Persistent custom transports without a supported reconstruction
+are rejected before creating a Run.
 
-`DirectOperations` and `ManagedOperations` declare static namespace signatures;
-the concrete classes implement those protocols. `backends.messages` defines
-JSON-compatible execution/recovery requests and status/submission/recovery replies.
-Source extraction strips API annotations from the actual method syntax tree,
-without introducing an alternative implementation or a target typing dependency.
+Every Run has one FileSession. It stages files when needed, owns client streams,
+and finalizes the FileManifest after native execution. Local finalization does
+not copy files. Transfer indexes are derived from the staged manifest; temporary
+staging data is discarded when ownership moves to that manifest.
 
-Native PSI/J and Slurm return `JobStatus` with execution facts only. The client
-endpoint constructs `RunStatus` with any client execution/file context.
-Direct target stdout/stderr use readiness-based writes; a full output pipe yields
-the event loop so cancellation can terminate the calculation. Pending output
-still drains rather than being silently dropped on cancellation.
+A local direct PID is diagnostic; its persisted identity additionally includes
+process start time. STATUS, REATTACH and RECOVER capabilities are independent
+of having an identity. Losing a direct observer does not provide an exit code
+or prove successful completion.

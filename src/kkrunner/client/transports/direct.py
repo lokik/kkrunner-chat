@@ -1,4 +1,4 @@
-"""Connect DirectSession to the same backend method locally or through SSH.
+"""Connect DirectObservation to the same backend method locally or through SSH.
 
 These channels own client I/O resources. Process execution and process-group
 termination belong exclusively to DirectBackend.stream().
@@ -8,86 +8,87 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import deque
 from dataclasses import replace
 
 from kkrunner.backends.direct import DirectBackend
-from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client.execution_request import execution_request
 from kkrunner.client.operations import BackendOperation
-from kkrunner.client.transport import LocalTransport
-from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.paths import file_path
 from kkrunner.files.streams import open_output_streams
-from kkrunner.runs.base import MpiNotFoundWarning, RunState
+from kkrunner.execution import MpiNotFoundWarning, RunState
+
+from .local import LocalTransport
 
 
-async def prepare_direct_request(transport, request):
-    """Resolve target MPI and prepare declared files before starting a session."""
+async def prepare_direct_request(transport, backend, request):
+    """Invoke native preflight; the channel only owns its transport and sinks."""
     import warnings
 
-    request = dict(request)
-    use_stdin = True
-    mpi = (request.get("launch") or {}).get("mpi") or {}
-    if request.get("mpi_argv"):
-        launcher = await transport.call(BackendOperation.standalone(resolve_mpi_options), mpi)
-        if launcher:
-            request["argv"] = [*launcher, *request["mpi_argv"]]
-            if not request.get("mpi_uses_stdin", True):
-                request["stdin"] = None
-                use_stdin = False
-        elif mpi.get("required"):
-            raise FileNotFoundError("MPI was requested but no MPI launcher was found")
-        elif mpi.get("autodetect") and mpi.get("warning", True):
-            warnings.warn("MPI autodetection did not find an MPI launcher; the calculation will run without MPI.",
-                          MpiNotFoundWarning, stacklevel=3)
-    await transport.call(BackendOperation.standalone(prepare_target_outputs), request)
-    return request, use_stdin
+    backend_type = backend if isinstance(backend, type) else type(backend)
+    prepared = await transport.call(BackendOperation.for_backend(backend_type, "prepare_mpi"), request)
+    if prepared["warning"] is not None:
+        warnings.warn(prepared["warning"], MpiNotFoundWarning, stacklevel=3)
+    request = prepared["request"]
+    await transport.call(BackendOperation.for_backend(backend_type, "prepare_target_outputs"), request)
+    return request, prepared["use_stdin"]
 
 
 class _OutputChannel:
-    """Bounded asynchronous sink/reader for a local backend invocation."""
+    """Bounded byte channel; close discards data and wakes every waiter."""
 
     def __init__(self):
-        self._chunks = asyncio.Queue(maxsize=8)
+        self._chunks = deque()
         self._buffer = b""
-        self._eof = False
+        self._finished = False
         self._closed = False
+        self._changed = asyncio.Event()
+
+    def _wake_waiters(self):
+        changed, self._changed = self._changed, asyncio.Event()
+        changed.set()
 
     async def write(self, data):
-        if not self._closed:
-            await self._chunks.put(bytes(data))
+        while len(self._chunks) >= 8 and not self._closed and not self._finished:
+            await self._changed.wait()
+        if self._closed or self._finished:
+            raise BrokenPipeError("Output channel is closed")
+        self._chunks.append(bytes(data))
+        self._wake_waiters()
 
     def flush(self):
         pass
 
     async def finish(self):
-        if not self._closed:
-            await self._chunks.put(None)
+        """Publish EOF after buffered data, without requiring queue capacity."""
+        self._finished = True
+        self._wake_waiters()
 
     def close(self):
-        # Release pending producers when the session has lost its reader.
         self._closed = True
-        while not self._chunks.empty():
-            self._chunks.get_nowait()
+        self._chunks.clear()
+        self._buffer = b""
+        self._wake_waiters()
 
     async def read(self, n=-1):
         if n == 0:
             return b""
         chunks = []
-        while True:
+        while not self._closed:
             if self._buffer:
                 size = len(self._buffer) if n < 0 else min(n, len(self._buffer))
                 chunks.append(self._buffer[:size])
                 self._buffer = self._buffer[size:]
                 if n >= 0:
                     return b"".join(chunks)
-            if self._eof:
-                return b"".join(chunks)
-            chunk = await self._chunks.get()
-            if chunk is None:
-                self._eof = True
+            if self._chunks:
+                self._buffer = self._chunks.popleft()
+                self._wake_waiters()
+            elif self._finished:
+                break
             else:
-                self._buffer = chunk
+                await self._changed.wait()
+        return b"" if self._closed else b"".join(chunks)
 
 
 class _LocalDirectOperation:
@@ -99,6 +100,7 @@ class _LocalDirectOperation:
 
     def __init__(self, backend, request, *, files, stdin):
         self.pid = None
+        self.identity = None
         self.returncode = None
         self.stdout = _OutputChannel()
         self.stderr = _OutputChannel()
@@ -108,6 +110,8 @@ class _LocalDirectOperation:
 
     def _on_started(self, pid):
         self.pid = pid
+        from kkrunner.support.process_identity import ProcessIdentity
+        self.identity = ProcessIdentity.read(pid)
         self._started.set_result(pid)
 
     async def _execute(self, backend, request, files, stdin):
@@ -157,8 +161,10 @@ class LocalDirectChannel:
     expose_pid = True
     uncertain_after_launch = False
 
-    def __init__(self, backend=DirectBackend):
+    def __init__(self, backend=DirectBackend, *, files=None):
         self.backend = backend
+        self.files = files
+        self._request = None
         self._streams = None
         self.detached = False
 
@@ -166,7 +172,9 @@ class LocalDirectChannel:
         self.detached = detached
 
     def configure_submission(self, request, **observation):
-        raise RuntimeError("Local direct execution has no remote staging request")
+        if self._request is not None:
+            raise RuntimeError("Direct submission is already configured")
+        self._request = request
 
     def prepare(self, spec):
         if self.detached and any(
@@ -181,9 +189,11 @@ class LocalDirectChannel:
             name: file_path(getattr(spec, name), spec.directory)
             for name in ("stdin", "output_file", "error_file")
         })
-        request, use_stdin = await prepare_direct_request(LocalTransport(), execution_request(declaration))
+        request, self._request = self._request, None
+        request, use_stdin = await prepare_direct_request(
+            LocalTransport(), self.backend, execution_request(declaration) if request is None else request)
         request["detached"] = self.detached
-        self._streams = open_output_streams(spec)
+        self._streams = self.files.open_direct_streams() if self.files is not None else open_output_streams(spec)
         files = {kind: stream for kind, stream in (
             ("out", self._streams.output_file), ("err", self._streams.error_file),
         ) if stream is not None}
@@ -216,7 +226,7 @@ class LocalDirectChannel:
         if process is not None:
             process.close()
         streams, self._streams = self._streams, None
-        if streams is not None:
+        if streams is not None and self.files is None:
             streams.close()
 
 
@@ -250,16 +260,16 @@ class SshDirectChannel:
 
     async def launch(self, spec):
         request, self._request = self._request, None
-        request, _ = await prepare_direct_request(self.context.transport, request)
+        request, _ = await prepare_direct_request(self.context.transport, self.context.client.backend, request)
         request["detached"] = self.detached
         return await self.context.transport.start_operation(
-            BackendOperation.for_backend(type(self.context.endpoint.backend), "stream"), request,
+            BackendOperation.for_backend(type(self.context.client.backend), "stream"), request,
         )
 
     async def stop(self, process, *, discard_output=False):
         readers = []
         if discard_output:
-            # DirectSession has already stopped delivery after an error.
+            # DirectObservation has already stopped delivery after an error.
             # Keep draining transport pipes while the target handles cancel.
             async def discard(source):
                 while await source.read(65536):

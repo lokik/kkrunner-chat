@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Protocol
 
 if TYPE_CHECKING:
-    from kkrunner.backends.contracts import JobRef, JobStatus
+    from kkrunner.backends.contracts import Backend, JobRef, JobStatus, RecoveryResult
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.client.transports import Transport
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.client.run_parts import RunParts
     from kkrunner.files.manifest import FileManifest
@@ -22,10 +24,32 @@ class JobAttachment:
     files: FileManifest
 
 
-class RunEndpoint(Protocol):
+class RunClientProtocol(Protocol):
     """Create an entire client session, never implement the backend contract."""
 
+    backend: Backend
+    transport: Transport
+
+    @property
+    def backend_config(self) -> BackendConfig: ...
+
+    @property
+    def default_persistent(self) -> bool: ...
+
+    @property
+    def default_detached(self) -> bool: ...
+
     def create_run_parts(self, spec, *, submission_key=None, callback=None) -> RunParts: ...
+
+    def open_run_parts(self, attachment: JobAttachment, *, callback=None, output_listener=None) -> RunParts: ...
+
+    def status(self, *runs: JobAttachment): ...
+
+    def recover_submission(self, submission_key, submission, *, submitted_at=None) -> RecoveryResult: ...
+
+    def acknowledge(self, run): ...
+
+    def acknowledge_submission(self, run): ...
 
 
 
@@ -60,6 +84,9 @@ class JobProtocol(Protocol):
     def backend_id(self) -> Optional[str]: ...
 
     @property
+    def pid(self) -> Optional[int]: ...
+
+    @property
     def state(self): ...
 
     # The Job has a runtime specification; the original submission spec
@@ -84,6 +111,8 @@ class JobProtocol(Protocol):
     def add_output_error_listener(self, callback) -> None: ...
 
     def status(self) -> JobStatus: ...
+
+    def refresh_status(self) -> JobStatus: ...
 
     def submit(self) -> None: ...
 

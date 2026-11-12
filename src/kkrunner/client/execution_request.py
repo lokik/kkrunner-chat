@@ -9,6 +9,7 @@ guessed from the file handle's local .name.
 from __future__ import annotations
 
 import os
+from dataclasses import asdict
 from typing import Callable
 
 from kkrunner.files.paths import file_path
@@ -27,6 +28,17 @@ def _named_path(value, directory, mapping):
     if not isinstance(path, (str, os.PathLike)):
         raise TypeError("File mapping must return a target pathname")
     return os.fspath(path)
+
+
+def command_request(spec, transform=list):
+    """Project client command intent to target-only JSON execution fields."""
+    spec.require_complete()
+    return {
+        "argv": transform(spec.argv),
+        "mpi_argv": None if spec.mpi_argv is None else transform(spec.mpi_argv),
+        "mpi_uses_stdin": spec.mpi_uses_stdin,
+        "mpi": asdict(spec.mpi),
+    }
 
 
 def execution_request(spec, *, directory=None, map_path: Callable | None = None):
@@ -52,7 +64,7 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
         return [path(value) for value in values if value is not None]
 
     request = {
-        **spec.command_request(),
+        **command_request(spec),
         "directory": target_dir,
         "input_file": path(spec.input_file),
         "stdin": path(spec.stdin),

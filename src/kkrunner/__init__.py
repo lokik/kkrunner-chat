@@ -4,12 +4,13 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kkrunner._version import __version__
+    from kkrunner.execution import RunState
     from kkrunner.files.task_file import TaskFile
-    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, RunState
+    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.runs.manager import RunManager
-    from kkrunner.runs.run import Run
     from kkrunner.runs.processing import ProcessingPending
     from kkrunner.runs.records import RunStore
+    from kkrunner.runs.run import Run
 
 __all__ = [
     "ExecutionOutcome", "ExecutionSpec", "ProcessingPending",
@@ -25,10 +26,11 @@ def __getattr__(name):
     elif name in (
         "ExecutionOutcome",
         "ExecutionSpec",
-        "RunState",
     ):
         from .runs import base
         value = getattr(base, name)
+    elif name == "RunState":
+        from .execution import RunState as value
     elif name == "Run":
         from .runs.run import Run as value
     elif name == "RunManager":

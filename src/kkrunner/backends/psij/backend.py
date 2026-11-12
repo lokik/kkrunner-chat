@@ -2,25 +2,38 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
+from uuid import uuid4
 
-from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.backends.support.messages import (
-    AcknowledgeReply, ExecutionRequest, RecoveryReply, RecoveryRequest, StatusReply, SubmissionReply,
-    request_to_spec, status_reply,
+from kkrunner.backends.contracts import (
+    Backend,
+    BackendCapability,
+    JobFailurePhase,
+    ManagedOperations,
+    SubmissionNotStarted,
 )
-from kkrunner.backends.contracts import JobFailurePhase
-from kkrunner.runs.states import RunState
-from kkrunner.support.growing_file_tail import follow_growing_files
-from .executor import PsijExecutor
-from .submission import psij_state
-from . import slurm
-
-
-from kkrunner.backends.contracts import Backend, ManagedOperations, BackendCapability
 from kkrunner.backends.support.class_helper import imported_ssh_helper
-from .support import _create_executor, _follow_scheduler
+from kkrunner.backends.support.messages import (
+    AcknowledgeReply,
+    ExecutionRequest,
+    RecoveryReply,
+    RecoveryRequest,
+    StatusReply,
+    SubmissionReply,
+    normalize_request,
+    status_reply,
+)
+from kkrunner.execution import RunState
+from kkrunner.remote.handles import decode_handle, encode_handle
+
+from . import slurm
+from .submission import prepare_job, prepare_outputs
+from .support import (
+    _attach_job,
+    _create_executor,
+    _follow_scheduler,
+    psij_state,
+    supports_recovery,
+)
 
 
 class PsijBackend(Backend, ManagedOperations):
@@ -29,8 +42,7 @@ class PsijBackend(Backend, ManagedOperations):
     name = "psij"
     default_options = (("executor_name", "slurm"), ("url", None))
     SshHelper = imported_ssh_helper
-    session_bound = False
-    default_persistent = True
+    execution_mode = "managed"
     default_detached = True
     def __init__(self, **options):
         super().__init__(**options)
@@ -40,37 +52,48 @@ class PsijBackend(Backend, ManagedOperations):
             raise ValueError("PSI/J executor_name must be a nonempty string")
         if url is not None and (not isinstance(url, str) or not url):
             raise ValueError("PSI/J url must be a nonempty string or None")
-        supports = {BackendCapability.REATTACH}
-        if executor_name.lower() == "slurm" and url is None:
+        supports = {BackendCapability.REATTACH, BackendCapability.STATUS}
+        if supports_recovery(self.options):
             supports.add(BackendCapability.RECOVER)
         self.supports = frozenset(supports)
 
     @staticmethod
     def submit(request: ExecutionRequest) -> SubmissionReply:
-        executor = _create_executor(request.get("backend_options"))
-        spec = request_to_spec(request)
-        submission = executor.create_submission(spec, submission_key=request.get("id"))
-        # PSI/J's _prepare_io() owns cleanup of its complete declared manifest.
-        # Running a second cleanup here would duplicate it and risk wildcard caches.
-        submission.submit()
-        native_id = submission.native_id
+        try:
+            options = PsijBackend(**dict(request.get("backend_options") or {})).options
+            request = normalize_request(request)
+            psij, executor = _create_executor(options)
+            job = prepare_job(psij, request, executor_name=options["executor_name"],
+                              submission_key=request.get("submission_key") or uuid4().hex)
+            prepare_outputs(request)
+        except Exception as exc:
+            raise SubmissionNotStarted(str(exc)) from exc
+        # Crossing this boundary can submit a job even when the call raises.
+        # Such errors must never be reported as SubmissionNotStarted.
+        executor.submit(job)
+        native_id = job.native_id
         if native_id is None:
             raise RuntimeError("PSI/J submission did not return a native job id")
         remote_id = encode_handle(
             {
                 "kind": "psij",
-                "executor_name": executor.executor_name,
-                "url": executor.url,
-                "native_id": native_id,
+                "executor_name": options["executor_name"],
+                "url": options["url"],
+                "native_id": str(native_id),
             }
         )
+        native_status = job.status
+        state = psij_state(native_status)
         return {
             "remote_id": remote_id,
-            **status_reply(submission.state, submission.return_code, failure_phase=submission.failure_phase),
+            **status_reply(
+                state, getattr(native_status, "exit_code", None),
+                failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
+            ),
             "directory": request["directory"],
             "input_file": request.get("input_file"),
-            "output_file": submission.result.output_file,
-            "error_file": submission.result.error_file,
+            "output_file": request.get("output_file"),
+            "error_file": request.get("error_file"),
         }
 
     @staticmethod
@@ -81,8 +104,14 @@ class PsijBackend(Backend, ManagedOperations):
         if str(handle["executor_name"]).lower() == "slurm" and handle.get("url") is None:
             facts = slurm.status(handle["native_id"])
         else:
-            executor = _create_executor(handle)
-            facts = executor.status(handle["native_id"])
+            from kkrunner.backends.contracts import job_status_from_facts
+            job = _attach_job(handle)
+            native = job.status
+            state = psij_state(native, attached=True)
+            facts = job_status_from_facts(state,
+                                          failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
+                                          return_code=getattr(native, "exit_code", None),
+                                          message=getattr(native, "message", None))
         return status_reply(
             facts.state, facts.return_code,
             failure_phase=facts.failure_phase, error=facts.message,
@@ -93,8 +122,7 @@ class PsijBackend(Backend, ManagedOperations):
         handle = decode_handle(remote_id)
         if handle["kind"] != "psij":
             raise ValueError("Not a PSI/J job reference")
-        executor = _create_executor(handle)
-        job = executor.attach_job(handle["native_id"])
+        job = _attach_job(handle)
         job.cancel()
         return PsijBackend.status(remote_id)
 
@@ -111,10 +139,10 @@ class PsijBackend(Backend, ManagedOperations):
         run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
     ) -> RecoveryReply:
         try:
-            executor = _create_executor(request.get("backend_options"))
-            facts = executor.recover(
-                run_id, request["directory"], submitted_at=submitted_at,
-            )
+            options = PsijBackend(**dict(request.get("backend_options") or {})).options
+            if not supports_recovery(options):
+                raise NotImplementedError("Submission recovery requires a local Slurm executor")
+            facts = slurm.recover(run_id, request["directory"], submitted_at=submitted_at)
         except NotImplementedError as exc:
             return {"unsupported": True, "error": str(exc)}
         if facts is None:
@@ -123,8 +151,8 @@ class PsijBackend(Backend, ManagedOperations):
         remote_id = encode_handle(
             {
                 "kind": "psij",
-                "executor_name": executor.executor_name,
-                "url": executor.url,
+                "executor_name": options["executor_name"],
+                "url": options["url"],
                 "native_id": native_id,
             }
         )

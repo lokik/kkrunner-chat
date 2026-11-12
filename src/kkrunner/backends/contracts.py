@@ -19,10 +19,10 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
     from kkrunner.backends.support.messages import (
         AcknowledgeReply, ExecutionRequest, FollowOptions, RecoveryReply, RecoveryRequest,
-        StatusReply, SubmissionReply,
+        StatusReply, SubmissionReply, PreparedExecution,
     )
 
-from kkrunner.runs.states import RunState
+from kkrunner.execution import RunState
 from kkrunner.support.decorators import class_property
 
 
@@ -31,6 +31,13 @@ class BackendCapability(str, Enum):
 
     REATTACH = "reattach"
     RECOVER = "recover"
+    STATUS = "status"
+
+
+class SubmissionNotStarted(RuntimeError):
+    """The target confirms that the native submission boundary was not crossed."""
+
+    submission_started = False
 
 
 class JobFailurePhase(str, Enum):
@@ -183,6 +190,12 @@ class DirectOperations(Protocol):
     """Static namespace interface for one session-bound execution."""
 
     @staticmethod
+    def prepare_mpi(request: ExecutionRequest, *, resolve_only: bool = False) -> PreparedExecution: ...
+
+    @staticmethod
+    def prepare_target_outputs(request: ExecutionRequest) -> None: ...
+
+    @staticmethod
     async def stream(
         request: ExecutionRequest, *,
         stdout: Optional[Union[ByteSink, AsyncByteSink]] = None,
@@ -249,16 +262,15 @@ class Backend:
     indeterminate, or an explicit unsupported reply. It never resubmits.
     Each instance owns validated immutable options and its actual capabilities.
     Static native operations and SSH helpers remain methods of its class.
-    The endpoint supplies location, transport and client resources.
+    The client supplies its transport and client resources.
     """
 
     name: str
     default_options: ClassVar[Tuple[Tuple[str, Optional[str]], ...]] = ()
     resolves_mpi_launcher = False
-    session_bound = True
+    execution_mode = "direct"
     supports: frozenset[BackendCapability]
     options: Mapping[str, object]
-    default_persistent = False
     default_detached = False
 
     def __init__(self, **options):
@@ -284,5 +296,5 @@ class Backend:
 __all__ = [
     "Backend", "BackendCapability", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoveryDisposition", "RecoveryResult",
-    "UnsupportedCapability", "job_status_from_facts",
+    "UnsupportedCapability", "SubmissionNotStarted", "job_status_from_facts",
 ]

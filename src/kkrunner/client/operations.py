@@ -13,7 +13,7 @@ from typing import Callable
 
 @dataclass(frozen=True)
 class BackendOperation:
-    """How an endpoint locates one context-independent Python operation."""
+    """How a transport locates one context-independent Python operation."""
 
     function: str | None = None
     portable: Callable | None = None
@@ -63,10 +63,16 @@ def operation_command(operation: BackendOperation, *, python=("python3",), strea
         lines += [
             "from contextlib import redirect_stdout",
             "payload = json.loads(sys.stdin.buffer.read())",
-            "with redirect_stdout(sys.stderr):",
-            f"    result = {entrypoint}(*payload['args'], **payload['kwargs'])",
-            "    if inspect.isawaitable(result): result = asyncio.run(result)",
-            "sys.stdout.write(json.dumps(result, allow_nan=False))",
+            "try:",
+            "    with redirect_stdout(sys.stderr):",
+            f"        result = {entrypoint}(*payload['args'], **payload['kwargs'])",
+            "        if inspect.isawaitable(result): result = asyncio.run(result)",
+            "    reply = {'version': 1, 'result': result}",
+            "except Exception as exc:",
+            "    reply = {'version': 1, 'error': {'type': type(exc).__name__, 'message': str(exc),",
+            "             'submission_started': getattr(exc, 'submission_started', None),",
+            "             'errno': getattr(exc, 'errno', None)}}",
+            "sys.stdout.write(json.dumps(reply, allow_nan=False))",
         ]
     script = "\n".join(lines) + "\n"
     return (*python, "-u", "-c", script) if streaming else (*python, "-c", script)

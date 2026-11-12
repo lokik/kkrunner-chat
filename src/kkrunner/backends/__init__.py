@@ -21,7 +21,7 @@ def backend_class(kind):
 
 
 def configured_backend(backend=None, *, options=None):
-    """Construct one configured backend; never duplicate its options in an endpoint."""
+    """Construct one configured backend; never duplicate its options in a transport."""
     from .contracts import Backend
 
     if backend is None:
@@ -46,10 +46,13 @@ def installed_backend_names():
     return frozenset(("process", "psij"))
 
 
-__all__ = ["DirectBackend", "SupervisedBackend", "PsijBackend"]
+__all__ = ["DirectBackend", "SupervisedBackend", "PsijBackend", "BackendConfig"]
 
 
 def __getattr__(name):
+    if name == "BackendConfig":
+        from .config import BackendConfig
+        return BackendConfig
     kinds = {"DirectBackend": "direct", "SupervisedBackend": "process", "PsijBackend": "psij"}
     try:
         value = backend_class(kinds[name])

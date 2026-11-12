@@ -1,37 +1,36 @@
-"""Remote execution with client-owned lifecycle persistence."""
+"""One execution client; transport selects direct calls or SSH RPC."""
 
 from __future__ import annotations
 
-import glob
 import os
 import posixpath
-import warnings
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
-from kkrunner.client.remote_paths import RemotePathContext, _relative_local_path, query_remote_home
-from kkrunner.client.endpoint import describe_endpoint
-from kkrunner.files.manifest import FileMapping
 from kkrunner.backends import configured_backend
-from kkrunner.client.operations import BackendOperation
-from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.job import Job
-from kkrunner.client.run_parts import RunParts
-from kkrunner.client.contracts import RunEndpoint
+from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability
-from kkrunner.support.async_utils import run_coro_sync as _run_sync
-from kkrunner.client.observation import follow_framed_command
+from kkrunner.client.contracts import RunClientProtocol
+from kkrunner.client.file_context import (
+    FileContext,
+    _relative_local_path,
+    query_remote_home,
+)
+from kkrunner.client.file_session import FileSession
+from kkrunner.client.job import Job
+from kkrunner.client.operations import BackendOperation
+from kkrunner.client.run_parts import RunParts
+from kkrunner.client.staging import StagingSpec
+from kkrunner.files.manifest import FileMapping
 from kkrunner.runs.base import (
-    LaunchSpec,
-    MpiNotFoundWarning,
     RunState,
     RunStatus,
 )
 from kkrunner.runs.model import WorkingDirectory
+from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
-
-def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
+def _run_status_from_facts(facts, backend_id, *, execution=None, files=None):
     """Interpret one backend reply without issuing another remote request."""
     return RunStatus(
         RunState(facts.get("state", "unknown")),
@@ -44,56 +43,55 @@ def _remote_status_from_facts(facts, backend_id, *, execution=None, files=None):
     )
 
 
-class _SshRunContext(RemotePathContext):
+class _RunContext(FileContext):
     @property
     def backend(self):
-        """Execution backend identity is owned by the endpoint."""
-        return self.endpoint.backend
+        """Backend selection belongs to the configured client."""
+        return self.client.backend
 
     async def _submit(self, request):
-        return await self.endpoint._submit(request)
+        return await self.client._submit(request)
 
     async def _status(self, directory, backend_id, files=None):
-        return await self.endpoint._status(directory, backend_id, files)
+        return await self.client._status(directory, backend_id, files)
 
     async def _cancel(self, directory, backend_id, files=None):
-        return await self.endpoint._cancel(directory, backend_id, files)
+        return await self.client._cancel(directory, backend_id, files)
 
     async def _follow(
         self, directory, backend_id, *, on_output, offsets=None,
         stdout_path=None, stderr_path=None,
     ):
-        return await self.endpoint._follow(
+        return await self.client._follow(
             directory, backend_id, on_output=on_output, offsets=offsets,
             stdout_path=stdout_path, stderr_path=stderr_path,
         )
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
-        files = RemoteFileSession(self, spec)
-        if self.backend.session_bound:
-            from kkrunner.client.direct_channels import SshDirectChannel
-            job = Job.direct(spec, callback=callback, adapter=SshDirectChannel(self))
+        files = FileSession(self, spec)
+        if self.backend.execution_mode == "direct":
+            job = Job.direct(spec, callback=callback, adapter=self.transport.direct_channel(self, files))
         else:
             job = Job(self, spec, callback=callback)
         return RunParts(
             job, files,
-            submission_builder=lambda prepared: self.endpoint.submission_request(
+            submission_builder=lambda prepared: self.client.submission_request(
                 prepared, submission_key=submission_key,
             ),
         )
 
     async def attach_run_parts(self, attachment, *, callback=None, output_listener=None):
         execution = attachment.execution
-        if execution.backend_id is None or execution.directory.remote is None:
+        if execution.backend_id is None:
             raise ValueError("Remote run lacks backend identity or target directory")
-        status = await self._status(execution.directory.remote, execution.backend_id)
-        files = await RemoteFileSession.from_attachment(self, attachment)
+        status = await self._status(execution.directory.target, execution.backend_id)
+        files = await FileSession.from_attachment(self, attachment)
         try:
             job = Job(
                 self, files.spec, callback=callback,
                 output_listener=output_listener,
                 backend_id=execution.backend_id,
-                remote_directory=execution.directory.remote,
+                remote_directory=execution.directory.target,
                 status=status,
             )
             return RunParts(job, files)
@@ -102,30 +100,46 @@ class _SshRunContext(RemotePathContext):
             raise
 
 
-class SshRunEndpoint(RunEndpoint):
-    """Reusable remote endpoint with client-owned lifecycle state."""
+class RunClient(RunClientProtocol):
+    """Compose an execution backend and transport with client lifecycle state."""
 
-    name = "ssh"
     supports_result_file_retrieval = True
 
     def __init__(
         self,
-        transport,
-        *,
         backend=None,
+        *,
+        transport=None,
         backend_options=None,
-        filesystem_id=None,
     ):
         backend = configured_backend(backend, options=backend_options)
-        self.transport = transport
-        self.filesystem_id = filesystem_id
+        from kkrunner.client.transports import LocalTransport
+        self.transport = LocalTransport() if transport is None else transport
         self.backend = backend
-        self.computer = getattr(transport, "host", None)
+        self.computer = getattr(self.transport, "host", None)
         self._remote_home_cache = None
+
+    @classmethod
+    def from_config(cls, transport, backend):
+        """Reconstruct a client from supported stored connection/backend data."""
+        from kkrunner.client.transports import (
+            require_persistable_transport,
+            transport_from_dict,
+        )
+        if isinstance(transport, dict):
+            transport = transport_from_dict(transport)
+        if isinstance(backend, dict):
+            backend = BackendConfig(**backend)
+        require_persistable_transport(transport)
+        return cls(backend.create(), transport=transport)
+
+    @property
+    def backend_config(self):
+        return BackendConfig(self.backend.name, self.backend.options)
 
     @property
     def default_persistent(self):
-        return self.backend.default_persistent
+        return self.backend.execution_mode == "managed"
 
     @property
     def default_detached(self):
@@ -145,7 +159,7 @@ class SshRunEndpoint(RunEndpoint):
         """Add the selected backend configuration to the staged target request."""
         return {
             **prepared_files,
-            "id": submission_key,
+            "submission_key": submission_key,
             "backend": self.backend.name,
             "backend_options": dict(self.backend.options),
             "detached": self.backend.default_detached,
@@ -159,23 +173,22 @@ class SshRunEndpoint(RunEndpoint):
         return await self.transport.call(self._operation(name), *args, **kwargs)
 
     @staticmethod
-    def _context(endpoint, launch):
-        if not isinstance(launch, LaunchSpec):
-            launch = LaunchSpec(**dict(launch))
-        return _SshRunContext(endpoint, launch)
+    def _context(client, staging):
+        if not isinstance(staging, StagingSpec):
+            staging = StagingSpec(**dict(staging))
+        return _RunContext(client, staging)
 
     def _validate_run(self, run):
-        if run.execution.endpoint != describe_endpoint(self):
-            raise ValueError("Run belongs to a different remote endpoint")
-        if not run.execution.directory.remote:
-            raise ValueError("Remote run lacks a target working directory")
+        if (run.execution.transport != self.transport or
+                run.execution.backend != self.backend_config):
+            raise ValueError("Run belongs to a different transport or backend")
 
     @staticmethod
-    def _launch_from_manifest(files):
+    def _staging_from_manifest(files):
         mapping = files.mapping
         if mapping is None:
-            raise ValueError("Remote run has no persisted file mapping")
-        return LaunchSpec(
+            return StagingSpec()
+        return StagingSpec(
             local_root=mapping.local_root,
             remote_root=mapping.remote_root,
             input_sync=mapping.input_sync,
@@ -183,6 +196,8 @@ class SshRunEndpoint(RunEndpoint):
         )
 
     async def _resolve_submission_directory(self, directory):
+        if self.transport.is_local:
+            return os.path.abspath(directory)
         directory = posixpath.normpath(os.fspath(directory))
         if directory == "~":
             return await self._remote_home()
@@ -191,13 +206,15 @@ class SshRunEndpoint(RunEndpoint):
         return directory
 
     def submission_directory(self, spec):
-        launch = spec.launch
+        if self.transport.is_local:
+            return os.path.abspath(spec.directory)
+        staging = spec.staging
         relative = _relative_local_path(
             spec.directory,
-            launch.local_root or Path.home(),
+            staging.local_root or Path.home(),
         )
 
-        root = launch.remote_root
+        root = staging.remote_root
         if root is None or root == "~":
             remote_root = "~"
         elif root.startswith("~/"):
@@ -213,8 +230,11 @@ class SshRunEndpoint(RunEndpoint):
     def resolve_submission(self, record, spec):
         """Resolve the footprint without uploads, mkdir, or opening output files."""
 
+        if self.transport.is_local:
+            return record
+
         async def resolve():
-            context = self._context(self, spec.launch)
+            context = self._context(self, spec.staging)
             directory = await context.map_directory(spec.directory)
 
             async def mapped(entry):
@@ -250,27 +270,6 @@ class SshRunEndpoint(RunEndpoint):
         return _run_sync(resolve())
 
     async def _submit(self, request):
-        launch = request.get("launch") or {}
-        mpi = launch.get("mpi") or {}
-        if (
-            self.backend.resolves_mpi_launcher
-            and mpi.get("autodetect")
-            and not mpi.get("required")
-            and mpi.get("warning", True)
-        ):
-            # Shared support rule, evaluated on the actual execution host.
-            from kkrunner.backends.support.process import resolve_mpi_options
-            resolved = await self.transport.call(
-                BackendOperation.standalone(resolve_mpi_options),
-                mpi,
-            )
-            if not resolved:
-                warnings.warn(
-                    "MPI autodetection did not find an MPI launcher on the remote "
-                    "host; the calculation will run without MPI.",
-                    MpiNotFoundWarning,
-                    stacklevel=3,
-                )
         return await self._invoke("submit", request)
 
     async def _status(self, directory, backend_id, files=None):
@@ -279,20 +278,14 @@ class SshRunEndpoint(RunEndpoint):
     async def _cancel(self, directory, backend_id, files=None):
         return await self._invoke("cancel", backend_id)
 
-    async def _follow(
-        self, directory, backend_id, *, on_output, offsets=None,
-        stdout_path=None, stderr_path=None,
-    ):
+    async def _follow(self, directory, backend_id, *, on_output, offsets=None,
+                      stdout_path=None, stderr_path=None):
         offsets = {"out": 0, "err": 0} if offsets is None else offsets
-        process = await self.transport.start_operation(
-            self._operation("follow_framed"), str(backend_id),
-            stdout_offset=offsets.get("out"),
-            stderr_offset=offsets.get("err"),
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
+        return await self.transport.follow(
+            self._operation("follow"), backend_id, on_output,
+            stdout_offset=offsets.get("out"), stderr_offset=offsets.get("err"),
+            stdout_path=stdout_path, stderr_path=stderr_path,
         )
-        # Keep the transport diagnostic channel out of calculation stderr.
-        return await follow_framed_command(process, on_output)
 
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
@@ -309,7 +302,9 @@ class SshRunEndpoint(RunEndpoint):
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
 
     def status(self, *runs):
-        self._require_managed()
+        if BackendCapability.STATUS not in self.backend.supports:
+            from kkrunner.backends.contracts import UnsupportedCapability
+            raise UnsupportedCapability("This backend has no independent status query")
         for run in runs:
             self._validate_run(run)
             if not run.execution.backend_id:
@@ -321,9 +316,9 @@ class SshRunEndpoint(RunEndpoint):
             result = []
             for run in runs:
                 execution = run.execution
-                state = await self._status(execution.directory.remote, execution.backend_id, run.files)
+                state = await self._status(execution.directory.target, execution.backend_id, run.files)
                 result.append(
-                    _remote_status_from_facts(
+                    _run_status_from_facts(
                         state,
                         execution.backend_id,
                     )
@@ -362,94 +357,28 @@ class SshRunEndpoint(RunEndpoint):
             return RecoveryResult.unsupported("Direct execution has no submission recovery")
         return _run_sync(self._recover_submission(run_id, submission, submitted_at=submitted_at))
 
+    def file_session(self, spec):
+        return FileSession(self._context(self, spec.staging), spec)
+
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         from uuid import uuid4
         spec.require_complete()
-        return self._context(self, spec.launch).create_run_parts(
+        return self._context(self, spec.staging).create_run_parts(
             spec, submission_key=submission_key or uuid4().hex, callback=callback,
         )
 
-    async def _snapshot_file(self, run, file, *, destination=None):
-        """Observe target-side content without affecting normal result downloads."""
-        self._validate_run(run)
-        context = self._context(self, self._launch_from_manifest(run.files))
-        _relative_local_path(file, context.local_root)
-        entry = next(
-            (item for item in (
-                run.files.stdout, run.files.stderr, *run.files.outputs,
-                *(cache.file for cache in run.files.caches),
-            ) if item is not None and item.local_path == file),
-            None,
-        )
-        remote = entry.remote_path if entry is not None else None
-        if remote is None:
-            remote = await context.map_path(file)
-        root = await context._resolved_remote_root()
-        normalized = posixpath.normpath(remote)
-        if not posixpath.isabs(normalized) or posixpath.commonpath((root, normalized)) != root:
-            raise ValueError(f"Remote snapshot path is outside mapped root: {remote}")
-        # Also reject remote symlinks that escape the mapped filesystem root.
-        # query_files checks real path containment without requiring a stable file.
-        observed = await self.transport.query_files([normalized], root=root)
-        if not observed or observed[0]["status"] == "missing":
-            raise FileNotFoundError(normalized)
-        if observed[0]["type"] != "file":
-            raise ValueError(f"Snapshot source is not a regular file: {normalized}")
-        return await self.transport.snapshot_file(normalized, destination=destination)
-
     def snapshot_file(self, run, file, *, destination=None):
-        return _run_sync(self._snapshot_file(run, file, destination=destination))
-
-    async def _fetch_result_files(self, run, files, *, destinations=None):
-        self._validate_run(run)
-        context = self._context(self, self._launch_from_manifest(run.files))
-        remote_root = await context._resolved_remote_root()
-        destinations = (
-            {}
-            if destinations is None
-            else {os.path.abspath(os.fspath(path)): os.fspath(target) for path, target in destinations.items()}
-        )
-        for value in files:
-            local = os.path.abspath(os.fspath(value))
-            entry = next(
-                (
-                    item
-                    for item in (
-                        *run.files.inputs,
-                        *run.files.outputs,
-                        *(cache.file for cache in run.files.caches),
-                        run.files.stdout,
-                        run.files.stderr,
-                    )
-                    if item is not None and item.local_path == local
-                ),
-                None,
-            )
-            remote = entry.remote_path if entry is not None else None
-            if remote is None:
-                remote = await context.map_path(local)
-            # Exact paths and wildcards have the same source-side selection
-            # and use the transport's verified single-file download.
-            for matched in await self.transport.expand_files(remote, remote_root):
-                destination = os.fspath(await context.unmap_path(matched)) if glob.has_magic(remote) else local
-                _relative_local_path(destination, context.local_root)
-                target = destinations.get(destination, destination)
-                if not os.path.isfile(target):
-                    await self.transport.get_file(matched, target)
+        from kkrunner.client.file_access import FileAccess
+        return FileAccess(self).snapshot_file(run, file, destination=destination)
 
     def fetch_result_files(self, run, files, *, destinations=None):
-        return _run_sync(
-            self._fetch_result_files(
-                run,
-                files,
-                destinations=destinations,
-            )
-        )
+        from kkrunner.client.file_access import FileAccess
+        return FileAccess(self).fetch_result_files(run, files, destinations=destinations)
 
     async def _open_run_parts(self, attachment, *, callback=None, output_listener=None):
         self._validate_run(attachment)
-        launch = self._launch_from_manifest(attachment.files)
-        return await self._context(self, launch).attach_run_parts(
+        staging = self._staging_from_manifest(attachment.files)
+        return await self._context(self, staging).attach_run_parts(
             attachment, callback=callback, output_listener=output_listener,
         )
 

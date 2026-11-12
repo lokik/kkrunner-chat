@@ -25,23 +25,24 @@ class Run:
     """
 
     def __init__(
-        self, job, *, endpoint=None, manager=None, record=None,
+        self, job, *, client=None, manager=None, record=None,
         process_result=None, callback=None, file_session=None, parts=None,
-        local_files=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
         if record is not None and process_result is not None and not record.processing_required:
             raise ValueError("Result processing was not declared in RunRecord")
         from kkrunner.client.run_parts import RunParts
-        self._parts = parts if parts is not None else RunParts(job, file_session)
-        self._job = self._parts.job
-        self._file_session = self._parts.files
-        self._local_files = (
-            None if self._file_session is not None else
-            record.files if record is not None else local_files
-        )
-        self.endpoint = endpoint
+        if parts is None:
+            if file_session is None:
+                from kkrunner.client.client import RunClient
+                client = client if client is not None else RunClient()
+                file_session = client.file_session(job.spec)
+            parts = RunParts(job, file_session)
+        self._parts = parts
+        self._job = parts.job
+        self._file_session = parts.files
+        self.client = client
         self.manager = manager
         self._record = record
         self._process_result = process_result
@@ -65,14 +66,14 @@ class Run:
 
     @classmethod
     def create(
-        cls, endpoint, spec, *, persistent=None, detached=None,
+        cls, client, spec, *, persistent=None, detached=None,
         process_result=None, callback=None, **record_options,
     ):
         """Create one Run; persistence never selects its execution mechanism."""
         from kkrunner.runs.manager import RunManager
 
         if persistent is None:
-            persistent = getattr(endpoint, "default_persistent", False)
+            persistent = getattr(client, "default_persistent", False)
         if isinstance(persistent, RunManager):
             manager = persistent
         elif persistent is True:
@@ -83,33 +84,30 @@ class Run:
             raise TypeError("persistent must be None, bool, or a RunManager")
 
         if detached is None:
-            detached = getattr(endpoint, "default_detached", False)
+            detached = getattr(client, "default_detached", False)
         if type(detached) is not bool:
             raise TypeError("detached must be None or bool")
 
         if manager is not None:
             return manager.create_run(
-                endpoint, spec, process_result=process_result,
+                client, spec, process_result=process_result,
                 callback=callback, detached=detached, **record_options,
             )
         if record_options:
             raise ValueError("Record metadata requires a persistent RunManager")
-        return cls.direct(endpoint, spec, process_result=process_result,
+        return cls.untracked(client, spec, process_result=process_result,
                           callback=callback, detached=detached)
 
     @classmethod
-    def direct(cls, endpoint, spec, *, process_result=None, callback=None, detached=None):
+    def untracked(cls, client, spec, *, process_result=None, callback=None, detached=None):
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
-        parts = endpoint.create_run_parts(spec)
+        parts = client.create_run_parts(spec)
         parts.configure_detached(
-            getattr(endpoint, "default_detached", False) if detached is None else detached,
-            default=getattr(endpoint, "default_detached", False),
+            getattr(client, "default_detached", False) if detached is None else detached,
         )
-        from kkrunner.files.manifest import FileManifest
-        local_files = None if parts.files is not None or not isinstance(spec, ExecutionSpec) else FileManifest.from_spec(spec)
-        return cls(parts.job, endpoint=endpoint, parts=parts, local_files=local_files,
+        return cls(parts.job, client=client, parts=parts,
                    process_result=process_result, callback=callback)
 
     @property
@@ -122,7 +120,7 @@ class Run:
 
     @property
     def spec(self):
-        return self._job.spec if self._file_session is None else self._file_session.spec
+        return self._file_session.spec
 
     @property
     def backend_id(self):
@@ -130,26 +128,15 @@ class Run:
 
     @property
     def execution(self):
-        if self._file_session is not None:
-            proposed = self._file_session.execution(self.backend_id)
-            if proposed is None or self._record is None:
-                return proposed
-            from dataclasses import replace
-            return replace(proposed, submission_key=self._record.execution.submission_key)
-        proposed = getattr(self._job, "execution", None)
-        if proposed is not None:
+        proposed = self._file_session.execution(self.backend_id)
+        if proposed is None or self._record is None:
             return proposed
-        if self._record is None:
-            return None
-        if self.backend_id is None:
-            return self._record.execution
-        return self._record.execution.submitted(self.backend_id)
+        from dataclasses import replace
+        return replace(proposed, submission_key=self._record.execution.submission_key)
 
     @property
     def files(self):
-        if self._file_session is not None:
-            return self._file_session.files
-        return self._local_files
+        return self._file_session.files
 
     @property
     def exception(self):
@@ -177,14 +164,12 @@ class Run:
         elif self._processing:
             current = RunState.POSTPROCESSING
         else:
-            current = self._job.state
-            if current == RunState.FINISHED and self._started and self._file_session is not None:
-                current = RunState.DOWNLOADING
-            elif current == RunState.FINISHED and self._started:
-                if self._process_result is not None or (
-                    self._record is not None and self._record.processing_required
-                ):
-                    current = RunState.POSTPROCESSING
+            from kkrunner.runs.states import project_run_state
+            current = project_run_state(
+                self._job.state, files_pending=self._started,
+                processing_pending=self._process_result is not None,
+                failure_phase=self._job.failure_phase,
+            )
         if self._record is not None:
             if current == RunState.NEW and self._record.state != RunState.NEW:
                 return self._record.state
@@ -207,18 +192,15 @@ class Run:
         try:
             outcome = self._job.wait()
             raw_state = self._job.state
-            if self._file_session is not None:
-                # Even an uncertain or failed raw execution has partial local
-                # output files. Expose their paths through the Run outcome.
-                outcome = self._file_session.result
-                outcome.return_code = self._job.return_code
+            outcome = self._file_session.result
+            outcome.return_code = self._job.return_code
             self.result = outcome
-            if self._file_session is not None and raw_state.is_terminal:
+            if raw_state.is_terminal:
                 self._state = RunState.DOWNLOADING
                 try:
                     if raw_state == RunState.FINISHED and getattr(self._job, "output_error", None) is not None:
                         raise self._job.output_error
-                    self._file_session.synchronize(raw_state)
+                    self._file_session.finalize(self._job.status())
                     # Flush and close the client-owned streams *before*
                     # postprocessing can durably publish a finished Run.
                     self._parts.close()
@@ -227,7 +209,8 @@ class Run:
                         self._file_session.mark_transfer_failed(str(exc))
                         self._exception = exc
                         self._state = RunState.FAILED
-                        self._failure_phase = FailurePhase.DOWNLOAD
+                        self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
+                                               FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
                         self._failure_message = str(exc)
                         return
                     # Diagnostic transfer errors cannot replace a failed or
@@ -249,44 +232,6 @@ class Run:
                 return
             if raw_state != RunState.FINISHED:
                 raise RuntimeError(f"Backend observer completed in unexpected state {raw_state.value}")
-
-            # A local Job can confirm that execution finished even if FOLLOW,
-            # stream delivery or client output closure failed. Backend status
-            # stays FINISHED, but a client Run must not claim completed output
-            # or publish successful postprocessing in that case.
-            if self._file_session is None and getattr(self._job, "output_error", None) is not None:
-                self._exception = self._job.output_error
-                self._state = RunState.FAILED
-                self._failure_phase = FailurePhase.OUTPUT
-                self._failure_message = str(self._exception)
-                if self._local_files is not None:
-                    # Stream delivery is incomplete; keep unrelated output
-                    # artifacts unchanged, but do not leave stream availability
-                    # as pending or claim that its bytes are reliable.
-                    for stream in (self._local_files.stdout, self._local_files.stderr):
-                        if stream is not None and stream.local_path is not None:
-                            self._local_files = self._local_files.with_file_availability(
-                                stream.local_path, "failed", self._failure_message,
-                            )
-                return
-
-            # A Job finishes once its process ends. The client then verifies
-            # application artifacts, after native output streams were closed.
-            if self._local_files is not None:
-                from kkrunner.files.availability import discover_local_files
-                try:
-                    self._local_files = discover_local_files(self._local_files)
-                except OSError as exc:
-                    self._exception = exc
-                    self._state = RunState.FAILED
-                    self._failure_phase = FailurePhase.ARTIFACTS
-                    self._failure_message = str(exc)
-                    return
-                if self._local_files.failed_artifacts:
-                    self._state = RunState.FAILED
-                    self._failure_phase = FailurePhase.ARTIFACTS
-                    self._failure_message = self._local_files.availability_message
-                    return
 
             self._processing = True
             try:
@@ -333,19 +278,19 @@ class Run:
                 self._failure_phase = None
             self._failure_message = getattr(self._job, "failure_message", None) or str(exc)
         finally:
-            if self._file_session is not None:
-                try:
-                    self._parts.close()
-                except BaseException as exc:
-                    # File cleanup must never prevent finish_monitor from
-                    # waking waiters. For a successful Job, an unflushed
-                    # output is a client transfer failure, not Job failure.
-                    if self._exception is None:
-                        self._exception = exc
-                    if self._state == RunState.FINISHED:
-                        self._state = RunState.FAILED
-                        self._failure_phase = FailurePhase.DOWNLOAD
-                        self._failure_message = str(exc)
+            try:
+                self._parts.close()
+            except BaseException as exc:
+                # File cleanup must never prevent finish_monitor from
+                # waking waiters. For a successful Job, an unflushed
+                # output is a client transfer failure, not Job failure.
+                if self._exception is None:
+                    self._exception = exc
+                if self._state == RunState.FINISHED:
+                    self._state = RunState.FAILED
+                    self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
+                                           FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
+                    self._failure_message = str(exc)
             self._settled = True
             if self.manager is not None and self._record.state != RunState.NEW:
                 try:
@@ -387,14 +332,12 @@ class Run:
 
     def _close_files_after_failed_submission(self):
         """Cleanup must not replace the submission error or skip its record."""
-        if self._file_session is None:
-            return
         try:
             self._parts.close()
         except BaseException as cleanup_error:
             import logging
             logging.getLogger(__name__).warning(
-                "Remote file cleanup after failed submission also failed: %s", cleanup_error,
+                "File cleanup after failed submission also failed: %s", cleanup_error,
             )
 
     def submit(self):
@@ -411,7 +354,7 @@ class Run:
         if manager is not None:
             if self._record.state != RunState.NEW:
                 raise RuntimeError(f"Run is already {self._record.state.value}")
-            resolve = getattr(self.endpoint, "resolve_submission", None)
+            resolve = getattr(self.client, "resolve_submission", None)
             if resolve is not None:
                 self._record = resolve(self._record, self.spec)
             # Reservation and duplicate-submit checks are atomic at the store.
@@ -432,13 +375,12 @@ class Run:
                 )
                 self._monitor_record_version = self._record.updated_at
 
-            if self._file_session is not None:
-                self._parts.prepare_job()
+            self._parts.prepare_job()
 
             submitted = True
             self._job.submit()
             if manager is not None:
-                if self.backend_id is None and BackendCapability.REATTACH in self.endpoint.backend.supports:
+                if self.backend_id is None and BackendCapability.REATTACH in self.client.backend.supports:
                     # An attached-only direct Job may have no durable ID.
                     # Every other tracked backend must confirm an identity
                     # before the completion monitor can claim its resources.
@@ -486,7 +428,7 @@ class Run:
             raise
 
         if manager is not None:
-            manager.register_endpoint(self.endpoint, self._record.execution.endpoint)
+            manager.register_client(self.client)
             with self._completion_lock:
                 if not self._completion_persisted:
                     from kkrunner.runs.manager import _UNCHANGED
@@ -498,7 +440,7 @@ class Run:
                         files=self.files if self.files is not None else _UNCHANGED,
                     )
                     self._monitor_record_version = self._record.updated_at
-            manager._acknowledge_submission(self.endpoint, self._record)
+            manager._acknowledge_submission(self.client, self._record)
 
     def start(self):
         if self._started:

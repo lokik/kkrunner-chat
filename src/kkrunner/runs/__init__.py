@@ -7,12 +7,17 @@ when only the execution contracts are required.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, FailurePhase, LaunchSpec, MpiNotFoundWarning, MpiSpec, RunState, RunStatus
-    from kkrunner.runs.manager import DuplicateSubmissionError, HistoricalFileMismatchError, RunManager
-    from kkrunner.runs.run import Run
+    from kkrunner.execution import FailurePhase, MpiNotFoundWarning, MpiSpec, RunState
+    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, RunStatus
+    from kkrunner.runs.manager import (
+        DuplicateSubmissionError,
+        HistoricalFileMismatchError,
+        RunManager,
+    )
     from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.processing import ProcessingPending
     from kkrunner.runs.records import CorruptRunRecord, RunRecord, RunStore
+    from kkrunner.runs.run import Run
 
 __all__ = [
     "CorruptRunRecord",
@@ -22,7 +27,6 @@ __all__ = [
     "ExecutionSpec",
     "FailurePhase",
     "HistoricalFileMismatchError",
-    "LaunchSpec",
     "MpiNotFoundWarning",
     "MpiSpec",
     "Run",
@@ -40,15 +44,13 @@ def __getattr__(name):
     if name in (
         "ExecutionOutcome",
         "ExecutionSpec",
-        "FailurePhase",
-        "LaunchSpec",
-        "MpiNotFoundWarning",
-        "MpiSpec",
-        "RunState",
         "RunStatus",
     ):
         from . import base
         value = getattr(base, name)
+    elif name in ("FailurePhase", "MpiNotFoundWarning", "MpiSpec", "RunState"):
+        from kkrunner import execution
+        value = getattr(execution, name)
     elif name in (
         "DuplicateSubmissionError",
         "HistoricalFileMismatchError",

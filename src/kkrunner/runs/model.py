@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
-from kkrunner.client.endpoint import ExecutionEndpointConfig
+from kkrunner.client.transports import Transport, require_persistable_transport, transport_from_dict
+from kkrunner.backends.config import BackendConfig
 
 
 @dataclass(frozen=True)
@@ -31,18 +32,22 @@ class WorkingDirectory:
 class Execution:
     """Backend identity plus the directory in which the job executes."""
 
-    endpoint: ExecutionEndpointConfig
+    transport: Transport
     directory: WorkingDirectory
     backend_id: Optional[str] = None
     submission_key: Optional[str] = None
+    backend: BackendConfig = field(default_factory=BackendConfig)
 
     def __post_init__(self):
-        if isinstance(self.endpoint, dict):
-            object.__setattr__(self, "endpoint", ExecutionEndpointConfig(**self.endpoint))
+        if isinstance(self.transport, dict):
+            object.__setattr__(self, "transport", transport_from_dict(self.transport))
         if isinstance(self.directory, dict):
             object.__setattr__(self, "directory", WorkingDirectory(**self.directory))
-        if not isinstance(self.endpoint, ExecutionEndpointConfig):
-            raise TypeError("Execution.endpoint must be an ExecutionEndpointConfig")
+        require_persistable_transport(self.transport)
+        if isinstance(self.backend, dict):
+            object.__setattr__(self, "backend", BackendConfig(**self.backend))
+        if not isinstance(self.backend, BackendConfig):
+            raise TypeError("Execution.backend must be a BackendConfig")
         if not isinstance(self.directory, WorkingDirectory):
             raise TypeError("Execution.directory must be a WorkingDirectory")
         if self.submission_key is not None:

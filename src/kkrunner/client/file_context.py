@@ -1,4 +1,4 @@
-"""Shared remote filesystem mapping; no job execution or agent protocol."""
+"""Local and remote filesystem mapping; no job execution or agent protocol."""
 
 from __future__ import annotations
 
@@ -30,21 +30,23 @@ def _relative_local_path(path, local_root):
         ) from exc
 
 
-class RemotePathContext:
+class FileContext:
     """Per-run filesystem and synchronization policy."""
 
-    def __init__(self, endpoint, launch):
-        self.endpoint = endpoint
-        self.transport = endpoint.transport
-        self.local_root = Path(launch.local_root or Path.home()).expanduser().resolve()
-        self.remote_root = None if launch.remote_root is None else os.fspath(launch.remote_root)
-        self.input_files = FileSyncPolicy(launch.input_sync)
-        self.output_files = FileSyncPolicy(launch.output_sync)
+    def __init__(self, client, staging):
+        self.client = client
+        self.transport = client.transport
+        self.local_root = Path(staging.local_root or (Path("/") if self.transport.is_local else Path.home())).expanduser().resolve()
+        self.remote_root = None if staging.remote_root is None else os.fspath(staging.remote_root)
+        self.input_files = FileSyncPolicy(staging.input_sync)
+        self.output_files = FileSyncPolicy(staging.output_sync)
 
     async def _remote_home(self):
-        return await self.endpoint._remote_home()
+        return await self.client._remote_home()
 
     async def _resolved_remote_root(self):
+        if self.transport.is_local:
+            return os.fspath(self.local_root)
         root = self.remote_root
         if root is not None and posixpath.isabs(root):
             return posixpath.normpath(root)
@@ -56,6 +58,8 @@ class RemotePathContext:
         return posixpath.join(home, root)
 
     async def map_path(self, path):
+        if self.transport.is_local:
+            return os.path.abspath(os.fspath(path))
         relative = _relative_local_path(path, self.local_root)
         remote_root = await self._resolved_remote_root()
         if not relative.parts:
@@ -63,6 +67,8 @@ class RemotePathContext:
         return posixpath.join(remote_root, *relative.parts)
 
     async def unmap_path(self, path):
+        if self.transport.is_local:
+            return Path(os.path.abspath(path))
         remote_root = await self._resolved_remote_root()
         path = posixpath.normpath(os.fspath(path))
         if not posixpath.isabs(path):

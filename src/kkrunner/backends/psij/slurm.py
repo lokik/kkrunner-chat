@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime
 
 from kkrunner.backends.contracts import JobFailurePhase, JobStatus
-from kkrunner.runs.states import RunState
+from kkrunner.execution import RunState
 
 
 _SLURM_STATE_MAP = {

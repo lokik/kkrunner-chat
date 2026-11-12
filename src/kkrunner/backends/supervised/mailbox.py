@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
-from kkrunner.runs.base import FailurePhase, RunState
+from kkrunner.execution import FailurePhase, RunState
 from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync_directory
 
 _RECEIPT = re.compile(r"[0-9a-f]{32}\Z")

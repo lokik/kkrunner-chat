@@ -43,6 +43,18 @@ class ProcessIdentity:
     def to_dict(self):
         return asdict(self)
 
+    def to_token(self):
+        """PID:start-time identity interpreted on the execution host."""
+        return f"{self.pid}:{self.start_time:.9f}"
+
+    @classmethod
+    def from_token(cls, value):
+        try:
+            pid, started = value.split(":")
+            return cls(int(pid), float(started), "linux-boot" if psutil.LINUX else "epoch")
+        except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid process identity token") from exc
+
     @classmethod
     def from_dict(cls, value):
         if not isinstance(value, dict) or set(value) != {"pid", "start_time", "time_basis"}:

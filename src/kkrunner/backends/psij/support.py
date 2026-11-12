@@ -5,29 +5,73 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.backends.support.messages import (
-    AcknowledgeReply, ExecutionRequest, RecoveryReply, RecoveryRequest, StatusReply, SubmissionReply,
-    request_to_spec, status_reply,
-)
 from kkrunner.backends.contracts import JobFailurePhase
-from kkrunner.runs.states import RunState
+from kkrunner.backends.support.messages import (
+    status_reply,
+)
+from kkrunner.remote.handles import decode_handle
+from kkrunner.execution import RunState
 from kkrunner.support.growing_file_tail import follow_growing_files
-from .executor import PsijExecutor
-from .submission import psij_state
-from . import slurm
 
-def _create_executor(options=None):
-    options = options or {}
-    return PsijExecutor(options.get("executor_name") or "slurm", url=options.get("url"))
+_STATE_MAP = {
+    "NEW": RunState.NEW,
+    "STAGE_IN": RunState.QUEUED,
+    "QUEUED": RunState.QUEUED,
+    "ACTIVE": RunState.RUNNING,
+    "STAGE_OUT": RunState.RUNNING,
+    "COMPLETED": RunState.FINISHED,
+    "FAILED": RunState.FAILED,
+    "CANCELED": RunState.CANCELLED,
+}
+
+def psij_state(status, *, attached=False, return_code=None):
+    """Interpret native PSI/J job facts consistently across all observers.
+
+    A newly attached job reports NEW before PSI/J has received its real
+    scheduler status. That is UNKNOWN, not evidence of a new submission.
+    A completed job with a nonzero exit code is an execution failure.
+    """
+    name = getattr(getattr(status, "state", None), "name", None)
+    if attached and name == "NEW":
+        return RunState.UNKNOWN
+    state = _STATE_MAP.get(name, RunState.UNKNOWN)
+    if return_code is None:
+        return_code = getattr(status, "exit_code", None)
+    if state == RunState.FINISHED and return_code not in (None, 0):
+        return RunState.FAILED
+    return state
+
+
+def supports_recovery(options):
+    return options.get("executor_name", "slurm").lower() == "slurm" and options.get("url") is None
+
+
+def _load_psij():
+    try:
+        import psij
+    except ImportError as exc:
+        raise ImportError("PSI/J requires the optional 'psij-python' package") from exc
+    return psij
+
+
+def _create_executor(options):
+    psij = _load_psij()
+    executor = psij.JobExecutor.get_instance(options.get("executor_name", "slurm"), url=options.get("url"))
+    return psij, executor
+
+
+def _attach_job(handle):
+    psij, executor = _create_executor(handle)
+    job = psij.Job()
+    executor.attach(job, str(handle["native_id"]))
+    return job
 
 
 async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
     """Follow scheduler-owned files while PSI/J waits for terminal completion."""
 
     handle = decode_handle(remote_id)
-    executor = _create_executor(handle)
-    job = executor.attach_job(handle["native_id"])
+    job = _attach_job(handle)
 
     def emit(kind, data):
         streams[kind].write(data)

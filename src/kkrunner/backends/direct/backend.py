@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from kkrunner.backends.contracts import Backend, DirectOperations
+from kkrunner.backends.support.process import prepare_mpi
+from kkrunner.files.availability import prepare_target_outputs
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Callable, Mapping, Optional, Union
@@ -13,10 +15,12 @@ if TYPE_CHECKING:
 
 
 class DirectBackend(Backend, DirectOperations):
-    """Session-owned execution without a supervisor or durable identity."""
+    """Session-owned execution without a supervisor or durable outcome receipt."""
 
     name = "direct"
     streaming_exit_code = True
+    prepare_mpi = staticmethod(prepare_mpi)
+    prepare_target_outputs = staticmethod(prepare_target_outputs)
 
     @staticmethod
     async def stream(

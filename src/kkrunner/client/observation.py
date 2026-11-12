@@ -48,7 +48,16 @@ async def follow_framed_command(process, on_output):
     discarding = None
     protocol_error = None
     try:
-        terminal, _, code = await asyncio.gather(*(asyncio.shield(task) for task in (*readers, waiting)))
+        # wait() leaves the child tasks alive when observation is cancelled.
+        # Cleanup can then drain/reap the helper and retrieve every exception,
+        # without abandoned shield futures reporting errors during detach.
+        tasks = (*readers, waiting)
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for task in tasks:
+            if task in done:
+                task.result()
+        terminal = readers[0].result()
+        code = waiting.result()
         if code:
             diagnostic = diagnostics.decode("utf8", errors="replace").strip()
             raise StreamProtocolError(f"Remote stream helper exited with status {code}: {diagnostic}")

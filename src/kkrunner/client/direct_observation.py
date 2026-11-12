@@ -1,4 +1,4 @@
-"""One direct process session, shared by local and SSH adapters.
+"""Client observation of a direct backend call, over local or SSH channels.
 
 Owns client observation tasks, cancellation requests and output callbacks.
 The target backend owns the calculation process and its group termination.
@@ -12,12 +12,12 @@ from threading import Event
 from typing import Callable
 
 from kkrunner.backends.support.process import pump_stream
-from kkrunner.support.growing_file_tail import follow_growing_files
 from kkrunner.runs.base import FailurePhase, RunState
+from kkrunner.support.growing_file_tail import follow_growing_files
 
 
 @dataclass(frozen=True)
-class DirectOutcome:
+class ObservedOutcome:
     """One observed native process outcome, without client delivery state."""
 
     state: RunState
@@ -26,13 +26,14 @@ class DirectOutcome:
     message: str | None = None
 
 
-class DirectSession:
+class DirectObservation:
     """Own one direct observation session, leaving lifecycle decisions to Job."""
 
     def __init__(self, adapter):
         self.adapter = adapter
         self.detached = False
         self.pid = None
+        self.identity = None
         self._process = None
         self._loop = None
         self._stop_task = None
@@ -72,12 +73,12 @@ class DirectSession:
     async def execute(
         self, spec, *, on_started: Callable, on_output: Callable,
         on_detached_output: Callable, on_finish: Callable,
-    ) -> DirectOutcome:
+    ) -> ObservedOutcome:
         """Execute without writing any Job state or emitting Job callbacks."""
         self._loop = asyncio.get_running_loop()
         if self._cancel_requested.is_set():
             try:
-                return DirectOutcome(RunState.CANCELLED)
+                return ObservedOutcome(RunState.CANCELLED)
             finally:
                 self._loop = None
 
@@ -85,6 +86,7 @@ class DirectSession:
             self.adapter.prepare(spec)
             self._process = await self.adapter.launch(spec)
             self.pid = self._process.pid
+            self.identity = getattr(self._process, "identity", None)
             on_started(self.pid)
 
             # Pump before stopping: a full pipe must not deadlock cancellation.
@@ -127,24 +129,24 @@ class DirectSession:
             override = self.adapter.exit_status(return_code)
             if override is not None:
                 state, phase, message = override
-                return DirectOutcome(state, failure_phase=phase, message=message)
+                return ObservedOutcome(state, failure_phase=phase, message=message)
 
             if self._cancel_requested.is_set() and self._stop_task is not None:
                 try:
                     confirmed = await self._stop_task
                 except Exception as exc:
-                    return DirectOutcome(
+                    return ObservedOutcome(
                         RunState.UNKNOWN, return_code=return_code,
                         message=str(exc),
                     )
-                return DirectOutcome(
+                return ObservedOutcome(
                     RunState.CANCELLED if confirmed else RunState.UNKNOWN,
                     return_code=return_code,
                     message=None if confirmed else "Unable to confirm direct process cancellation",
                 )
             if return_code == 0:
-                return DirectOutcome(RunState.FINISHED, return_code=0)
-            return DirectOutcome(
+                return ObservedOutcome(RunState.FINISHED, return_code=0)
+            return ObservedOutcome(
                 RunState.FAILED, return_code=return_code,
                 failure_phase=FailurePhase.EXECUTION,
                 message=f"Process exited with status {return_code}",

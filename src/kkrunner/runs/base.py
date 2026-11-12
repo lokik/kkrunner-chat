@@ -7,18 +7,16 @@ import codecs
 import os
 import warnings
 from concurrent.futures import Future
-from dataclasses import asdict, dataclass, replace
-from enum import Enum
+from dataclasses import dataclass
 from threading import Event, Lock, Thread, current_thread
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence
 
-from kkrunner.files.manifest import FileManifest, FileSyncPolicy
-from kkrunner.files.paths import file_path
+from kkrunner.backends.contracts import SubmissionNotStarted as SubmissionNotStarted
+from kkrunner.client.staging import StagingSpec
+from kkrunner.execution import FailurePhase, MpiSpec, RunState
+from kkrunner.files.manifest import FileManifest
+from kkrunner.files.streams import _close_distinct
 from kkrunner.runs.model import Execution
-from kkrunner.runs.states import RunState
-
-
-from kkrunner.files.streams import _close_distinct, close_output_files
 
 
 def dispatch_cancellation(action):
@@ -87,16 +85,8 @@ def wait_for_monitor(runner):
     return runner.result
 
 
-class MpiNotFoundWarning(UserWarning):
-    """MPI autodetection was requested, but no MPI launcher was found."""
-
-
 class OutputObserverWarning(RuntimeWarning):
     """An output observer failed while the calculation itself keeps running."""
-
-
-class SubmissionNotStarted(RuntimeError):
-    """Submission failed before the backend could possibly accept the run."""
 
 
 class OutputObservers:
@@ -164,18 +154,6 @@ class OutputObservers:
                             OutputObserverWarning,
                             stacklevel=4,
                         )
-
-
-class FailurePhase(str, Enum):
-    """Phase in which a run entered :attr:`RunState.FAILED`."""
-
-    SUBMISSION = "submission"
-    LAUNCH = "launch"
-    EXECUTION = "execution"
-    ARTIFACTS = "artifacts"
-    OUTPUT = "output"
-    DOWNLOAD = "download"
-    POSTPROCESSING = "postprocessing"
 
 
 @dataclass
@@ -357,116 +335,6 @@ class RunStatus:
             object.__setattr__(self, "failure_phase", FailurePhase(self.failure_phase))
 
 
-@dataclass(frozen=True)
-class MpiSpec:
-    """Portable MPI launch semantics independent of the execution host."""
-
-    required: bool = False
-    autodetect: bool = False
-    launcher: Tuple[str, ...] = ()
-    process_count: Optional[int] = None
-    warning: bool = True
-
-    def __post_init__(self):
-        object.__setattr__(self, "launcher", tuple(os.fspath(part) for part in self.launcher))
-        if self.process_count is not None and self.process_count < 1:
-            raise ValueError("process_count must be positive")
-        if self.launcher and self.autodetect:
-            raise ValueError("explicit MPI launcher cannot be combined with autodetection")
-        if self.launcher and not self.required:
-            raise ValueError("explicit MPI launcher must be required")
-        if self.required and not self.autodetect and not self.launcher:
-            raise ValueError("required MPI needs autodetection or an explicit launcher")
-        if not self.requested and self.process_count is not None:
-            raise ValueError("process_count requires MPI")
-
-    @classmethod
-    def from_value(cls, mpi, *, process_count=None, warning=True):
-        if isinstance(mpi, cls):
-            if process_count is not None or warning is not True:
-                raise ValueError("MPI options cannot override an existing MpiSpec")
-            return mpi
-        if mpi is None or mpi is False:
-            if process_count is not None:
-                raise ValueError("process_count requires MPI")
-            return cls(warning=warning)
-        if isinstance(mpi, bool):
-            return cls(
-                required=True,
-                autodetect=True,
-                process_count=process_count,
-                warning=warning,
-            )
-        if isinstance(mpi, int):
-            if process_count is not None:
-                raise ValueError("MPI process count was specified twice")
-            return cls(
-                required=True,
-                autodetect=True,
-                process_count=mpi,
-                warning=warning,
-            )
-        if mpi == "auto":
-            return cls(
-                autodetect=True,
-                process_count=process_count,
-                warning=warning,
-            )
-        launcher = (mpi,) if isinstance(mpi, str) else tuple(os.fspath(part) for part in mpi)
-        return cls(
-            required=True,
-            launcher=launcher,
-            process_count=process_count,
-            warning=warning,
-        )
-
-    @property
-    def requested(self) -> bool:
-        return self.required or self.autodetect or bool(self.launcher)
-
-    @property
-    def allows_serial_fallback(self) -> bool:
-        return self.autodetect and not self.required
-
-
-@dataclass(frozen=True)
-class LaunchSpec:
-    """Portable launch and staging parameters for one concrete run."""
-
-    mpi: MpiSpec = MpiSpec()
-    local_root: Optional[str] = None
-    remote_root: Optional[str] = None
-    input_sync: str = FileSyncPolicy.CHANGED.value
-    output_sync: str = FileSyncPolicy.CHANGED.value
-
-    def __post_init__(self):
-        mpi = self.mpi
-        if isinstance(mpi, dict):
-            mpi = MpiSpec(**mpi)
-        elif not isinstance(mpi, MpiSpec):
-            raise TypeError("LaunchSpec.mpi must be an MpiSpec")
-        object.__setattr__(self, "mpi", mpi)
-        for name in ("local_root", "remote_root"):
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, os.fspath(value))
-        for name in ("input_sync", "output_sync"):
-            try:
-                value = FileSyncPolicy(getattr(self, name))
-            except ValueError as exc:
-                raise ValueError(f"Invalid {name} file synchronization policy") from exc
-            object.__setattr__(self, name, value.value)
-
-    def __bool__(self):
-        return self.mpi.requested
-
-    @classmethod
-    def from_mpi(cls, mpi):
-        if isinstance(mpi, cls):
-            return mpi
-        return cls(mpi=MpiSpec.from_value(mpi))
-
-
 def _pathlike(value):
     from kkrunner.files.task_file import TaskFile
 
@@ -503,12 +371,22 @@ class ExecutionSpec:
     output_files: Sequence[Any] = ()
     cache_files: Sequence[Any] = ()
     mpi_argv: Optional[Sequence[str]] = None
-    launch: LaunchSpec = LaunchSpec()
+    mpi: MpiSpec = MpiSpec()
+    staging: StagingSpec = StagingSpec()
     # The MPI command may have a different stdin contract from serial argv.
     # Generic executors preserve stdin unless the caller explicitly opts out.
     mpi_uses_stdin: bool = True
 
     def __post_init__(self):
+        for name, expected in (("mpi", MpiSpec), ("staging", StagingSpec)):
+            value = getattr(self, name)
+            if isinstance(value, dict):
+                value = expected(**value)
+            elif not isinstance(value, expected):
+                raise TypeError(f"ExecutionSpec.{name} must be a {expected.__name__}")
+            object.__setattr__(self, name, value)
+        if type(self.mpi_uses_stdin) is not bool:
+            raise TypeError("mpi_uses_stdin must be bool")
         object.__setattr__(self, "directory", os.fspath(self.directory))
         for name in ("input_file", "output_file", "stdin", "error_file"):
             object.__setattr__(self, name, _pathlike(getattr(self, name)))
@@ -537,18 +415,4 @@ class ExecutionSpec:
         if self.is_partial:
             raise ValueError("Cannot submit a partial ExecutionSpec: original argv is unknown")
         return self
-
-    def command_request(self, transform=list):
-        """Serialize common command and launch fields for execution services.
-
-        The caller supplies the mapping for command arguments; for remote runs
-        this resolves already-staged local file names to target paths.
-        """
-        self.require_complete()
-        return {
-            "argv": transform(self.argv),
-            "mpi_argv": None if self.mpi_argv is None else transform(self.mpi_argv),
-            "mpi_uses_stdin": self.mpi_uses_stdin,
-            "launch": asdict(self.launch),
-        }
 

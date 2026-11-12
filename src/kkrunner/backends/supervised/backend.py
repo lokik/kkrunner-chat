@@ -11,25 +11,39 @@ import socket
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 from uuid import uuid4
 
-from kkrunner.remote.handles import decode_handle, encode_handle
-from kkrunner.backends.support.messages import (
-    AcknowledgeReply, ExecutionRequest, RecoveryReply, RecoveryRequest, StatusReply, SubmissionReply,
-    request_to_spec, status_reply,
+from kkrunner.backends.contracts import (
+    Backend,
+    BackendCapability,
+    ManagedOperations,
+    SubmissionNotStarted,
 )
-from kkrunner.files.availability import prepare_target_outputs
-from kkrunner.runs.base import FailurePhase, RunState, SubmissionNotStarted
-from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.backends.supervised import mailbox
+from kkrunner.backends.supervised.streams import (
+    SupervisorClosedBeforeFollow,
+    follow_socket,
+)
 from kkrunner.backends.supervised.worker import _SPEC_ENV, _START_FD_ENV
-from kkrunner.backends.supervised.streams import follow_socket, SupervisorClosedBeforeFollow
-
-
-from kkrunner.backends.contracts import Backend, ManagedOperations, BackendCapability
 from kkrunner.backends.support.class_helper import imported_ssh_helper
-from .support import _absolute, _clean_request_outputs, _process_outcome
+from kkrunner.backends.support.messages import (
+    AcknowledgeReply,
+    ExecutionRequest,
+    RecoveryReply,
+    RecoveryRequest,
+    StatusReply,
+    SubmissionReply,
+    normalize_request,
+    status_reply,
+)
+from kkrunner.execution import FailurePhase, MpiNotFoundWarning, RunState
+from kkrunner.files.availability import prepare_target_outputs
+from kkrunner.remote.handles import decode_handle, encode_handle
+from kkrunner.support.process_identity import ProcessIdentity
+
+from .support import _process_outcome
 
 
 class SupervisedBackend(Backend, ManagedOperations):
@@ -38,12 +52,11 @@ class SupervisedBackend(Backend, ManagedOperations):
     name = "process"
     resolves_mpi_launcher = True
     SshHelper = imported_ssh_helper
-    session_bound = False
-    default_persistent = True
+    execution_mode = "managed"
     default_detached = True
     def __init__(self, **options):
         super().__init__(**options)
-        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER})
 
     @staticmethod
     def acknowledge_submission(run_id: str) -> AcknowledgeReply:
@@ -54,31 +67,32 @@ class SupervisedBackend(Backend, ManagedOperations):
         """Submit one process job, preserving the atomic release barrier."""
         if os.name != "posix":
             raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
-        from kkrunner.backends.support.process import materialize_local_spec
+        from kkrunner.backends.support.process import prepare_mpi
     
         # Everything here happens before launching a supervisor. A failed local
         # filesystem setup proves that submission never started, unlike a lost
         # reply after Popen.
         try:
-            directory = Path(request["directory"]).expanduser().resolve()
+            SupervisedBackend(**dict(request.get("backend_options") or {}))
+            request = normalize_request(request)
+            prepared = prepare_mpi(request)
+            if prepared["warning"] is not None:
+                warnings.warn(prepared["warning"], MpiNotFoundWarning, stacklevel=2)
+            execution = prepared["request"]
+            directory = Path(request["directory"])
             directory.mkdir(parents=True, exist_ok=True)
-            target_request = request.copy()
-            target_request["directory"] = os.fspath(directory)
-            original_spec = request_to_spec(target_request)
-            spec = materialize_local_spec(original_spec)
-            assert spec.argv is not None
     
-            output_path = _absolute(directory, spec.output_file)
-            error_path = _absolute(directory, spec.error_file)
+            output_path = request["output_file"]
+            error_path = request["error_file"]
             for path in (output_path, error_path):
                 if path is not None:
                     Path(path).parent.mkdir(parents=True, exist_ok=True)
-            _clean_request_outputs(original_spec, directory, output_path, error_path)
-        except (OSError, ValueError) as exc:
+            prepare_target_outputs(request)
+        except Exception as exc:
             # Pre-launch validation and filesystem failures are known non-submissions.
             raise SubmissionNotStarted(str(exc)) from exc
     
-        run_id = str(request.get("id") or uuid4().hex)
+        run_id = str(request.get("submission_key") or uuid4().hex)
         receipt_id = uuid4().hex
         socket_dir = None
         process = None
@@ -89,9 +103,9 @@ class SupervisedBackend(Backend, ManagedOperations):
             socket_dir = tempfile.mkdtemp(prefix="kkrunner-follow-")
             socket_path = os.path.join(socket_dir, "socket")
             worker_spec = {
-                "argv": list(spec.argv),
+                "argv": execution["argv"],
                 "directory": os.fspath(directory),
-                "stdin": _absolute(directory, spec.stdin),
+                "stdin": execution["stdin"],
                 "output_file": output_path,
                 "error_file": error_path,
                 "receipt_id": receipt_id,
@@ -176,7 +190,7 @@ class SupervisedBackend(Backend, ManagedOperations):
             **status_reply(RunState.RUNNING),
             "remote_id": remote_id,
             "directory": os.fspath(directory),
-            "input_file": _absolute(directory, spec.input_file),
+            "input_file": request["input_file"],
             "output_file": output_path,
             "error_file": error_path,
         }

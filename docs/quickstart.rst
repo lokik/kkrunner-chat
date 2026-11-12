@@ -14,7 +14,7 @@ Commands are argument sequences, so shell expansion is not performed.
    from kkrunner import ExecutionSpec
    from kkrunner import Run
    from kkrunner.backends import DirectBackend
-   from kkrunner.client import LocalRunEndpoint
+   from kkrunner.client import RunClient
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
@@ -23,7 +23,7 @@ Commands are argument sequences, so shell expansion is not performed.
        directory=directory,
        output_file="stdout.txt",
    )
-   runner = Run.direct(LocalRunEndpoint(DirectBackend), spec)
+   runner = Run.untracked(RunClient(DirectBackend), spec)
    outcome = runner.run()
    print(outcome.return_code)
    print(Path(outcome.output_file).read_text().strip())
@@ -46,7 +46,7 @@ stream paths. It contains no application-specific parsed result. Required
 outputs must exist after a successful command; declare optional outputs with
 :class:`~kkrunner.TaskFile` as described in :doc:`files`.
 
-``Run.direct()`` alone does not submit the program. Output paths are opened at
+``Run.untracked()`` alone does not submit the program. Output paths are opened at
 submission. Supplied streams remain the caller's responsibility unless ownership
 is explicitly transferred with :class:`~kkrunner.runs.base.ExecutionResources` and
 :class:`~kkrunner.runs.base.ResourceOwnedRunner`.

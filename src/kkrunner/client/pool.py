@@ -7,62 +7,65 @@ from threading import RLock
 from kkrunner.runs.base import _close_distinct
 
 
-class EndpointPool:
-    """Process-local cache of configured client RunEndpoints."""
+class ClientPool:
+    """Process-local cache of clients keyed by transport and backend."""
 
     def __init__(self):
-        self._endpoints = {}
+        self._clients = {}
         self._lock = RLock()
 
     @staticmethod
     def key_for_profile(profile):
-        """Return the endpoint configuration used for instance reuse."""
-        return profile.endpoint
+        """Return the client configuration used for instance reuse."""
+        return (profile.transport, profile.backend)
 
     def get(self, key, factory):
         with self._lock:
-            endpoint = self._endpoints.get(key)
-            if endpoint is None:
-                endpoint = factory()
-                self._endpoints[key] = endpoint
-            return endpoint
+            client = self._clients.get(key)
+            if client is None:
+                client = factory()
+                self._clients[key] = client
+            return client
 
-    def for_config(self, config):
-        """Return the shared endpoint reconstructed from *config*."""
-        from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_from_config
-
-        if isinstance(config, dict):
-            config = ExecutionEndpointConfig(**config)
-        return self.get(config, lambda: endpoint_from_config(config))
+    def for_config(self, transport, backend):
+        from kkrunner.client.transports import transport_from_dict, require_persistable_transport
+        from kkrunner.client.client import RunClient
+        from kkrunner.backends.config import BackendConfig
+        if isinstance(transport, dict):
+            transport = transport_from_dict(transport)
+        require_persistable_transport(transport)
+        if isinstance(backend, dict):
+            backend = BackendConfig(**backend)
+        return self.get((transport, backend), lambda: RunClient.from_config(transport, backend))
 
     def for_profile(self, profile):
         """Return the shared provider suitable for *profile*."""
-        return self.for_config(self.key_for_profile(profile))
+        return self.for_config(*self.key_for_profile(profile))
 
     def discard(self, key):
         """Forget one pooled provider and close it when supported."""
         with self._lock:
-            endpoint = self._endpoints.pop(key, None)
-        if endpoint is not None:
-            close = getattr(endpoint, "close", None)
+            client = self._clients.pop(key, None)
+        if client is not None:
+            close = getattr(client, "close", None)
             if close is not None:
                 close()
-        return endpoint
+        return client
 
     def discard_profile(self, profile):
         return self.discard(self.key_for_profile(profile))
 
     def close(self):
-        """Close every pooled endpoint, propagating the first close failure."""
+        """Close every pooled client, propagating the first close failure."""
         with self._lock:
-            endpoints = tuple(self._endpoints.values())
-            self._endpoints.clear()
+            endpoints = tuple(self._clients.values())
+            self._clients.clear()
         _close_distinct(endpoints)
 
 
-_DEFAULT_ENDPOINT_POOL = EndpointPool()
+_DEFAULT_CLIENT_POOL = ClientPool()
 
 
-def default_endpoint_pool():
+def default_client_pool():
     """Return the process-wide pool used by ordinary calculations."""
-    return _DEFAULT_ENDPOINT_POOL
+    return _DEFAULT_CLIENT_POOL
