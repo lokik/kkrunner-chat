@@ -1,27 +1,24 @@
-"""Generic endpoint identity and backend-pool resource ownership."""
+"""Client transport/backend identity and pooled-client resource ownership."""
 
 import pytest
 
-from kkrunner.client.pool import EndpointPool
+from kkrunner.client.pool import ClientPool
 
 
-def test_endpoint_normalizes_known_defaults_without_resolving_hostnames():
-    from kkrunner.client.endpoint import ExecutionEndpointConfig
+def test_client_profile_identity_normalizes_backend_options_without_host_resolution():
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.client.transports import LocalTransport, SshTransport
 
-    assert ExecutionEndpointConfig(backend="psij") == ExecutionEndpointConfig(
-        backend="psij", backend_options={"executor_name": "slurm"}
-    )
-    assert ExecutionEndpointConfig(location="ssh", host="cluster") == ExecutionEndpointConfig(
-        location="ssh", host="cluster", python_command=("python3",)
-    )
-    assert ExecutionEndpointConfig(location="ssh", host="cluster") != ExecutionEndpointConfig(
-        location="ssh", host="cluster.example.org"
-    )
+    assert BackendConfig("psij") == BackendConfig("psij", {"executor_name": "slurm"})
+    assert SshTransport("cluster") == SshTransport("cluster", python_command=("python3",))
+    assert SshTransport("cluster") != SshTransport("cluster.example.org")
+    assert LocalTransport() != SshTransport("cluster")
 
 
-def test_executor_pool_close_attempts_all_after_failure():
+
+def test_client_pool_close_attempts_all_after_failure():
     """One failing backend must not prevent cleanup of the remaining backends."""
-    pool = EndpointPool()
+    pool = ClientPool()
     closed = []
     backends = {}
 
@@ -51,17 +48,17 @@ def test_executor_pool_close_attempts_all_after_failure():
     assert closed == ["first", "second", "third"]
 
 
-def test_executor_pool_close_accepts_backends_without_close():
-    pool = EndpointPool()
+def test_client_pool_close_accepts_backends_without_close():
+    pool = ClientPool()
     executor = object()
     pool.get("no-close", lambda: executor)
     pool.close()
     assert pool.get("no-close", object) is not executor
 
 
-def test_executor_pool_closes_shared_backend_only_once():
+def test_client_pool_closes_shared_backend_only_once():
     """A backend may be cached under several keys but is one owned object."""
-    pool = EndpointPool()
+    pool = ClientPool()
     calls = []
 
     class Shared:
