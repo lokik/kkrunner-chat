@@ -1,26 +1,16 @@
-"""Transport stream adaptation and ownership of a remote FOLLOW command."""
+"""FOLLOW output adaptation, framing and ownership of the SSH observer.
+
+These are observation resources for an existing execution. Closing them
+does not cancel the calculation; execution calls have a separate runtime.
+"""
 
 import asyncio
 
+from kkrunner.execution import RunState
 from kkrunner.remote.stream import StreamProtocolError, read_stream_frames
 
 
-class OutputSink:
-    """Expose a binary sink to a backend without changing global streams."""
-
-    def __init__(self, on_output, kind):
-        self._on_output = on_output
-        self._kind = kind
-
-    def write(self, data):
-        self._on_output(data, self._kind)
-        return len(data)
-
-    def flush(self):
-        pass
-
-
-async def follow_framed_command(process, on_output):
+async def follow_framed_command(process, on_output, *, on_started=None, close_input=False):
     """Read calculation frames and diagnostics, then reap the SSH command.
 
     Cancelling this coroutine terminates only the transport observer. The
@@ -34,9 +24,15 @@ async def follow_framed_command(process, on_output):
 
     async def receive():
         terminal = None
+        accepted = False
         async for kind, data in read_stream_frames(process.stdout):
             if kind == "terminal":
                 terminal = data
+            elif kind == "started":
+                if accepted or on_started is None:
+                    raise StreamProtocolError("Unexpected execution-start frame")
+                accepted = True
+                on_started(data)
             else:
                 on_output(data, kind)
         if terminal is None:
@@ -58,9 +54,11 @@ async def follow_framed_command(process, on_output):
                 task.result()
         terminal = readers[0].result()
         code = waiting.result()
-        if code:
+        if code and not RunState(terminal["state"]).is_terminal:
             diagnostic = diagnostics.decode("utf8", errors="replace").strip()
             raise StreamProtocolError(f"Remote stream helper exited with status {code}: {diagnostic}")
+        # A valid terminal backend receipt remains authoritative even if the
+        # SSH/helper process subsequently exits unsuccessfully during cleanup.
     except StreamProtocolError as exc:
         protocol_error = exc
     finally:
@@ -74,10 +72,17 @@ async def follow_framed_command(process, on_output):
                     while await process.stdout.read(65536):
                         pass
                 discarding = asyncio.create_task(discard())
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
+            if close_input and process.stdin is not None:
+                process.stdin.close()
+                try:
+                    await asyncio.wait_for(asyncio.shield(waiting), timeout=2)
+                except asyncio.TimeoutError:
+                    pass
+            if not waiting.done():
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
             try:
                 await asyncio.wait_for(asyncio.shield(waiting), timeout=2)
             except asyncio.TimeoutError:

@@ -1,7 +1,7 @@
 """One client execution session: a Job and its file-transfer ownership.
 
 Run delegates transport-specific preparation here. No backend execution logic
-lives in this facade; Job remains the only owner of process state.
+lives in this facade; Job observes the selected backend's execution state.
 """
 
 from __future__ import annotations

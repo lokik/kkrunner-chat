@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from kkrunner.client.operations import BackendOperation, operation_payload
+from kkrunner.client.contracts import Operation
 from kkrunner.files.queries import (
     checked_files,
     expand_local_files,
@@ -21,6 +21,7 @@ from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
 
 from .base import Transport, _completed_process, _local_temporary_path
+from .rpc import operation_payload
 
 
 @dataclass(frozen=True)
@@ -34,17 +35,25 @@ class LocalTransport(Transport):
         if self.kind != "local":
             raise ValueError("LocalTransport.kind must be 'local'")
 
-    def direct_channel(self, context, files):
-        from kkrunner.client.transports.direct import LocalDirectChannel
-        return LocalDirectChannel(context.backend, files=files)
+    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
+        from .calls import LocalCall
+        files, stdin = ({}, None) if local_io is None else local_io(request.get("detached", False))
+        paths = {
+            kind: path for kind, path in (("out", request.get("output_file")), ("err", request.get("error_file")))
+            if path is not None
+        } if request.get("detached") else {}
+        return LocalCall(
+            getattr(operation.backend, operation.method), request, on_output,
+            files=files, stdin=stdin if use_stdin else None, tail_paths=paths,
+        )
 
     async def follow(self, operation, identity, on_output, **options):
-        from kkrunner.client.transports.streaming import OutputSink
-        return await getattr(operation.backend, operation.function)(
+        from .calls import OutputSink
+        return await getattr(operation.backend, operation.method)(
             identity, OutputSink(on_output, "out"), OutputSink(on_output, "err"), **options,
         )
 
-    async def call(self, operation: BackendOperation, *args, **kwargs):
+    async def call(self, operation: Operation, *args, **kwargs):
         # Local calls execute directly; argument payloads must still
         # be serializable to uphold the same contract as remote execution.
         import inspect
@@ -52,8 +61,8 @@ class LocalTransport(Transport):
         encoded = operation_payload(args, kwargs)
         request = json.loads(encoded)
         function = (
-            getattr(operation.backend, operation.function) if operation.backend is not None
-            else operation.portable
+            getattr(operation.backend, operation.method) if operation.backend is not None
+            else operation.function
         )
         if inspect.iscoroutinefunction(function):
             result = await function(*request["args"], **request["kwargs"])

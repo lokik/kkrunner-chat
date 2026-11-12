@@ -132,7 +132,7 @@ groups and Unix sockets. Linux and macOS are covered by CI; Windows-specific
 locking/durability code alone does not provide a managed supervisor on Windows.
 
 `support.process_identity.ProcessIdentity` owns process identity and uses
-public psutil API for process facts. An opaque backend handle stores the PID, creation time,
+public psutil API for process facts in native supervisor handles. Such a handle stores the PID, creation time,
 time basis and, on Linux, the kernel boot ID. On Linux the creation time is normalized as
 `Process(pid).create_time() - psutil.boot_time()`. Each observation creates a
 fresh `Process` because its creation time is cached. Boot-time reads before and
@@ -186,11 +186,18 @@ Helper selection does not determine persistence or reattachment capability.
 
 `DirectBackend.stream` is one self-contained asynchronous implementation. Its
 local invocation receives explicit streams and control; its SSH invocation
-uses the remote interpreter's standard streams. Only the target operation
-starts the calculation or terminates its process group. `DirectObservation`
-coordinates the client observation tasks and cancellation request; local and
-SSH channels own their client streams and transport resources. No additional
-local interpreter or worker thread runs the direct backend.
+receives framed sinks from the remote invocation bootstrap. Only the target
+operation starts the calculation, terminates its process group and interprets
+its outcome. It publishes acceptance with an opaque session identity and
+returns native status, including confirmed cancellation and launch failures.
+`Job` uses the `BackendExecution` interface for submit, observe, status and
+cancel, without inspecting PID, exit codes or backend execution modes.
+`client.backend_execution` binds those operations to the selected transport;
+session-bound and managed semantics are selected once at composition.
+`client.transports.calls` owns local coroutine/control resources or the SSH
+command and framed delivery. A calculation's exit code is payload data,
+independent of the SSH command's exit status. No additional local interpreter
+or worker thread runs the direct backend.
 
 Native supervisor and scheduler internals live in `backends/supervised` and
 `backends/psij`, split into worker, streams, receipts, submission and scheduler
@@ -201,7 +208,7 @@ without yielding between the EOF check and mode switch.
 
 Local managed FOLLOW awaits the existing backend coroutine. SSH runs a Python
 follower that invokes that coroutine and sends framed calculation output and
-terminal facts; transport stderr carries diagnostics. `client.transports.streaming`
+terminal facts; transport stderr carries diagnostics. `client.transports.follow`
 owns reading and reaping that SSH follower. `Job.stop_observation()` cancels
 only its observation task. The supervisor/calculation survives; `Job.cancel()`
 invokes the separate backend cancellation operation. PSI/J uses native status
@@ -324,18 +331,23 @@ recovery never authorizes a duplicate submission.
 | Role | Implementations |
 | --- | --- |
 | Static target operations | `DirectBackend`, `SupervisedBackend`, `PsijBackend` |
-| Client lifecycle, state, result and listeners | `client.job.Job` |
+| Client lifecycle, cached backend status, result and listeners | `client.job.Job` |
 | Local and SSH session composition | `RunClient` |
-| Direct observation and cancellation requests | `DirectObservation`, local/SSH channels |
-| Managed output delivery and SSH follower cleanup | `client.transports.streaming` |
+| Backend execution semantics bound to a transport | `client.backend_execution`, `client.contracts.BackendExecution` |
+| Live invocation/control resources and transport diagnostics | `client.transports.calls` |
+| Managed output delivery and SSH follower cleanup | `client.transports.follow` |
 | Immutable connection settings, calls and file transport | `client.transports.LocalTransport`, `client.transports.SshTransport` |
 | Persistence and end-to-end completion | `RunManager`, `Run`, `RunStore` |
 | Reuse of configured clients | `ClientPool` |
 
 The backend contract and pure identity/status/recovery values live in
 `backends.contracts`. Client Job/composition protocols and attachment contexts
-live in `client.contracts`. Source extraction and the single JSON/streaming
-bootstrap live in `client.portable_functions` and `client.operations`.
+live in `client.contracts`. `Operation` in that module describes which backend
+method or standalone function to call. `client.transports.rpc` owns the
+JSON/streaming bootstrap, argument encoding and reply/error decoding together.
+`client.transports.source` checks
+and extracts the selected function's source when building a remote command;
+local operation references do not require source delivery.
 Local short calls invoke the selected method directly; asynchronous methods
 run in the caller's event loop. Synchronous entry points use `asyncio.run`
 only at an independent interpreter/CLI boundary.
@@ -360,7 +372,7 @@ and finalizes the FileManifest after native execution. Local finalization does
 not copy files. Transfer indexes are derived from the staged manifest; temporary
 staging data is discarded when ownership moves to that manifest.
 
-A local direct PID is diagnostic; its persisted identity additionally includes
-process start time. STATUS, REATTACH and RECOVER capabilities are independent
+A direct execution receives an opaque session identity from its backend;
+the client Job never reads or serializes a PID. STATUS, REATTACH and RECOVER capabilities are independent
 of having an identity. Losing a direct observer does not provide an exit code
 or prove successful completion.

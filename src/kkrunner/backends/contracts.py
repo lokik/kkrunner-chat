@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
     from kkrunner.backends.support.messages import (
         AcknowledgeReply, ExecutionRequest, FollowOptions, RecoveryReply, RecoveryRequest,
-        StatusReply, SubmissionReply, PreparedExecution,
+        StatusReply, SubmissionReply, PreparedExecution, ExecutionReply,
     )
 
 from kkrunner.execution import RunState
@@ -202,9 +202,9 @@ class DirectOperations(Protocol):
         stderr: Optional[Union[ByteSink, AsyncByteSink]] = None,
         control: Optional[ControlReader] = None,
         files: Optional[Mapping[str, BinaryIO]] = None,
-        started: Optional[Callable[[int], None]] = None,
+        started: Optional[Callable[[ExecutionReply], Union[None, Awaitable[None]]]] = None,
         stdin: Optional[BinaryIO] = None,
-    ) -> int: ...
+    ) -> ExecutionReply: ...
 
 
 class ManagedOperations(Protocol):
@@ -251,7 +251,7 @@ class Backend:
     """Configured native backend with a class-level static-operation interface.
 
     Every backend implements ``stream(subject, **options)``. Session-bound
-    backends receive an execution request and return an exit code. Durable
+    backends receive an execution request and return authoritative status. Durable
     backends receive a job reference and return authoritative terminal facts;
     they also declare submit, status, cancel, recover and acknowledgement.
     Short operations are synchronous and exchange JSON-compatible values.

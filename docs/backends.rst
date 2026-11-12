@@ -10,7 +10,7 @@ Choose an execution backend
      - Requirements and limits
    * - ``DirectBackend``
      - A direct subprocess on the client machine
-     - Local PID/start-time identity; no reattachment or durable exit receipt.
+     - Opaque session identity; no reattachment or durable exit receipt.
    * - ``SupervisedBackend``
      - A reconnectable process on the client machine
      - POSIX process groups and Unix sockets, plus retained supervisor receipts.
@@ -79,8 +79,10 @@ Python worker provides separate live stdout/stderr, cancellation and target-side
 file writing. File staging and synchronization still use ``FileSession``.
 Both directions of transfer use SSH; agentless file metadata queries and
 atomic upload publication execute source-transferred, stdlib-only Python functions.
-The same ``Job`` and ``DirectObservation`` coordinate direct local and SSH execution;
-only the launch/stop/output adapter differs. The target Python command can be
+The same generic ``Job`` uses a transport-bound backend execution interface
+locally and over SSH. The backend reports acceptance and terminal status;
+SSH frames carry those facts alongside output, separately from transport
+diagnostics and the SSH command's exit status. The target Python command can be
 configured with ``SshTransport(python_command=("python3.12",))``.
 
 .. code-block:: python

@@ -69,6 +69,10 @@ class StatusReply(TypedDict):
     error: Optional[str]
 
 
+class ExecutionReply(StatusReply):
+    remote_id: Optional[str]
+
+
 class RecoveryReceipt(StatusReply):
     remote_id: str
     directory: str

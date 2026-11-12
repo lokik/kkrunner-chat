@@ -11,14 +11,34 @@ from __future__ import annotations
 
 import asyncio
 import json
-import struct
 
 from kkrunner.execution import RunState
 
-STREAM_MAGIC = b"A2SSTRM1"
-_HEADER = struct.Struct("!cQ")
-_KIND_TO_CODE = {"out": b"O", "err": b"E"}
-_CODE_TO_KIND = {value: key for key, value in _KIND_TO_CODE.items()}
+def stream_protocol():
+    """Self-contained wire encoder, also delivered to targets without KKRunner."""
+    import json
+    import struct
+
+    class Protocol:
+        magic = b"A2SSTRM1"
+        header = struct.Struct("!cQ")
+        codes = {"out": b"O", "err": b"E", "started": b"S", "terminal": b"T"}
+
+        @classmethod
+        def encode(cls, kind, data):
+            if kind in ("started", "terminal"):
+                data = json.dumps(data, separators=(",", ":"), allow_nan=False).encode("utf8")
+            else:
+                data = bytes(data)
+            return cls.header.pack(cls.codes[kind], len(data)) + data
+
+    return Protocol
+
+
+_PROTOCOL = stream_protocol()
+STREAM_MAGIC = _PROTOCOL.magic
+_HEADER = _PROTOCOL.header
+_CODE_TO_KIND = {value: key for key, value in _PROTOCOL.codes.items()}
 
 
 class FramedSink:
@@ -61,17 +81,13 @@ class StreamProtocolError(RuntimeError):
 
 
 def encode_stream_frame(kind, data):
-    try:
-        code = _KIND_TO_CODE[kind]
-    except KeyError as exc:
-        raise ValueError(f"Unknown stream kind: {kind!r}") from exc
-    data = bytes(data)
-    return _HEADER.pack(code, len(data)) + data
+    if kind not in ("out", "err"):
+        raise ValueError(f"Unknown stream kind: {kind!r}")
+    return _PROTOCOL.encode(kind, data)
 
 
 def encode_terminal_frame(outcome):
-    data = json.dumps(outcome, separators=(",", ":")).encode("utf8")
-    return _HEADER.pack(b"T", len(data)) + data
+    return _PROTOCOL.encode("terminal", outcome)
 
 
 async def _read_exactly(source, size):
@@ -93,20 +109,22 @@ async def read_stream_frames(source):
             return
         rest = await _read_exactly(source, _HEADER.size - 1)
         code, size = _HEADER.unpack(first + rest)
-        if code == b"T":
+        if code in (b"T", b"S"):
             if size > 4096:
-                raise StreamProtocolError("Terminal frame is too large")
+                raise StreamProtocolError("Status frame is too large")
             try:
                 outcome = json.loads(await _read_exactly(source, size))
             except (ValueError, UnicodeError) as exc:
-                raise StreamProtocolError("Invalid terminal frame JSON") from exc
+                raise StreamProtocolError("Invalid status frame JSON") from exc
             if not isinstance(outcome, dict):
                 raise StreamProtocolError("Invalid terminal frame outcome")
             try:
                 RunState(outcome.get("state"))
             except (TypeError, ValueError) as exc:
                 raise StreamProtocolError("Invalid terminal frame outcome") from exc
-            yield "terminal", outcome
+            yield _CODE_TO_KIND[code], outcome
+            if code == b"S":
+                continue
             # The terminal receipt ends the framed stream. Reading through
             # EOF also prevents a misbehaving helper from blocking on a full
             # pipe after sending the terminal frame.

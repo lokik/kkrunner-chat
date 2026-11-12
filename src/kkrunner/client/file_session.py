@@ -687,10 +687,22 @@ class FileSession:
                 raise SubmissionNotStarted(str(exc)) from exc
         return dict(request)
 
-    def open_direct_streams(self):
+    def local_call_io(self, detached=False):
+        """Borrow local live streams for an in-process backend invocation."""
+        if detached and any(
+            value is not None and not isinstance(value, (str, os.PathLike))
+            for value in (self.spec.output_file, self.spec.error_file)
+        ):
+            raise ValueError("Detached output requires a named file or None")
         if self._streams is None:
             self._streams = open_output_streams(self.spec)
-        return self._streams
+        files = {kind: stream for kind, stream in (
+            ("out", self._streams.output_file), ("err", self._streams.error_file),
+        ) if stream is not None}
+        stdin = self.spec.stdin
+        if isinstance(stdin, (str, os.PathLike)):
+            stdin = None  # The target operation opens its declared pathname.
+        return files, stdin
 
     @property
     def stream_paths(self):

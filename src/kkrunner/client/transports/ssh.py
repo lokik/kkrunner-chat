@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import posixpath
 import shlex
@@ -13,11 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, Tuple
 from uuid import uuid4
 
-from kkrunner.client.operations import (
-    BackendOperation,
-    operation_command,
-    operation_payload,
-)
+from kkrunner.client.contracts import Operation
 from kkrunner.files.queries import (
     _sources,
     checked_files,
@@ -29,30 +24,34 @@ from kkrunner.files.queries import (
 from kkrunner.files.snapshots import snapshot_destination
 
 from .base import Transport, _completed_process, _local_temporary_path
+from .rpc import operation_command, operation_payload, operation_result
 
 
 @dataclass(frozen=True)
 class SshTransport(Transport):
     """Transport using the system ``ssh`` client."""
 
-    def direct_channel(self, context, files):
-        from kkrunner.client.transports.direct import SshDirectChannel
-        return SshDirectChannel(context)
+    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
+        from .calls import SshCall
+        command = operation_command(operation, python=self.python_command, framed=True)
+        process = await self.start(
+            (*command, operation_payload((request,), {})), stdin=asyncio.subprocess.PIPE,
+        )
+        return SshCall(process, on_output)
 
     async def follow(self, operation, identity, on_output, **options):
-        from kkrunner.client.transports.streaming import follow_framed_command
-        operation = BackendOperation.for_backend(operation.backend, "follow_framed")
+        from .follow import follow_framed_command
+        operation = Operation.for_backend(operation.backend, "follow_framed")
         process = await self.start_operation(operation, identity, **options)
         return await follow_framed_command(process, on_output)
 
-    async def call(self, operation: BackendOperation, *args, **kwargs):
+    async def call(self, operation: Operation, *args, **kwargs):
         payload = operation_payload(args, kwargs).encode("utf-8")
         command = operation_command(operation, python=self.python_command)
         result = await self.run(command, input=payload)
-        from kkrunner.client.rpc import operation_result
-        return operation_result(json.loads(result.stdout.decode("utf-8")))
+        return operation_result(result.stdout)
 
-    async def start_operation(self, operation: BackendOperation, *args, **kwargs):
+    async def start_operation(self, operation: Operation, *args, **kwargs):
         payload = operation_payload(args, kwargs)
         command = operation_command(operation, python=self.python_command, streaming=True)
         return await self.start((*command, payload), stdin=asyncio.subprocess.PIPE)
@@ -146,7 +145,7 @@ class SshTransport(Transport):
 
     async def call_function(self, function, *args, **kwargs):
         """Invoke a portable shared function through the common operation path."""
-        return await self.call(BackendOperation.standalone(function), *args, **kwargs)
+        return await self.call(Operation.standalone(function), *args, **kwargs)
 
     async def _finalize_upload(self, temporary, destination, mtime_ns):
         await self.call_function(finalize_upload, temporary, destination, mtime_ns)

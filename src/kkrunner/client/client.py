@@ -10,7 +10,8 @@ from pathlib import Path, PurePosixPath
 from kkrunner.backends import configured_backend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability
-from kkrunner.client.contracts import RunClientProtocol
+from kkrunner.client.contracts import Operation, RunClientProtocol
+from kkrunner.client.backend_execution import bind_execution
 from kkrunner.client.file_context import (
     FileContext,
     _relative_local_path,
@@ -18,7 +19,6 @@ from kkrunner.client.file_context import (
 )
 from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
-from kkrunner.client.operations import BackendOperation
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client.staging import StagingSpec
 from kkrunner.files.manifest import FileMapping
@@ -49,30 +49,10 @@ class _RunContext(FileContext):
         """Backend selection belongs to the configured client."""
         return self.client.backend
 
-    async def _submit(self, request):
-        return await self.client._submit(request)
-
-    async def _status(self, directory, backend_id, files=None):
-        return await self.client._status(directory, backend_id, files)
-
-    async def _cancel(self, directory, backend_id, files=None):
-        return await self.client._cancel(directory, backend_id, files)
-
-    async def _follow(
-        self, directory, backend_id, *, on_output, offsets=None,
-        stdout_path=None, stderr_path=None,
-    ):
-        return await self.client._follow(
-            directory, backend_id, on_output=on_output, offsets=offsets,
-            stdout_path=stdout_path, stderr_path=stderr_path,
-        )
-
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         files = FileSession(self, spec)
-        if self.backend.execution_mode == "direct":
-            job = Job.direct(spec, callback=callback, adapter=self.transport.direct_channel(self, files))
-        else:
-            job = Job(self, spec, callback=callback)
+        execution = bind_execution(self.backend, self.transport, local_io=files.local_call_io)
+        job = Job(execution, spec, callback=callback)
         return RunParts(
             job, files,
             submission_builder=lambda prepared: self.client.submission_request(
@@ -84,16 +64,15 @@ class _RunContext(FileContext):
         execution = attachment.execution
         if execution.backend_id is None:
             raise ValueError("Remote run lacks backend identity or target directory")
-        status = await self._status(execution.directory.target, execution.backend_id)
+        status = await self.client._invoke("status", execution.backend_id)
         files = await FileSession.from_attachment(self, attachment)
         try:
-            job = Job(
-                self, files.spec, callback=callback,
-                output_listener=output_listener,
-                backend_id=execution.backend_id,
-                remote_directory=execution.directory.target,
-                status=status,
+            from kkrunner.backends.contracts import JobRef
+            binding = bind_execution(
+                self.backend, self.transport,
+                ref=JobRef(self.backend.name, execution.backend_id), status=status,
             )
+            job = Job(binding, files.spec, callback=callback, output_listener=output_listener)
             return RunParts(job, files)
         except BaseException:
             files.close()
@@ -167,7 +146,7 @@ class RunClient(RunClientProtocol):
 
     def _operation(self, name):
         """Select the target backend class, never a serialized Python object."""
-        return BackendOperation.for_backend(type(self.backend), name)
+        return Operation.for_backend(type(self.backend), name)
 
     async def _invoke(self, name, *args, **kwargs):
         return await self.transport.call(self._operation(name), *args, **kwargs)
@@ -271,24 +250,6 @@ class RunClient(RunClientProtocol):
 
         return _run_sync(resolve())
 
-    async def _submit(self, request):
-        return await self._invoke("submit", request)
-
-    async def _status(self, directory, backend_id, files=None):
-        return await self._invoke("status", backend_id)
-
-    async def _cancel(self, directory, backend_id, files=None):
-        return await self._invoke("cancel", backend_id)
-
-    async def _follow(self, directory, backend_id, *, on_output, offsets=None,
-                      stdout_path=None, stderr_path=None):
-        offsets = {"out": 0, "err": 0} if offsets is None else offsets
-        return await self.transport.follow(
-            self._operation("follow"), backend_id, on_output,
-            stdout_offset=offsets.get("out"), stderr_offset=offsets.get("err"),
-            stdout_path=stdout_path, stderr_path=stderr_path,
-        )
-
     def acknowledge_submission(self, run):
         """Release temporary submission identity after client persistence."""
         if BackendCapability.REATTACH not in self.backend.supports:
@@ -318,7 +279,7 @@ class RunClient(RunClientProtocol):
             result = []
             for run in runs:
                 execution = run.execution
-                state = await self._status(execution.directory.target, execution.backend_id, run.files)
+                state = await self._invoke("status", execution.backend_id)
                 result.append(
                     _run_status_from_facts(
                         state,

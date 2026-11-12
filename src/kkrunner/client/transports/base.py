@@ -7,8 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
-from kkrunner.client.contracts import RunningCommand
-from kkrunner.client.operations import BackendOperation
+from kkrunner.client.contracts import Operation, RunningCommand
 from kkrunner.files.snapshots import snapshot_destination
 
 
@@ -35,7 +34,8 @@ class Transport:
         from . import require_persistable_transport
         return asdict(require_persistable_transport(self))
 
-    def direct_channel(self, context, files):
+    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
+        """Start an execution call with backend acceptance/completion messages."""
         raise NotImplementedError
 
     async def follow(self, operation, identity, on_output, **options):
@@ -44,11 +44,11 @@ class Transport:
     async def run(self, argv, *, cwd=None, input=None, check=True):
         raise NotImplementedError
 
-    async def call(self, operation: BackendOperation, *args, **kwargs):
+    async def call(self, operation: Operation, *args, **kwargs):
         """Run one context-independent operation and return its JSON result."""
         raise NotImplementedError
 
-    async def start_operation(self, operation: BackendOperation, *args, **kwargs):
+    async def start_operation(self, operation: Operation, *args, **kwargs):
         """Start a streaming operation; stdout/stderr remain live channels."""
         raise NotImplementedError
 

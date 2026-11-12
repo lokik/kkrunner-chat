@@ -66,7 +66,7 @@ def _direct(args, *, action):
 
 def _follow_remote(transport, command, remote_id, from_start, stdout_path, stderr_path):
     from kkrunner.remote.protocol import control_command
-    from kkrunner.client.transports.streaming import follow_framed_command
+    from kkrunner.client.transports.follow import follow_framed_command
     from kkrunner.support.async_utils import run_coro_sync
 
     async def observe():

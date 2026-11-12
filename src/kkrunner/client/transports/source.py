@@ -1,4 +1,4 @@
-"""Transport standalone Python functions, not arbitrary objects or modules."""
+"""Validate and extract one self-contained function for source delivery."""
 
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ import textwrap
 import types
 
 
-def function_definition(fn, *, static=False):
+def function_definition(fn, *, static=False, name=None):
     """Extract one function, checking its explicit dependencies.
 
     Functions may import only target-available modules inside their own body.
     Nonlocal state and module-level referenced objects are rejected rather
-    than implicitly copied across the client/target boundary.
+    than implicitly copied across the client/target boundary. ``name`` can
+    bind an internal bootstrap under a name distinct from the operation.
     """
     if not inspect.isfunction(fn) or (not static and fn.__qualname__ != fn.__name__):
         raise TypeError("Remote operation must be a top-level Python function")
@@ -22,7 +23,15 @@ def function_definition(fn, *, static=False):
         raise TypeError("Remote operation must not depend on module globals or closures")
 
     def globals_used(code):
-        for instruction in dis.get_instructions(code):
+        instructions = tuple(dis.get_instructions(code))
+        for index, instruction in enumerate(instructions):
+            if instruction.opname == "LOAD_NAME" and instruction.argval == "__name__":
+                # Class bodies implicitly set __module__ from the interpreter
+                # namespace. This compiler-generated metadata is portable;
+                # explicit global references in methods remain forbidden.
+                following = instructions[index + 1] if index + 1 < len(instructions) else None
+                if following is not None and following.opname == "STORE_NAME" and following.argval == "__module__":
+                    continue
             if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
                 yield instruction.argval
         for constant in code.co_consts:
@@ -56,4 +65,6 @@ def function_definition(fn, *, static=False):
         except (ValueError, TypeError, SyntaxError) as exc:
             raise TypeError("Portable defaults must be literal values") from exc
 
+    if name is not None:
+        node.name = name
     return ast.unparse(node) + "\n"
