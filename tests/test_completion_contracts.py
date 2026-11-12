@@ -197,6 +197,7 @@ def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, mon
         monkeypatch.setattr(job, "submit", lambda: _accept_job(job))
     else:
         # A reattached Run has already committed a job reference.
+        manager.store.save(run.record)
         run._record = manager.transition(
             run.record, state=RunState.RUNNING,
             execution=run.record.execution.submitted("native-1"),
