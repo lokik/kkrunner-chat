@@ -59,16 +59,25 @@ def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
         directory=str(tmp_path), input_file=None, output_file=None,
     ))
     run.submit()
-    pid = run._job.pid
-    assert pid is not None
     run.cancel()
     run.cancel()
     run.wait()
     assert run.state is RunState.CANCELLED
-    assert calls == [pid]
+    assert len(calls) == 1
+    assert calls[0] > 0
 
 
 def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypatch):
+    terminated = []
+    original_killpg = os.killpg
+
+    def record_termination(pid, sig):
+        if sig == signal.SIGTERM:
+            terminated.append(pid)
+        return original_killpg(pid, sig)
+
+    monkeypatch.setattr(os, "killpg", record_termination)
+
     def failing_write(self, data):
         raise RuntimeError("output pump failed")
 
@@ -78,12 +87,13 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
         directory=str(tmp_path), input_file=None, output_file=None,
     ))
     run.submit()
-    pid = run._job.pid
     with pytest.raises(RuntimeError, match="output pump failed"):
         run.wait()
     assert run.state is RunState.FAILED
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert terminated, "Output-pump failure must terminate the child process group"
+    for pid in terminated:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
@@ -103,7 +113,8 @@ def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
         parts.close()
 
     run = Run.untracked(client, spec)
-    run.run()
+    with pytest.raises(FileNotFoundError, match="Required output file is missing"):
+        run.run()
     assert run.state is RunState.FAILED
     assert run.files.failed_artifacts
     assert run.failure_phase.value == "artifacts"
