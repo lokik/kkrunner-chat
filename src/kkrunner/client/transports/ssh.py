@@ -40,7 +40,7 @@ class SshTransport(Transport):
         return SshDirectChannel(context)
 
     async def follow(self, operation, identity, on_output, **options):
-        from kkrunner.client.observation import follow_framed_command
+        from kkrunner.client.transports.streaming import follow_framed_command
         operation = BackendOperation.for_backend(operation.backend, "follow_framed")
         process = await self.start_operation(operation, identity, **options)
         return await follow_framed_command(process, on_output)
@@ -62,7 +62,6 @@ class SshTransport(Transport):
     options: Tuple[str, ...] = ()
     zstd: bool = False
     python_command: Tuple[str, ...] = ("python3",)
-    filesystem_id: str | None = None
     kind: Literal["ssh"] = "ssh"
 
     def __post_init__(self):
@@ -81,8 +80,6 @@ class SshTransport(Transport):
             raise ValueError("SSH python_command must not be empty")
         if type(self.zstd) is not bool:
             raise TypeError("SSH zstd must be bool")
-        if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
-            raise ValueError("filesystem_id must be a nonempty string or None")
 
     @property
     def _tar_command(self):

@@ -5,17 +5,21 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
+from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client.transports import LocalTransport, SshTransport, require_persistable_transport
-from kkrunner.backends.config import BackendConfig
 from kkrunner.client.pool import default_client_pool
+from kkrunner.client.transports import (
+    LocalTransport,
+    SshTransport,
+    require_persistable_transport,
+)
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
@@ -24,7 +28,6 @@ from kkrunner.runs.file_history import RunFileHistory, _now
 from kkrunner.runs.model import Execution, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
-
 
 _STATE_RANK = {
     RunState.NEW: 0,
@@ -664,9 +667,7 @@ class RunManager(RunFileHistory):
                 return True
             try:
                 client = self.client_for(record)
-                acknowledge = getattr(client, "acknowledge", None)
-                if acknowledge is not None:
-                    acknowledge(record)
+                client.acknowledge(record)
             except (OSError, RuntimeError, ValueError, NotImplementedError):
                 return False
             self._acknowledged_results.add(key)
@@ -678,16 +679,14 @@ class RunManager(RunFileHistory):
 
     @staticmethod
     def _acknowledge_submission(client, record):
-        """Discard the temporary backend PID only after RunStore is durable."""
+        """Discard the submission receipt only after RunStore is durable."""
         if record.execution.backend_id is None:
             return
-        acknowledge = getattr(client, "acknowledge_submission", None)
-        if acknowledge is not None:
-            try:
-                acknowledge(record)
-            except (OSError, RuntimeError):
-                # The receipt remains recoverable until a subsequent refresh.
-                pass
+        try:
+            client.acknowledge_submission(record)
+        except (OSError, RuntimeError):
+            # The receipt remains recoverable until a subsequent refresh.
+            pass
 
     def create_run(
         self, client, spec, *, process_result=None, metadata=None,
@@ -716,7 +715,7 @@ class RunManager(RunFileHistory):
             spec, submission_key=record.execution.submission_key,
         )
         parts.configure_detached(
-            getattr(client, "default_detached", False) if detached is None else detached,
+            client.default_detached if detached is None else detached,
         )
         return Run(
             parts.job, client=client, manager=self, record=record,

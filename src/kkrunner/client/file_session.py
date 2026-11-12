@@ -114,9 +114,11 @@ class FileSession:
     def _cache_before(self, value):
         self._staging["cache_before"] = value
 
-    def configure_direct_detached_streams(self, detached):
-        """Use target-file retrieval when direct SSH child has no relay pipes."""
-        self._retrieve_primary_streams = detached
+    def configure_stream_retrieval(self, required):
+        """Choose file retrieval when the job does not relay primary streams."""
+        if type(required) is not bool:
+            raise TypeError("Stream retrieval policy must be bool")
+        self._retrieve_primary_streams = required
 
     @property
     def files(self):
@@ -547,6 +549,7 @@ class FileSession:
             remote_root=await self.context._resolved_remote_root(),
             input_sync=self.context.input_files.value,
             output_sync=self.context.output_files.value,
+            filesystem_id=self.context.filesystem_id,
         )
         return replace(
             local,
@@ -640,6 +643,7 @@ class FileSession:
                     remote_root=context.remote_root,
                     input_sync=context.input_files.value,
                     output_sync=context.output_files.value,
+                    filesystem_id=context.filesystem_id,
                 ),
             )
             session = cls(

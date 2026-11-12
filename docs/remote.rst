@@ -12,8 +12,7 @@ No separate agent endpoint or persistent agent service is required.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import RunClient, SshTransport
-   from kkrunner.client import StagingSpec
+   from kkrunner.client import RunClient, SshTransport, StagingSpec
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
@@ -39,10 +38,21 @@ Select the target Python environment on the transport:
    client = RunClient(
        SupervisedBackend,
        transport=SshTransport("user@cluster", python_command=("/opt/kkrunner/bin/python",)),
-       filesystem_id="cluster-home",
    )
 
-A consistent ``filesystem_id`` declares that aliases or shared mounts name the
+Select storage identity in the run's file mapping, independently of this
+connection:
+
+.. code-block:: python
+
+   staging = StagingSpec(
+       local_root=directory,
+       remote_root="/absolute/remote/work",
+       filesystem_id="cluster-home",
+   )
+   # Pass staging=staging when constructing ExecutionSpec.
+
+A consistent ``StagingSpec.filesystem_id`` declares that aliases or shared mounts name the
 same target filesystem, independently of backend and SSH options. Workspace
 mapping belongs to each run's ``StagingSpec``. The target directory and complete
 file footprint are resolved before reservation; uploads, output opening and
@@ -54,7 +64,7 @@ one method definition. Direct uses its own portable method. Supervisor and
 PSI/J use import-only helpers. Local execution calls the original methods,
 without another Python interpreter. ``DirectOperations`` and ``ManagedOperations``
 define static namespace interfaces, with JSON request/reply types in
-``kkrunner.backends.messages``. Type annotations are erased when extracting
+``kkrunner.backends.support.messages``. Type annotations are erased when extracting
 portable source; the executed method body is shared.
 
 Managed FOLLOW forwards calculation frames and terminal facts, keeping SSH

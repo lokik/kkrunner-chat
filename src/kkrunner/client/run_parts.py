@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
-    from kkrunner.client.job import Job
     from kkrunner.client.file_session import FileSession
+    from kkrunner.client.job import Job
 
 
 @dataclass
@@ -42,7 +42,7 @@ class RunParts:
 
     def configure_detached(self, detached):
         self.job.configure_detached(detached)
-        self.files.configure_direct_detached_streams(self.job.requires_stream_retrieval)
+        self.files.configure_stream_retrieval(self.job.requires_stream_retrieval)
 
     def configure_observation(self):
         self.job.configure_observation(**self.files.observation())

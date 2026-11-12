@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from threading import RLock
 
-from kkrunner.runs.base import _close_distinct
+from kkrunner.files.streams import _close_distinct
 
 
 class ClientPool:
@@ -28,9 +28,12 @@ class ClientPool:
             return client
 
     def for_config(self, transport, backend):
-        from kkrunner.client.transports import transport_from_dict, require_persistable_transport
-        from kkrunner.client.client import RunClient
         from kkrunner.backends.config import BackendConfig
+        from kkrunner.client.client import RunClient
+        from kkrunner.client.transports import (
+            require_persistable_transport,
+            transport_from_dict,
+        )
         if isinstance(transport, dict):
             transport = transport_from_dict(transport)
         require_persistable_transport(transport)

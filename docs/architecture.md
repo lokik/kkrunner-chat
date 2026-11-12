@@ -110,7 +110,8 @@ backend, and check the target filesystem as well. Local process and local PSI/J
 therefore share the local filesystem namespace. SSH connections to the same
 host share a target namespace regardless of SSH flags, remote command or backend.
 
-For host aliases or shared mounts, pass filesystem_id to SshTransport. Matching IDs declare one shared target filesystem; distinct
+For host aliases or shared mounts, pass filesystem_id to StagingSpec. The ID belongs to the run
+file mapping, independently of its connection. Matching IDs declare one shared target filesystem; distinct
 IDs declare distinct ones. A client must use the same identity consistently.
 The API does not infer that different host aliases refer to the same mount.
 
@@ -130,8 +131,8 @@ Managed local execution and the direct-process remote service use POSIX process
 groups and Unix sockets. Linux and macOS are covered by CI; Windows-specific
 locking/durability code alone does not provide a managed supervisor on Windows.
 
-`support.process_identity.ProcessIdentity` owns process identity and uses only
-public psutil API. An opaque backend handle stores the PID, creation time,
+`support.process_identity.ProcessIdentity` owns process identity and uses
+public psutil API for process facts. An opaque backend handle stores the PID, creation time,
 time basis and, on Linux, the kernel boot ID. On Linux the creation time is normalized as
 `Process(pid).create_time() - psutil.boot_time()`. Each observation creates a
 fresh `Process` because its creation time is cached. Boot-time reads before and
@@ -200,7 +201,7 @@ without yielding between the EOF check and mode switch.
 
 Local managed FOLLOW awaits the existing backend coroutine. SSH runs a Python
 follower that invokes that coroutine and sends framed calculation output and
-terminal facts; transport stderr carries diagnostics. `client.observation`
+terminal facts; transport stderr carries diagnostics. `client.transports.streaming`
 owns reading and reaping that SSH follower. `Job.stop_observation()` cancels
 only its observation task. The supervisor/calculation survives; `Job.cancel()`
 invokes the separate backend cancellation operation. PSI/J uses native status
@@ -209,8 +210,9 @@ callbacks and growing-file observation, unregistering callbacks on detach.
 Generic file operations and shared support do not own the run lifecycle.
 Shared execution vocabulary lives in kkrunner.execution without client
 imports. ExecutionSpec and StagingSpec are client declarations; backends consume
-only the target ExecutionRequest with MPI options and target paths. File reservations use generic local path expansion without
-importing a transport. The manifest and execution identity are separate models.
+only the target ExecutionRequest with MPI options and target paths. File reservations
+use generic path matching and the persisted transport/mapping namespace.
+The manifest and execution identity are separate models.
 `runs` owns persistence and end-to-end completion; backend implementations report
 execution facts. `projects` adds project membership to that existing lifecycle.
 A scheduler job is the backend part of a run, while a run also includes staging,
@@ -325,7 +327,7 @@ recovery never authorizes a duplicate submission.
 | Client lifecycle, state, result and listeners | `client.job.Job` |
 | Local and SSH session composition | `RunClient` |
 | Direct observation and cancellation requests | `DirectObservation`, local/SSH channels |
-| Managed output delivery and SSH follower cleanup | `client.observation` |
+| Managed output delivery and SSH follower cleanup | `client.transports.streaming` |
 | Immutable connection settings, calls and file transport | `client.transports.LocalTransport`, `client.transports.SshTransport` |
 | Persistence and end-to-end completion | `RunManager`, `Run`, `RunStore` |
 | Reuse of configured clients | `ClientPool` |

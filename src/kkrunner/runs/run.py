@@ -11,7 +11,12 @@ from threading import Event, Lock, Thread
 
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.runs.base import (
-    ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted, finish_monitor, wait_for_monitor,
+    ExecutionSpec,
+    FailurePhase,
+    RunState,
+    SubmissionNotStarted,
+    finish_monitor,
+    wait_for_monitor,
 )
 from kkrunner.runs.processing import ProcessingPending
 
@@ -73,7 +78,7 @@ class Run:
         from kkrunner.runs.manager import RunManager
 
         if persistent is None:
-            persistent = getattr(client, "default_persistent", False)
+            persistent = client.default_persistent
         if isinstance(persistent, RunManager):
             manager = persistent
         elif persistent is True:
@@ -84,7 +89,7 @@ class Run:
             raise TypeError("persistent must be None, bool, or a RunManager")
 
         if detached is None:
-            detached = getattr(client, "default_detached", False)
+            detached = client.default_detached
         if type(detached) is not bool:
             raise TypeError("detached must be None or bool")
 
@@ -105,7 +110,7 @@ class Run:
             spec.require_complete()
         parts = client.create_run_parts(spec)
         parts.configure_detached(
-            getattr(client, "default_detached", False) if detached is None else detached,
+            client.default_detached if detached is None else detached,
         )
         return cls(parts.job, client=client, parts=parts,
                    process_result=process_result, callback=callback)
@@ -354,9 +359,7 @@ class Run:
         if manager is not None:
             if self._record.state != RunState.NEW:
                 raise RuntimeError(f"Run is already {self._record.state.value}")
-            resolve = getattr(self.client, "resolve_submission", None)
-            if resolve is not None:
-                self._record = resolve(self._record, self.spec)
+            self._record = self.client.resolve_submission(self._record, self.spec)
             # Reservation and duplicate-submit checks are atomic at the store.
             self._record = manager.reserve(self._record)
             self._monitor_record_version = self._record.updated_at

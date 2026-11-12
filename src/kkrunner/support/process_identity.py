@@ -1,4 +1,4 @@
-"""Persistable process identity using only psutil's public API."""
+"""Persistable process identity using psutil and the Linux kernel boot ID."""
 
 from __future__ import annotations
 

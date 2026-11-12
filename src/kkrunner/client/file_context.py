@@ -36,6 +36,7 @@ class FileContext:
     def __init__(self, client, staging):
         self.client = client
         self.transport = client.transport
+        self.filesystem_id = staging.filesystem_id
         self.local_root = Path(staging.local_root or (Path("/") if self.transport.is_local else Path.home())).expanduser().resolve()
         self.remote_root = None if staging.remote_root is None else os.fspath(staging.remote_root)
         self.input_files = FileSyncPolicy(staging.input_sync)

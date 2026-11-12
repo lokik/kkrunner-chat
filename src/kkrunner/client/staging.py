@@ -16,8 +16,11 @@ class StagingSpec:
     remote_root: str | None = None
     input_sync: str = FileSyncPolicy.CHANGED.value
     output_sync: str = FileSyncPolicy.CHANGED.value
+    filesystem_id: str | None = None
 
     def __post_init__(self):
+        if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
+            raise ValueError("filesystem_id must be a nonempty string or None")
         for name in ("local_root", "remote_root"):
             value = getattr(self, name)
             if value is not None:

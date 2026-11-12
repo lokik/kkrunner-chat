@@ -101,10 +101,13 @@ class FileMapping:
     remote_root: str
     input_sync: str = FileSyncPolicy.CHANGED.value
     output_sync: str = FileSyncPolicy.CHANGED.value
+    filesystem_id: Optional[str] = None
 
     def __post_init__(self):
         import os
 
+        if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
+            raise ValueError("filesystem_id must be a nonempty string or None")
         object.__setattr__(self, "local_root", os.fspath(self.local_root))
         object.__setattr__(self, "remote_root", os.fspath(self.remote_root))
         try:

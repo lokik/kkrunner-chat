@@ -318,7 +318,7 @@ class ResourceOwnedRunner:
 
 @dataclass(frozen=True)
 class RunStatus:
-    """Backend status facts; the client owns durable RunRecord state."""
+    """Client projection of execution facts, identity and file availability."""
 
     state: RunState
     backend_id: Optional[str] = None
@@ -347,7 +347,7 @@ def _pathlike(value):
 
 @dataclass(frozen=True)
 class ExecutionSpec:
-    """Command, files and launch intent handed to an execution backend.
+    """Client declaration of a command, files, MPI and staging policy.
 
     Path-valued file fields are resolved relative to ``directory``. For
     example, ``output_file="stdout.txt"`` saves stdout in that working directory.

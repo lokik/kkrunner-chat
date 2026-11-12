@@ -1,4 +1,4 @@
-"""Client output delivery and ownership of a remote FOLLOW command."""
+"""Transport stream adaptation and ownership of a remote FOLLOW command."""
 
 import asyncio
 

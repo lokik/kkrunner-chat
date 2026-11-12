@@ -86,7 +86,8 @@ the backend. Remote paths are also checked in their target filesystem namespace.
 A :class:`~kkrunner.runs.DuplicateSubmissionError` reports an active conflict.
 
 For host aliases or shared mounts, supply the same ``filesystem_id`` to
-:class:`~kkrunner.client.SshTransport`. KKRunner does not infer shared mounts
+:class:`~kkrunner.client.StagingSpec`. It is persisted in FileMapping and
+does not partition connection identity. KKRunner does not infer shared mounts
 from different hostnames. Distinct IDs declare distinct target filesystems.
 
 Transfers and captured contents

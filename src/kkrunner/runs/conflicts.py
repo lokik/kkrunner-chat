@@ -64,7 +64,6 @@ def _paths_overlap(first, second):
 
 def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
     """Conservatively exclude overlapping declared read/write operations."""
-    a, b = left.execution, right.execution
 
     def overlaps(first, second):
         left_reads, left_writes = first
@@ -76,16 +75,17 @@ def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
     if overlaps(_manifest_accesses(left, remote=False), _manifest_accesses(right, remote=False)):
         return True
 
-    def namespace(execution):
-        transport = execution.transport
+    def namespace(record):
+        transport = record.execution.transport
         if isinstance(transport, LocalTransport):
             return "local"
-        if transport.filesystem_id is not None:
-            return ("filesystem", transport.filesystem_id)
+        mapping = record.files.mapping
+        if mapping is not None and mapping.filesystem_id is not None:
+            return ("filesystem", mapping.filesystem_id)
         if isinstance(transport, SshTransport):
             # Connection flags, commands and scheduler choices do not partition
             # the host's filesystem. Host aliases/shared mounts use filesystem_id.
             return ("ssh", str(transport.host).rsplit("@", 1)[-1].lower())
         return "local"
 
-    return namespace(a) == namespace(b) and overlaps(_manifest_accesses(left), _manifest_accesses(right))
+    return namespace(left) == namespace(right) and overlaps(_manifest_accesses(left), _manifest_accesses(right))

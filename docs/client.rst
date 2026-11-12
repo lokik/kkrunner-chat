@@ -83,3 +83,9 @@ paths and MPI options only. Backend code never reconstructs a client
 Shared state/MPI values live in ``kkrunner.execution`` without importing the
 client, transports, file manifests or run monitoring. There is no second native
 specification object alongside the JSON request.
+
+``StagingSpec.filesystem_id`` identifies the target storage namespace for file
+reservations and is persisted with ``FileMapping``. It does not belong to SSH
+connection settings: one connection can reach multiple filesystems and several
+connections can reach the same storage. Local copying onto the same file,
+including a hardlink or symlink alias, preserves that file without replacing it.

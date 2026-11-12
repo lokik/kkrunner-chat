@@ -39,7 +39,7 @@ class LocalTransport(Transport):
         return LocalDirectChannel(context.backend, files=files)
 
     async def follow(self, operation, identity, on_output, **options):
-        from kkrunner.client.observation import OutputSink
+        from kkrunner.client.transports.streaming import OutputSink
         return await getattr(operation.backend, operation.function)(
             identity, OutputSink(on_output, "out"), OutputSink(on_output, "err"), **options,
         )
@@ -86,6 +86,11 @@ class LocalTransport(Transport):
         if signature is None:
             raise FileNotFoundError(source)
         destination = Path(destination)
+        try:
+            if os.path.samefile(source, destination):
+                return
+        except FileNotFoundError:
+            pass  # A new destination will be published by atomic replacement.
         temporary = _local_temporary_path(destination)
         try:
             await asyncio.to_thread(shutil.copyfile, source, temporary)

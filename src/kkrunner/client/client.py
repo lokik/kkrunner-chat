@@ -193,6 +193,7 @@ class RunClient(RunClientProtocol):
             remote_root=mapping.remote_root,
             input_sync=mapping.input_sync,
             output_sync=mapping.output_sync,
+            filesystem_id=mapping.filesystem_id,
         )
 
     async def _resolve_submission_directory(self, directory):
@@ -256,6 +257,7 @@ class RunClient(RunClientProtocol):
                     remote_root=await context._resolved_remote_root(),
                     input_sync=context.input_files.value,
                     output_sync=context.output_files.value,
+                    filesystem_id=context.filesystem_id,
                 ),
             )
             return replace(
