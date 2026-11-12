@@ -71,7 +71,7 @@ def test_for_project_preserves_explicit_run_store(tmp_path):
     bound = original.for_project(project)
     assert bound.store is custom_store
     assert bound.submitting_grace == 17
-    assert bound.executor_pool is original.executor_pool
+    assert bound.client_pool is original.client_pool
     assert bound.for_project(project) is bound
     assert resolve_project_manager(bound) is bound
     record = bound.new_record(directory=tmp_path / "work", metadata={"test": {"task": "DOS"}}, processing_required=True)
