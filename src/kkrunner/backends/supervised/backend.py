@@ -24,6 +24,7 @@ from kkrunner.backends.contracts import (
 from kkrunner.backends.supervised import mailbox
 from kkrunner.backends.supervised.streams import (
     SupervisorClosedBeforeFollow,
+    SupervisorConnectionError,
     follow_socket,
 )
 from kkrunner.backends.supervised.worker import _SPEC_ENV, _START_FD_ENV
@@ -305,7 +306,7 @@ class SupervisedBackend(Backend, ManagedOperations):
             if facts["state"] != RunState.FAILED.value or facts.get("failure_phase") != FailurePhase.LAUNCH.value:
                 raise
             return facts
-        except (FileNotFoundError, ConnectionRefusedError):
+        except SupervisorConnectionError:
             # A completed supervisor has removed its transient socket. Replay
             # declared spools once, without the historical polling lifecycle.
             facts = SupervisedBackend.status(remote_id)

@@ -51,6 +51,9 @@ def prepare_target_outputs(request):
     for path in streams:
         if is_protected(path):
             raise ValueError("Output stream conflicts with input/cache: " + path)
+    # Validate every declaration before deleting anything: a later collision
+    # must not leave a partially cleared directory after a preflight failure.
+    removable = []
     for declaration in dict.fromkeys(patterns):
         wildcard = glob.has_magic(declaration)
         matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]
@@ -61,10 +64,15 @@ def prepare_target_outputs(request):
                 if wildcard:
                     continue
                 raise ValueError("Explicit output conflicts with input/cache: " + path)
-            if os.path.islink(path) or os.path.isfile(path):
-                os.unlink(path)
-            elif os.path.exists(path) and not wildcard:
+            if os.path.exists(path) and not wildcard and not (
+                os.path.islink(path) or os.path.isfile(path)
+            ):
                 raise IsADirectoryError(path)
+            removable.append(path)
+
+    for path in dict.fromkeys(removable):
+        if os.path.islink(path) or os.path.isfile(path):
+            os.unlink(path)
 
 
 def discover_local_files(files, *, include_streams=True, require_outputs=True):

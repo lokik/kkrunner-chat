@@ -29,27 +29,34 @@ class SupervisorClosedBeforeFollow(asyncio.IncompleteReadError):
     """The supervisor closed before sending any protocol bytes."""
 
 
+class SupervisorConnectionError(ConnectionError):
+    """Socket I/O failed, independently of the client's output consumer."""
+
+
 async def receive(reader):
     """Yield offset-bearing stream frames followed by terminal facts."""
     try:
-        magic = await reader.readexactly(len(MAGIC))
-    except asyncio.IncompleteReadError as exc:
-        if not exc.partial:
-            raise SupervisorClosedBeforeFollow(exc.partial, exc.expected) from exc
-        raise
-    if magic != MAGIC:
-        raise ValueError("Unknown supervisor stream protocol")
-    while True:
-        code, offset, length = _HEADER.unpack(await reader.readexactly(_HEADER.size))
-        if length > (_MAX_REQUEST if code == b"T" else _CHUNK):
-            raise ValueError("Oversized supervisor frame")
-        payload = await reader.readexactly(length)
-        if code == b"T":
-            yield "terminal", 0, json.loads(payload)
-            return
-        if code not in _BACK:
-            raise ValueError("Invalid supervisor channel")
-        yield _BACK[code], offset, payload
+        try:
+            magic = await reader.readexactly(len(MAGIC))
+        except asyncio.IncompleteReadError as exc:
+            if not exc.partial:
+                raise SupervisorClosedBeforeFollow(exc.partial, exc.expected) from exc
+            raise
+        if magic != MAGIC:
+            raise ValueError("Unknown supervisor stream protocol")
+        while True:
+            code, offset, length = _HEADER.unpack(await reader.readexactly(_HEADER.size))
+            if length > (_MAX_REQUEST if code == b"T" else _CHUNK):
+                raise ValueError("Oversized supervisor frame")
+            payload = await reader.readexactly(length)
+            if code == b"T":
+                yield "terminal", 0, json.loads(payload)
+                return
+            if code not in _BACK:
+                raise ValueError("Invalid supervisor channel")
+            yield _BACK[code], offset, payload
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+        raise SupervisorConnectionError(str(exc)) from exc
 
 
 @dataclass(eq=False)
@@ -296,10 +303,17 @@ class SupervisorStreams:
 
 
 async def follow_socket(path, offsets, on_chunk):
-    reader, writer = await asyncio.open_unix_connection(path)
     try:
-        writer.write(json.dumps({"command": "follow", "offsets": offsets}).encode() + b"\n")
-        await writer.drain()
+        reader, writer = await asyncio.open_unix_connection(path)
+    except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError,
+            ConnectionAbortedError, BrokenPipeError) as exc:
+        raise SupervisorConnectionError(str(exc)) from exc
+    try:
+        try:
+            writer.write(json.dumps({"command": "follow", "offsets": offsets}).encode() + b"\n")
+            await writer.drain()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            raise SupervisorConnectionError(str(exc)) from exc
         async for kind, offset, data in receive(reader):
             if kind == "terminal":
                 return data
@@ -307,6 +321,11 @@ async def follow_socket(path, offsets, on_chunk):
         raise ConnectionError("Supervisor ended without terminal outcome")
     finally:
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Cleanup must preserve a received terminal result or the original
+            # protocol/callback failure when the supervisor closes its socket.
+            pass
 
 
