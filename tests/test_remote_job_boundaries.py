@@ -1,39 +1,67 @@
-"""Contract regressions for separated remote execution and client file lifecycle.
+"""Contract regressions for separated backend jobs and client file lifecycles.
 
-These tests use fake transports and do not require SSH, PSI/J, Slurm, or a
-background server. They intentionally exercise public Run/Job boundaries.
+Tests do not require SSH, PSI/J, Slurm, or a background server.
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from kkrunner import ExecutionOutcome, ExecutionSpec, Run, RunState
+from kkrunner.backends.contracts import JobRef, JobStatus
 from kkrunner.client.job import Job
 from kkrunner.runs.base import FailurePhase
 
 
-class _TransportContext:
-    backend = "process"
+class _BackendExecution:
+    """One controllable backend binding; the real Job owns its lifecycle."""
 
     def __init__(self, *, submit_error=None):
         self.submit_error = submit_error
         self.submit_calls = 0
         self.status_calls = 0
+        self.ref = None
+        self.snapshot = JobStatus(RunState.NEW)
+        self.requires_stream_retrieval = False
 
-    async def _submit(self, request):
+    def configure_detached(self, detached):
+        pass
+
+    def configure_observation(self, *, stream_offsets, stream_paths):
+        if not isinstance(stream_offsets, dict):
+            raise TypeError("stream offsets must be a mapping")
+
+    async def submit(self, request, on_output):
         self.submit_calls += 1
         if self.submit_error is not None:
+            # A lost reply is not a proof of non-submission.
+            self.snapshot = JobStatus(RunState.UNKNOWN, message=str(self.submit_error))
             raise self.submit_error
-        return {"state": "queued", "remote_id": "opaque-job", "return_code": None}
+        self.ref = JobRef("process", "opaque-job")
+        self.snapshot = JobStatus(RunState.QUEUED)
+        return self.snapshot
 
-    async def _status(self, directory, backend_id):
+    async def observe(self, on_output):
+        self.snapshot = JobStatus(RunState.FINISHED, return_code=0)
+        return self.snapshot
+
+    async def status(self):
         self.status_calls += 1
-        return {"state": "finished", "return_code": 0}
+        return self.snapshot
+
+    async def cancel(self):
+        return None
+
+    async def stop_observation(self):
+        return None
+
+    async def close(self):
+        return None
 
 
-def _job(context, tmp_path):
-    return Job(context, ExecutionSpec(["true"], directory=tmp_path))
+def _job(execution, tmp_path):
+    return Job(execution, ExecutionSpec(["true"], directory=tmp_path))
 
 
 def _configure(job, tmp_path):
@@ -46,8 +74,8 @@ def _configure(job, tmp_path):
 
 
 def test_unknown_submit_cannot_be_replayed_on_the_same_job(tmp_path):
-    context = _TransportContext(submit_error=ConnectionError("reply lost"))
-    job = _job(context, tmp_path)
+    execution = _BackendExecution(submit_error=ConnectionError("reply lost"))
+    job = _job(execution, tmp_path)
     _configure(job, tmp_path)
     with pytest.raises(ConnectionError, match="reply lost"):
         job.submit()
@@ -55,29 +83,30 @@ def test_unknown_submit_cannot_be_replayed_on_the_same_job(tmp_path):
     assert job.ref is None
     with pytest.raises(RuntimeError, match="prepared"):
         job.submit()
-    assert context.submit_calls == 1
+    assert execution.submit_calls == 1
 
 
 def test_backend_job_status_excludes_download_and_processing(tmp_path):
-    context = _TransportContext()
-    job = _job(context, tmp_path)
+    execution = _BackendExecution()
+    job = _job(execution, tmp_path)
     _configure(job, tmp_path)
-    # This test concerns the submission boundary, not the follow monitor.
-    job.start = lambda: None
     job.submit()
-    assert job.ref.backend == "process"
-    assert job.ref.token == "opaque-job"
+    assert job.wait().return_code == 0
+    assert job.ref == JobRef("process", "opaque-job")
+    # status() is passive; refresh_status() explicitly invokes the backend.
     status = job.status()
-    assert status.state.value == "finished"
+    assert status.state is RunState.FINISHED
     assert status.return_code == 0
-    assert context.status_calls == 1
+    assert execution.status_calls == 0
+    assert job.refresh_status() == status
+    assert execution.status_calls == 1
     assert not hasattr(job, "_output_targets")
     assert not hasattr(job, "_cache_targets")
     assert not hasattr(job, "_sync_output_files")
 
 
 def test_pre_submit_configuration_failure_leaves_no_publishable_request(tmp_path):
-    job = _job(_TransportContext(), tmp_path)
+    job = _job(_BackendExecution(), tmp_path)
     with pytest.raises(TypeError):
         job.configure_submission(
             {"directory": str(tmp_path)},
