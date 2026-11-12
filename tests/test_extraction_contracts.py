@@ -210,6 +210,7 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
         exception = None
         return_code = 0
         result = ExecutionOutcome(return_code=0)
+        output_error = None
 
         def submit(self):
             backend.submissions += 1
@@ -218,6 +219,9 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
 
         def wait(self):
             release.wait(3)
+            # This fake backend must publish the declared output before its
+            # FINISHED status can be committed by the client file session.
+            Path(spec.output_file).write_text("written")
             self.state = RunState.FINISHED
             return self.result
 

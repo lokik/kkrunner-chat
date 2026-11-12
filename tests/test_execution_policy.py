@@ -70,6 +70,7 @@ def test_callback_failure_does_not_change_local_execution_state(tmp_path):
 
 class _UnknownRunner:
     result = object()
+    return_code = None
     backend_id = None
     state = RunState.NEW
     exception = None
@@ -102,9 +103,10 @@ def test_unknown_raw_state_is_preserved_and_not_postprocessed():
     runner = Run(raw, client=client, parts=parts,
                  process_result=lambda outcome: processed.append(outcome))
     runner.submit()
-    assert runner.wait() is raw.result
+    outcome = runner.wait()
+    assert outcome is runner._file_session.result
     assert processed == []
-    assert runner.result is raw.result
+    assert runner.result is outcome
     assert runner.state == RunState.UNKNOWN
     assert runner.failure_phase is None
 

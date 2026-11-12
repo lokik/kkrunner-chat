@@ -1,4 +1,4 @@
-import kkrunner.runs.manager as manager_module
+import kkrunner.runs.files as files_module
 from kkrunner.files import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.runs import FailurePhase
 from kkrunner import RunState, RunStore
@@ -21,7 +21,7 @@ def test_result_snapshot_sync_failure_is_artifact_failure(tmp_path, monkeypatch)
     def fail_sync(_path):
         raise OSError("cannot synchronize result snapshot")
 
-    monkeypatch.setattr(manager_module, "sync_file", fail_sync)
+    monkeypatch.setattr(files_module, "sync_file", fail_sync)
     failed = manager.complete(record, state=RunState.FINISHED, return_code=0, artifacts_available=True)
     assert failed.state == RunState.FAILED
     assert failed.failure_phase == FailurePhase.ARTIFACTS
