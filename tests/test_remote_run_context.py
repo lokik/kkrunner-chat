@@ -37,8 +37,8 @@ def test_different_run_staging_policies_share_one_endpoint(tmp_path):
 
 def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkeypatch):
     from kkrunner import RunState
-        from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
-        from kkrunner.runs.model import Execution, WorkingDirectory
+    from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
+    from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
     local = tmp_path / "local"
@@ -142,9 +142,9 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
     import builtins
 
     from kkrunner import RunState
-        from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
+    from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
     import kkrunner.client.file_session as remote_files
-        from kkrunner.runs.model import Execution, WorkingDirectory
+    from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
     local, remote = (tmp_path / "local", tmp_path / "remote")
