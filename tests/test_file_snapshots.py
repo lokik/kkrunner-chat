@@ -21,6 +21,7 @@ def loopback_remote_snapshots(monkeypatch):
     # Check file mapping independently of an external SSH daemon.
     monkeypatch.setattr(SshTransport, "query_files", LocalTransport.query_files)
     monkeypatch.setattr(SshTransport, "snapshot_file", LocalTransport.snapshot_file)
+    monkeypatch.setattr(SshTransport, "read_file", LocalTransport.read_file)
 
 
 def running_run(tmp_path, remote=False, output="result.dat"):
