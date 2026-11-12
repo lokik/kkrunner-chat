@@ -1,6 +1,6 @@
 """Behavioral contracts introduced by the extraction, without application imports."""
 
-from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.client import RunClient, StagingSpec
 import json
 import subprocess
 import sys
@@ -129,7 +129,7 @@ def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        LocalRunEndpoint(SupervisedBackend),
+        RunClient(SupervisedBackend),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -146,7 +146,7 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        LocalRunEndpoint(SupervisedBackend),
+        RunClient(SupervisedBackend),
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
@@ -167,7 +167,7 @@ def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypat
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
-        LocalRunEndpoint(SupervisedBackend),
+        RunClient(SupervisedBackend),
         ExecutionSpec(
             [sys.executable, "-c", "import time; time.sleep(.4); print(42)"],
             directory=tmp_path,
@@ -227,11 +227,9 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
 
 
 def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
-    from kkrunner.runs import FailurePhase, LaunchSpec
-    from kkrunner.client.ssh import SshRunEndpoint
+    from kkrunner.runs import FailurePhase
     from kkrunner.backends import SupervisedBackend
     from .test_remote import _OperationLoopbackTransport
-    from kkrunner.client.transport import LocalTransport
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     local, remote = tmp_path / "local", tmp_path / "remote"
@@ -247,7 +245,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             return await super().get_file(source, destination)
 
     transport = Transport()
-    executor = SshRunEndpoint(transport, backend=SupervisedBackend)
+    executor = RunClient(SupervisedBackend, transport=transport)
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(
         executor,
@@ -256,7 +254,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             directory=local,
             output_file=local / "stdout",
             output_files=(local / "answer.txt",),
-            launch=LaunchSpec(local_root=local, remote_root=remote),
+            staging=StagingSpec(local_root=local, remote_root=remote),
         ),
     )
     with pytest.raises(OSError, match="interrupted download"):
@@ -266,7 +264,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     assert failed.return_code == 0
     transport.fail = False
     manager.resume_download(failed)
-    attached = manager.attach(run.id, backend=executor)
+    attached = manager.attach(run.id, client=executor)
     assert attached.wait().return_code == 0
     assert manager.store.get(run.id).state == RunState.FINISHED
     assert (local / "answer.txt").read_text() == "42"
