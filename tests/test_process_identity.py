@@ -13,6 +13,13 @@ from kkrunner.support.process_identity import ProcessIdentity
 
 
 def fake_process(monkeypatch, *, created=1_700_001_234.56, status=psutil.STATUS_RUNNING, running=True):
+    # Synthetic psutil identities must also have a verifiable Linux boot ID.
+    # Production intentionally rejects PID+start_time without that provenance.
+    import kkrunner.support.process_identity as identity_module
+    monkeypatch.setattr(
+        identity_module, "_read_boot_id",
+        lambda: "12345678-1234-4234-8234-123456789abc",
+    )
     instances = []
 
     class Process:
