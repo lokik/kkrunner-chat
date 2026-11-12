@@ -4,16 +4,14 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.files import FileEntry, FileManifest, FileMapping
-from kkrunner.runs import LaunchSpec
-from kkrunner.client.ssh import SshRunEndpoint
-from kkrunner.client.remote_files import RemoteFileSession
-from kkrunner.client.transport import LocalTransport
+from kkrunner.client import StagingSpec, RunClient, LocalTransport
+from kkrunner.client.file_session import FileSession
 from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
 def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, monkeypatch):
-    executor = SshRunEndpoint(LocalTransport())
+    executor = RunClient('process', transport=LocalTransport())
     manager = RunManager(RunStore(tmp_path / "runs"))
     directory = tmp_path / "local"
     directory.mkdir()
@@ -23,7 +21,7 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
         directory=str(directory),
         input_file=None,
         output_file=str(output),
-        launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "target")),
+        staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "target")),
     )
     run = manager.create_run(
         executor, spec, process_result=lambda outcome: outcome, metadata={"example": {"task": "DOS"}}
@@ -43,7 +41,7 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
         submitted.append(current)
         return {"state": "running", "remote_id": "opaque-job"}
 
-    monkeypatch.setattr(RemoteFileSession, "_prepare_async", prepare)
+    monkeypatch.setattr(FileSession, "_prepare_async", prepare)
     monkeypatch.setattr(run._job, "start", lambda: None)
     executor._submit = submit
 
@@ -79,10 +77,10 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
         error_file="main.err",
         output_files=("main.out", "main.err", "one.dat", "two.dat"),
         cache_files=("restart.pot",),
-        launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(remote)),
+        staging=StagingSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
     local = FileManifest.from_spec(spec)
-    executor = SshRunEndpoint(LocalTransport())
+    executor = RunClient('process', transport=LocalTransport())
     runner = executor.create_run_parts(spec).files
     manifest = asyncio.run(
         runner._submitted_manifest(
@@ -118,7 +116,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
     directory = tmp_path / "work"
     directory.mkdir()
     remote = tmp_path / "remote"
-    executor = SshRunEndpoint(LocalTransport())
+    executor = RunClient('process', transport=LocalTransport())
     spec = ExecutionSpec(
         argv=("ignored",),
         directory=str(directory),
@@ -126,7 +124,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
         output_file="stdout.out",
         output_files=(None, "stdout.out", "one.dat", "cut-*.dat"),
         cache_files=(None, "restart.dat", "checkpoint-*.dat"),
-        launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(remote)),
+        staging=StagingSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
     runner = executor.create_run_parts(spec).files
     manifest = FileManifest.from_spec(spec)
@@ -203,8 +201,8 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
         output_file=str(local / "stdout.out"),
         output_files=output_files,
         cache_files=cache_files,
-        launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
+        staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    runner = SshRunEndpoint(NoSideEffectTransport()).create_run_parts(spec).files
+    runner = RunClient('process', transport=NoSideEffectTransport()).create_run_parts(spec).files
     with pytest.raises(SubmissionNotStarted, match="Conflicting optionality|Duplicate file declaration"):
         runner.prepare_submission()
