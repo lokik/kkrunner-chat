@@ -11,9 +11,9 @@ if TYPE_CHECKING:
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, RunStatus
     from kkrunner.runs.manager import (
         DuplicateSubmissionError,
-        HistoricalFileMismatchError,
         RunManager,
     )
+    from kkrunner.runs.file_history import HistoricalFileMismatchError
     from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.processing import ProcessingPending
     from kkrunner.runs.records import CorruptRunRecord, RunRecord, RunStore
@@ -53,11 +53,12 @@ def __getattr__(name):
         value = getattr(execution, name)
     elif name in (
         "DuplicateSubmissionError",
-        "HistoricalFileMismatchError",
         "RunManager",
     ):
         from . import manager
         value = getattr(manager, name)
+    elif name == "HistoricalFileMismatchError":
+        from .file_history import HistoricalFileMismatchError as value
     elif name in (
         "Execution",
         "WorkingDirectory",

@@ -56,7 +56,7 @@ must not be reported as a successful completed calculation.
 client supplies the default tracking policy; native backends do not own it.
 
 Execution intent and staging
----------------------------
+----------------------------
 
 ``ExecutionSpec.mpi`` is a :class:`~kkrunner.execution.MpiSpec`. File mapping
 and synchronization are a separate :class:`~kkrunner.client.StagingSpec` in
