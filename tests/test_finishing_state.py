@@ -22,6 +22,13 @@ class _Executor(EndpointClient):
         )
         self.status_value = status
 
+    def acknowledge(self, record):
+        # This suite verifies state projection, not remote receipt transport.
+        return None
+
+    def acknowledge_submission(self, record):
+        return None
+
     def status(self, *runs):
         return tuple(
             RunStatus(
