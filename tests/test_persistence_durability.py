@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-import kkrunner.runs.manager as manager_module
+import kkrunner.runs.file_history as file_history_module
 import kkrunner.runs.records as records_module
 import kkrunner.support.durability as durability
-from kkrunner.client.endpoint import ExecutionEndpointConfig
+from kkrunner.client import LocalTransport
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.runs.base import RunState
 from kkrunner.runs.manager import RunManager
@@ -97,13 +97,13 @@ def test_reserve_syncs_inputs_before_submitting_record(tmp_path, monkeypatch):
     manager = RunManager(store)
     record = manager.new_record(
         directory=tmp_path,
-        endpoint=ExecutionEndpointConfig(),
+        transport=LocalTransport(),
         files=FileManifest(inputs=(FileEntry(local_path=str(input_file)),)),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
     )
     events = []
-    monkeypatch.setattr(manager_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
+    monkeypatch.setattr(file_history_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
     real_transition = manager.transition
 
     def tracked_transition(current, **changes):
@@ -131,7 +131,7 @@ def test_artifact_publication_syncs_outputs_before_terminal_record(tmp_path, mon
     store.save(record)
     record = manager.transition(record, state=RunState.RUNNING)
     events = []
-    monkeypatch.setattr(manager_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
+    monkeypatch.setattr(file_history_module, "sync_file", lambda path: events.append(("sync", Path(path).name)))
     real_transition = manager.transition
 
     def tracked_transition(current, **changes):
