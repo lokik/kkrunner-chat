@@ -1,5 +1,5 @@
 from kkrunner import ExecutionSpec
-from kkrunner.client import RunClient, StagingSpec, SshTransport
+from kkrunner.client import EndpointClient, StagingSpec, SshTransport
 from kkrunner.backends import SupervisedBackend
 
 
@@ -8,7 +8,7 @@ class _Transport:
 
 
 def test_remote_project_run_parts_retain_manager_run_id(tmp_path):
-    backend = RunClient(SupervisedBackend, transport=SshTransport("cluster"))
+    backend = EndpointClient(SupervisedBackend, transport=SshTransport("cluster"))
     spec = ExecutionSpec(
         argv=("true",),
         input_file=None,

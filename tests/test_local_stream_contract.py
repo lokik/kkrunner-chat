@@ -8,13 +8,13 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.backends import DirectBackend
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 from kkrunner.client.transports.direct import _OutputChannel
 from kkrunner.execution import MpiSpec
 
 
 def _run(spec):
-    return Run.untracked(RunClient(DirectBackend), spec)
+    return Run.untracked(EndpointClient(DirectBackend), spec)
 
 
 @pytest.mark.parametrize("store_stdout, store_stderr", ((True, True), (True, False), (False, True), (False, False)))
@@ -91,7 +91,7 @@ def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
         argv=(sys.executable, "-c", "print('ok')"), directory=str(tmp_path),
         output_files=("missing.output",),
     )
-    client = RunClient(DirectBackend)
+    client = EndpointClient(DirectBackend)
     parts = client.create_run_parts(spec)
     parts.prepare_submission()
     parts.prepare_job()

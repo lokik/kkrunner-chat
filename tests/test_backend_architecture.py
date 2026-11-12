@@ -15,7 +15,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
-from kkrunner.client import RunClient, LocalTransport, SshTransport, StagingSpec
+from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client.operations import BackendOperation, operation_command, operation_payload
 
@@ -35,9 +35,9 @@ class LoopbackSshTransport(SshTransport):
 @pytest.mark.parametrize("location", ("local", "ssh"))
 def test_backend_and_location_round_trip_independently(backend, location):
     transport = LocalTransport() if location == "local" else SshTransport("example")
-    client = RunClient(backend, transport=transport)
+    client = EndpointClient(backend, transport=transport)
     config = (client.transport.to_dict(), asdict(client.backend_config))
-    restored = RunClient.from_config(*json.loads(json.dumps(config)))
+    restored = EndpointClient.from_config(*json.loads(json.dumps(config)))
 
     assert client.transport.kind == location
     assert client.backend.name == backend.name
@@ -54,7 +54,7 @@ def test_same_ssh_endpoint_runs_selected_backend(tmp_path, monkeypatch, backend)
     local, remote = tmp_path / "client", tmp_path / "target"
     local.mkdir()
 
-    client = RunClient(backend, transport=LoopbackSshTransport())
+    client = EndpointClient(backend, transport=LoopbackSshTransport())
     spec = ExecutionSpec(
         (sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"),
         directory=str(local), output_file="stdout", error_file="stderr",
