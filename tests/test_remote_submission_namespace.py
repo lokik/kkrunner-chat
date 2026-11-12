@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from kkrunner import ExecutionSpec
-from kkrunner.client import StagingSpec, RunClient, SshTransport
+from kkrunner.client import StagingSpec, EndpointClient, SshTransport
 
 
 class _Transport:
@@ -21,7 +21,7 @@ class _Transport:
     ids=("target-a", "target-b", "implicit-home", "explicit-home"),
 )
 def test_remote_submission_directory_uses_target_namespace_without_io(tmp_path, relative, remote_root, expected):
-    executor = RunClient(transport=SshTransport("cluster"))
+    executor = EndpointClient(transport=SshTransport("cluster"))
     directory = tmp_path / relative
     directory.mkdir(parents=True)
     options = {} if remote_root is None else {"remote_root": remote_root}

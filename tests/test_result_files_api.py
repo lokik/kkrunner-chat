@@ -1,6 +1,6 @@
 """Public result-file terminology and client ownership."""
 
-from kkrunner.client import RunClient, LocalTransport, SshTransport
+from kkrunner.client import EndpointClient, LocalTransport, SshTransport
 from kkrunner.backends import PsijBackend
 from kkrunner.files import FileManifest, FileState
 
@@ -13,8 +13,8 @@ def test_result_file_names_use_canonical_public_api():
 
 
 def test_result_file_retrieval_is_owned_by_shared_client():
-    local = RunClient(PsijBackend, transport=LocalTransport())
-    remote = RunClient(PsijBackend, transport=SshTransport("cluster"))
+    local = EndpointClient(PsijBackend, transport=LocalTransport())
+    remote = EndpointClient(PsijBackend, transport=SshTransport("cluster"))
     assert local.supports_result_file_retrieval is True
     assert remote.supports_result_file_retrieval is True
     assert callable(local.fetch_result_files)

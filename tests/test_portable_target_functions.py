@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from kkrunner.backends.support.process import resolve_mpi_options
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 from kkrunner.client.operations import BackendOperation, operation_command
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
@@ -31,7 +31,7 @@ def test_native_backend_does_not_construct_client_session(tmp_path):
     from kkrunner.backends import DirectBackend
     assert not hasattr(DirectBackend, "create_job")
     assert not hasattr(DirectBackend, "create_run_parts")
-    endpoint = RunClient(DirectBackend)
+    endpoint = EndpointClient(DirectBackend)
     assert isinstance(endpoint.backend, DirectBackend)
 
 

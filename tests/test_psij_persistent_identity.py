@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner.backends.psij.slurm import submission_marker
 from kkrunner.backends.psij.submission import prepare_job
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 from kkrunner.backends import PsijBackend
 from kkrunner import ExecutionSpec
 from kkrunner.client.execution_request import execution_request
@@ -54,7 +54,7 @@ def test_project_job_carries_kkrunner_submission_identity(tmp_path, executor_nam
 
 
 def test_untracked_psij_submission_has_independent_recovery_key(tmp_path):
-    client = RunClient(PsijBackend(executor_name="slurm"))
+    client = EndpointClient(PsijBackend(executor_name="slurm"))
     spec = ExecutionSpec(("program",), directory=str(tmp_path), output_file="run.out")
     parts = client.create_run_parts(spec)
     request = parts.submission_builder({"directory": str(tmp_path)})
