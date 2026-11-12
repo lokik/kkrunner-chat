@@ -126,7 +126,7 @@ def local_manifest(files, status):
     for entry in (files.stdout, files.stderr):
         if entry is None or entry.local_path is None:
             continue
-        if status.failure_phase == FailurePhase.ARTIFACTS:
+        if status.failure_phase in (FailurePhase.ARTIFACTS, FailurePhase.OUTPUT):
             state, message = "failed", status.message or "Output publication failed"
         elif published:
             exists = os.path.isfile(entry.local_path)
