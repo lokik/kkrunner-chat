@@ -15,8 +15,8 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
-from kkrunner.client import LocalRunEndpoint, SshRunEndpoint, SshTransport
-from kkrunner.client.endpoint import ExecutionEndpointConfig, describe_endpoint, endpoint_from_config
+from kkrunner.client import RunClient, LocalTransport, SshTransport, StagingSpec
+from kkrunner.backends.config import BackendConfig
 from kkrunner.client.operations import BackendOperation, operation_command, operation_payload
 
 
@@ -34,18 +34,17 @@ class LoopbackSshTransport(SshTransport):
 @pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend, PsijBackend))
 @pytest.mark.parametrize("location", ("local", "ssh"))
 def test_backend_and_location_round_trip_independently(backend, location):
-    endpoint = (LocalRunEndpoint(backend) if location == "local" else
-                SshRunEndpoint(SshTransport("example"), backend=backend))
-    config = describe_endpoint(endpoint)
-    loaded = ExecutionEndpointConfig(**json.loads(json.dumps(asdict(config))))
-    restored = endpoint_from_config(loaded)
+    transport = LocalTransport() if location == "local" else SshTransport("example")
+    client = RunClient(backend, transport=transport)
+    config = (client.transport.to_dict(), asdict(client.backend_config))
+    restored = RunClient.from_config(*json.loads(json.dumps(config)))
 
-    assert config.location == location
-    assert config.backend == backend.name
-    assert hash(config) == hash(loaded)
-    assert isinstance(restored.backend, backend)
-    assert restored.default_detached == backend.default_detached
-    assert restored.default_persistent == backend.default_persistent
+    assert client.transport.kind == location
+    assert client.backend.name == backend.name
+    assert restored.backend.name == backend.name
+    assert restored.backend.options == client.backend.options
+    assert restored.default_detached == backend().default_detached
+    assert restored.default_persistent == (backend().execution_mode == "managed")
     assert restored.backend.supports == backend().supports
 
 
@@ -54,19 +53,18 @@ def test_same_ssh_endpoint_runs_selected_backend(tmp_path, monkeypatch, backend)
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
     local, remote = tmp_path / "client", tmp_path / "target"
     local.mkdir()
-    from kkrunner.runs import LaunchSpec
 
-    endpoint = SshRunEndpoint(LoopbackSshTransport(), backend=backend)
+    client = RunClient(backend, transport=LoopbackSshTransport())
     spec = ExecutionSpec(
         (sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"),
         directory=str(local), output_file="stdout", error_file="stderr",
-        launch=LaunchSpec(local_root=str(local), remote_root=str(remote)),
+        staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.direct(endpoint, spec)
+    run = Run.untracked(client, spec)
     assert run.run().return_code == 0
     assert (local / "stdout").read_bytes() == (remote / "stdout").read_bytes() == b"out\n"
     assert (local / "stderr").read_bytes() == (remote / "stderr").read_bytes() == b"err\n"
-    assert bool(run.backend_id) == (not backend.session_bound)
+    assert bool(run.backend_id) == (backend().execution_mode == "managed")
 
 
 def _alive(pid):
@@ -170,17 +168,15 @@ def test_local_direct_preserves_client_streams_and_working_directory(tmp_path):
 
 def test_native_psij_status_contains_only_execution_facts(monkeypatch):
     from types import SimpleNamespace
-    from kkrunner.backends.contracts import JobStatus
-    from kkrunner.backends.psij import executor
+    from kkrunner.backends.psij import backend as psij_ops
+    from kkrunner.remote.handles import encode_handle
 
     native_status = SimpleNamespace(state=SimpleNamespace(name="COMPLETED"), exit_code=7, message="native")
-    job = SimpleNamespace(status=native_status)
-    monkeypatch.setattr(executor, "_load_psij", lambda: SimpleNamespace(Job=lambda: job))
-    runtime = executor.PsijExecutor("local", job_executor=SimpleNamespace(attach=lambda job, identity: None))
-    status = runtime.status("42")
-    assert isinstance(status, JobStatus)
-    assert status.state.value == "failed"
-    assert status.return_code == 7
-    assert status.message == "native"
-    assert not hasattr(status, "execution")
-    assert not hasattr(status, "files")
+    monkeypatch.setattr(psij_ops, "_attach_job", lambda identity: SimpleNamespace(status=native_status))
+    remote_id = encode_handle({"kind": "psij", "executor_name": "pbs", "url": None, "native_id": "42"})
+    facts = PsijBackend.status(remote_id)
+    assert facts["state"] == "failed"
+    assert facts["return_code"] == 7
+    assert facts["error"] == "native"
+    assert "files" not in facts
+    assert "execution" not in facts
