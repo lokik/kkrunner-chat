@@ -27,9 +27,12 @@ def _client_and_attachment(tmp_path, monkeypatch, backend_type=SupervisedBackend
     files = FileManifest(stdout=FileEntry(local_path=str(tmp_path / "run.out")))
 
     async def status(name, *args, **kwargs):
-        assert name == "status"
-        assert args == (backend_id,)
-        return {"state": "running", "return_code": None}
+        if name == "status":
+            assert args == (backend_id,)
+            return {"state": "running", "return_code": None}
+        if name in ("acknowledge", "acknowledge_submission"):
+            return {"acknowledged": True}
+        raise AssertionError(f"Unexpected backend operation: {name}")
 
     monkeypatch.setattr(client, "_invoke", status)
     return client, JobAttachment(execution, files)
