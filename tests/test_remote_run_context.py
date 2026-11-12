@@ -39,7 +39,7 @@ def test_different_run_staging_policies_share_one_endpoint(tmp_path):
 def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkeypatch):
     from kkrunner import RunState
     from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
-    from kkrunner.runs.model import Execution, WorkingDirectory
+    from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
     local = tmp_path / "local"
@@ -74,7 +74,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(endpoint.transport, WorkingDirectory(str(local), str(remote)), "opaque-id"),
+        execution=ExecutionMetadata(endpoint.transport, WorkingDirectory(str(local), str(remote)), "opaque-id"),
         files=files,
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -143,7 +143,7 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
     from kkrunner import RunState
     from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
     import kkrunner.client.file_session as remote_files
-    from kkrunner.runs.model import Execution, WorkingDirectory
+    from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
     local, remote = (tmp_path / "local", tmp_path / "remote")
@@ -158,7 +158,7 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(endpoint.transport, WorkingDirectory(str(local), str(remote)), "remote-id"),
+        execution=ExecutionMetadata(endpoint.transport, WorkingDirectory(str(local), str(remote)), "remote-id"),
         files=FileManifest(
             mapping=FileMapping(str(local), str(remote)),
             stdout=FileEntry(str(stdout), str(remote / "stdout.txt")),
