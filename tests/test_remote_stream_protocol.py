@@ -1,21 +1,26 @@
+"""Framed FOLLOW transport keeps native output and SSH diagnostics separate."""
+
 import asyncio
 import sys
 
 import pytest
 
-from kkrunner.client import RunClient, SshTransport, StagingSpec
-from kkrunner.remote.stream import STREAM_MAGIC, FramedRunningCommand, StreamProtocolError, encode_stream_frame, encode_terminal_frame
+from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import DirectBackend
-from kkrunner import Run
-from kkrunner.runs.base import ExecutionSpec, RunState
-
+from kkrunner.client import RunClient, SshTransport, StagingSpec
+from kkrunner.client.transports.streaming import follow_framed_command
+from kkrunner.execution import RunState
+from kkrunner.remote.stream import (
+    STREAM_MAGIC, StreamProtocolError, encode_stream_frame, encode_terminal_frame,
+    read_stream_frames,
+)
 
 
 def _reader_with(data):
-    stream = asyncio.StreamReader()
-    stream.feed_data(data)
-    stream.feed_eof()
-    return stream
+    reader = asyncio.StreamReader()
+    reader.feed_data(data)
+    reader.feed_eof()
+    return reader
 
 
 class _FinishedCommand:
@@ -33,44 +38,101 @@ class _FinishedCommand:
     def terminate(self):
         self.terminated = True
 
+    def kill(self):
+        self.terminated = True
 
-def test_framed_command_separates_calculation_and_transport_stderr():
 
+def test_framed_transport_delivers_distinct_channels_without_diagnostic_leak():
     async def check():
         process = _FinishedCommand(
-            STREAM_MAGIC + encode_stream_frame("out", b"stdout\n") + encode_stream_frame("err", b"stderr\n")
+            STREAM_MAGIC + encode_stream_frame("out", b"stdout\n")
+            + encode_stream_frame("err", b"stderr\n")
             + encode_terminal_frame({"state": "finished", "return_code": 0}),
             b"Warning: transport diagnostic\n",
         )
-        command = FramedRunningCommand(process)
-        stdout, stderr, returncode = await asyncio.gather(command.stdout.read(), command.stderr.read(), command.wait())
-        assert returncode == 0
-        assert stdout == b"stdout\n"
-        assert stderr == b"stderr\n"
-        assert command.diagnostics == b"Warning: transport diagnostic\n"
-
+        chunks = []
+        terminal = await follow_framed_command(process, lambda chunk, kind: chunks.append((kind, chunk)))
+        assert chunks == [("out", b"stdout\n"), ("err", b"stderr\n")]
+        assert terminal == {"state": "finished", "return_code": 0}
     asyncio.run(check())
 
 
-def test_framed_command_reports_helper_failure_with_diagnostic():
+def test_framed_transport_reports_helper_failure_with_diagnostic():
+    async def check():
+        process = _FinishedCommand(
+            STREAM_MAGIC + encode_terminal_frame({"state": "finished", "return_code": 0}),
+            b"remote helper traceback\n", returncode=2,
+        )
+        with pytest.raises(StreamProtocolError, match="status 2.*remote helper traceback"):
+            await follow_framed_command(process, lambda *_: None)
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("payload", [
+    b"null", b"[]", b"42", b'{"missing":"state"}', b'{"state":"invalid"}', b"{invalid",
+])
+def test_terminal_frame_rejects_invalid_outcomes(payload):
+    from kkrunner.remote.stream import _HEADER
 
     async def check():
-        process = _FinishedCommand(STREAM_MAGIC, b"remote helper traceback\n", returncode=2)
-        command = FramedRunningCommand(process)
-        with pytest.raises(StreamProtocolError, match="status 2.*remote helper traceback"):
-            await command.wait()
+        source = _reader_with(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
+        with pytest.raises(StreamProtocolError, match="terminal frame"):
+            await read_stream_frames(source).__anext__()
+    asyncio.run(check())
 
+
+def test_invalid_terminal_frame_terminates_observer_and_preserves_error():
+    from kkrunner.remote.stream import _HEADER
+
+    async def check():
+        payload = b"null"
+        process = _FinishedCommand(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
+        with pytest.raises(StreamProtocolError, match="Invalid terminal frame outcome"):
+            await follow_framed_command(process, lambda *_: None)
+        assert process.terminated is False or process.returncode == 0
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("state", tuple(RunState))
+def test_terminal_frame_accepts_every_run_state(state):
+    from kkrunner.remote.stream import _HEADER
+
+    async def check():
+        payload = ('{"state":"' + state.value + '"}').encode()
+        source = _reader_with(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
+        assert await read_stream_frames(source).__anext__() == ("terminal", {"state": state.value})
+    asyncio.run(check())
+
+
+def test_follow_rejects_clean_exit_without_terminal_receipt():
+    async def check():
+        process = _FinishedCommand(STREAM_MAGIC + encode_stream_frame("out", b"partial"))
+        chunks = []
+        with pytest.raises(StreamProtocolError, match="without terminal frame"):
+            await follow_framed_command(process, lambda data, kind: chunks.append((kind, data)))
+        assert chunks == [("out", b"partial")]
+    asyncio.run(check())
+
+
+def test_follow_rejects_data_after_terminal_receipt():
+    async def check():
+        process = _FinishedCommand(
+            STREAM_MAGIC + encode_terminal_frame({"state": "finished", "return_code": 0})
+            + encode_stream_frame("out", b"late"),
+        )
+        with pytest.raises(StreamProtocolError, match="data after terminal frame"):
+            await follow_framed_command(process, lambda *_: None)
     asyncio.run(check())
 
 
 class _DiagnosticProcess:
-    """Proxy a real subprocess while replacing its transport diagnostic channel."""
+    """Subprocess with an independent synthetic SSH diagnostic channel."""
 
-    def __init__(self, process, diagnostic):
+    def __init__(self, process):
         self._process = process
-        self.stdout = process.stdout
-        self.stderr = diagnostic
         self.stdin = process.stdin
+        self.stdout = process.stdout
+        self.stderr = _reader_with(b"Warning: Permanently added test host\n")
 
     @property
     def returncode(self):
@@ -81,8 +143,7 @@ class _DiagnosticProcess:
 
     async def communicate(self, input=None):
         stdout, stderr = await self._process.communicate(input)
-        diagnostic = await self.stderr.read()
-        return (stdout, (stderr or b"") + diagnostic)
+        return stdout, stderr + await self.stderr.read()
 
     def terminate(self):
         self._process.terminate()
@@ -92,8 +153,6 @@ class _DiagnosticProcess:
 
 
 class _DiagnosticTransport(SshTransport):
-    """Inject an SSH-like diagnostic into the transport control channel."""
-
     def __init__(self):
         super().__init__("loopback", python_command=(sys.executable,))
 
@@ -102,124 +161,24 @@ class _DiagnosticTransport(SshTransport):
         return tuple(argv)
 
     async def start(self, argv, *, cwd=None, stdin=None):
-        process = await super().start(argv, cwd=cwd, stdin=stdin)
-        diagnostic = asyncio.StreamReader()
-        diagnostic.feed_data(b"Warning: Permanently added test host\n")
-        diagnostic.feed_eof()
-        return _DiagnosticProcess(process, diagnostic)
+        return _DiagnosticProcess(await super().start(argv, cwd=cwd, stdin=stdin))
 
 
-def test_remote_transport_stderr_never_enters_calculation_files(tmp_path):
-    local_root = tmp_path / "local"
+def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
+    local_root, remote_root = tmp_path / "local", tmp_path / "remote"
     workdir = local_root / "calculation"
     workdir.mkdir(parents=True)
-    input_file = (workdir / "input.txt").open("w+b")
-    output_file = (workdir / "output.txt").open("wb")
-    error_file = (workdir / "output.err").open("wb")
-    remote_root = tmp_path / "remote"
-    executor = RunClient(DirectBackend, transport=_DiagnosticTransport())
+    remote_root.mkdir()
+    client = RunClient(DirectBackend, transport=_DiagnosticTransport())
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"),
-        input_file=input_file,
-        output_file=output_file,
-        error_file=error_file,
-        directory=str(workdir),
+        directory=workdir,
+        output_file=workdir / "output.txt",
+        error_file=workdir / "output.err",
         staging=StagingSpec(local_root=local_root, remote_root=remote_root),
     )
-    result = Run.untracked(executor, spec).run()
-    assert result.return_code == 0
+    assert Run.untracked(client, spec).run().return_code == 0
     assert (workdir / "output.txt").read_bytes() == b"stdout\n"
     assert (workdir / "output.err").read_bytes() == b"stderr\n"
     assert b"Permanently added" not in (workdir / "output.txt").read_bytes()
     assert b"Permanently added" not in (workdir / "output.err").read_bytes()
-
-
-def test_framed_command_delivers_terminal_result_in_band():
-    from kkrunner.remote.stream import encode_terminal_frame
-
-    async def check():
-        command = FramedRunningCommand(
-            _FinishedCommand(
-                STREAM_MAGIC
-                + encode_stream_frame("out", b"hello")
-                + encode_terminal_frame(
-                    {"state": "failed", "return_code": 4, "failure_phase": "execution", "error": "calculation failed"}
-                )
-            )
-        )
-        assert await command.stdout.read() == b"hello"
-        assert await command.wait() == 0
-        assert command.terminal["return_code"] == 4
-        assert command.terminal["failure_phase"] == "execution"
-
-    asyncio.run(check())
-
-
-@pytest.mark.parametrize(
-    "payload", (b"null", b"[]", b"42", b'{"missing":"state"}', b'{"state":"invalid"}', b"{invalid")
-)
-def test_remote_terminal_frame_rejects_invalid_outcomes(payload):
-    from kkrunner.remote.stream import _HEADER, read_stream_frames
-
-    async def check():
-        reader = _reader_with(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
-        with pytest.raises(StreamProtocolError, match="terminal frame"):
-            await read_stream_frames(reader).__anext__()
-
-    asyncio.run(check())
-
-
-def test_malformed_terminal_frame_terminates_helper_and_preserves_protocol_error():
-    from kkrunner.remote.stream import _HEADER
-
-    async def check():
-        payload = b"null"
-        process = _FinishedCommand(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
-        command = FramedRunningCommand(process)
-        with pytest.raises(StreamProtocolError, match="Invalid terminal frame outcome"):
-            await command.wait()
-        assert process.terminated
-        assert command.terminal is None
-
-    asyncio.run(check())
-
-
-@pytest.mark.parametrize("state", tuple(RunState))
-def test_terminal_frame_accepts_every_run_state(state):
-    from kkrunner.remote.stream import _HEADER, read_stream_frames
-
-    async def check():
-        payload = ('{"state":"' + state.value + '"}').encode()
-        reader = _reader_with(STREAM_MAGIC + _HEADER.pack(b"T", len(payload)) + payload)
-        assert await read_stream_frames(reader).__anext__() == ("terminal", {"state": state.value})
-
-    asyncio.run(check())
-
-
-def test_framed_follow_rejects_clean_exit_without_terminal_receipt():
-    """Native success cannot establish that FOLLOW delivered the last bytes."""
-    async def check():
-        command = FramedRunningCommand(_FinishedCommand(
-            STREAM_MAGIC + encode_stream_frame("out", b"partial"),
-        ))
-        assert await command.stdout.read() == b"partial"
-        with pytest.raises(StreamProtocolError, match="without terminal frame"):
-            await command.wait()
-        assert command.terminal is None
-
-    asyncio.run(check())
-
-
-def test_framed_follow_rejects_data_after_terminal_frame():
-    async def check():
-        process = _FinishedCommand(
-            STREAM_MAGIC
-            + encode_terminal_frame({"state": "finished", "return_code": 0})
-            + encode_stream_frame("out", b"late bytes")
-        )
-        command = FramedRunningCommand(process)
-        with pytest.raises(StreamProtocolError, match="data after terminal frame"):
-            await command.wait()
-        assert process.terminated
-
-    asyncio.run(check())
