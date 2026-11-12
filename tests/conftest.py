@@ -1,4 +1,4 @@
-"""Keep process-local executor pools isolated between tests."""
+"""Keep process-local client pools isolated between tests."""
 
 import pytest
 
@@ -6,14 +6,14 @@ from kkrunner.client import pool
 
 
 @pytest.fixture(autouse=True)
-def isolated_default_endpoint_pool():
-    previous = pool._DEFAULT_ENDPOINT_POOL
-    pool._DEFAULT_ENDPOINT_POOL = pool.EndpointPool()
+def isolated_default_client_pool():
+    previous = pool._DEFAULT_CLIENT_POOL
+    pool._DEFAULT_CLIENT_POOL = pool.ClientPool()
     try:
         yield
     finally:
-        pool._DEFAULT_ENDPOINT_POOL.close()
-        pool._DEFAULT_ENDPOINT_POOL = previous
+        pool._DEFAULT_CLIENT_POOL.close()
+        pool._DEFAULT_CLIENT_POOL = previous
 
 
 @pytest.fixture(scope="session")
