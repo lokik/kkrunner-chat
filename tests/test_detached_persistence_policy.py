@@ -13,8 +13,9 @@ from kkrunner import ExecutionSpec, Run, RunManager, RunState, RunStore
 from kkrunner.client import EndpointClient, SshTransport, StagingSpec
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends import DirectBackend
-from kkrunner.client.operations import BackendOperation, operation_command
-WORKER_SOURCE = operation_command(BackendOperation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
+from kkrunner.client.contracts import Operation
+from kkrunner.client.transports.rpc import operation_command
+WORKER_SOURCE = operation_command(Operation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
 
 
 def test_explicit_and_contextual_persistence(tmp_path):

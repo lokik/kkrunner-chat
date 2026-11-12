@@ -9,7 +9,8 @@ from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition
 from kkrunner.client import EndpointClient, LocalTransport, SshTransport
 from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.support.class_helper import static_methods
-from kkrunner.client.operations import BackendOperation, operation_command
+from kkrunner.client.contracts import Operation
+from kkrunner.client.transports.rpc import operation_command
 
 
 MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
@@ -94,7 +95,7 @@ def test_package_layout_and_ssh_operation_are_class_based():
         backend_type = backend_class(kind)
         assert backend_type.__module__.endswith(".backend")
         assert static_methods(backend_type)
-        operation = BackendOperation.for_backend(backend_type, "stream")
+        operation = Operation.for_backend(backend_type, "stream")
         command = operation_command(operation, streaming=True)
         assert "-c" in command
         compile(command[-1], "<SSH backend operation>", "exec")

@@ -12,12 +12,13 @@ from kkrunner.client import LocalTransport, EndpointClient, SshTransport, Stagin
 from kkrunner.files.queries import finalize_upload, query_files
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
-from kkrunner.client.operations import BackendOperation, operation_command
+from kkrunner.client.contracts import Operation
+from kkrunner.client.transports.rpc import operation_command
 
-_FINALIZE_SOURCE = operation_command(BackendOperation.standalone(finalize_upload), python=(sys.executable,))[-1]
-_QUERY_SOURCE = operation_command(BackendOperation.standalone(query_files), python=(sys.executable,))[-1]
+_FINALIZE_SOURCE = operation_command(Operation.standalone(finalize_upload), python=(sys.executable,))[-1]
+_QUERY_SOURCE = operation_command(Operation.standalone(query_files), python=(sys.executable,))[-1]
 WORKER_SOURCE = operation_command(
-    BackendOperation.for_backend(DirectBackend, "stream"), python=(sys.executable,), streaming=True,
+    Operation.for_backend(DirectBackend, "stream"), python=(sys.executable,), streaming=True,
 )[-1]
 
 

@@ -17,7 +17,8 @@ from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
 from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client.operations import BackendOperation, operation_command, operation_payload
+from kkrunner.client.contracts import Operation
+from kkrunner.client.transports.rpc import operation_command, operation_payload
 
 
 class LoopbackSshTransport(SshTransport):
@@ -83,7 +84,7 @@ def test_cancel_stops_calculation_while_remote_output_is_blocked(tmp_path, descr
         f"while True: os.write({descriptor}, b'x' * 65536)"
     )
     command = operation_command(
-        BackendOperation.for_backend(DirectBackend, "stream"),
+        Operation.for_backend(DirectBackend, "stream"),
         python=(sys.executable, "-I"), streaming=True,
     )
     payload = operation_payload(({

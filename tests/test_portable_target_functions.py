@@ -10,14 +10,15 @@ import pytest
 
 from kkrunner.backends.support.process import resolve_mpi_options
 from kkrunner.client import EndpointClient
-from kkrunner.client.operations import BackendOperation, operation_command
+from kkrunner.client.contracts import Operation
+from kkrunner.client.transports.rpc import operation_command
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
 
 
 def _operation_script(function):
     """Exercise the actual transported JSON operation, not a legacy wrapper."""
-    return operation_command(BackendOperation.standalone(function), python=(sys.executable,))[-1]
+    return operation_command(Operation.standalone(function), python=(sys.executable,))[-1]
 
 
 def _isolated(script, *, input=None, args=()):
