@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from kkrunner.backends.support.process import resolve_mpi_options
+from kkrunner.backends.support.process import prepare_mpi, resolve_mpi_options
 from kkrunner.client import EndpointClient
 from kkrunner.client.contracts import Operation
 from kkrunner.client.transports.rpc import operation_command, operation_result
@@ -84,11 +84,12 @@ def test_portable_mpi_options_matches_local_resolver(monkeypatch):
     # without relying on the CI host having any MPI software.
     isolated_request = {**request, "launcher": ["custom-mpi", "--bind"]}
     result = _isolated(
-        _operation_script(resolve_mpi_options),
-        input=json.dumps({"args": [isolated_request], "kwargs": {}}),
+        _operation_script(prepare_mpi),
+        input=json.dumps({"args": [{"argv": [], "mpi_argv": [], "mpi": isolated_request}],
+                          "kwargs": {"resolve_only": True}}),
     )
     assert native == ("srun", "-n", "3")
-    assert operation_result(result) == ["custom-mpi", "--bind", "-np", "3"]
+    assert operation_result(result)["launcher"] == ["custom-mpi", "--bind", "-np", "3"]
 
 
 def test_portable_output_cleanup_preserves_wildcard_cache(tmp_path):
@@ -97,10 +98,8 @@ def test_portable_output_cleanup_preserves_wildcard_cache(tmp_path):
     stale.write_text("stale")
     request = {
         "output_file": None,
-        "client_sync": {
-            "cache_patterns": [str(tmp_path / "saved*.pot")],
-            "output_patterns": [str(tmp_path / "*.pot")],
-        },
+        "cache_files": [str(tmp_path / "saved*.pot")],
+        "output_files": [str(tmp_path / "*.pot")],
     }
     payload = json.dumps({"args": [request], "kwargs": {}})
     assert operation_result(_isolated(_operation_script(prepare_target_outputs), input=payload)) is None
