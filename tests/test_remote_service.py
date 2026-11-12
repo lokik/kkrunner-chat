@@ -762,7 +762,7 @@ def test_remote_submit_ipc_setup_failure_closes_every_fd(tmp_path, monkeypatch, 
         process_operations.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("supervisor must not start")
     )
     with pytest.raises(SubmissionNotStarted, match="cannot allocate"):
-        process_operations._local_submit({"argv": ("never-executed",), "directory": str(tmp_path), "detached": True})
+        process_operations.SupervisedBackend.submit({"argv": ("never-executed",), "directory": str(tmp_path), "detached": True})
     assert not directory.exists()
     assert len(created) == {"socket_directory": 0, "first_pipe": 0, "second_pipe": 2}[failure_point]
     for fd in created:
@@ -797,7 +797,7 @@ def test_remote_submit_json_setup_failure_cleans_pipes_and_directory(tmp_path, m
         process_operations.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("supervisor must not start")
     )
     with pytest.raises(TypeError, match="invalid worker specification"):
-        process_operations._local_submit({"argv": ("never-executed",), "directory": str(tmp_path), "detached": True})
+        process_operations.SupervisedBackend.submit({"argv": ("never-executed",), "directory": str(tmp_path), "detached": True})
     assert not directory.exists()
     assert len(created) == 4
     for fd in created:
@@ -856,7 +856,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 
     _, remote_id, _ = _process_handle(tmp_path)
     facts = messages.status_reply(state, 127, failure_phase=phase)
-    monkeypatch.setattr(process_operations, "_status_impl", lambda handle: facts)
+    monkeypatch.setattr(process_operations.SupervisedBackend, "status", staticmethod(lambda handle: facts))
 
     async def closed_socket(path, offsets, on_chunk):
         reader = asyncio.StreamReader()
@@ -882,7 +882,7 @@ def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_p
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
-        process_operations, "_status_impl",
+        process_operations.SupervisedBackend, "status",
         lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH),
     )
 
@@ -903,7 +903,7 @@ def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, m
 
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
-        process_operations, "_status_impl",
+        process_operations.SupervisedBackend, "status",
         lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH),
     )
 
