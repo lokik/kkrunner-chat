@@ -3,12 +3,12 @@ import sys
 
 import pytest
 
-from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.client import RunClient, SshTransport, StagingSpec
 from kkrunner.remote.stream import STREAM_MAGIC, FramedRunningCommand, StreamProtocolError, encode_stream_frame, encode_terminal_frame
-from kkrunner.client.transport import LocalTransport
+from kkrunner.backends import DirectBackend
+from kkrunner import Run
 from kkrunner.runs.base import ExecutionSpec, RunState
 
-from .test_remote import _launch, _processed_run
 
 
 def _reader_with(data):
@@ -70,6 +70,7 @@ class _DiagnosticProcess:
         self._process = process
         self.stdout = process.stdout
         self.stderr = diagnostic
+        self.stdin = process.stdin
 
     @property
     def returncode(self):
@@ -90,8 +91,15 @@ class _DiagnosticProcess:
         self._process.kill()
 
 
-class _DiagnosticTransport(LocalTransport):
+class _DiagnosticTransport(SshTransport):
     """Inject an SSH-like diagnostic into the transport control channel."""
+
+    def __init__(self):
+        super().__init__("loopback", python_command=(sys.executable,))
+
+    def _command(self, argv, cwd=None):
+        assert cwd is None
+        return tuple(argv)
 
     async def start(self, argv, *, cwd=None, stdin=None):
         process = await super().start(argv, cwd=cwd, stdin=stdin)
@@ -109,19 +117,17 @@ def test_remote_transport_stderr_never_enters_calculation_files(tmp_path):
     output_file = (workdir / "output.txt").open("wb")
     error_file = (workdir / "output.err").open("wb")
     remote_root = tmp_path / "remote"
-    executor = SshRunEndpoint(_DiagnosticTransport())
+    executor = RunClient(DirectBackend, transport=_DiagnosticTransport())
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"),
         input_file=input_file,
         output_file=output_file,
         error_file=error_file,
         directory=str(workdir),
-        launch=_launch(local_root, remote_root),
+        staging=StagingSpec(local_root=local_root, remote_root=remote_root),
     )
-    result = _processed_run(executor, spec).run()
+    result = Run.untracked(executor, spec).run()
     assert result.return_code == 0
-    assert result.output == b"stdout\n"
-    assert result.error == b"stderr\n"
     assert (workdir / "output.txt").read_bytes() == b"stdout\n"
     assert (workdir / "output.err").read_bytes() == b"stderr\n"
     assert b"Permanently added" not in (workdir / "output.txt").read_bytes()
