@@ -87,9 +87,11 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
         directory=str(tmp_path), input_file=None, output_file=None,
     ))
     run.submit()
-    with pytest.raises(RuntimeError, match="output pump failed"):
-        run.wait()
+    result = run.wait()
     assert run.state is RunState.FAILED
+    assert run.failure_phase.value == "execution"
+    assert "output pump failed" in run.failure_message
+    assert result.return_code is None
     assert terminated, "Output-pump failure must terminate the child process group"
     for pid in terminated:
         with pytest.raises(ProcessLookupError):

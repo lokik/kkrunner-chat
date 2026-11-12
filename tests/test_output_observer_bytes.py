@@ -37,9 +37,9 @@ def test_observed_output_delivers_bytes_and_preserves_raw_sink(kind):
         stream_paths=(None, None),
     )
     job.add_output_listener(lambda text, stream: received.append((text, stream)))
-    job._observed_output(b"message:\\xff", kind)
+    job._observed_output(b"message:\xff", kind)
     job._observed_output(b"", kind)
-    assert written == [(b"message:\\xff", kind), (b"", kind)]
+    assert written == [(b"message:\xff", kind), (b"", kind)]
     assert received == [("message:�", kind)]
 
 

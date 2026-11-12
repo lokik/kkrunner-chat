@@ -192,10 +192,10 @@ def test_local_transfer_batches_use_their_directional_file_primitives(tmp_path):
     transport = TracedTransport()
 
     async def check():
-        await transport.uploads("nested/*.dat", source, dest)
+        await transport.put_files("nested/*.dat", source, dest)
         assert transport.operations == ["put"]
         transport.operations.clear()
-        await transport.downloads("nested/*.dat", source, dest)
+        await transport.get_files("nested/*.dat", source, dest)
         assert transport.operations == ["get", "put"]
 
     asyncio.run(check())
