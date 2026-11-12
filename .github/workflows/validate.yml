@@ -86,6 +86,7 @@ jobs:
               'tests/test_remote_output_integrity.py',
               'tests/test_remote_endpoint_status.py',
               'tests/test_remote_stream_protocol.py',
+              'tests/test_output_closure.py',
               'tests/test_reservations.py',
           ]
           subprocess.run([sys.executable, '-m', 'pytest', '-q', *focused],
