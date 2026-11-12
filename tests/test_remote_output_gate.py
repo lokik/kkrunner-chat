@@ -7,9 +7,9 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client.job import Job
-from kkrunner.client.remote_files import RemoteFileSession
+from kkrunner.client.file_session import FileSession
 from kkrunner.support.file_locks import FileLock
-from kkrunner.client.transport import LocalTransport
+from kkrunner.client.transports import LocalTransport
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.runs.base import FailurePhase
 
@@ -32,7 +32,8 @@ class _Follow:
 
 
 class _Context:
-    backend = "process"
+    from kkrunner.backends import SupervisedBackend
+    backend = SupervisedBackend()
     output_files = FileSyncPolicy.NEVER
 
     def __init__(self, state=RunState.FINISHED):
@@ -46,7 +47,8 @@ class _Context:
         self.follow_calls += 1
         if self.follow_error is not None:
             raise self.follow_error
-        return _Follow()
+        kwargs["on_output"](b"streamed\n", "out")
+        return await self._status()
 
     async def _status(self, *args, **kwargs):
         if self.status_error is not None:
@@ -71,7 +73,10 @@ def _run(tmp_path, state=RunState.FINISHED):
         stdout=FileEntry(str(destination), str(remote)),
     ).initialize_availability()
     context = _Context(state)
-    session = RemoteFileSession(context, spec, files=files, remote_directory="/work/case")
+    session = FileSession(context, spec, files=files, remote_directory="/work/case")
+    from kkrunner.files.streams import OutputStreams
+    session._streams = OutputStreams(output, None)
+    session._stream_positions = {"out": 0, "err": None}
     job = Job(
         context, spec, backend_id="opaque-handle", remote_directory="/work/case",
         status={"state": "running"},
@@ -136,8 +141,11 @@ def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
     a_stream = destination.open("ab")
     b_stream = destination.open("ab")
     try:
-        a = RemoteFileSession(context, ExecutionSpec(argv=(), output_file=a_stream, directory=tmp_path))
-        b = RemoteFileSession(context, ExecutionSpec(argv=(), output_file=b_stream, directory=tmp_path))
+        a = FileSession(context, ExecutionSpec(argv=(), output_file=a_stream, directory=tmp_path))
+        b = FileSession(context, ExecutionSpec(argv=(), output_file=b_stream, directory=tmp_path))
+        from kkrunner.files.streams import OutputStreams
+        a._streams = OutputStreams(a_stream, None)
+        b._streams = OutputStreams(b_stream, None)
         a._stream_positions = {"out": 3}
         b._stream_positions = {"out": 3}
         a._write_output(b"def", "out")
