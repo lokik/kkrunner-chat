@@ -3,12 +3,13 @@ import sys
 
 import pytest
 
-from kkrunner.client.endpoint import describe_endpoint
-from kkrunner.client.local import LocalRunEndpoint
-from kkrunner.client.job import Job
+from kkrunner.backends import DirectBackend
+from kkrunner.client import EndpointClient, LocalTransport
+from kkrunner.client.execution_request import command_request, execution_request
+from kkrunner.client.run_parts import RunParts
+from kkrunner.execution import MpiSpec
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.files.paths import file_path
-from kkrunner.client.transport import LocalTransport
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.run import Run
@@ -26,7 +27,7 @@ def _local_spec(tmp_path, code="print('ok')"):
 
 
 def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path):
-    runner = Job.direct(_local_spec(tmp_path))
+    runner = Run.untracked(EndpointClient(DirectBackend), _local_spec(tmp_path))
     observer_errors = []
 
     def broken_observer(*_):
@@ -43,12 +44,11 @@ def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path)
 
 
 def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
-    raw = Job.direct(_local_spec(tmp_path))
-
     def fail(_outcome):
         raise ValueError("parser failed")
 
-    runner = Run(raw, process_result=fail)
+    runner = Run.untracked(EndpointClient(DirectBackend), _local_spec(tmp_path), process_result=fail)
+    raw = runner._job
     runner.submit()
     with pytest.raises(ValueError, match="parser failed"):
         runner.wait()
@@ -58,8 +58,9 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
-    runner = Job.direct(
-        _local_spec(tmp_path), callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed"))
+    runner = Run.untracked(
+        EndpointClient(DirectBackend), _local_spec(tmp_path),
+        callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed")),
     )
     runner.submit()
     with pytest.raises(ValueError, match="callback failed"):
@@ -74,6 +75,9 @@ class _UnknownRunner:
     exception = None
     failure_phase = None
     failure_message = None
+
+    def configure_submission(self, request, **options):
+        pass
 
     def submit(self):
         self.state = RunState.UNKNOWN
@@ -91,7 +95,12 @@ class _UnknownRunner:
 def test_unknown_raw_state_is_preserved_and_not_postprocessed():
     raw = _UnknownRunner()
     processed = []
-    runner = Run(raw, process_result=lambda outcome: processed.append(outcome))
+    client = EndpointClient(DirectBackend)
+    spec = ExecutionSpec(argv=("unused",), directory=".")
+    parts = client.create_run_parts(spec)
+    parts.job = raw
+    runner = Run(raw, client=client, parts=parts,
+                 process_result=lambda outcome: processed.append(outcome))
     runner.submit()
     assert runner.wait() is raw.result
     assert processed == []
@@ -107,6 +116,16 @@ class _NotStartedRunner:
     exception = None
     failure_phase = None
     failure_message = None
+
+    def configure_submission(self, request, **options):
+        pass
+
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_detached(self, detached):
+        pass
 
     def submit(self):
         raise SubmissionNotStarted("input staging failed")
@@ -125,12 +144,15 @@ class _UncertainRunner(_NotStartedRunner):
 
 def _project_wrapper(tmp_path, runner):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    executor = LocalRunEndpoint()
-    endpoint = describe_endpoint(executor)
+    client = EndpointClient(DirectBackend)
+    spec = ExecutionSpec(argv=("unused",), directory=str(tmp_path))
+    parts = client.create_run_parts(spec)
+    parts.job = runner
     record = manager.new_record(
-        directory=tmp_path, endpoint=endpoint, metadata={"test": {"task": "SCF"}}, processing_required=True
+        directory=tmp_path, transport=client.transport, backend=client.backend_config,
+        metadata={"test": {"task": "SCF"}}, processing_required=True,
     )
-    return (manager, Run(runner, manager=manager, backend=executor, record=record))
+    return manager, Run(runner, client=client, manager=manager, record=record, parts=parts)
 
 
 def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):
@@ -228,24 +250,22 @@ def test_file_path_strict_contract_preserves_optional_none(tmp_path):
 
 
 def test_strict_runner_path_errors_remain_backend_specific(tmp_path):
-    from kkrunner.backends.psij.submission import _path as psij_path
-    from kkrunner.client.remote_files import RemoteFileSession
+    from kkrunner.client import SshTransport
+    from kkrunner.client.file_session import FileSession
 
-    spec = ExecutionSpec(argv=(), input_file=None, output_file=None, directory=str(tmp_path))
-    runner = RemoteFileSession(object(), spec)
+    spec = ExecutionSpec(argv=(), directory=str(tmp_path))
+    session = EndpointClient(DirectBackend, transport=SshTransport("example.org")).file_session(spec)
     with pytest.raises(ValueError, match="Remote execution requires named files"):
-        runner._local_path(object())
+        session._local_path(object())
     with pytest.raises(ValueError, match="Remote execution requires named files"):
-        runner._local_path(1)
-    with pytest.raises(ValueError, match="PSI/J execution requires named"):
-        psij_path(object(), tmp_path)
-    assert runner._local_path(None) is None
-    assert psij_path(None, tmp_path) is None
+        session._local_path(1)
+    assert session._local_path(None) is None
+    with pytest.raises(ValueError, match="named file"):
+        execution_request(ExecutionSpec(argv=("prog",), directory=str(tmp_path), stdin=object()))
 
 
 def test_common_command_request_preserves_mpi_and_launch_contract(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.runs import LaunchSpec
 
     spec = ExecutionSpec(
         argv=("serial", "input.inp"),
@@ -254,16 +274,16 @@ def test_common_command_request_preserves_mpi_and_launch_contract(tmp_path):
         input_file=None,
         output_file=None,
         directory=str(tmp_path),
-        launch=LaunchSpec.from_mpi(2),
+        mpi=MpiSpec(required=True, autodetect=True, process_count=2),
     )
-    request = spec.command_request()
+    request = command_request(spec)
     assert request["argv"] == ["serial", "input.inp"]
     assert request["mpi_argv"] == ["parallel", "input.inp"]
     assert request["mpi_uses_stdin"] is False
-    transformed = spec.command_request(lambda command: [arg.upper() for arg in command])
+    transformed = command_request(spec, lambda command: [arg.upper() for arg in command])
     assert transformed["argv"] == ["SERIAL", "INPUT.INP"]
     assert transformed["mpi_argv"] == ["PARALLEL", "INPUT.INP"]
-    assert transformed["launch"] == request["launch"]
+    assert transformed["mpi"] == request["mpi"]
     assert transformed["mpi_uses_stdin"] is False
     assert spec.argv == ("serial", "input.inp")
 
@@ -279,22 +299,19 @@ def test_partial_spec_distinguishes_unknown_from_empty_argv(tmp_path):
     assert partial.is_partial
     assert partial.directory == empty.directory
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        partial.command_request()
+        command_request(partial)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
         partial.require_complete()
-    assert empty.command_request()["argv"] == []
+    assert command_request(empty)["argv"] == []
 
 
 def test_partial_spec_cannot_be_submitted_to_public_backend_apis(tmp_path):
-    from kkrunner import ExecutionSpec, Run, RunManager, RunStore
-    from kkrunner.client.local import LocalRunEndpoint
-
     spec = ExecutionSpec(argv=None, directory=str(tmp_path))
-    backend = LocalRunEndpoint()
+    client = EndpointClient(DirectBackend)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        Run.direct(backend, spec)
+        Run.untracked(client, spec)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        backend.create_job(spec)
+        client.create_run_parts(spec)
     manager = RunManager(RunStore(tmp_path / "store"))
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        manager.create_run(backend, spec)
+        manager.create_run(client, spec)
