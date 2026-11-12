@@ -19,8 +19,8 @@ Choose an execution backend
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
 
 
-Location and execution mode are independent. ``RunClient(BackendClass)``
-and ``RunClient(BackendClass, transport=transport)`` construct configured backend
+Location and execution mode are independent. ``EndpointClient(BackendClass)``
+and ``EndpointClient(BackendClass, transport=transport)`` construct configured backend
 instances; both also accept an already configured instance. They default to
 ``DirectBackend``. ``client.backend`` is always an instance. Its immutable
 ``options`` and ``supports`` are computed when constructed; the backend class
@@ -73,7 +73,7 @@ stdout/stderr from SSH diagnostics and delivers a terminal receipt.
 Direct SSH execution
 --------------------
 
-``RunClient`` with ``backend=DirectBackend`` creates a connection-owned client ``Job``. No
+``EndpointClient`` with ``backend=DirectBackend`` creates a connection-owned client ``Job``. No
 ``kkrunner-agent`` or supervisor runs on the target; a minimal one-shot
 Python worker provides separate live stdout/stderr, cancellation and target-side
 file writing. File staging and synchronization still use ``FileSession``.
@@ -89,10 +89,10 @@ configured with ``SshTransport(python_command=("python3.12",))``.
 
    from kkrunner import Run, ExecutionSpec
    from kkrunner.backends import DirectBackend
-   from kkrunner.client import RunClient, SshTransport
+   from kkrunner.client import EndpointClient, SshTransport
    from kkrunner.client import StagingSpec
 
-   client = RunClient(DirectBackend, transport=SshTransport("alice@cluster.example"))
+   client = EndpointClient(DirectBackend, transport=SshTransport("alice@cluster.example"))
    spec = ExecutionSpec(
        argv=("python3", "-c", "print('hello', flush=True)"),
        directory="/home/alice/work/job",
@@ -104,7 +104,7 @@ configured with ``SshTransport(python_command=("python3.12",))``.
    )
    result = Run.untracked(client, spec).run()
 
-Use ``RunClient(SupervisedBackend, transport=transport)`` and a ``RunManager`` for persistent SSH
+Use ``EndpointClient(SupervisedBackend, transport=transport)`` and a ``RunManager`` for persistent SSH
 runs that need reconnection. Direct SSH may retain client-side history, but
 has no durable ID for attachment or submission recovery. Never automatically
 retry after uncertain connection loss. An SSH failure (exit 255) is reported
@@ -113,17 +113,17 @@ as UNKNOWN, not proof that the target computation failed.
 Local and scheduler execution
 -------------------------------
 
-Use ``Run.untracked(RunClient(DirectBackend), spec)`` for an untracked run. Use
-``RunManager.create_run(RunClient(SupervisedBackend), spec)`` for durable local
+Use ``Run.untracked(EndpointClient(DirectBackend), spec)`` for an untracked run. Use
+``RunManager.create_run(EndpointClient(SupervisedBackend), spec)`` for durable local
 supervision; the execution mode does not depend on whether a submission key
 was supplied. The same manager interface accepts a scheduler client:
 
 .. code-block:: python
 
    from kkrunner.backends import PsijBackend
-   from kkrunner.client import RunClient
+   from kkrunner.client import EndpointClient
 
-   client = RunClient(PsijBackend(executor_name="slurm"))
+   client = EndpointClient(PsijBackend(executor_name="slurm"))
    # manager and spec are created as in the persistent-run example.
    run = manager.create_run(client, spec)
    run.submit()
@@ -226,7 +226,7 @@ Architecture boundary
 
 Backend classes define static target operations; their configured instances
 own the immutable ``options`` and ``supports``. They neither create client Jobs
-nor receive client file manifests. ``RunClient`` holds a configured
+nor receive client file manifests. ``EndpointClient`` holds a configured
 backend instance and invokes its static methods. SSH selects
 ``type(client.backend).SshHelper`` and sends a single method definition. The client
 creates the client ``Job`` and composes it with a file session as ``RunParts``.

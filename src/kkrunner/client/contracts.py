@@ -7,15 +7,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 if TYPE_CHECKING:
-    from kkrunner.backends.config import BackendConfig
-    from kkrunner.backends.contracts import Backend, JobRef, JobStatus, RecoveryResult
-    from kkrunner.client.file_session import FileSession
-    from kkrunner.client.run_parts import RunParts
-    from kkrunner.client.transports import Transport
+    from kkrunner.backends.contracts import JobRef, JobStatus
     from kkrunner.files.manifest import FileManifest
-    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, RunStatus
+    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.runs.model import Execution
-    from kkrunner.runs.records import RunRecord
 
 
 @dataclass(frozen=True)
@@ -59,45 +54,6 @@ class JobAttachment:
 
     execution: Execution
     files: FileManifest
-
-
-class RunClientProtocol(Protocol):
-    """Create an entire client session, never implement the backend contract."""
-
-    backend: Backend
-    transport: Transport
-    supports_result_file_retrieval: bool
-
-    @property
-    def backend_config(self) -> BackendConfig: ...
-
-    @property
-    def default_persistent(self) -> bool: ...
-
-    @property
-    def default_detached(self) -> bool: ...
-
-    def create_run_parts(self, spec, *, submission_key=None, callback=None) -> RunParts: ...
-
-    def open_run_parts(self, attachment: JobAttachment, *, callback=None, output_listener=None) -> RunParts: ...
-
-    def submission_directory(self, spec: ExecutionSpec) -> str: ...
-
-    def resolve_submission(self, record: RunRecord, spec: ExecutionSpec) -> RunRecord: ...
-
-    def file_session(self, spec: ExecutionSpec) -> FileSession: ...
-
-    def status(self, *runs: JobAttachment) -> tuple[RunStatus, ...]: ...
-
-    def recover_submission(self, submission_key, submission, *, submitted_at=None) -> RecoveryResult: ...
-
-    def acknowledge(self, run): ...
-
-    def acknowledge_submission(self, run): ...
-
-    def snapshot_file(self, run, file, *, destination=None): ...
-
-    def fetch_result_files(self, run, files, *, destinations=None) -> None: ...
 
 
 class RunningCommand(Protocol):

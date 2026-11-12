@@ -328,6 +328,15 @@ class RunStatus:
     message: Optional[str] = None
     failure_phase: Optional[FailurePhase] = None
 
+    @classmethod
+    def from_job_status(cls, status, *, backend_id=None, execution=None, files=None):
+        """Add client identity/file context to already-decoded backend facts."""
+        return cls(
+            state=status.state, backend_id=backend_id, execution=execution, files=files,
+            return_code=status.return_code, message=status.message,
+            failure_phase=None if status.failure_phase is None else status.failure_phase.value,
+        )
+
     def __post_init__(self):
         if not isinstance(self.state, RunState):
             object.__setattr__(self, "state", RunState(self.state))

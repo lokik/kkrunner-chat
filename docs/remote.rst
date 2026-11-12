@@ -1,7 +1,7 @@
 Remote execution
 ==================
 
-``RunClient`` uses its transport to select the execution location. The backend independently
+``EndpointClient`` uses its transport to select the execution location. The backend independently
 selects direct execution, a KKRunner supervisor or PSI/J. Direct execution
 needs Python on the target. Supervisor and PSI/J helpers import the installed
 KKRunner library there; PSI/J also needs its optional dependency and scheduler.
@@ -12,12 +12,12 @@ No separate agent endpoint or persistent agent service is required.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import RunClient, SshTransport, StagingSpec
+   from kkrunner.client import EndpointClient, SshTransport, StagingSpec
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
    manager = RunManager(RunStore(directory / "runs"))
-   client = RunClient(SupervisedBackend, transport=SshTransport("user@cluster"))
+   client = EndpointClient(SupervisedBackend, transport=SshTransport("user@cluster"))
    spec = ExecutionSpec(
        ["python3", "-c", "print(42)"], directory=directory, output_file="stdout.txt",
        staging=StagingSpec(local_root=directory, remote_root="/absolute/remote/work"),
@@ -25,8 +25,8 @@ No separate agent endpoint or persistent agent service is required.
    run = manager.create_run(client, spec)
    run.run()
 
-For a one-shot command use ``RunClient(DirectBackend, transport=transport)``.
-For a scheduler use ``RunClient(PsijBackend(executor_name="slurm"), transport=transport)``.
+For a one-shot command use ``EndpointClient(DirectBackend, transport=transport)``.
+For a scheduler use ``EndpointClient(PsijBackend(executor_name="slurm"), transport=transport)``.
 The client and file session stay the same. Direct local process identities use
 PID and start time, but direct execution currently offers no independent
 reattachment or authoritative exit status after losing its observer.
@@ -35,7 +35,7 @@ Select the target Python environment on the transport:
 
 .. code-block:: python
 
-   client = RunClient(
+   client = EndpointClient(
        SupervisedBackend,
        transport=SshTransport("user@cluster", python_command=("/opt/kkrunner/bin/python",)),
    )

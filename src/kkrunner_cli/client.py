@@ -92,7 +92,7 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 
 def _persisted(args):
     from kkrunner.client.contracts import JobAttachment
-    from kkrunner.client import RunClient
+    from kkrunner.client import EndpointClient
     record = _record(args)
     if args.host:
         raise ValueError("--host is only for --remote-id; persisted runs use their recorded transport")
@@ -120,7 +120,7 @@ def _persisted(args):
             raise RuntimeError("Run has not been submitted")
         return {"state": record.state.value, "return_code": record.return_code,
                 "error": record.message}
-    client = RunClient.from_config(record.execution.transport, record.execution.backend)
+    client = EndpointClient.from_config(record.execution.transport, record.execution.backend)
     attachment = JobAttachment(record.execution, record.files)
     if args.action == "status":
         return _facts(client.status(attachment)[0])

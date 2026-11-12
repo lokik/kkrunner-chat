@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import posixpath
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
-from kkrunner.files.manifest import FileSyncPolicy
+from kkrunner.files.manifest import FileMapping, FileSyncPolicy
+from kkrunner.client.staging import StagingSpec
 
 
 async def query_remote_home(transport):
@@ -34,6 +36,8 @@ class FileContext:
     """Per-run filesystem and synchronization policy."""
 
     def __init__(self, client, staging):
+        if not isinstance(staging, StagingSpec):
+            staging = StagingSpec(**dict(staging))
         self.client = client
         self.transport = client.transport
         self.filesystem_id = staging.filesystem_id
@@ -45,27 +49,76 @@ class FileContext:
     async def _remote_home(self):
         return await self.client._remote_home()
 
-    async def _resolved_remote_root(self):
+    def _target_root(self, home):
+        """Use the same root rules for a symbolic preview and a resolved path."""
         if self.transport.is_local:
             return os.fspath(self.local_root)
         root = self.remote_root
         if root is not None and posixpath.isabs(root):
             return posixpath.normpath(root)
-        home = await self._remote_home()
         if root is None or root == "~":
             return home
-        if root.startswith("~/"):
-            return posixpath.join(home, root[2:])
-        return posixpath.join(home, root)
+        suffix = root[2:] if root.startswith("~/") else root
+        if posixpath.isabs(home):
+            return posixpath.normpath(posixpath.join(home, suffix))
+        # Keep '~' symbolic: normalizing '~/..' before resolving the home
+        # would turn an absolute target location into an unrelated relative path.
+        suffix = posixpath.normpath(suffix)
+        return home if suffix == "." else posixpath.join(home, suffix)
 
-    async def map_path(self, path):
+    async def _resolved_remote_root(self):
+        if self.transport.is_local or (self.remote_root is not None and posixpath.isabs(self.remote_root)):
+            return self._target_root("~")
+        return self._target_root(await self._remote_home())
+
+    def _map_path(self, path, remote_root):
         if self.transport.is_local:
             return os.path.abspath(os.fspath(path))
         relative = _relative_local_path(path, self.local_root)
-        remote_root = await self._resolved_remote_root()
         if not relative.parts:
             return remote_root
         return posixpath.join(remote_root, *relative.parts)
+
+    def preview_path(self, path):
+        """Map without target I/O, leaving the target home symbolic as '~'."""
+        return self._map_path(path, self._target_root("~"))
+
+    async def map_path(self, path):
+        return self._map_path(path, await self._resolved_remote_root())
+
+    async def resolve_target_path(self, path):
+        """Resolve an already-target-side path, without mapping it again."""
+        if self.transport.is_local:
+            return os.path.abspath(path)
+        path = os.fspath(path)
+        if path == "~" or path.startswith("~/"):
+            home = await self._remote_home()
+            return home if path == "~" else posixpath.normpath(posixpath.join(home, path[2:]))
+        return posixpath.normpath(path)
+
+    async def map_manifest(self, manifest):
+        """Project declared file identities; do not stage files or capture versions."""
+        if self.transport.is_local:
+            return manifest
+
+        async def mapped(entry):
+            if entry is None or entry.local_path is None:
+                return entry
+            return replace(entry, remote_path=await self.map_path(entry.local_path))
+
+        mapping = FileMapping(
+            local_root=os.fspath(self.local_root), remote_root=await self._resolved_remote_root(),
+            input_sync=self.input_files.value, output_sync=self.output_files.value,
+            filesystem_id=self.filesystem_id,
+        )
+        return replace(
+            manifest,
+            inputs=tuple([await mapped(entry) for entry in manifest.inputs]),
+            outputs=tuple([await mapped(entry) for entry in manifest.outputs]),
+            caches=tuple([replace(cache, file=await mapped(cache.file)) for cache in manifest.caches]),
+            stdin=await mapped(manifest.stdin), stdout=await mapped(manifest.stdout),
+            stderr=await mapped(manifest.stderr), mapping=mapping,
+        )
 
     async def unmap_path(self, path):
         if self.transport.is_local:

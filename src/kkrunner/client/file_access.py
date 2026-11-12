@@ -4,7 +4,8 @@ import glob
 import os
 import posixpath
 
-from kkrunner.client.file_context import _relative_local_path
+from kkrunner.client.file_context import FileContext, _relative_local_path
+from kkrunner.client.staging import StagingSpec
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
@@ -14,8 +15,7 @@ class FileAccess:
 
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
-        self.client._validate_run(run)
-        context = self.client._context(self.client, self.client._staging_from_manifest(run.files))
+        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         _relative_local_path(file, context.local_root)
         entry = next(
             (item for item in (
@@ -44,8 +44,7 @@ class FileAccess:
         return _run_sync(self._snapshot_file(run, file, destination=destination))
 
     async def _fetch_result_files(self, run, files, *, destinations=None):
-        self.client._validate_run(run)
-        context = self.client._context(self.client, self.client._staging_from_manifest(run.files))
+        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         remote_root = await context._resolved_remote_root()
         destinations = (
             {}

@@ -3,11 +3,10 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.client.client import RunClient
+    from kkrunner.client.endpoint import EndpointClient
     from kkrunner.client.contracts import (
         JobAttachment,
         JobProtocol,
-        RunClientProtocol,
         SubmissionContext,
     )
     from kkrunner.client.pool import ClientPool, default_client_pool
@@ -15,19 +14,19 @@ if TYPE_CHECKING:
     from kkrunner.client.transports import LocalTransport, SshTransport, Transport
 
 __all__ = [
-    "RunClient", "StagingSpec",
+    "EndpointClient", "StagingSpec",
     "ClientPool", "JobAttachment", "JobProtocol",
-    "SubmissionContext", "RunClientProtocol", "LocalTransport",
+    "SubmissionContext", "LocalTransport",
     "SshTransport", "Transport", "default_client_pool",
 ]
 
 
 def __getattr__(name):
-    if name == "RunClient":
-        from .client import RunClient as value
+    if name == "EndpointClient":
+        from .endpoint import EndpointClient as value
     elif name == "StagingSpec":
         from .staging import StagingSpec as value
-    elif name in ("JobAttachment", "JobProtocol", "SubmissionContext", "RunClientProtocol"):
+    elif name in ("JobAttachment", "JobProtocol", "SubmissionContext"):
         from . import contracts
         value = getattr(contracts, name)
     elif name in ("ClientPool", "default_client_pool"):

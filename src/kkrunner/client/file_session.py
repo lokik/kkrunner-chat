@@ -16,7 +16,6 @@ from kkrunner.files.manifest import (
     CacheEntry,
     FileEntry,
     FileManifest,
-    FileMapping,
     FileSyncPolicy,
 )
 from kkrunner.files.paths import file_path, has_file_magic
@@ -531,46 +530,29 @@ class FileSession:
         }
 
     async def _submitted_manifest(self, request, local):
-
-        async def mapped(entry):
-            return replace(entry, remote_path=await self.context.map_path(entry.local_path))
-
-        inputs = tuple([await mapped(entry) for entry in local.inputs])
-        outputs = tuple([await mapped(entry) for entry in local.outputs])
+        mapped = await self.context.map_manifest(local)
         caches = []
-        for cache in local.caches:
-            entry = await mapped(cache.file)
-            previous = self._cache_targets.get(entry.local_path)
-            caches.append(CacheEntry(entry, None if previous is None else previous[1]))
+        for cache in mapped.caches:
+            previous = self._cache_targets.get(cache.file.local_path)
+            caches.append(replace(cache, before=None if previous is None else previous[1]))
         for remote, before in self._cache_before.items():
             caches.append(CacheEntry(FileEntry(remote_path=remote), before))
 
-        mapping = FileMapping(
-            local_root=os.fspath(self.context.local_root),
-            remote_root=await self.context._resolved_remote_root(),
-            input_sync=self.context.input_files.value,
-            output_sync=self.context.output_files.value,
-            filesystem_id=self.context.filesystem_id,
-        )
         return replace(
-            local,
-            inputs=inputs,
-            outputs=outputs,
+            mapped,
             caches=tuple(caches),
-            stdin=None if local.stdin is None else await mapped(local.stdin),
             stdout=None
-            if local.stdout is None
+            if mapped.stdout is None
             else replace(
-                local.stdout,
+                mapped.stdout,
                 remote_path=request.get("output_file"),
             ),
             stderr=None
-            if local.stderr is None
+            if mapped.stderr is None
             else replace(
-                local.stderr,
+                mapped.stderr,
                 remote_path=request.get("error_file"),
             ),
-            mapping=mapping,
         )
 
     async def _prepare_async(self):
@@ -655,14 +637,26 @@ class FileSession:
             streams.pop_all()  # Explicitly transfer stream ownership.
             return session
 
+    def _working_directory(self, target):
+        from kkrunner.runs.model import WorkingDirectory
+        return WorkingDirectory(os.path.abspath(self.spec.directory), None if self.is_local else target)
+
+    def submission_footprint(self, files):
+        """Resolve names for reservation without creating or transferring files."""
+        async def resolve():
+            directory = await self.context.map_directory(self.spec.directory)
+            return self._working_directory(directory), await self.context.map_manifest(files)
+
+        return _run_sync(resolve())
+
     def execution(self, backend_id):
         if backend_id is None and self._remote_directory is None:
             return None
         from kkrunner.client.transports import require_persistable_transport
-        from kkrunner.runs.model import Execution, WorkingDirectory
+        from kkrunner.runs.model import Execution
         return Execution(
             require_persistable_transport(self.context.transport),
-            WorkingDirectory(os.path.abspath(self.spec.directory), None if self.is_local else self._remote_directory),
+            self._working_directory(self._remote_directory),
             backend=self.context.client.backend_config,
             backend_id=backend_id,
         )

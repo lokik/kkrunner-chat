@@ -160,6 +160,14 @@ def job_status_from_facts(state, *, return_code=None, failure_phase=None, messag
     )
 
 
+def decode_job_status(reply):
+    """Decode the shared JSON status reply at a backend invocation boundary."""
+    return job_status_from_facts(
+        reply.get("state", "unknown"), return_code=reply.get("return_code"),
+        failure_phase=reply.get("failure_phase"), message=reply.get("error"),
+    )
+
+
 class UnsupportedCapability(NotImplementedError):
     """The selected backend/job cannot provide the requested guarantee."""
 
@@ -296,5 +304,5 @@ class Backend:
 __all__ = [
     "Backend", "BackendCapability", "DirectOperations", "ManagedOperations", "ByteSink", "AsyncByteSink", "ControlReader", "JobFailurePhase", "JobRef", "JobStatus",
     "ObservationUnavailable", "RecoveryDisposition", "RecoveryResult",
-    "UnsupportedCapability", "SubmissionNotStarted", "job_status_from_facts",
+    "UnsupportedCapability", "SubmissionNotStarted", "job_status_from_facts", "decode_job_status",
 ]

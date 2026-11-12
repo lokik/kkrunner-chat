@@ -18,6 +18,17 @@ class StagingSpec:
     output_sync: str = FileSyncPolicy.CHANGED.value
     filesystem_id: str | None = None
 
+    @classmethod
+    def from_mapping(cls, mapping):
+        """Restore per-run staging policy from a resolved file mapping."""
+        if mapping is None:
+            return cls()
+        return cls(
+            local_root=mapping.local_root, remote_root=mapping.remote_root,
+            input_sync=mapping.input_sync, output_sync=mapping.output_sync,
+            filesystem_id=mapping.filesystem_id,
+        )
+
     def __post_init__(self):
         if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
             raise ValueError("filesystem_id must be a nonempty string or None")

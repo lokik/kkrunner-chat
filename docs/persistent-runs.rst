@@ -45,13 +45,13 @@ its missing result processor. The command is not submitted again:
    from pathlib import Path
    from kkrunner import ExecutionSpec, ProcessingPending, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import RunClient
+   from kkrunner.client import EndpointClient
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
    manager = RunManager(RunStore(directory / "runs"))
    run = manager.create_run(
-       RunClient(SupervisedBackend),
+       EndpointClient(SupervisedBackend),
        ExecutionSpec(
            [sys.executable, "-c", "print(43)"],
            directory=directory,

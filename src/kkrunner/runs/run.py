@@ -40,8 +40,8 @@ class Run:
         from kkrunner.client.run_parts import RunParts
         if parts is None:
             if file_session is None:
-                from kkrunner.client.client import RunClient
-                client = client if client is not None else RunClient()
+                from kkrunner.client.endpoint import EndpointClient
+                client = client if client is not None else EndpointClient()
                 file_session = client.file_session(job.spec)
             parts = RunParts(job, file_session)
         self._parts = parts
@@ -359,7 +359,12 @@ class Run:
         if manager is not None:
             if self._record.state != RunState.NEW:
                 raise RuntimeError(f"Run is already {self._record.state.value}")
-            self._record = self.client.resolve_submission(self._record, self.spec)
+            from dataclasses import replace
+            directory, files = self._file_session.submission_footprint(self._record.files)
+            self._record = replace(
+                self._record, files=files,
+                execution=replace(self._record.execution, directory=directory),
+            )
             # Reservation and duplicate-submit checks are atomic at the store.
             self._record = manager.reserve(self._record)
             self._monitor_record_version = self._record.updated_at

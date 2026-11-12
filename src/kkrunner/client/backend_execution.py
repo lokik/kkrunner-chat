@@ -11,7 +11,7 @@ import asyncio
 import warnings
 
 from kkrunner.backends.contracts import (
-    JobRef, JobStatus, ObservationUnavailable, SubmissionNotStarted, job_status_from_facts,
+    JobRef, JobStatus, ObservationUnavailable, SubmissionNotStarted, decode_job_status,
 )
 from kkrunner.client.contracts import Operation
 from kkrunner.execution import MpiNotFoundWarning, RunState
@@ -34,10 +34,7 @@ class _Execution:
         token = facts.get("remote_id")
         if token:
             self.ref = JobRef(self.backend.name, str(token))
-        self.snapshot = job_status_from_facts(
-            facts.get("state", "unknown"), return_code=facts.get("return_code"),
-            failure_phase=facts.get("failure_phase"), message=facts.get("error"),
-        )
+        self.snapshot = decode_job_status(facts)
         return self.snapshot
 
     def configure_detached(self, detached):

@@ -1,24 +1,25 @@
 Client, connection and backend
 ==============================
 
-``RunClient`` composes a configured backend with a transport. There is one
-client implementation for local and SSH execution:
+``EndpointClient`` provides access to a configured backend through a transport.
+It can serve multiple runs and composes their ``Job``, backend binding and
+``FileSession``. There is one client implementation for local and SSH execution:
 
 .. code-block:: python
 
    from kkrunner import ExecutionSpec, Run
    from kkrunner.backends import DirectBackend, PsijBackend
-   from kkrunner.client import RunClient, SshTransport
+   from kkrunner.client import EndpointClient, SshTransport
 
-   local = RunClient(DirectBackend)
-   remote = RunClient(
+   local = EndpointClient(DirectBackend)
+   remote = EndpointClient(
        PsijBackend(executor_name="slurm"),
        transport=SshTransport("user@cluster"),
    )
    run = Run.untracked(local, ExecutionSpec(["python3", "-c", "print(42)"]))
    run.run()
 
-The transport owns direct invocation versus SSH RPC, including streaming
+The transport owns local invocation versus SSH RPC, including streaming
 FOLLOW. Both transports use the same backend methods. An SSH application
 error is decoded separately from a broken transport; a confirmed
 ``SubmissionNotStarted`` remains a confirmed non-submission across SSH.
@@ -29,7 +30,7 @@ Transports live under ``kkrunner.client.transports``. ``LocalTransport`` and
 there is no separate endpoint type. ``Execution.transport`` stores the transport,
 whose dataclass fields serialize to JSON, including an explicit ``kind`` tag.
 ``Transport.to_dict()`` exposes the same connection settings.
-``RunClient.from_config(transport, backend)`` reconstructs supported clients from
+``EndpointClient.from_config(transport, backend)`` reconstructs supported clients from
 objects or JSON dictionaries. Only local/ssh transports and the backend names
 direct/process/psij are allowed; records never contain arbitrary Python imports.
 Persistent unsupported custom transports are rejected before a Run is created.
@@ -44,13 +45,21 @@ than independently maintained lists. Snapshots and manual retrieval are in the
 file-access layer, with the client delegating those requests.
 
 ``Job.state`` and ``Job.status()`` expose cached native facts without I/O.
-``Job.refresh_status()`` explicitly queries a backend with independent status
-support. PID is available separately as ``Job.pid``; a local direct identity
-uses ``pid:start_time:boot_id`` on Linux; the boot identifier prevents a
-PID/start-time collision across reboots. STATUS, REATTACH and RECOVER are explicit capabilities.
-Direct reattachment is not implemented merely by recording this identity.
+``Job.refresh_status()`` asks the backend binding for its status, using an
+independent query when supported or the live call's last facts otherwise.
+Job identities are opaque backend references; Job never reads or serializes
+a PID. STATUS, REATTACH and RECOVER are explicit capabilities. Recording a
+direct session identity does not provide reattachment.
 An exited process whose observer was lost has no recoverable return code and
 must not be reported as a successful completed calculation.
+
+FileContext owns the shared projection of paths and manifests. A symbolic
+directory preview performs no target I/O; reservation resolves the same mapping
+without staging or opening output files. FileSession adds transfer results and
+cache baselines after staging. Run applies the resolved directory and manifest
+to its record before RunManager reserves it; EndpointClient never rewrites a
+RunRecord. Native status replies use one decoder before projection into client
+RunStatus values.
 
 ``Run.untracked`` selects absence of persistence, independently of backend.
 ``Run.create(..., persistent=...)`` selects tracking policy. The configured

@@ -14,7 +14,7 @@ Commands are argument sequences, so shell expansion is not performed.
    from kkrunner import ExecutionSpec
    from kkrunner import Run
    from kkrunner.backends import DirectBackend
-   from kkrunner.client import RunClient
+   from kkrunner.client import EndpointClient
 
    workspace = tempfile.TemporaryDirectory()
    directory = Path(workspace.name)
@@ -23,7 +23,7 @@ Commands are argument sequences, so shell expansion is not performed.
        directory=directory,
        output_file="stdout.txt",
    )
-   runner = Run.untracked(RunClient(DirectBackend), spec)
+   runner = Run.untracked(EndpointClient(DirectBackend), spec)
    outcome = runner.run()
    print(outcome.return_code)
    print(Path(outcome.output_file).read_text().strip())

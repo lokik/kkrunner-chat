@@ -1,6 +1,6 @@
 # Execution boundary and public contract
 
-KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, RunClient,
+KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, EndpointClient,
 RunState/FailurePhase, Execution/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
 ExecutionResources and ResourceOwnedRunner. The root `kkrunner` package exports
@@ -159,7 +159,7 @@ clock change that reverses entirely between sampled reads can evade detection.
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
 | `kkrunner.backends` | Flat direct/supervised/PSI-J functional implementations, common process/MPI support, and backend contracts. |
-| `kkrunner.client` | RunClient, backend composition, client pools, transports, Job and FileSession. |
+| `kkrunner.client` | EndpointClient, backend composition, client pools, transports, Job and FileSession. |
 | `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
 | `kkrunner.files` | TaskFile, manifests, transfer policy, pathname declarations, captured versions and artifact availability. |
@@ -169,10 +169,10 @@ The root package exports eight backend-independent entry points:
 `ExecutionSpec`, `ExecutionOutcome`, `Run`, `RunManager`, `RunStore`,
 `RunState`, `TaskFile` and `ProcessingPending`. Select a backend class
 (`DirectBackend`, `SupervisedBackend`, `PsijBackend`) from `kkrunner.backends`
-and supply it to `RunClient`. Configured backend instances hold immutable
+and supply it to `EndpointClient`. Configured backend instances hold immutable
 options and capabilities; their classes expose the static target operations.
 
-The three classes declare static target operations. A RunClient retains
+The three classes declare static target operations. An EndpointClient retains
 the configured backend instance; persisted BackendConfig uses a whitelisted
 backend name and options to reconstruct it. Client Jobs, staging, file synchronization and attachment
 belong to `kkrunner.client`.
@@ -249,7 +249,7 @@ transport, backend, or application code. Local and SSH transports share this
 implementation. Discovery returns metadata in the same response; cache baselines
 query all patterns and exact paths together in one request instead of probing
 each match. File queries and execution share the command configured on the SSH
-transport or its `RunClient`, including custom Python environments.
+transport or its `EndpointClient`, including custom Python environments.
 
 Single-file uploads retain temporary-file staging and atomic replacement. The
 `finalize-upload` operation uses `os.utime(ns=...)` and `os.replace()` to publish
@@ -317,7 +317,7 @@ the handle. Native scheduler IDs remain native backend facts.
 `JobAttachment` and `SubmissionContext` are client snapshots of persisted
 execution and file declarations. Clients project the target request and
 stream paths; native operations do not receive a `RunRecord` or `FileManifest`.
-Only a `RunClient` creates or reopens `RunParts` (a Job plus file resources).
+Only a `EndpointClient` creates or reopens `RunParts` (a Job plus file resources).
 Backends do not manufacture client Jobs.
 
 `BackendCapability.REATTACH` explicitly describes native reattachment. Manager
@@ -332,7 +332,8 @@ recovery never authorizes a duplicate submission.
 | --- | --- |
 | Static target operations | `DirectBackend`, `SupervisedBackend`, `PsijBackend` |
 | Client lifecycle, cached backend status, result and listeners | `client.job.Job` |
-| Local and SSH session composition | `RunClient` |
+| Local and SSH session composition | `EndpointClient` |
+| Path previews and resolved manifest projection | `client.file_context.FileContext` |
 | Backend execution semantics bound to a transport | `client.backend_execution`, `client.contracts.BackendExecution` |
 | Live invocation/control resources and transport diagnostics | `client.transports.calls` |
 | Managed output delivery and SSH follower cleanup | `client.transports.follow` |
@@ -348,6 +349,9 @@ JSON/streaming bootstrap, argument encoding and reply/error decoding together.
 `client.transports.source` checks
 and extracts the selected function's source when building a remote command;
 local operation references do not require source delivery.
+`backends.contracts.decode_job_status` decodes native replies for both live
+backend bindings and endpoint-wide queries. `RunStatus.from_job_status` only
+adds client context to already-decoded backend facts.
 Local short calls invoke the selected method directly; asynchronous methods
 run in the caller's event loop. Synchronous entry points use `asyncio.run`
 only at an independent interpreter/CLI boundary.
@@ -360,7 +364,7 @@ PSI/J client Job, or process-based local FOLLOW fallback.
 
 ## Orthogonal location and backend selection
 
-`RunClient(BackendClass, transport=...)` is the sole standard execution client.
+`EndpointClient(BackendClass, transport=...)` is the sole standard execution client.
 LocalTransport calls the selected static operation directly; SshTransport delivers
 its actual portable method or import-only helper. Execution.transport holds the
 immutable LocalTransport or SshTransport under client/transports; these serialize

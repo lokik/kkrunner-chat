@@ -99,11 +99,10 @@ Clients, transports and pooling
 .. autosummary::
    :toctree: _generated
 
-   RunClient
+   EndpointClient
    StagingSpec
    JobProtocol
    SubmissionContext
-   RunClientProtocol
    JobAttachment
    ClientPool
    default_client_pool

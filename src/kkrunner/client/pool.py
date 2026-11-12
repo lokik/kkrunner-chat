@@ -29,7 +29,7 @@ class ClientPool:
 
     def for_config(self, transport, backend):
         from kkrunner.backends.config import BackendConfig
-        from kkrunner.client.client import RunClient
+        from kkrunner.client.endpoint import EndpointClient
         from kkrunner.client.transports import (
             require_persistable_transport,
             transport_from_dict,
@@ -39,7 +39,7 @@ class ClientPool:
         require_persistable_transport(transport)
         if isinstance(backend, dict):
             backend = BackendConfig(**backend)
-        return self.get((transport, backend), lambda: RunClient.from_config(transport, backend))
+        return self.get((transport, backend), lambda: EndpointClient.from_config(transport, backend))
 
     def for_profile(self, profile):
         """Return the shared provider suitable for *profile*."""
