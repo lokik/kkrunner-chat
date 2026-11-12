@@ -95,7 +95,7 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
         input_files=(input_file,),
         output_files=(output_file, generated),
         cache_files=(cache,),
-        launch=_launch(local_root, remote_root),
+        staging=_launch(local_root, remote_root),
     )
     original = Run.untracked(first_executor, spec, process_result=lambda outcome: outcome)
     original.submit()
@@ -144,7 +144,7 @@ def test_remote_executor_first_attach_after_completion_replays_finished_run(tmp_
         stdin=input_file,
         input_files=(input_file,),
         output_files=(output_file,),
-        launch=_launch(local_root, remote_root),
+        staging=_launch(local_root, remote_root),
     )
     original = Run.untracked(first_executor, spec)
     assert original.run().return_code == 0

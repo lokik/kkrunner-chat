@@ -128,7 +128,7 @@ def test_unresolved_or_recovered_submission_keeps_duplicate_protection(
     tmp_path, recovered, grace, expected_state, expected_backend, recovery_calls
 ):
     executor = _RecoveringExecutor(recovered)
-    manager = RunManager(RunStore(tmp_path / "runs"), endpoint_pool=EndpointPool(), submitting_grace=grace)
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool(), submitting_grace=grace)
     uncertain = _run(manager, executor, tmp_path)
     manager.reserve(uncertain.record)
     replacement = _run(manager, executor, tmp_path)
