@@ -166,7 +166,7 @@ def test_protected_output_rejects_hardlink_alias(tmp_path):
     alias = tmp_path / "alias.out"
     os.link(source, alias)
     with pytest.raises(ValueError, match="conflicts with input/cache"):
-        validate_output_collisions((alias,), protected=(source,))
+        _prepare_outputs((alias,), protected_paths=(source,))
     assert source.read_bytes() == b"density"
 
 
