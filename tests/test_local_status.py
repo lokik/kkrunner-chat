@@ -55,7 +55,8 @@ def test_lost_is_not_a_run_state():
         (RunState.CANCELLED, None, "available"),
         (RunState.FAILED, FailurePhase.EXECUTION, "available"),
         (RunState.FAILED, FailurePhase.LAUNCH, "skipped"),
-        (RunState.FAILED, FailurePhase.OUTPUT, "failed"),
+        (RunState.FAILED, FailurePhase.OUTPUT, "skipped"),
+        (RunState.FAILED, FailurePhase.ARTIFACTS, "failed"),
     ],
 )
 def test_local_status_projection_and_identity_recovery_are_independent(
