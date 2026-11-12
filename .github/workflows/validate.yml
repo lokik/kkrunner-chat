@@ -90,6 +90,7 @@ jobs:
               'tests/test_endpoint_persistence.py',
               'tests/test_file_snapshots.py',
               'tests/test_reservations.py',
+              'tests/test_attach_output_listener.py',
           ]
           subprocess.run([sys.executable, '-m', 'pytest', '-q', *focused],
                          cwd=root, check=True)
