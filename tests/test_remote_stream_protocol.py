@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from kkrunner import ExecutionSpec, Run
-from kkrunner.backends import DirectBackend
+from kkrunner.backends import SupervisedBackend
 from kkrunner.client import RunClient, SshTransport, StagingSpec
 from kkrunner.client.transports.streaming import follow_framed_command
 from kkrunner.execution import RunState
@@ -170,7 +170,7 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
     workdir = local_root / "calculation"
     workdir.mkdir(parents=True)
     remote_root.mkdir()
-    client = RunClient(DirectBackend, transport=_DiagnosticTransport())
+    client = RunClient(SupervisedBackend, transport=_DiagnosticTransport())
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"),
         directory=workdir,
