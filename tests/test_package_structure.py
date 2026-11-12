@@ -17,11 +17,11 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
-    from kkrunner.client.client import RunClient
+    from kkrunner.client.endpoint import EndpointClient
     from kkrunner.client.transports.ssh import SshTransport
     from kkrunner.runs.run import Run
 
-    assert RunClient.__module__ == "kkrunner.client.client"
+    assert EndpointClient.__module__ == "kkrunner.client.endpoint"
     assert SshTransport.__module__ == "kkrunner.client.transports.ssh"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
@@ -32,12 +32,12 @@ def test_public_managers_have_one_unambiguous_name():
 
 def test_run_and_job_ownership_boundaries_are_explicit():
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
-    from kkrunner.client import RunClient, LocalTransport
+    from kkrunner.client import EndpointClient, LocalTransport
     from kkrunner.backends.contracts import BackendCapability
 
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert not hasattr(backend, "create_job")
-        client = RunClient(backend, transport=LocalTransport())
+        client = EndpointClient(backend, transport=LocalTransport())
         assert callable(client.create_run_parts)
     assert BackendCapability.REATTACH not in DirectBackend().supports
     assert BackendCapability.REATTACH in SupervisedBackend().supports
@@ -115,15 +115,15 @@ def test_process_strategies_have_distinct_implementations():
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.client import RunClient
+    from kkrunner.client import EndpointClient
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.job import Job
 
-    client = RunClient()
+    client = EndpointClient()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
     assert isinstance(client.create_run_parts(spec).job, Job)
     assert isinstance(client.create_run_parts(spec, submission_key="run-1").job, Job)
-    assert isinstance(RunClient(SupervisedBackend).create_run_parts(spec, submission_key="run-1").job, Job)
+    assert isinstance(EndpointClient(SupervisedBackend).create_run_parts(spec, submission_key="run-1").job, Job)
 
 
 def test_remote_process_service_reuses_supervised_backend_operations():

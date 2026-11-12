@@ -8,7 +8,7 @@ import pytest
 from kkrunner.runs import DuplicateSubmissionError
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.files import FileEntry, FileManifest, FileMapping
-from kkrunner.client import RunClient, SshTransport, StagingSpec
+from kkrunner.client import EndpointClient, SshTransport, StagingSpec
 from kkrunner.runs.conflicts import submission_conflicts
 
 
@@ -21,7 +21,7 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
         return SimpleNamespace(stdout=b"/home/tester\n")
 
     monkeypatch.setattr(SshTransport, "run", fake_run)
-    client = RunClient(transport=SshTransport("cluster"))
+    client = EndpointClient(transport=SshTransport("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     spec = ExecutionSpec(
         ["unused"],

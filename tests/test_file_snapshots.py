@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from kkrunner import RunState, RunStore
-from kkrunner.client import RunClient, LocalTransport, SshTransport
+from kkrunner.client import EndpointClient, LocalTransport, SshTransport
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
@@ -149,7 +149,7 @@ def test_snapshot_runner_convenience(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "history"))
     run = manager.create_run(
-        RunClient(SupervisedBackend),
+        EndpointClient(SupervisedBackend),
         ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"),
     )
     run.run()

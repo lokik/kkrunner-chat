@@ -3,7 +3,7 @@
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.backends import PsijBackend, SupervisedBackend
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client import RunClient, LocalTransport, SshTransport
+from kkrunner.client import EndpointClient, LocalTransport, SshTransport
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.job import Job
 from kkrunner.client.pool import ClientPool
@@ -39,7 +39,7 @@ def test_manager_reconstructs_local_supervised_client_after_restart(tmp_path):
     store.save(record)
     restarted = RunManager(store, client_pool=ClientPool())
     client = restarted.client_for(store.get(record.id))
-    assert isinstance(client, RunClient)
+    assert isinstance(client, EndpointClient)
     assert client.transport == LocalTransport()
     assert isinstance(client.backend, SupervisedBackend)
 
@@ -83,7 +83,7 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
         )
         return RunParts(job, files)
 
-    monkeypatch.setattr(RunClient, "open_run_parts", fake_open)
+    monkeypatch.setattr(EndpointClient, "open_run_parts", fake_open)
     monkeypatch.setattr(Run, "start", lambda self: starts.append(self))
     pool = RecordingPool()
     restarted = RunManager(store, client_pool=pool)
@@ -109,7 +109,7 @@ def test_pool_reconstructs_and_reuses_same_ssh_client():
         "name": backend.name, "options": dict(backend.options),
     })
     assert first is second
-    assert isinstance(first, RunClient)
+    assert isinstance(first, EndpointClient)
     assert first.transport == transport
     assert first.transport.options == ("-p", "2222")
     assert first.transport.zstd is True
@@ -119,10 +119,10 @@ def test_pool_reconstructs_and_reuses_same_ssh_client():
 
 
 def test_default_psij_configuration_survives_client_reconstruction():
-    live = RunClient(PsijBackend, transport=SshTransport("cluster"))
+    live = EndpointClient(PsijBackend, transport=SshTransport("cluster"))
     restored = ClientPool().for_config(live.transport.to_dict(), live.backend_config)
     assert live.backend_config.name == "psij"
-    assert isinstance(restored, RunClient)
+    assert isinstance(restored, EndpointClient)
     assert isinstance(restored.backend, PsijBackend)
     assert restored.transport == live.transport
     assert dict(restored.backend.options) == {"executor_name": "slurm", "url": None}

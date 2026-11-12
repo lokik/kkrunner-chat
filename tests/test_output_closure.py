@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.backends import DirectBackend, SupervisedBackend
-from kkrunner.client import RunClient
+from kkrunner.client import EndpointClient
 from kkrunner.client.job import Job
 from kkrunner.files.streams import close_output_files
 from kkrunner.runs.base import FailurePhase
@@ -33,7 +33,7 @@ def test_local_file_session_closes_unique_output_handles(tmp_path, backend, merg
     stdout = _TrackedOutput(str(tmp_path / "stdout.out"))
     stderr = stdout if merged else _TrackedOutput(str(tmp_path / "stderr.err"))
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=stdout, error_file=stderr)
-    parts = RunClient(backend).create_run_parts(spec)
+    parts = EndpointClient(backend).create_run_parts(spec)
     # Creating a backend Job never transfers ownership of application streams.
     assert stdout.close_calls == stderr.close_calls == 0
     parts.close()
@@ -67,7 +67,7 @@ def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path)
             raise ConnectionError("remote STATUS unavailable")
 
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output, error_file=output)
-    files = RunClient().file_session(spec)
+    files = EndpointClient().file_session(spec)
     job = Job(LostContext(), spec, backend_id="job-1", remote_directory="/remote/case")
     asyncio.run(job._monitor())
     assert job.state is RunState.UNKNOWN
@@ -143,7 +143,7 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     error = OSError("cannot close output")
     output = _TrackedOutput(str(tmp_path / "out.txt"), error=error)
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output)
-    client = RunClient(SupervisedBackend)
+    client = EndpointClient(SupervisedBackend)
     files = client.file_session(spec)
     job = Job(client._context(client, spec.staging), spec,
               backend_id="known-job", remote_directory=str(tmp_path))
