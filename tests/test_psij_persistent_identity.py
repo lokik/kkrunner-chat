@@ -1,68 +1,70 @@
+"""PSI/J submission identity is injected into the native specification."""
+
 from types import SimpleNamespace
 
 import pytest
 
+from kkrunner.backends.psij.slurm import submission_marker
+from kkrunner.backends.psij.submission import prepare_job
+from kkrunner.client import RunClient
+from kkrunner.backends import PsijBackend
 from kkrunner import ExecutionSpec
-import kkrunner.backends.psij.executor as psij_backend
-from kkrunner.backends.psij import slurm as psij_slurm
+from kkrunner.client.execution_request import execution_request
 
 
-class _JobSpec:
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+class _FakeJobSpec:
+    def __init__(self, **values):
+        self.__dict__.update(values)
 
 
-class _JobAttributes:
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+class _FakeJobAttributes:
+    def __init__(self, **values):
+        self.__dict__.update(values)
 
 
-class _Job:
+class _FakeJob:
     def __init__(self, spec=None):
         self.spec = spec
-        self.native_id = None
-        self.status = SimpleNamespace(state=SimpleNamespace(name="NEW"))
 
 
-class _JobExecutor:
-    @staticmethod
-    def get_instance(*args, **kwargs):
-        raise AssertionError("test supplies the job executor")
+_FAKE_PSIJ = SimpleNamespace(
+    Job=_FakeJob, JobSpec=_FakeJobSpec, JobAttributes=_FakeJobAttributes,
+)
 
 
-_FAKE_PSIJ = SimpleNamespace(Job=_Job, JobSpec=_JobSpec, JobAttributes=_JobAttributes, JobExecutor=_JobExecutor)
+def _request(tmp_path):
+    return execution_request(ExecutionSpec(
+        argv=("program",), directory=str(tmp_path), output_file="run.out",
+    ))
 
 
-def _executor(monkeypatch, backend="slurm"):
-    monkeypatch.setattr(psij_backend, "_load_psij", lambda: _FAKE_PSIJ)
-    return psij_backend.PsijExecutor(backend, job_executor=object())
-
-
-def _spec(tmp_path):
-    output = tmp_path / "run.out"
-    return ExecutionSpec(argv=("program",), input_file=None, output_file=str(output), directory=str(tmp_path))
-
-
-@pytest.mark.parametrize("backend", ("slurm", "pbs"))
-def test_project_job_carries_kkrunner_identity(monkeypatch, tmp_path, backend):
-    executor = _executor(monkeypatch, backend)
-    runner = executor.create_native_job(_spec(tmp_path), submission_key="run-123")
-    job_spec = runner._job.spec
-    assert job_spec.environment == {"KKRunner_RUN_ID": "run-123"}
-    if backend == "slurm":
-        assert job_spec.attributes.custom_attributes == {
-            "slurm.comment": psij_slurm.submission_marker("run-123")
+@pytest.mark.parametrize("executor_name", ("slurm", "pbs"))
+def test_project_job_carries_kkrunner_submission_identity(tmp_path, executor_name):
+    job = prepare_job(
+        _FAKE_PSIJ, _request(tmp_path), executor_name=executor_name,
+        submission_key="run-123",
+    )
+    assert job.spec.environment == {"KKRunner_RUN_ID": "run-123"}
+    if executor_name == "slurm":
+        assert job.spec.attributes.custom_attributes == {
+            "slurm.comment": submission_marker("run-123"),
         }
     else:
-        assert job_spec.attributes is None
+        assert job.spec.attributes is None
 
 
-def test_nonpersistent_psij_job_has_independent_recovery_key(monkeypatch, tmp_path):
-    executor = _executor(monkeypatch, "slurm")
-    runner = executor.create_native_job(_spec(tmp_path))
-    job_spec = runner._job.spec
-    key = job_spec.environment["KKRunner_RUN_ID"]
-    assert key and key == runner._run_id
-    assert job_spec.attributes.custom_attributes == {
-        "slurm.comment": psij_slurm.submission_marker(key)
+def test_untracked_psij_submission_has_independent_recovery_key(tmp_path):
+    client = RunClient(PsijBackend(executor_name="slurm"))
+    spec = ExecutionSpec(("program",), directory=str(tmp_path), output_file="run.out")
+    parts = client.create_run_parts(spec)
+    request = parts.submission_builder({"directory": str(tmp_path)})
+    submission_key = request["submission_key"]
+    assert isinstance(submission_key, str) and submission_key
+    job = prepare_job(
+        _FAKE_PSIJ, execution_request(spec), executor_name="slurm",
+        submission_key=submission_key,
+    )
+    assert job.spec.environment["KKRunner_RUN_ID"] == submission_key
+    assert job.spec.attributes.custom_attributes == {
+        "slurm.comment": submission_marker(submission_key),
     }
