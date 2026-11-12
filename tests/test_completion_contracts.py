@@ -164,20 +164,41 @@ def test_completed_durable_result_cannot_be_postprocessed_again(tmp_path):
 
 
 class _ImmediatelyFinishedJob:
-    """Fake backend that finishes before Run persists its submitted identity."""
-
-    state = RunState.NEW
-    backend_id = None
-    exception = None
-    failure_phase = None
-    failure_message = None
-    return_code = 0
-    output_error = None
+    """Instantaneous native outcome, exercised through real RunParts/FileSession."""
 
     def __init__(self):
-        from kkrunner import ExecutionSpec
-        self.spec = ExecutionSpec(("instant",))
-        self.result = None
+        from kkrunner import ExecutionOutcome
+        self.state = RunState.NEW
+        self.backend_id = None
+        self.return_code = 0
+        self.result = ExecutionOutcome(return_code=0)
+        self.exception = None
+        self.failure_phase = None
+        self.failure_message = None
+        self.output_error = None
+
+    @property
+    def requires_stream_retrieval(self):
+        return False
+
+    def configure_detached(self, detached):
+        pass
+
+    def configure_submission(self, request, **observation):
+        pass
+
+    def configure_observation(self, **observation):
+        pass
+
+    def add_output_listener(self, callback):
+        pass
+
+    def add_output_error_listener(self, callback):
+        pass
+
+    def status(self):
+        from kkrunner.backends.contracts import JobStatus
+        return JobStatus(self.state, return_code=self.return_code)
 
     def submit(self):
         self.backend_id = "native-1"
@@ -187,38 +208,49 @@ class _ImmediatelyFinishedJob:
         self.state = RunState.FINISHED
 
     def wait(self):
-        from kkrunner import ExecutionOutcome
-        return ExecutionOutcome(return_code=0)
+        return self.result
+
+
+class _InstantClient(EndpointClient):
+    """Keep real client/files plumbing; replace only the native Job."""
+
+    def __init__(self, job):
+        super().__init__(SupervisedBackend)
+        self.job = job
+
+    def create_run_parts(self, spec, *, submission_key=None, callback=None):
+        parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
+        self.job.spec = spec
+        parts.job = self.job
+        return parts
+
+    def acknowledge(self, record):
+        pass
+
+    def acknowledge_submission(self, record):
+        pass
+
+
+def _instant_run(manager, job, tmp_path, *, process_result=None):
+    from kkrunner import ExecutionSpec
+    return manager.create_run(
+        _InstantClient(job),
+        ExecutionSpec(("unused",), directory=str(tmp_path)),
+        process_result=process_result,
+    )
 
 
 @pytest.mark.parametrize("operation", ["submit", "start"])
 def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, monkeypatch, operation):
-    from kkrunner import Run
-
-    class Backend:
-        name = "instant"
-
-        def acknowledge(self, record):
-            pass
-
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = Backend()
     job = _ImmediatelyFinishedJob()
+    run = _instant_run(manager, job, tmp_path, process_result=lambda outcome: outcome)
     if operation == "start":
         job.backend_id = "native-1"
-    record = manager.new_record(directory=tmp_path, processing_required=True)
-    if operation == "start":
-        record = manager.transition(
-            record, state=RunState.RUNNING,
-            execution=record.execution.submitted(job.backend_id),
+        run._record = manager.transition(
+            run.record, state=RunState.RUNNING,
+            execution=run.record.execution.submitted(job.backend_id),
         )
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(
-        job, backend=backend, manager=manager, record=record,
-        process_result=lambda outcome: outcome,
-    )
-    # Freeze the monitor at the point where its creation normally races with
-    # persistence, then explicitly deliver its result after checking the store.
     monkeypatch.setattr(run, "_start_completion", lambda: setattr(run, "_started", True))
     getattr(run, operation)()
     assert manager.store.get(run.id).state == RunState.RUNNING
@@ -227,17 +259,8 @@ def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, mon
 
 
 def test_confirmed_identity_is_durable_before_client_monitor_starts(tmp_path, monkeypatch):
-    from kkrunner import Run
-
-    class Backend:
-        name = "instant"
-
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = Backend()
-    job = _ImmediatelyFinishedJob()
-    record = manager.new_record(directory=tmp_path)
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(job, backend=backend, manager=manager, record=record)
+    run = _instant_run(manager, _ImmediatelyFinishedJob(), tmp_path)
     seen = []
 
     def start_monitor():
@@ -253,30 +276,14 @@ def test_confirmed_identity_is_durable_before_client_monitor_starts(tmp_path, mo
 
 
 def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch):
-    from kkrunner import Run
-
-    class Backend:
-        name = "unconfirmed"
-
-    class Job:
-        state = RunState.NEW
-        backend_id = None
-        exception = None
-        failure_phase = None
-        failure_message = None
-
+    class Unconfirmed(_ImmediatelyFinishedJob):
         def submit(self):
             self.state = RunState.UNKNOWN
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = Backend()
-    record = manager.new_record(directory=tmp_path)
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(Job(), backend=backend, manager=manager, record=record)
-    monkeypatch.setattr(
-        run, "_start_completion",
-        lambda: pytest.fail("Completion must not start without a job identity"),
-    )
+    run = _instant_run(manager, Unconfirmed(), tmp_path)
+    monkeypatch.setattr(run, "_start_completion",
+                        lambda: pytest.fail("Completion must not start without a job identity"))
     with pytest.raises(RuntimeError, match="without a job identity"):
         run.submit()
     assert not run._started
@@ -286,11 +293,6 @@ def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch
 
 
 def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypatch):
-    from kkrunner import Run
-
-    class Backend:
-        name = "monitor-error"
-
     class FailingThread:
         def __init__(self, *, target, daemon):
             pass
@@ -299,11 +301,7 @@ def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypa
             raise RuntimeError("client thread unavailable")
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = Backend()
-    record = manager.new_record(directory=tmp_path)
-    manager.register_executor(backend, record.execution.endpoint)
-    run = Run(_ImmediatelyFinishedJob(), backend=backend, manager=manager, record=record)
-
+    run = _instant_run(manager, _ImmediatelyFinishedJob(), tmp_path)
     monkeypatch.setattr("kkrunner.runs.run.Thread", FailingThread)
     with pytest.raises(RuntimeError, match="client thread unavailable"):
         run.submit()
@@ -315,93 +313,45 @@ def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypa
 
 
 def test_known_backend_identity_survives_failed_client_submission(tmp_path):
-    from kkrunner import Run
-
-    class Backend:
-        name = "interrupted"
-
-    class Job:
-        state = RunState.NEW
-        backend_id = None
-        exception = None
-        failure_phase = None
-        failure_message = None
-
+    class Interrupted(_ImmediatelyFinishedJob):
         def submit(self):
             self.backend_id = "accepted-job"
             self.state = RunState.FINISHED
             raise ConnectionError("client could not start observer")
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = Backend()
-    manager.register_executor(backend)
-    record = manager.new_record(directory=tmp_path)
-    run = Run(Job(), backend=backend, manager=manager, record=record)
+    run = _instant_run(manager, Interrupted(), tmp_path)
     with pytest.raises(ConnectionError, match="could not start observer"):
         run.submit()
-    saved = manager.store.get(record.id)
+    saved = manager.store.get(run.id)
     assert saved.execution.backend_id == "accepted-job"
     assert saved.state == RunState.UNKNOWN
     assert not saved.state.is_terminal
 
 
 def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persistence(tmp_path, caplog):
-    from kkrunner import ExecutionSpec, Run
-    from kkrunner.files import FileManifest
     from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
 
     original = SubmissionNotStarted("submission never reached backend")
 
-    class Backend:
-        name = "preflight"
-
-    class Job:
-        state = RunState.NEW
-        backend_id = None
-        failure_phase = None
-        failure_message = None
-        exception = None
-
-        def configure_submission(self, request, **observation):
-            pass
-
+    class Rejected(_ImmediatelyFinishedJob):
         def submit(self):
             raise original
 
-    class Files:
-        def __init__(self):
-            self.spec = ExecutionSpec(("unused",), directory=tmp_path)
-            self.files = FileManifest()
-            self.close_calls = 0
-
-        def prepare_submission(self):
-            pass
-
-        def execution(self, backend_id):
-            return None
-
-        def prepare_job(self):
-            return {"directory": str(tmp_path)}
-
-        def observation(self):
-            return {"stream_offsets": {}, "stream_writer": None, "stream_paths": (None, None)}
-
-        def close(self):
-            self.close_calls += 1
-            raise OSError("cleanup also failed")
-
     manager = RunManager(RunStore(tmp_path / "runs"))
-    backend = Backend()
-    manager.register_executor(backend)
-    record = manager.new_record(directory=tmp_path)
-    files = Files()
-    run = Run(Job(), backend=backend, manager=manager, record=record, file_session=files)
+    run = _instant_run(manager, Rejected(), tmp_path)
+    close_calls = []
 
+    def failing_close():
+        close_calls.append(True)
+        raise OSError("cleanup also failed")
+
+    run._parts.close = failing_close
     with pytest.raises(SubmissionNotStarted) as caught:
         run.submit()
     assert "cleanup also failed" in caplog.text
     assert caught.value is original
-    assert files.close_calls == 1
+    assert close_calls == [True]
     saved = manager.store.get(run.id)
     assert saved.state == RunState.FAILED
     assert saved.failure_phase == FailurePhase.SUBMISSION
