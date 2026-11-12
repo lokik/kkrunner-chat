@@ -1,74 +1,54 @@
-from threading import Event
-from types import SimpleNamespace
+"""Execution status projection and observable client postprocessing."""
 
-from kkrunner import ExecutionOutcome, RunState, RunStore
+import sys
+from threading import Event
+
+import pytest
+
+from kkrunner import ExecutionSpec, RunState, RunStore
+from kkrunner.backends import DirectBackend, SupervisedBackend
+from kkrunner.client import EndpointClient, SshTransport
 from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner.client.pool import ClientPool
-from kkrunner.client import EndpointClient
-from kkrunner.backends import SupervisedBackend
 from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
 class _Executor(EndpointClient):
-    def __init__(self, status):
-        super().__init__(SupervisedBackend)
+    def __init__(self, status, *, remote=False):
+        super().__init__(
+            SupervisedBackend,
+            transport=SshTransport("cluster") if remote else None,
+        )
         self.status_value = status
 
     def status(self, *runs):
         return tuple(
-            (
-                RunStatus(
-                    backend_id=run.execution.backend_id,
-                    state=self.status_value,
-                    return_code=0 if self.status_value == RunState.FINISHED else 1,
-                    failure_phase=FailurePhase.EXECUTION if self.status_value == RunState.FAILED else None,
-                )
-                for run in runs
+            RunStatus(
+                backend_id=run.execution.backend_id,
+                state=self.status_value,
+                return_code=0 if self.status_value == RunState.FINISHED else 1,
+                failure_phase=FailurePhase.EXECUTION if self.status_value == RunState.FAILED else None,
             )
+            for run in runs
         )
-
-
-class _RawRunner:
-    def __init__(self):
-        self.result = ExecutionOutcome(return_code=0)
-        self.state = RunState.NEW
-        self.backend_id = "job-1"
-        self.exception = None
-        self.failure_phase = None
-        self._done = Event()
-
-    def submit(self):
-        self.state = RunState.RUNNING
-
-    def wait(self):
-        self._done.wait()
-        self.state = RunState.FINISHED
-        return self.result
-
-    def complete(self):
-        self._done.set()
-
-    def cancel(self):
-        self.state = RunState.CANCELLED
-        self._done.set()
-
-    def add_output_listener(self, callback):
-        pass
-
-    def add_output_error_listener(self, callback):
-        pass
 
 
 def _record(tmp_path, executor, state=RunState.RUNNING):
     manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
     manager.register_client(executor)
     record = manager.new_record(
-        directory=str(tmp_path), transport=executor.transport, backend=executor.backend_config,
-        metadata={"test": {"task": "DOS"}}, processing_required=True
+        directory=str(tmp_path),
+        transport=executor.transport,
+        backend=executor.backend_config,
+        remote_directory="/remote/job" if not executor.transport.is_local else None,
+        metadata={"test": {"task": "DOS"}},
+        processing_required=True,
     )
-    record = manager.transition(record, state=state, execution=record.execution.submitted("job-1"))
-    return (manager, record)
+    record = manager.transition(
+        record, state=state, execution=record.execution.submitted("job-1"),
+    )
+    return manager, record
 
 
 def test_refresh_maps_raw_success_to_postprocessing(tmp_path):
@@ -90,76 +70,52 @@ def test_refresh_keeps_raw_execution_failure_terminal(tmp_path):
     assert refreshed in manager.store.runs(active=False)
 
 
-def test_postprocessing_is_observable_until_processor_finishes():
-    raw = _RawRunner()
+def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
     entered = Event()
     release = Event()
 
     def process(outcome):
         entered.set()
-        release.wait()
-        return SimpleNamespace(return_code=outcome.return_code)
+        assert release.wait(5), "Postprocessing was never released"
+        return outcome
 
-    runner = Run(raw, process_result=process)
-    runner.submit()
-    raw.complete()
-    assert entered.wait(1)
-    assert runner.state == RunState.POSTPROCESSING
-    release.set()
-    result = runner.wait()
-    assert result.return_code == 0
-    assert runner.state == RunState.FINISHED
-
-
-def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable():
-
-    class InaccessibleRunner:
-        backend_id = "job-1"
-        exception = None
-        failure_phase = None
-        result = None
-
-        def __init__(self):
-            self.started = False
-
-        @property
-        def state(self):
-            if not self.started:
-                return RunState.NEW
-            raise OSError("backend status unavailable")
-
-        def submit(self):
-            self.started = True
-
-        def wait(self):
-            raise ValueError("original execution failure")
-
-    runner = Run(InaccessibleRunner(), process_result=lambda outcome: outcome)
-    runner.submit()
+    run = Run.untracked(
+        EndpointClient(DirectBackend),
+        ExecutionSpec((sys.executable, "-c", "print('complete')"), directory=str(tmp_path)),
+        process_result=process,
+    )
     try:
-        import pytest
-
-        with pytest.raises(ValueError, match="original execution failure"):
-            runner.wait()
-        assert runner.state == RunState.UNKNOWN
-        assert runner.failure_phase is None
-        assert runner.failure_message == "original execution failure"
+        run.submit()
+        assert entered.wait(5), "Postprocessing did not begin"
+        assert run.state == RunState.POSTPROCESSING
     finally:
-        assert runner._done.wait(2), "completion worker must not escape exception handling"
+        release.set()
+    assert run.wait().return_code == 0
+    assert run.state == RunState.FINISHED
+
+
+def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable(tmp_path, monkeypatch):
+    run = Run.untracked(
+        EndpointClient(DirectBackend),
+        ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path)),
+    )
+
+    def fail_wait():
+        raise ValueError("original execution failure")
+
+    monkeypatch.setattr(run._job, "wait", fail_wait)
+    run.submit()
+    with pytest.raises(ValueError, match="original execution failure"):
+        run.wait()
+    assert run.state == RunState.UNKNOWN
+    assert run.failure_phase is None
+    assert run.failure_message == "original execution failure"
+    assert run._done.wait(2), "Completion worker must not escape exception handling"
+
 
 def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
-    from kkrunner.runs.model import WorkingDirectory, Execution
-    from dataclasses import replace
-
-    executor = _Executor(RunState.FINISHED)
+    executor = _Executor(RunState.FINISHED, remote=True)
     manager, record = _record(tmp_path, executor)
-    record = manager.transition(
-        record,
-        execution=Execution(
-            record.execution.endpoint, WorkingDirectory(str(tmp_path), "/remote/job"),
-            record.execution.backend_id,
-        ),
-    )
     (refreshed,) = manager.refresh((record,))
     assert refreshed.state == RunState.DOWNLOADING
     assert refreshed.return_code == 0
@@ -167,17 +123,8 @@ def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
 
 
 def test_backend_failure_on_remote_job_still_preserves_transfer_stage(tmp_path):
-    from kkrunner.runs.model import WorkingDirectory, Execution
-
-    executor = _Executor(RunState.FAILED)
+    executor = _Executor(RunState.FAILED, remote=True)
     manager, record = _record(tmp_path, executor)
-    record = manager.transition(
-        record,
-        execution=Execution(
-            record.execution.endpoint, WorkingDirectory(str(tmp_path), "/remote/job"),
-            record.execution.backend_id,
-        ),
-    )
     (refreshed,) = manager.refresh((record,))
     assert refreshed.state == RunState.DOWNLOADING
     assert refreshed in manager.store.runs(active=True)
