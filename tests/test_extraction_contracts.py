@@ -74,13 +74,29 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         def wait(self):
             return self.result
 
-    class Backend:
-        name = "instant"
+        @property
+        def requires_stream_retrieval(self):
+            return False
+
+        def configure_detached(self, detached):
+            pass
+
+        def configure_submission(self, request, **options):
+            pass
+
+        def status(self):
+            return JobStatus(self.state, return_code=self.return_code)
+
+    class Client(EndpointClient):
+        def __init__(self):
+            super().__init__(SupervisedBackend)
 
         def create_run_parts(self, spec, *, submission_key=None, callback=None):
+            parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
             raw = Raw()
             raw.spec = spec
-            return RunParts(raw)
+            parts.job = raw
+            return parts
 
     def process(outcome):
         entered.set()
@@ -94,7 +110,7 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         assert entered.wait(3)
 
     monkeypatch.setattr(Run, "_start_completion", start_and_yield)
-    run = manager.create_run(Backend(), ExecutionSpec(["instant"], directory=tmp_path), process_result=process)
+    run = manager.create_run(Client(), ExecutionSpec(["instant"], directory=tmp_path), process_result=process)
     try:
         run.submit()
     finally:
@@ -172,27 +188,24 @@ def test_stdin_is_part_of_read_manifest(tmp_path):
 
 
 def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch):
-    from kkrunner.client.ssh import SshRunEndpoint
-    from kkrunner.client.remote_files import RemoteFileSession
-    from kkrunner.client.transport import LocalTransport
+    from .test_transport import _LoopbackSshTransport
 
-    executor = SshRunEndpoint(LocalTransport())
-    raw = Run.direct(executor, ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "stdout"))
+    local = tmp_path / "local"
+    local.mkdir()
+    output = (local / "stdout").open("wb")
+    spec = ExecutionSpec(
+        ["unused"], directory=local, output_file=output,
+        staging=StagingSpec(local_root=local, remote_root=tmp_path / "remote"),
+    )
+    run = Run.untracked(EndpointClient(DirectBackend, transport=_LoopbackSshTransport()), spec)
 
-    async def prepared(self):
-        return {"directory": "/remote"}, FileManifest.from_spec(self.spec)
-
-    async def rejected(_request):
+    async def rejected(self, request, on_output):
         raise RuntimeError("lost submit response")
 
-    monkeypatch.setattr(RemoteFileSession, "_prepare_async", prepared)
-    monkeypatch.setattr(executor, "_submit", rejected)
-    try:
-        with pytest.raises(RuntimeError, match="lost submit response"):
-            raw.submit()
-        assert raw.spec.output_file.closed
-    finally:
-        raw.spec.output_file.close()
+    monkeypatch.setattr(DirectExecution, "submit", rejected)
+    with pytest.raises(RuntimeError, match="lost submit response"):
+        run.submit()
+    assert output.closed
 
 
 def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
@@ -216,16 +229,33 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
             self.state = RunState.FINISHED
             return self.result
 
-    class Backend:
-        name = "fake"
+        @property
+        def requires_stream_retrieval(self):
+            return False
+
+        def configure_detached(self, detached):
+            pass
+
+        def configure_submission(self, request, **options):
+            pass
+
+        def status(self):
+            return JobStatus(self.state, return_code=self.return_code)
+
+    class Client(EndpointClient):
         submissions = 0
 
+        def __init__(self):
+            super().__init__(SupervisedBackend)
+
         def create_run_parts(self, spec, *, submission_key=None, callback=None):
+            parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
             raw = Raw()
             raw.spec = spec
-            return RunParts(raw)
+            parts.job = raw
+            return parts
 
-    backend = Backend()
+    backend = Client()
     spec = ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "same-output")
     first = manager.create_run(backend, spec, run_id="same-id")
     second = manager.create_run(backend, spec, run_id="same-id")
