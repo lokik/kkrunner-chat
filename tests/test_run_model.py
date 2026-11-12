@@ -3,6 +3,7 @@ from dataclasses import asdict
 import pytest
 
 from kkrunner.client.transports import LocalTransport, SshTransport
+from kkrunner.client.staging import StagingSpec
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files.manifest import (
     ArtifactAvailabilityState,
@@ -276,17 +277,17 @@ def test_file_sync_policy_validation_uses_the_runtime_enum():
 
 @pytest.mark.parametrize("name", ("input_sync", "output_sync"))
 @pytest.mark.parametrize("policy", list(FileSyncPolicy))
-def test_launch_sync_policies_are_validated_and_serialized(name, policy):
-    launch = LaunchSpec(**{name: policy})
-    assert type(getattr(launch, name)) is str
-    assert getattr(launch, name) == policy.value
-    assert LaunchSpec(**asdict(launch)) == launch
+def test_staging_sync_policies_are_validated_and_serialized(name, policy):
+    staging = StagingSpec(**{name: policy})
+    assert type(getattr(staging, name)) is str
+    assert getattr(staging, name) == policy.value
+    assert StagingSpec(**asdict(staging)) == staging
 
 
 @pytest.mark.parametrize("name", ("input_sync", "output_sync"))
-def test_launch_rejects_unknown_sync_policies(name):
+def test_staging_rejects_unknown_sync_policies(name):
     with pytest.raises(ValueError, match="synchronization policy"):
-        LaunchSpec(**{name: "unsupported"})
+        StagingSpec(**{name: "unsupported"})
 
 
 @pytest.mark.parametrize(
