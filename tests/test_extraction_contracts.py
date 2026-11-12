@@ -9,7 +9,11 @@ import pytest
 from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
 from kkrunner.runs.base import ExecutionResources, ResourceOwnedRunner
-from kkrunner.client.endpoint import ExecutionEndpointConfig
+from kkrunner.backends import DirectBackend, SupervisedBackend
+from kkrunner.backends.config import BackendConfig
+from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
+from kkrunner.backends.contracts import JobStatus
+from kkrunner.client.backend_execution import DirectExecution
 from kkrunner.client.run_parts import RunParts
 from kkrunner.runs.run import Run
 from kkrunner.files import FileEntry, FileManifest
@@ -46,7 +50,7 @@ def test_nested_execution_is_validated(tmp_path):
     manager.store.save(record)
     path = manager.store._path(record)
     data = json.loads(path.read_text())
-    data["execution"]["endpoint"] = []
+    data["execution"]["transport"] = []
     path.write_text(json.dumps(data))
     with pytest.raises(CorruptRunRecord):
         manager.store.get(record.id)
@@ -137,21 +141,22 @@ def test_cancel_and_failed_submit_do_not_deadlock(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "other_endpoint",
+    "transport, backend",
     [
-        ExecutionEndpointConfig(backend="psij"),
-        ExecutionEndpointConfig(location="ssh", host="other-host"),
+        (LocalTransport(), BackendConfig("psij")),
+        (SshTransport("other-host"), BackendConfig("direct")),
     ],
 )
-def test_local_publication_conflict_is_independent_of_backend(tmp_path, other_endpoint):
+def test_local_publication_conflict_is_independent_of_backend(tmp_path, transport, backend):
     manager = manager_at(tmp_path)
     files = FileManifest(stdout=FileEntry(local_path=str(tmp_path / "same.out")))
     first = manager.new_record(directory=tmp_path, files=files)
     second = manager.new_record(
         directory=tmp_path,
         files=files,
-        endpoint=other_endpoint,
-        remote_directory="/remote" if other_endpoint.executor == "ssh" else None,
+        transport=transport,
+        backend=backend,
+        remote_directory="/remote" if not transport.is_local else None,
     )
     assert submission_conflicts(first, second)
 
