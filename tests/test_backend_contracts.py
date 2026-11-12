@@ -66,63 +66,87 @@ def test_status_validates_execution_facts_without_client_phases():
 def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
     from kkrunner.backends.contracts import Backend
-    from kkrunner.client import LocalRunEndpoint
+    from kkrunner.client import EndpointClient
     from kkrunner.client.job import Job
     from kkrunner.runs.base import ExecutionSpec
+
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert issubclass(backend, Backend)
         assert not hasattr(backend, "create_job")
         assert not hasattr(backend, "create_run_parts")
-        endpoint = LocalRunEndpoint(backend)
+        endpoint = EndpointClient(backend)
         assert callable(endpoint.create_run_parts)
-        job = endpoint.create_run_parts(ExecutionSpec(("true",), directory=str(tmp_path))).job
+        job = endpoint.create_run_parts(
+            ExecutionSpec(("true",), directory=str(tmp_path))
+        ).job
         assert type(job) is Job
+        assert job.execution.backend is endpoint.backend
+        assert job.execution.transport is endpoint.transport
         assert all(hasattr(job, name) for name in ("submit", "wait", "cancel", "status", "ref"))
-    assert DirectBackend.session_bound
-    assert not SupervisedBackend.session_bound
-    assert not PsijBackend.session_bound
-    expected = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER})
+
+    assert DirectBackend().execution_mode == "direct"
+    assert SupervisedBackend().execution_mode == PsijBackend().execution_mode == "managed"
+    managed = frozenset({
+        BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS,
+    })
     assert DirectBackend().supports == frozenset()
-    assert SupervisedBackend().supports == expected
-    assert PsijBackend().supports == expected
+    assert SupervisedBackend().supports == managed
+    assert PsijBackend().supports == managed
 
 
-def test_direct_rejects_reattachment_without_resubmission(tmp_path):
-    from kkrunner.client import LocalRunEndpoint
+def test_direct_rejects_reattachment_without_resubmission():
+    from kkrunner.backends import DirectBackend
     from kkrunner.backends.contracts import UnsupportedCapability
-    with pytest.raises(UnsupportedCapability, match="durable identity"):
-        LocalRunEndpoint().open_run_parts(object())
+    from kkrunner.client import EndpointClient
+
+    with pytest.raises(UnsupportedCapability, match="reattachment"):
+        EndpointClient(DirectBackend).open_run_parts(object())
 
 
 def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):
     from kkrunner.backends import SupervisedBackend
-    from kkrunner.client import LocalRunEndpoint, SshRunEndpoint, SshTransport
+    from kkrunner.client import EndpointClient, SshTransport, StagingSpec
     from kkrunner.client.job import Job
-    from kkrunner.runs.base import ExecutionSpec, LaunchSpec
+    from kkrunner.runs.base import ExecutionSpec
 
-    spec = ExecutionSpec(("true",), directory=str(tmp_path), launch=LaunchSpec(local_root=str(tmp_path), remote_root=str(tmp_path / 'remote')))
-    local = LocalRunEndpoint(SupervisedBackend).create_run_parts(spec).job
-    remote = SshRunEndpoint(SshTransport("example"), backend=SupervisedBackend).create_run_parts(spec).job
+    spec = ExecutionSpec(
+        ("true",), directory=str(tmp_path),
+        staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
+    )
+    local = EndpointClient(SupervisedBackend).create_run_parts(spec).job
+    remote = EndpointClient(SupervisedBackend, transport=SshTransport("example")).create_run_parts(spec).job
     assert type(local) is type(remote) is Job
+    assert local.execution.transport.is_local
+    assert not remote.execution.transport.is_local
+    assert local.execution.backend.name == remote.execution.backend.name == "process"
 
-def test_managed_job_does_not_expose_direct_detached_configuration(tmp_path):
-    from kkrunner.client.job import Job
-    from kkrunner.client.run_parts import RunParts
+
+def test_managed_job_rejects_direct_detached_configuration(tmp_path):
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.client import EndpointClient
     from kkrunner.runs.base import ExecutionSpec
-    class Context:
-        backend = "process"
-    managed = Job(Context(), ExecutionSpec(("true",), directory=str(tmp_path)))
-    RunParts(managed).configure_detached(True, default=True)
-    with pytest.raises(ValueError):
-        RunParts(managed).configure_detached(False, default=True)
+
+    parts = EndpointClient(SupervisedBackend).create_run_parts(
+        ExecutionSpec(("true",), directory=str(tmp_path))
+    )
+    parts.configure_detached(True)
+    with pytest.raises(ValueError, match="fixed by the selected backend"):
+        parts.configure_detached(False)
 
 
-def test_client_context_provides_backend_identity_for_job_ref(tmp_path):
-    from types import SimpleNamespace
+def test_client_execution_binding_provides_backend_identity_for_job_ref(tmp_path):
     from kkrunner.backends import PsijBackend
+    from kkrunner.client import EndpointClient
+    from kkrunner.client.backend_execution import bind_execution
     from kkrunner.client.job import Job
     from kkrunner.runs.base import ExecutionSpec
 
-    context = SimpleNamespace(backend=PsijBackend())
-    job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)), backend_id="opaque-id")
+    endpoint = EndpointClient(PsijBackend)
+    execution = bind_execution(
+        endpoint.backend, endpoint.transport,
+        ref=JobRef("psij", "opaque-id"), status={"state": "running"},
+    )
+    job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))
     assert job.ref == JobRef("psij", "opaque-id")
+    assert job.backend_id == "opaque-id"
+    assert job.status().state is RunState.RUNNING

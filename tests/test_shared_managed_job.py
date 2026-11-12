@@ -22,6 +22,6 @@ def test_psij_local_client_does_not_construct_target_runtime(tmp_path):
     ).job
     assert type(job) is Job
     assert job.execution.transport == client.transport
-    assert isinstance(job.context.backend, PsijBackend)
-    assert dict(job.context.backend.options)["executor_name"] == "slurm"
+    assert isinstance(job.execution.backend, PsijBackend)
+    assert dict(job.execution.backend.options)["executor_name"] == "slurm"
     assert job.ref is None  # No target identity until submission is accepted.
