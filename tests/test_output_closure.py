@@ -56,19 +56,33 @@ def test_close_error_still_closes_remaining_handles():
     assert first.close_calls == second.close_calls == 1
 
 
-def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path):
+def _managed_job(spec):
+    from kkrunner.backends.contracts import JobRef
+    from kkrunner.client.backend_execution import bind_execution
+
+    client = EndpointClient(SupervisedBackend)
+    binding = bind_execution(
+        client.backend, client.transport,
+        ref=JobRef("process", "job-1"),
+        status={"state": "running", "return_code": None},
+    )
+    return Job(binding, spec)
+
+
+def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path, monkeypatch):
     output = _TrackedOutput(str(tmp_path / "output.out"))
-
-    class LostContext:
-        async def _follow(self, *args, **kwargs):
-            raise ConnectionError("remote FOLLOW interrupted")
-
-        async def _status(self, *args, **kwargs):
-            raise ConnectionError("remote STATUS unavailable")
-
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output, error_file=output)
     files = EndpointClient().file_session(spec)
-    job = Job(LostContext(), spec, backend_id="job-1", remote_directory="/remote/case")
+    job = _managed_job(spec)
+
+    async def disconnected(_on_output):
+        raise ConnectionError("remote FOLLOW interrupted")
+
+    async def unavailable():
+        raise ConnectionError("remote STATUS unavailable")
+
+    monkeypatch.setattr(job.execution, "observe", disconnected)
+    monkeypatch.setattr(job.execution, "status", unavailable)
     asyncio.run(job._monitor())
     assert job.state is RunState.UNKNOWN
     assert output.close_calls == 0
@@ -76,60 +90,55 @@ def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path)
     assert output.close_calls == 1
 
 
-@pytest.mark.parametrize("monitor_fails,finish_fails,cleanup_fails", [
-    (True, False, False), (False, True, False), (False, False, True),
-    (True, True, True), (False, True, True), (True, False, True),
+@pytest.mark.parametrize("monitor_fails,finish_fails", [
+    (True, False), (False, True), (True, True),
 ])
-def test_managed_job_cleanup_attempts_all_stages(
-    tmp_path, monkeypatch, monitor_fails, finish_fails, cleanup_fails,
-):
-    calls, callbacks = [], []
-    errors = (RuntimeError("monitor failed"), OSError("decoder failed"), OSError("cleanup failed"))
-    spec = ExecutionSpec(("true",), directory=tmp_path)
+def test_managed_job_cleanup_attempts_all_stages(tmp_path, monkeypatch, monitor_fails, finish_fails):
+    """Output decoder closure runs even when backend observation fails."""
+    calls = []
+    errors = (RuntimeError("monitor failed"), OSError("decoder failed"))
+    job = _managed_job(ExecutionSpec(("true",), directory=tmp_path))
 
     async def monitor():
         calls.append("monitor")
         if monitor_fails:
             raise errors[0]
+        job._state = RunState.FINISHED
+        job.result.return_code = 0
 
     def finish_bytes():
         calls.append("finish")
         if finish_fails:
             raise errors[1]
 
-    def cleanup():
-        calls.append("cleanup")
-        if cleanup_fails:
-            raise errors[2]
-
-    job = Job(object(), spec, backend_id="job", callback=lambda result: callbacks.append(result),
-              completion_cleanup=cleanup)
     monkeypatch.setattr(job, "_monitor", monitor)
     monkeypatch.setattr(job._output_observers, "finish_bytes", finish_bytes)
     job._thread_main()
-    assert calls == ["monitor", "finish", "cleanup"]
+    assert calls == ["monitor", "finish"]
     assert job._done.is_set()
-    assert callbacks == [job.result]
     if monitor_fails:
         assert job.exception is errors[0]
+        assert job.state is RunState.UNKNOWN
+    else:
+        assert job.state is RunState.FINISHED
     if finish_fails:
         assert job.output_error is errors[1]
-    elif cleanup_fails:
-        assert job.output_error is errors[2]
-    assert job.state is RunState.UNKNOWN
 
 
 def test_confirmed_native_completion_survives_client_cleanup_error(tmp_path, monkeypatch):
-    error = OSError("output cleanup failed")
-    job = Job(object(), ExecutionSpec(("true",), directory=tmp_path),
-              backend_id="known-job", completion_cleanup=lambda: (_ for _ in ()).throw(error))
+    """A failed output decoder must not replace a confirmed backend outcome."""
+    error = OSError("output decoder failed")
+    job = _managed_job(ExecutionSpec(("true",), directory=tmp_path))
 
     async def finished():
         job._state = RunState.FINISHED
-        job._return_code = 0
         job.result.return_code = 0
 
+    def close_decoder():
+        raise error
+
     monkeypatch.setattr(job, "_monitor", finished)
+    monkeypatch.setattr(job._output_observers, "finish_bytes", close_decoder)
     job._thread_main()
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
@@ -145,12 +154,10 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output)
     client = EndpointClient(SupervisedBackend)
     files = client.file_session(spec)
-    job = Job(client._context(client, spec.staging), spec,
-              backend_id="known-job", remote_directory=str(tmp_path))
+    job = _managed_job(spec)
 
     async def finished():
         job._state = RunState.FINISHED
-        job._return_code = 0
         job.result.return_code = 0
 
     monkeypatch.setattr(job, "_monitor", finished)
