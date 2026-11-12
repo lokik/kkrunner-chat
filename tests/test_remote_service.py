@@ -12,6 +12,7 @@ from kkrunner.backends.supervised import streams as supervisor
 from kkrunner.backends.supervised import worker as remote_process_worker
 from kkrunner.backends.psij import slurm as psij_slurm
 from kkrunner.backends.psij import backend as scheduler_operations
+from kkrunner.backends.psij import support as psij_support
 from kkrunner.backends.support import messages
 from kkrunner.backends.contracts import SubmissionNotStarted
 from kkrunner.remote import service as remote_service
@@ -192,17 +193,13 @@ def test_psij_cancellation_does_not_invent_terminal_state(monkeypatch, tmp_path)
         def cancel(self):
             calls.append("cancel")
 
-    class Backend:
-        def attach_native_job(self, native_id):
-            calls.append(native_id)
-            return Job()
+    def attach(handle):
+        calls.append(handle["native_id"])
+        return Job()
 
-    monkeypatch.setattr(scheduler_operations, "_psij_executor", lambda _: Backend())
-    monkeypatch.setattr(
-        scheduler_operations,
-        "_status_impl",
-        lambda _: {"state": RunState.RUNNING.value, "return_code": None, "failure_phase": None},
-    )
+    monkeypatch.setattr(psij_support, "_attach_job", attach)
+    from kkrunner.backends.contracts import JobStatus
+    monkeypatch.setattr(psij_slurm, "status", lambda _: JobStatus(RunState.RUNNING))
     status = remote_service.cancel_remote(remote_id)
     assert status["state"] == RunState.RUNNING.value
     assert calls == ["42", "cancel"]
@@ -218,12 +215,11 @@ def _stub_terminal_psij_job(monkeypatch, state, return_code, observed):
             observed.append("wait")
             return self.status
 
-    class Backend:
-        def attach_native_job(self, native_id):
-            observed.append(("attach", native_id))
-            return Job()
+    def attach(handle):
+        observed.append(("attach", handle["native_id"]))
+        return Job()
 
-    monkeypatch.setattr(scheduler_operations, "_psij_executor", lambda _: Backend())
+    monkeypatch.setattr(psij_support, "_attach_job", attach)
 
 
 def test_follow_waits_for_psij_terminal_without_repeated_status_probes(tmp_path, monkeypatch):
@@ -236,11 +232,11 @@ def test_follow_waits_for_psij_terminal_without_repeated_status_probes(tmp_path,
         checks.append(_remote_id)
         return {"state": RunState.FINISHED.value, "return_code": 0}
 
-    monkeypatch.setattr(scheduler_operations, "_status_impl", status)
+    monkeypatch.setattr(psij_slurm, "status", status)
     outcome = remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
     assert outcome["state"] == RunState.FINISHED.value
-    assert observed == [("attach", "42"), "wait"]
-    assert checks == [remote_id]
+    assert observed == [("attach", "42")]
+    assert checks == []
 
 
 def test_follow_uses_native_terminal_when_status_query_is_transient_unknown(tmp_path, monkeypatch):
@@ -253,20 +249,20 @@ def test_follow_uses_native_terminal_when_status_query_is_transient_unknown(tmp_
         checks.append(_remote_id)
         return {"state": RunState.UNKNOWN.value}
 
-    monkeypatch.setattr(scheduler_operations, "_status_impl", status)
+    monkeypatch.setattr(psij_slurm, "status", status)
     outcome = remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
     assert outcome["state"] == RunState.FAILED.value
     assert outcome["return_code"] == 7
     assert outcome["failure_phase"] == FailurePhase.EXECUTION.value
-    assert observed == [("attach", "42"), "wait"]
-    assert checks == [remote_id]
+    assert observed == [("attach", "42")]
+    assert checks == []
 
 
 def test_follow_fallback_treats_completed_nonzero_psij_as_failed(tmp_path, monkeypatch):
     _, remote_id = _psij_handle(tmp_path)
     observed = []
     _stub_terminal_psij_job(monkeypatch, "COMPLETED", 7, observed)
-    monkeypatch.setattr(scheduler_operations, "_status_impl", lambda _remote_id: {"state": RunState.UNKNOWN.value})
+    monkeypatch.setattr(psij_slurm, "status", lambda _native_id: pytest.fail("FOLLOW must not poll Slurm"))
     outcome = remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO())
     assert outcome == {
         "state": RunState.FAILED.value,
@@ -274,7 +270,7 @@ def test_follow_fallback_treats_completed_nonzero_psij_as_failed(tmp_path, monke
         "failure_phase": FailurePhase.EXECUTION.value,
         "error": None,
     }
-    assert observed == [("attach", "42"), "wait"]
+    assert observed == [("attach", "42")]
 
 
 def test_cancel_requests_supervisor_without_inventing_terminal_state(tmp_path, monkeypatch):
