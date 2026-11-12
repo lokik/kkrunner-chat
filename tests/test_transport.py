@@ -356,7 +356,7 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
     class ProbedTransport(SshTransport):
         async def run(self, argv, *, cwd=None, input=None, check=True):
             calls.append((argv, json.loads(input), check))
-            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps([item]).encode(), stderr=b"")
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"version": 1, "result": [item]}).encode(), stderr=b"")
 
     query = getattr(ProbedTransport("example-host"), method)
     if status == "error":
@@ -364,14 +364,15 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
             asyncio.run(query(path))
     else:
         assert asyncio.run(query(path)) == (None if status == "missing" else expected)
-    assert calls == [
-        (
-            ("kkrunner-agent", "--protocol-version", "1", "query-files"),
-            {"paths": [path], "root": None, "digest": method == "file_digest"},
-            True,
-        )
-    ]
-
+    assert len(calls) == 1
+    command, payload, checked = calls[0]
+    assert command[:2] == ("python3", "-c")
+    assert "def query_files(" in command[2]
+    assert payload == {
+        "args": [[path]],
+        "kwargs": {"root": None, "digest": method == "file_digest"},
+    }
+    assert checked is True
 
 def test_ssh_file_query_preserves_command_errors():
     class Failed(SshTransport):
@@ -412,16 +413,16 @@ def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd)
         assert ("--zstd" in consumer) is zstd
 
 
-def test_ssh_endpoint_compression_roundtrips_from_transport():
-    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
-    from kkrunner.client.ssh import SshRunEndpoint
+def test_ssh_client_compression_roundtrips_from_transport():
+    from kkrunner.client import RunClient
+    from kkrunner.backends import DirectBackend
 
     for compressed in (False, True):
-        endpoint = describe_endpoint(SshRunEndpoint(SshTransport("cluster", zstd=compressed)))
-        assert endpoint.ssh_zstd is compressed
-        restored = endpoint_from_config(endpoint)
+        client = RunClient(DirectBackend, transport=SshTransport("cluster", zstd=compressed))
+        assert client.transport.zstd is compressed
+        restored = RunClient.from_config(client.transport.to_dict(), client.backend_config)
+        assert restored.transport == client.transport
         assert restored.transport.zstd is compressed
-
 
 @pytest.mark.parametrize("factory", (LocalTransport, _LoopbackSshTransport))
 @pytest.mark.parametrize("check", (False, True))
@@ -468,16 +469,16 @@ def test_transport_run_uses_start_and_preserves_completion(factory, check, send_
 def test_ssh_upload_preserves_original_error_when_remote_cleanup_fails(tmp_path):
     source = tmp_path / "source.txt"
     source.write_bytes(b"payload")
-    transport = SshTransport("unused", ssh="/missing-kkrunner-ssh-executable")
     commands = []
 
-    async def fake_run(argv, *, cwd=None, input=None, check=True):
-        commands.append(tuple(argv))
-        if argv[0] == "rm":
-            raise OSError("cleanup connection unavailable")
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
+    class FailingUpload(SshTransport):
+        async def run(self, argv, *, cwd=None, input=None, check=True):
+            commands.append(tuple(argv))
+            if argv[0] == "rm":
+                raise OSError("cleanup connection unavailable")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
 
-    transport.run = fake_run
+    transport = FailingUpload("unused", ssh="/missing-kkrunner-ssh-executable")
 
     async def check():
         with pytest.raises(FileNotFoundError) as original:
@@ -489,14 +490,13 @@ def test_ssh_upload_preserves_original_error_when_remote_cleanup_fails(tmp_path)
 
 
 def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, monkeypatch):
-    from kkrunner.remote import transport as module
+    from kkrunner.client.transports import ssh as module
 
-    transport = SshTransport("unused", ssh="/missing-kkrunner-ssh-executable")
+    class UnavailableTransport(SshTransport):
+        async def file_signature(self, path):
+            return (5, 1000000000)
 
-    async def signature(path):
-        return (5, 1000000000)
-
-    transport.file_signature = signature
+    transport = UnavailableTransport("unused", ssh="/missing-kkrunner-ssh-executable")
     staged = tmp_path / "staged.tmp"
     cleanup_calls = []
 
@@ -544,13 +544,13 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
     assert destination.stat().st_mtime_ns == mtime_ns
 
 
-def test_agent_endpoint_retains_target_python_configuration():
-    from kkrunner.client.ssh import SshRunEndpoint
-    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
+def test_ssh_client_retains_target_python_configuration():
+    from kkrunner.client import RunClient
+    from kkrunner.backends import DirectBackend
 
-    backend = SshRunEndpoint(
-        SshTransport("cluster", python_command=("python3.12",))
+    client = RunClient(
+        DirectBackend, transport=SshTransport("cluster", python_command=("python3.12",)),
     )
-    endpoint = describe_endpoint(backend)
-    assert endpoint.python_command == ("python3.12",)
-    assert describe_endpoint(endpoint_from_config(endpoint)) == endpoint
+    assert client.transport.python_command == ("python3.12",)
+    restored = RunClient.from_config(client.transport.to_dict(), client.backend_config)
+    assert restored.transport == client.transport
