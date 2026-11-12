@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from kkrunner.runs import LaunchSpec
+from kkrunner.client import StagingSpec, RunClient, SshTransport
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client.ssh import SshRunEndpoint
+
 
 
 
@@ -13,34 +13,32 @@ class _Transport:
 
 
 def test_run_context_is_staging_policy_not_executor(tmp_path):
-    endpoint = SshRunEndpoint(_Transport())
+    endpoint = RunClient(transport=SshTransport("cluster"))
     context = endpoint._context(
-        endpoint, LaunchSpec(local_root=tmp_path, remote_root="/scratch/a", input_sync="always", output_sync="missing")
+        endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/a", input_sync="always", output_sync="missing")
     )
     assert not hasattr(context, 'create_job')
-    assert context.endpoint is endpoint
+    assert context.client is endpoint
     assert context.transport is endpoint.transport
     assert context.local_root == tmp_path.resolve()
     assert context.remote_root == "/scratch/a"
 
 
 def test_different_run_staging_policies_share_one_endpoint(tmp_path):
-    endpoint = SshRunEndpoint(_Transport())
-    first = endpoint._context(endpoint, LaunchSpec(local_root=tmp_path, remote_root="/scratch/one"))
-    second = endpoint._context(endpoint, LaunchSpec(local_root=tmp_path, remote_root="/scratch/two"))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    first = endpoint._context(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/one"))
+    second = endpoint._context(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/two"))
     assert first is not second
-    assert first.endpoint is endpoint
-    assert second.endpoint is endpoint
+    assert first.client is endpoint
+    assert second.client is endpoint
     assert first.remote_root == "/scratch/one"
     assert second.remote_root == "/scratch/two"
 
 
 def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkeypatch):
     from kkrunner import RunState
-    from kkrunner.client.endpoint import describe_endpoint
-    from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest
-    from kkrunner.client.transport import LocalTransport
-    from kkrunner.runs.model import Execution, WorkingDirectory
+        from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
+        from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
     local = tmp_path / "local"
@@ -59,6 +57,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
             entry("data-a.out", source_pattern=str(local / "data-*.out")),
             FileEntry(str(local / "local-only.out")),
         ),
+        mapping=FileMapping(str(local), str(remote)),
         caches=(
             CacheEntry(entry("cache.dat"), (2, 3)),
             CacheEntry(entry("restart-*.pot")),
@@ -67,14 +66,14 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
             CacheEntry(FileEntry(str(local / "local-only-cache.dat"))),
         ),
     )
-    endpoint = SshRunEndpoint(LocalTransport())
-    context = endpoint._context(endpoint, LaunchSpec(local_root=local, remote_root=remote))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    context = endpoint._context(endpoint, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="test-manifest",
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(describe_endpoint(endpoint), WorkingDirectory(str(local), str(remote)), "opaque-id"),
+        execution=Execution(endpoint.transport, WorkingDirectory(str(local), str(remote)), "opaque-id"),
         files=files,
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -97,8 +96,8 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
 
 
 def test_absolute_remote_root_needs_no_remote_home_query(tmp_path, monkeypatch):
-    endpoint = SshRunEndpoint(_Transport())
-    context = endpoint._context(endpoint, LaunchSpec(local_root=tmp_path, remote_root="/scratch/../work"))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    context = endpoint._context(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/../work"))
     calls = []
 
     async def remote_home():
@@ -125,8 +124,8 @@ def test_absolute_remote_root_needs_no_remote_home_query(tmp_path, monkeypatch):
     ],
 )
 def test_home_relative_remote_root_still_resolves_home_once(tmp_path, monkeypatch, root, expected):
-    endpoint = SshRunEndpoint(_Transport())
-    context = endpoint._context(endpoint, LaunchSpec(local_root=tmp_path, remote_root=root))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    context = endpoint._context(endpoint, StagingSpec(local_root=tmp_path, remote_root=root))
     calls = []
 
     async def remote_home():
@@ -143,11 +142,9 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
     import builtins
 
     from kkrunner import RunState
-    from kkrunner.client.endpoint import describe_endpoint
-    from kkrunner.files.manifest import FileEntry, FileManifest
-    import kkrunner.client.remote_files as remote_files
-    from kkrunner.client.transport import LocalTransport
-    from kkrunner.runs.model import Execution, WorkingDirectory
+        from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
+    import kkrunner.client.file_session as remote_files
+        from kkrunner.runs.model import Execution, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
     local, remote = (tmp_path / "local", tmp_path / "remote")
@@ -155,15 +152,16 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
     remote.mkdir()
     stdout = local / "stdout.txt"
     stderr = local / "stderr.txt"
-    endpoint = SshRunEndpoint(LocalTransport())
-    context = endpoint._context(endpoint, LaunchSpec(local_root=local, remote_root=remote))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    context = endpoint._context(endpoint, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="stream-open-failure",
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=Execution(describe_endpoint(endpoint), WorkingDirectory(str(local), str(remote)), "remote-id"),
+        execution=Execution(endpoint.transport, WorkingDirectory(str(local), str(remote)), "remote-id"),
         files=FileManifest(
+            mapping=FileMapping(str(local), str(remote)),
             stdout=FileEntry(str(stdout), str(remote / "stdout.txt")),
             stderr=FileEntry(str(stderr), str(remote / "stderr.txt")),
         ),
@@ -199,8 +197,8 @@ def test_unmap_rejects_symlink_parent_outside_local_root(tmp_path):
     root.mkdir()
     outside.mkdir()
     (root / "redirect").symlink_to(outside, target_is_directory=True)
-    endpoint = SshRunEndpoint(_Transport())
-    context = endpoint._context(endpoint, LaunchSpec(local_root=root, remote_root="/remote"))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    context = endpoint._context(endpoint, StagingSpec(local_root=root, remote_root="/remote"))
     with pytest.raises(ValueError, match="outside mapped root"):
         asyncio.run(context.unmap_path("/remote/redirect/output.dat"))
 
@@ -210,6 +208,6 @@ def test_unmap_preserves_internal_symlink_spelling(tmp_path):
     actual = root / "actual"
     actual.mkdir(parents=True)
     (root / "alias").symlink_to(actual, target_is_directory=True)
-    endpoint = SshRunEndpoint(_Transport())
-    context = endpoint._context(endpoint, LaunchSpec(local_root=root, remote_root="/remote"))
+    endpoint = RunClient(transport=SshTransport("cluster"))
+    context = endpoint._context(endpoint, StagingSpec(local_root=root, remote_root="/remote"))
     assert asyncio.run(context.unmap_path("/remote/alias/output.dat")) == root / "alias" / "output.dat"
