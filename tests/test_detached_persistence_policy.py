@@ -36,7 +36,7 @@ def test_explicit_and_contextual_persistence(tmp_path):
     # A backend's natural recovery capability never forces persistent records.
     untracked_supervised = Run.create(EndpointClient(SupervisedBackend), spec, persistent=False)
     assert untracked_supervised.record is None
-    assert untracked_supervised._job._request_factory is not None
+    assert untracked_supervised._parts.submission_builder is not None
 
 
 def test_tracked_direct_completes_without_recoverable_handle(tmp_path):
