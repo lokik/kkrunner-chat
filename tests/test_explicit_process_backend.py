@@ -3,37 +3,39 @@
 import pytest
 
 from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.client.local import LocalRunEndpoint
+from kkrunner.client import RunClient, LocalTransport
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client.job import Job
-from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_from_config, describe_endpoint
+from kkrunner.backends.config import BackendConfig
 
 
 def test_direct_mode_never_switches_implicitly(tmp_path):
-    backend = LocalRunEndpoint()
+    backend = RunClient()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
-    assert isinstance(backend.create_job(spec), Job)
-    assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
+    assert isinstance(backend.create_run_parts(spec).job, Job)
+    assert isinstance(backend.create_run_parts(spec, submission_key="run-id").job, Job)
     manager = RunManager(RunStore(tmp_path / "runs"))
     assert manager.create_run(backend, spec).record is not None
 
 
 def test_supervised_mode_is_explicit_and_persistable(tmp_path):
-    backend = LocalRunEndpoint(SupervisedBackend)
+    backend = RunClient(SupervisedBackend)
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
-    assert isinstance(backend.create_job(spec), Job)
-    assert isinstance(backend.create_job(spec, submission_key="run-id"), Job)
-    endpoint = describe_endpoint(backend)
-    assert endpoint == ExecutionEndpointConfig(location="local", backend="process")
-    assert isinstance(endpoint_from_config(endpoint).backend, SupervisedBackend)
-    assert isinstance(endpoint_from_config(ExecutionEndpointConfig()), LocalRunEndpoint)
-    assert endpoint != describe_endpoint(LocalRunEndpoint())
+    assert isinstance(backend.create_run_parts(spec).job, Job)
+    assert isinstance(backend.create_run_parts(spec, submission_key="run-id").job, Job)
+    assert backend.transport == LocalTransport()
+    assert backend.backend_config == BackendConfig("process")
+    restored = RunClient.from_config(backend.transport.to_dict(), backend.backend_config)
+    assert isinstance(restored.backend, SupervisedBackend)
+    assert isinstance(RunClient.from_config(LocalTransport().to_dict(), BackendConfig()).backend,
+                      type(RunClient().backend))
+    assert backend.backend_config != RunClient().backend_config
 
 
 def test_native_client_capabilities_match_backend(tmp_path):
-    direct = LocalRunEndpoint()
-    supervised = LocalRunEndpoint(SupervisedBackend)
-    assert direct.backend.session_bound
+    direct = RunClient()
+    supervised = RunClient(SupervisedBackend)
+    assert direct.backend.execution_mode == "direct"
     assert callable(supervised.open_run_parts)
 
 

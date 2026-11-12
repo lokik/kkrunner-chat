@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from kkrunner.client.operations import BackendOperation
-from kkrunner.client.transport import LocalTransport, SshTransport
+from kkrunner.client.transports import LocalTransport, SshTransport
 
 
 def portable_add(a, b):

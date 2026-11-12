@@ -3,8 +3,7 @@ import asyncio
 import pytest
 
 from kkrunner import ExecutionSpec
-from kkrunner.runs import LaunchSpec
-from kkrunner.client.ssh import SshRunEndpoint
+from kkrunner.client import StagingSpec, RunClient, SshTransport
 
 
 class _Transport:
@@ -22,7 +21,7 @@ class _Transport:
     ids=("target-a", "target-b", "implicit-home", "explicit-home"),
 )
 def test_remote_submission_directory_uses_target_namespace_without_io(tmp_path, relative, remote_root, expected):
-    executor = SshRunEndpoint(_Transport())
+    executor = RunClient(transport=SshTransport("cluster"))
     directory = tmp_path / relative
     directory.mkdir(parents=True)
     options = {} if remote_root is None else {"remote_root": remote_root}
@@ -31,7 +30,7 @@ def test_remote_submission_directory_uses_target_namespace_without_io(tmp_path, 
         input_file=None,
         output_file=None,
         directory=directory,
-        launch=LaunchSpec(local_root=tmp_path, **options),
+        staging=StagingSpec(local_root=tmp_path, **options),
     )
     assert executor.submission_directory(spec) == expected
 
@@ -47,8 +46,8 @@ def test_context_and_submission_directory_share_local_path_resolution(tmp_path, 
     directory.mkdir(parents=True)
     (local_root / "case-alias").symlink_to(directory, target_is_directory=True)
     executor = SshRunEndpoint(_Transport())
-    launch = LaunchSpec(local_root=local_root, remote_root="/scratch/project")
-    spec = ExecutionSpec(argv=("true",), directory=local_root / name, input_file=None, output_file=None, launch=launch)
+    launch = StagingSpec(local_root=local_root, remote_root="/scratch/project")
+    spec = ExecutionSpec(argv=("true",), directory=local_root / name, input_file=None, output_file=None, staging=launch)
     context = executor._context(executor, launch)
 
     async def home():
@@ -67,9 +66,9 @@ def test_context_and_submission_directory_reject_symlink_escaping_root(tmp_path)
     outside.mkdir()
     (local_root / "escape").symlink_to(outside, target_is_directory=True)
     executor = SshRunEndpoint(_Transport())
-    launch = LaunchSpec(local_root=local_root, remote_root="/scratch/project")
+    launch = StagingSpec(local_root=local_root, remote_root="/scratch/project")
     spec = ExecutionSpec(
-        argv=("true",), directory=local_root / "escape", input_file=None, output_file=None, launch=launch
+        argv=("true",), directory=local_root / "escape", input_file=None, output_file=None, staging=launch
     )
     context = executor._context(executor, launch)
     with pytest.raises(ValueError, match="outside mapped root"):
