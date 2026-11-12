@@ -50,6 +50,7 @@ def replay_observer(monkeypatch):
 
 def test_manager_attach_forwards_initial_output_listener(tmp_path, monkeypatch, replay_observer):
     client, attachment = _client_and_attachment(tmp_path, monkeypatch)
+    (tmp_path / "run.out").write_bytes(b"replayed output\n")
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
         directory=tmp_path, backend=client.backend_config,
