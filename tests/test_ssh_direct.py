@@ -13,7 +13,7 @@ from kkrunner.files.queries import finalize_upload, query_files
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command
+from kkrunner.client.transports.rpc import operation_command, operation_result
 
 _FINALIZE_SOURCE = operation_command(Operation.standalone(finalize_upload), python=(sys.executable,))[-1]
 _QUERY_SOURCE = operation_command(Operation.standalone(query_files), python=(sys.executable,))[-1]
@@ -63,7 +63,7 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
     outcome = run.run()
     assert outcome.return_code == 0
     assert run.state == RunState.FINISHED
-    assert run.backend_id is None
+    assert run.backend_id is not None  # live session identity, not a durable reattach token
     assert run.spec is spec
     assert run.spec.output_file == str(directory / "stdout.txt")
     assert run.spec.error_file == str(directory / "stderr.txt")
@@ -113,7 +113,7 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
     result = asyncio.run(LocalTransport().run((sys.executable, "-c", _QUERY_SOURCE), input=json.dumps({
         "args": [[str(target)]], "kwargs": {"root": None, "digest": True},
     }).encode()))
-    value = json.loads(result.stdout)
+    value = operation_result(result.stdout.decode())
     assert value[0]["status"] == "ok"
     assert value[0]["size"] == 3
     assert len(value[0]["digest"]) == 64
@@ -128,8 +128,8 @@ def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
     ).job
     assert type(local) is Job
     assert type(remote) is Job
-    assert local.adapter.expose_pid is True
-    assert remote.adapter.expose_pid is False
+    assert local.execution.transport.is_local
+    assert not remote.execution.transport.is_local
 
 def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
     root = tmp_path / "local"
@@ -148,23 +148,23 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
 
 
 def test_direct_endpoint_round_trip_and_normalized_identity():
-    from kkrunner.client.endpoint import ExecutionEndpointConfig, endpoint_from_config, describe_endpoint
+    from kkrunner.client.transports import transport_from_dict
+    from kkrunner.client.transports import require_persistable_transport
+    from dataclasses import asdict
 
-    endpoint = describe_endpoint(
-        SshRunEndpoint(SshTransport("user@example.net", options=("-p", "2200")))
-    )
-    assert endpoint.location == "ssh"
-    assert endpoint.backend == "direct"
-    restored = endpoint_from_config(endpoint)
-    assert isinstance(restored, SshRunEndpoint)
-    assert describe_endpoint(restored) == endpoint
-    configured = SshRunEndpoint(
-        SshTransport("user@example.net", python_command=("python3.12",))
-    )
-    normalized_python = describe_endpoint(configured)
-    assert normalized_python.python_command == ("python3.12",)
-    assert describe_endpoint(endpoint_from_config(normalized_python)) == normalized_python
-    assert normalized_python != ExecutionEndpointConfig(location="ssh", host="user@example.net")
+    transport = SshTransport("user@example.net", options=("-p", "2200"))
+    client = EndpointClient(DirectBackend, transport=transport)
+    configured = client.backend_config
+    restored = EndpointClient.from_config(asdict(transport), asdict(configured))
+    assert restored.transport == transport
+    assert restored.backend_config == configured
+    assert isinstance(restored.transport, SshTransport)
+    assert not restored.transport.is_local
+
+    python = SshTransport("user@example.net", python_command=("python3.12",))
+    restored_python = EndpointClient.from_config(asdict(python), asdict(configured))
+    assert restored_python.transport == python
+    assert restored_python.transport.python_command == ("python3.12",)
 
 
 def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
