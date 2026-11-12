@@ -76,6 +76,20 @@ jobs:
               assert (root / path).is_file(), path
           subprocess.run([sys.executable, str(root / 'tests/smoke_distribution.py')],
                          cwd=directory, check=True)
+          # While the endpoint-to-client test migration is underway, keep a
+          # focused, independently collectable set visible before global pytest.
+          focused = [
+              'tests/test_remote_backend_options.py',
+              'tests/test_remote_result_files_fetch.py',
+              'tests/test_remote_run_context.py',
+              'tests/test_optional_remote_output.py',
+              'tests/test_remote_output_integrity.py',
+              'tests/test_remote_endpoint_status.py',
+              'tests/test_remote_stream_protocol.py',
+              'tests/test_reservations.py',
+          ]
+          subprocess.run([sys.executable, '-m', 'pytest', '-q', *focused],
+                         cwd=root, check=True)
           subprocess.run([sys.executable, '-m', 'pytest', '-q'], cwd=root, check=True)
           PY
 
