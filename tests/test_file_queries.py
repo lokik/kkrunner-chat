@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files import queries
-from kkrunner.client.transport import LocalTransport
+from kkrunner.client.transports import LocalTransport
 
 from .test_transport import _LoopbackSshTransport
 
@@ -100,7 +100,7 @@ def test_ssh_combines_globs_and_metadata_in_one_request(tmp_path):
     assert len(items) == 3
     assert all(item["mtime_ns"] == os.stat(item["path"]).st_mtime_ns for item in items)
     assert len(calls) == 1
-    assert calls[0][-1] == "query-files"
+    assert calls[0][1] == "-c"\n    assert "def query_files(" in calls[0][2]
 
 
 @pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
@@ -137,15 +137,14 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
 
 
 def test_remote_endpoint_reuses_configured_target_python_command():
-    from kkrunner.client.endpoint import endpoint_from_config, describe_endpoint
-    from kkrunner.client.ssh import SshRunEndpoint
-    from kkrunner.client.transport import SshTransport
+    from kkrunner.client import RunClient, SshTransport
+    from kkrunner.backends.config import BackendConfig
 
     command = (sys.executable,)
     transport = SshTransport("host", python_command=command)
-    endpoint = SshRunEndpoint(transport)
-    assert endpoint.transport.python_command == command
-    restored = endpoint_from_config(describe_endpoint(endpoint))
+    client = RunClient(transport=transport)
+    assert client.transport.python_command == command
+    restored = RunClient.from_config(transport.to_dict(), client.backend_config)
     assert restored.transport.python_command == command
 
 
