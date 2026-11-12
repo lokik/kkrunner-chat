@@ -158,6 +158,10 @@ class _Files:
         self.spec = ExecutionSpec(["true"], directory=tmp_path)
         self.result = ExecutionOutcome(output_file=str(tmp_path / "stdout"), return_code=0)
         self.files = None
+        self.is_local = False  # A failed remote transfer is a DOWNLOAD failure.
+
+    def prepare_submission(self):
+        self.events.append("stage")
 
     def prepare_job(self):
         self.events.append("prepare")
@@ -167,9 +171,9 @@ class _Files:
         return {"stream_offsets": {}, "stream_writer": lambda data, kind: None,
                 "stream_paths": (None, None)}
 
-    def synchronize(self, state):
+    def finalize(self, status):
         self.events.append("sync")
-        assert state == RunState.FINISHED
+        assert status.state == RunState.FINISHED
         if self.error is not None:
             raise self.error
 
@@ -188,7 +192,8 @@ def test_run_synchronizes_before_postprocessing(tmp_path):
     ))
     assert run.run() == 0
     assert run.state == RunState.FINISHED
-    assert events.index("wait") < events.index("sync") < events.index("process") < events.index("close")
+    # Owned streams must be flushed/closed before postprocessing sees files.
+    assert events.index("wait") < events.index("sync") < events.index("close") < events.index("process")
 
 
 def test_download_failure_does_not_change_successful_job_state(tmp_path):
@@ -218,7 +223,7 @@ def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
         run.submit()
     assert run.state == RunState.FAILED
     assert "submit" not in events
-    assert events == ["close"]
+    assert events == ["stage", "close"]
 
 
 def test_run_parts_own_file_cleanup_before_and_after_handoff(tmp_path):
@@ -280,7 +285,9 @@ def test_untracked_run_does_not_postprocess_after_failed_local_follow():
     assert observed == ["wait"]
 
 
-def test_incomplete_local_follow_marks_only_declared_streams_failed(tmp_path):
+def test_incomplete_local_follow_marks_pending_declared_files_failed(tmp_path):
+    from kkrunner.backends import DirectBackend
+    from kkrunner.client import EndpointClient
     from kkrunner.files.manifest import FileManifest
 
     spec = ExecutionSpec(
@@ -289,69 +296,49 @@ def test_incomplete_local_follow_marks_only_declared_streams_failed(tmp_path):
         output_files=("other-result.dat",),
     )
     job = _FinishedJob([])
+    job.spec = spec
     job.state = RunState.FINISHED
     job.output_error = OSError("FOLLOW stream truncated")
-    run = Run(job, local_files=FileManifest.from_spec(spec).initialize_availability())
-
+    files = EndpointClient(DirectBackend).file_session(spec)
+    files._files = FileManifest.from_spec(spec).initialize_availability()
+    run = Run(job, file_session=files)
     run._finish()
 
     assert run.state is RunState.FAILED
     assert run.failure_phase is FailurePhase.OUTPUT
-    assert run.files.stdout.availability_state == "failed"
-    assert run.files.stderr.availability_state == "failed"
-    assert run.files.stdout.availability_message == "FOLLOW stream truncated"
-    assert run.files.outputs[0].availability_state == "pending"
+    for entry in run.files.artifacts:
+        assert entry.availability_state == "failed"
+        assert entry.availability_message == "FOLLOW stream truncated"
 
 
-def test_managed_follow_writer_failure_terminates_and_reaps_helper(tmp_path):
-    import asyncio
+def test_managed_follow_writer_failure_preserves_native_success(tmp_path):
+    """Delivery failure is a client error, not a false backend failure."""
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.client.backend_execution import ManagedExecution
+    from kkrunner.client.transports import LocalTransport
 
-    class Follow:
-        def __init__(self):
-            self.stdout = asyncio.StreamReader()
-            self.stderr = asyncio.StreamReader()
-            self.stdout.feed_data(b"data")
-            self.stdout.feed_eof()
-            self.stderr.feed_eof()
-            self.terminated = False
-            self.reaped = False
-            self.exited = asyncio.Event()
-            self.terminal = None
-
-        def terminate(self):
-            self.terminated = True
-            self.exited.set()
-
-        def kill(self):
-            self.exited.set()
-
-        async def wait(self):
-            await self.exited.wait()
-            self.reaped = True
-            return -15
-
-    class Context:
-        backend = "process"
-        def __init__(self):
-            self.follow = None
-        async def _follow(self, *args, **kwargs):
-            self.follow = Follow()
-            return self.follow
-        async def _status(self, *args, **kwargs):
+    class FollowTransport(LocalTransport):
+        async def follow(self, operation, identity, on_output, **options):
+            assert identity == "opaque"
+            on_output(b"data", "out")
             return {"state": "finished", "return_code": 0}
 
-    context = Context()
-    job = Job(context, ExecutionSpec(("true",), directory=str(tmp_path)),
-              backend_id="opaque", remote_directory=str(tmp_path),
-              status={"state": "running"})
+    execution = ManagedExecution(
+        SupervisedBackend(), FollowTransport(),
+        ref=JobRef("process", "opaque"), status={"state": "running"},
+    )
+    job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))
+
     def fail_writer(data, kind):
         raise OSError("output cannot be written")
+
     job.configure_observation(
         stream_offsets={"out": 0, "err": 0},
         stream_writer=fail_writer, stream_paths=(None, None),
     )
-    asyncio.run(job._monitor())
-    assert context.follow.terminated
-    assert context.follow.reaped
+    job.start()
+    job.wait()
     assert job.state is RunState.FINISHED
+    assert job.return_code == 0
     assert isinstance(job.output_error, OSError)
+    assert str(job.output_error) == "output cannot be written"
