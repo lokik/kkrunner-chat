@@ -15,9 +15,9 @@ def _record(tmp_path):
         directory=tmp_path,
         files=FileManifest(stdout=FileEntry(local_path=str(tmp_path / "run.out"), availability_state="pending")),
         metadata={"test": {"task": "DOS"}},
-        processing_required=True,
+        processing_required=False,
     )
-    record = manager.transition(record, state=RunState.POSTPROCESSING)
+    record = manager.transition(record, state=RunState.DOWNLOADING)
     return (manager, record)
 
 

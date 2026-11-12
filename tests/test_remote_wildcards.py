@@ -128,7 +128,7 @@ def test_exact_and_wildcard_outputs_share_availability_tracking(tmp_path):
     assert entries[str(pattern)].availability_state == "available"
     remote_workdir = remote_root / "calculation"
     for name in ("bands.dat", "part-a.dat", "part-b.dat", "part-c.dat"):
-        assert sum((src == remote_workdir / name for src, _ in transport.get_files)) == 1
+        assert sum((src == remote_workdir / name for src, _ in transport.downloads)) == 1
 
 
 def test_exact_and_wildcard_caches_keep_individual_sync_states(tmp_path):
@@ -192,10 +192,10 @@ def test_local_transfer_batches_use_their_directional_file_primitives(tmp_path):
     transport = TracedTransport()
 
     async def check():
-        await transport.put_files("nested/*.dat", source, dest)
+        await transport.uploads("nested/*.dat", source, dest)
         assert transport.operations == ["put"]
         transport.operations.clear()
-        await transport.get_files("nested/*.dat", source, dest)
+        await transport.downloads("nested/*.dat", source, dest)
         assert transport.operations == ["get", "put"]
 
     asyncio.run(check())
@@ -221,8 +221,8 @@ def test_overlapping_exact_and_wildcard_caches_are_transferred_once(tmp_path):
     runner.run()
     remote_a = remote_root / "calculation" / "restart-a.dat"
     remote_b = remote_root / "calculation" / "restart-b.dat"
-    assert sum((src == remote_a for src, _ in transport.get_files)) == 1
-    assert sum((src == remote_b for src, _ in transport.get_files)) == 1
+    assert sum((src == remote_a for src, _ in transport.downloads)) == 1
+    assert sum((src == remote_b for src, _ in transport.downloads)) == 1
     entries = {item.file.local_path: item.file for item in runner.files.caches}
     assert entries[str(exact)].availability_state == "available"
     assert entries[str(pattern)].availability_state == "available"
@@ -265,7 +265,7 @@ def test_overlapping_optional_and_required_wildcards_sync_each_file_once(tmp_pat
     assert runner.run().return_code == 0
     for filename, expected in (("part-a.dat", "a"), ("part-b.dat", "b")):
         assert (workdir / filename).read_text() == expected
-        assert sum((source == remote_root / "calculation" / filename for source, _ in transport.get_files)) == 1
+        assert sum((source == remote_root / "calculation" / filename for source, _ in transport.downloads)) == 1
     entries = {item.local_path: item for item in runner.files.outputs}
     assert entries[str(optional)].availability_state == "available"
     assert entries[str(required)].availability_state == "available"
@@ -310,7 +310,7 @@ def test_mandatory_input_alias_cannot_be_made_optional(tmp_path):
     workdir = tmp_path / "local" / "calculation"
     missing = workdir / "mandatory.pot"
     executor, spec, _, _ = _text_run(tmp_path, declared_input_files=(TaskFile(missing, optional=True), missing))
-    with pytest.raises(SubmissionNotStarted, match="Conflicting optionality"):
+    with pytest.raises(ValueError, match="Conflicting optionality"):
         _processed_run(executor, spec).run()
 
 
@@ -331,7 +331,7 @@ def test_remote_collects_exact_cache_created_during_run(tmp_path):
     assert runner.run().return_code == 0
     assert cache_file.read_text() == "fresh"
     remote_cache = remote_root / "calculation" / "fresh-cache.dat"
-    assert all((source != cache_file for source, _ in transport.put_files))
-    assert sum((source == remote_cache for source, _ in transport.get_files)) == 1
+    assert all((source != cache_file for source, _ in transport.uploads))
+    assert sum((source == remote_cache for source, _ in transport.downloads)) == 1
     entries = {entry.file.local_path: entry.file for entry in runner.files.caches}
     assert entries[str(cache_file)].availability_state == "available"
