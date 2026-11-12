@@ -100,7 +100,8 @@ def test_ssh_combines_globs_and_metadata_in_one_request(tmp_path):
     assert len(items) == 3
     assert all(item["mtime_ns"] == os.stat(item["path"]).st_mtime_ns for item in items)
     assert len(calls) == 1
-    assert calls[0][1] == "-c"\n    assert "def query_files(" in calls[0][2]
+    assert calls[0][1] == "-c"
+    assert "def query_files(" in calls[0][2]
 
 
 @pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
