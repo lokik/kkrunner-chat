@@ -5,10 +5,12 @@ import asyncio
 import pytest
 
 from kkrunner.client.job import Job
+from kkrunner.client.backend_execution import DirectExecution
+from kkrunner.client.transports import LocalTransport
+from kkrunner.backends import DirectBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
 
-@pytest.mark.parametrize("job_class", (Job,))
 @pytest.mark.parametrize(
     "state, message",
     (
@@ -18,18 +20,17 @@ from kkrunner.runs.base import ExecutionSpec, RunState
         (RunState.FINISHED, "Attached run has not been started"),
     ),
 )
-def test_wait_without_started_monitor_fails_immediately(tmp_path, job_class, state, message):
+def test_wait_without_started_monitor_fails_immediately(tmp_path, state, message):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = job_class.direct(spec) if job_class is Job else job_class(None, spec)
+    job = Job(DirectExecution(DirectBackend(), LocalTransport()), spec)
     job._state = state
     with pytest.raises(RuntimeError, match=message):
         job.wait()
 
 
-@pytest.mark.parametrize("job_class", (Job,))
-def test_wait_and_run_async_return_completed_monitor_result(tmp_path, job_class):
+def test_wait_and_run_async_return_completed_monitor_result(tmp_path):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = job_class.direct(spec)
+    job = Job(DirectExecution(DirectBackend(), LocalTransport()), spec)
     job._state = RunState.FINISHED
     job._thread = object()
     job._done.set()
