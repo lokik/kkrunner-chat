@@ -231,15 +231,27 @@ def test_cancelled_run_preserves_partial_stream_availability(tmp_path):
     assert out.read_bytes() == b"partial output\n"
 
 
-def test_terminal_local_runner_never_regresses_to_running(tmp_path, monkeypatch):
+def _attached_job(tmp_path, *, state="running", return_code=None):
+    """Build a managed client Job with real backend identity and cached facts."""
+    from kkrunner.backends.contracts import JobRef
+    from kkrunner.client.backend_execution import bind_execution
 
-    runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
-    runner._backend_id = "opaque-handle"
-    runner._state = RunState.FINISHED
-    runner._return_code = 0
-    runner.result.return_code = 0
-    monkeypatch.setattr(runner.context, "_status", lambda *args: RunStatus(RunState.RUNNING))
-    assert runner.state == RunState.FINISHED
+    binding = bind_execution(
+        SupervisedBackend(), LocalTransport(),
+        ref=JobRef("process", "opaque-target-id"),
+        status={"state": state, "return_code": return_code},
+    )
+    return Job(binding, _spec(tmp_path))
+
+
+def test_terminal_local_runner_never_regresses_to_running(tmp_path, monkeypatch):
+    runner = _attached_job(tmp_path, state="finished", return_code=0)
+
+    async def forbidden_status():
+        pytest.fail("Reading cached terminal state must not query the backend")
+
+    monkeypatch.setattr(runner.execution, "status", forbidden_status)
+    assert runner.state is RunState.FINISHED
     assert runner.return_code == 0
 
 
@@ -306,15 +318,14 @@ def test_local_project_request_uses_common_command_fields(tmp_path):
 
 
 def test_terminal_project_runner_does_not_query_backend(monkeypatch, tmp_path):
-    import pytest
+    runner = _attached_job(tmp_path, state="finished", return_code=0)
 
-    spec = _spec(tmp_path)
-    client = RunClient(SupervisedBackend)
-    context = client._context(client, StagingSpec())
-    runner = Job(context, spec, backend_id="old-supervisor", remote_directory=str(tmp_path),
-                 status={"state": "finished", "return_code": 0})
-    monkeypatch.setattr(context, "_status", lambda *args: pytest.fail("Terminal runner must not query backend"))
+    async def forbidden_status():
+        pytest.fail("Terminal Job must not query the backend on state access")
+
+    monkeypatch.setattr(runner.execution, "status", forbidden_status)
     assert runner.state is RunState.FINISHED
+    assert runner.return_code == 0
 
 
 def test_local_project_invalid_output_is_known_non_submission(tmp_path):
@@ -390,20 +401,19 @@ assert (root / 'run.out').read_text() == '42\\n'
 def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatch):
     """A terminal backend does not erase the local observation failure."""
     import asyncio
+    from kkrunner.backends.contracts import JobStatus
     from kkrunner.remote.stream import StreamProtocolError
 
-    runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
-    runner._backend_id = "opaque-target-id"
-    runner._remote_directory = str(tmp_path)
+    runner = _attached_job(tmp_path)
 
-    async def follow(*args, **kwargs):
+    async def follow(_on_output):
         raise StreamProtocolError("Unknown supervisor stream protocol")
 
-    async def status(*args, **kwargs):
-        return {"state": "finished", "return_code": 0}
+    async def status():
+        return JobStatus(RunState.FINISHED, return_code=0)
 
-    monkeypatch.setattr(runner.context, "_follow", follow)
-    monkeypatch.setattr(runner.context, "_status", status)
+    monkeypatch.setattr(runner.execution, "observe", follow)
+    monkeypatch.setattr(runner.execution, "status", status)
     asyncio.run(runner._monitor())
     assert runner.state is RunState.FINISHED
     assert isinstance(runner.output_error, StreamProtocolError)
@@ -420,7 +430,7 @@ def test_unnameable_file_declared_for_local_managed_is_known_prelaunch_error(tmp
 def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, monkeypatch):
     import asyncio
     from kkrunner.backends import PsijBackend
-    
+    from kkrunner.client.contracts import Operation
     from kkrunner.remote.handles import encode_handle
 
     calls = []
@@ -430,11 +440,12 @@ def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, mon
         return {"state": "running", "return_code": None}
 
     monkeypatch.setattr(PsijBackend, "follow", staticmethod(follow))
-    endpoint = RunClient(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
+    client = RunClient(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
     identity = encode_handle({"kind": "psij", "executor_name": "pbs", "url": "local", "native_id": "native-id"})
-    result = asyncio.run(endpoint._follow(
-        str(tmp_path), identity, on_output=lambda *_: None,
-        offsets={"out": 4, "err": None}, stdout_path=str(tmp_path / "run.out"),
+    result = asyncio.run(client.transport.follow(
+        Operation.for_backend(PsijBackend, "follow"), identity, lambda *_: None,
+        stdout_offset=4, stderr_offset=None, stdout_path=str(tmp_path / "run.out"),
+        stderr_path=None,
     ))
     assert result["state"] == "running"
     assert calls == [(identity, {
@@ -445,21 +456,18 @@ def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, mon
 
 def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_path, monkeypatch):
     import asyncio
-    
-    from kkrunner.backends import SupervisedBackend
+    from kkrunner.backends.contracts import JobStatus
 
-    job = _managed_job(_spec(tmp_path))
-    job._backend_id = "opaque-psij-id"
-    job._remote_directory = str(tmp_path)
+    job = _attached_job(tmp_path)
 
-    async def follow(*args, **kwargs):
-        return {"state": "finished", "return_code": 0}
+    async def follow(_on_output):
+        return JobStatus(RunState.FINISHED, return_code=0)
 
-    async def never_poll(*args, **kwargs):
+    async def never_poll():
         raise AssertionError("FOLLOW already supplied authoritative terminal facts")
 
-    monkeypatch.setattr(job.context, "_follow", follow)
-    monkeypatch.setattr(job.context, "_status", never_poll)
+    monkeypatch.setattr(job.execution, "observe", follow)
+    monkeypatch.setattr(job.execution, "status", never_poll)
     asyncio.run(job._monitor())
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
