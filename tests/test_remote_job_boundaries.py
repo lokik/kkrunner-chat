@@ -121,6 +121,8 @@ def test_pre_submit_configuration_failure_leaves_no_publishable_request(tmp_path
 
 class _FinishedJob:
     def __init__(self, events):
+        # An observed Job still carries its immutable execution specification.
+        self.spec = ExecutionSpec(("true",), directory=".")
         self.events = events
         self.state = RunState.NEW
         self.output_error = None
@@ -140,6 +142,13 @@ class _FinishedJob:
     def wait(self):
         self.events.append("wait")
         return ExecutionOutcome(return_code=0)
+
+    def status(self):
+        from kkrunner.backends.contracts import job_status_from_facts
+        return job_status_from_facts(
+            self.state, return_code=self.return_code,
+            failure_phase=self.failure_phase, message=self.failure_message,
+        )
 
 
 class _Files:
