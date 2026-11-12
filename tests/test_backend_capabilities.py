@@ -23,7 +23,7 @@ def test_capabilities_are_immutable_and_instance_specific():
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
         assert PsijBackend(executor_name=name).supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
-    assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == frozenset({BackendCapability.REATTACH})
+    assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
 
 
 def test_backend_owns_its_options_without_a_second_endpoint_copy():
@@ -36,7 +36,7 @@ def test_backend_owns_its_options_without_a_second_endpoint_copy():
         assert not hasattr(endpoint, "backend_options")
         assert not hasattr(endpoint, "supports_reattachment")
         assert not hasattr(endpoint, "requires_backend_identity")
-        assert endpoint.backend.supports == frozenset({BackendCapability.REATTACH})
+        assert endpoint.backend.supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
         assert dict(endpoint.backend.options) == {"executor_name": "pbs", "url": None}
     assert not hasattr(EndpointClient, "supports_reattachment")
     with pytest.raises(TypeError):
