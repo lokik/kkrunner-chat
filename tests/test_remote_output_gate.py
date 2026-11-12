@@ -196,7 +196,11 @@ def test_unframed_backend_follow_failure_does_not_invent_terminal_state(tmp_path
         transport, "follow_error", subprocess.CalledProcessError(17, ("ssh",)),
     )
     run.start()
-    run.wait()
-    assert run.state == RunState.UNKNOWN
-    assert run.failure_phase is None
+    with pytest.raises(subprocess.CalledProcessError):
+        run.wait()
+    assert run._job.state == RunState.FINISHED
+    assert run.result.return_code == 0
+    assert isinstance(run._job.output_error, subprocess.CalledProcessError)
+    assert run.state == RunState.FAILED
+    assert run.failure_phase is FailurePhase.OUTPUT
     assert output.closed
