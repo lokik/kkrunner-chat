@@ -32,7 +32,7 @@ def test_backend_imports_in_fresh_interpreter(kind):
 
 
 def test_direct_and_managed_operations_have_distinct_contracts():
-    assert set(static_methods(backend_class("direct"))) == {"stream"}
+    assert set(static_methods(backend_class("direct"))) == {"prepare_mpi", "prepare_target_outputs", "stream"}
     assert set(static_methods(backend_class("process"))) == MANAGED_OPERATIONS
 
 
@@ -62,7 +62,8 @@ def test_backend_operation_reference_is_well_formed(kind):
     backend = backend_class(kind)
     operation = Operation.for_backend(backend, "stream")
     assert operation.backend is backend
-    assert operation.function == "stream"
+    assert operation.method == "stream"
+    assert operation.function is None
 
 
 def test_portable_direct_stream_is_self_contained():
