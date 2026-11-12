@@ -2,7 +2,9 @@
 
 
 def open_job(endpoint, attachment, *, start=True, **options):
-    job = endpoint.open_run_parts(attachment, **options).job
+    parts = endpoint.open_run_parts(attachment, **options)
+    parts.configure_observation()
+    job = parts.job
     if start:
         job.start()
     return job
