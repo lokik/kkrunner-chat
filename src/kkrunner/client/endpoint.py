@@ -204,6 +204,30 @@ class EndpointClient:
             files.close()
             raise
 
+    def collect_ended_direct_files(self, record, status):
+        """Recover outputs without reattaching or resubmitting direct execution.
+
+        The original observer may have died, but the persisted manifest still
+        defines which target files are eligible for retrieval.
+        """
+        from kkrunner.client.contracts import JobAttachment
+        if self.backend.name != "direct":
+            raise ValueError("Only direct execution uses unobserved file collection")
+        self._validate_run(record)
+
+        async def collect():
+            context = FileContext(self, StagingSpec.from_mapping(record.files.mapping))
+            session = await FileSession.from_attachment(
+                context, JobAttachment(record.execution, record.files),
+            )
+            try:
+                session.configure_stream_retrieval(True)
+                return await session.finalize_async(status)
+            finally:
+                session.close()
+
+        return _run_sync(collect())
+
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         if BackendCapability.REATTACH not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability

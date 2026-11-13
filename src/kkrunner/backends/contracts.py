@@ -205,6 +205,9 @@ class DirectOperations(Protocol):
     def prepare_target_outputs(request: ExecutionRequest) -> None: ...
 
     @staticmethod
+    def status(job_ref: str) -> StatusReply: ...
+
+    @staticmethod
     async def stream(
         request: ExecutionRequest, *,
         stdout: Optional[Union[ByteSink, AsyncByteSink]] = None,

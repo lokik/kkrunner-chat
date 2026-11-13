@@ -114,8 +114,13 @@ class DirectExecution(_Execution):
             raise
 
     async def status(self):
-        # The live call is authoritative; there is no independent native query.
-        return self.snapshot
+        # Preserve confirmed live-call facts. Only a lost observer requires
+        # querying the original process by its durable identity.
+        if self.ref is None or self.snapshot.state != RunState.UNKNOWN:
+            return self.snapshot
+        return self._record(
+            await self.transport.call(self._operation("status"), self.ref.token)
+        )
 
     async def cancel(self):
         await self._call.cancel()

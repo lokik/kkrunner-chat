@@ -10,7 +10,7 @@ Choose an execution backend
      - Requirements and limits
    * - ``DirectBackend``
      - A direct subprocess on the client machine
-     - Opaque session identity; no reattachment or durable exit receipt.
+     - Boot-scoped process identity enables status and safe Linux cancellation; no reattachment or durable exit receipt.
    * - ``SupervisedBackend``
      - A reconnectable process on the client machine
      - POSIX process groups and Unix sockets, plus retained supervisor receipts.
@@ -105,10 +105,13 @@ configured with ``SshTransport(python_command=("python3.12",))``.
    result = Run.untracked(client, spec).run()
 
 Use ``EndpointClient(SupervisedBackend, transport=transport)`` and a ``RunManager`` for persistent SSH
-runs that need reconnection. Direct SSH may retain client-side history, but
-has no durable ID for attachment or submission recovery. Never automatically
-retry after uncertain connection loss. An SSH failure (exit 255) is reported
-as UNKNOWN, not proof that the target computation failed.
+runs that need reconnection. Direct SSH retains the process identity for an
+independent STATUS query, without supporting reattachment or submission recovery.
+If its process (including surviving group members) has exited, the persisted
+Run becomes FINISHED with an unknown return code and available files are
+retrieved. This does not prove successful execution; postprocessing requires
+confirmed success. If the SSH host cannot be queried, the job remains UNKNOWN.
+Never automatically retry after uncertain connection loss.
 
 Local and scheduler execution
 -------------------------------

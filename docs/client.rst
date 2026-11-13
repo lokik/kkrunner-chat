@@ -49,9 +49,11 @@ file-access layer, with the client delegating those requests.
 independent query when supported or the live call's last facts otherwise.
 Job identities are opaque backend references; Job never reads or serializes
 a PID. STATUS, REATTACH and RECOVER are explicit capabilities. Recording a
-direct session identity does not provide reattachment.
-An exited process whose observer was lost has no recoverable return code and
-must not be reported as a successful completed calculation.
+direct process identity does not provide reattachment. Linux identities also support verified cancellation after restart. The direct backend
+can independently query that process over either local or SSH transport.
+When a vanished process is verified, its run can become FINISHED with
+``return_code=None``; this releases file reservations, but does not establish
+successful execution or authorize success-only postprocessing.
 
 FileContext owns the shared projection of paths and manifests. A symbolic
 directory preview performs no target I/O; reservation resolves the same mapping
