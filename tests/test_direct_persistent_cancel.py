@@ -107,3 +107,42 @@ def test_restart_manager_cancels_saved_direct_job(tmp_path):
         if child.poll() is None:
             os.killpg(child.pid, signal.SIGKILL)
             child.wait()
+
+
+def test_direct_status_verifies_process_lifecycle():
+    child = _start_child()
+    try:
+        identity = _identity(child.pid)
+        assert DirectBackend.status(identity)["state"] == "running"
+        assert DirectBackend.status(identity)["return_code"] is None
+    finally:
+        child.terminate()
+        child.wait()
+    result = DirectBackend.status(identity)
+    assert result["state"] == "finished"
+    assert result["return_code"] is None
+
+
+def test_direct_status_refuses_to_guess_legacy_or_invalid_identity():
+    assert DirectBackend.status("opaque-old-session")["state"] == "unknown"
+    assert DirectBackend.status("direct:broken:0:invalid")["state"] == "unknown"
+
+
+def test_restart_manager_refreshes_finished_direct_job(tmp_path):
+    child = _start_child()
+    identity = _identity(child.pid)
+    child.terminate()
+    child.wait()
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=tmp_path,
+        transport=LocalTransport(),
+        backend=BackendConfig("direct"),
+    )
+    manager.transition(
+        record, state=RunState.UNKNOWN,
+        execution=record.execution.submitted(identity),
+    )
+    refreshed = RunManager(RunStore(tmp_path / "runs")).refresh()[0]
+    assert refreshed.state == RunState.FINISHED
+    assert refreshed.return_code is None

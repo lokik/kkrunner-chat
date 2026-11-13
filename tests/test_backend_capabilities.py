@@ -17,7 +17,7 @@ MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, Back
 
 
 def test_capabilities_are_immutable_and_instance_specific():
-    assert DirectBackend().supports == frozenset({BackendCapability.CANCEL})
+    assert DirectBackend().supports == frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
     assert SupervisedBackend().supports == MANAGED
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
