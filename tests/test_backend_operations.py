@@ -32,7 +32,7 @@ def test_backend_imports_in_fresh_interpreter(kind):
 
 
 def test_direct_and_managed_operations_have_distinct_contracts():
-    assert set(static_methods(backend_class("direct"))) == {"prepare_mpi", "prepare_target_outputs", "stream"}
+    assert set(static_methods(backend_class("direct"))) == {"prepare_mpi", "prepare_target_outputs", "stream", "cancel"}
     assert set(static_methods(backend_class("process"))) == MANAGED_OPERATIONS
 
 
