@@ -811,7 +811,12 @@ class RunManager:
         client = self.client_for(record)
         if BackendCapability.CANCEL not in client.backend.supports:
             raise UnsupportedCapability("This backend cannot cancel a job after restart")
-        status = client.cancel(JobAttachment(record.execution, record.files))
+        try:
+            status = client.cancel(JobAttachment(record.execution, record.files))
+        except NotImplementedError as exc:
+            # Remote direct execution cannot prove the identity of legacy jobs.
+            # Translate the backend-level limitation at the public manager boundary.
+            raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
         return self.update(record, status)
 
     def attach(
