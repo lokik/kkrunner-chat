@@ -82,14 +82,18 @@ class EndpointClient:
 
     def acknowledge_submission(self, run):
         """Release the submission receipt after the manager persisted acceptance."""
-        if BackendCapability.REATTACH not in self.backend.supports:
+        if self.backend.execution_mode != "managed":
+            # Direct reattachment observes saved files, but does not create
+            # a durable supervisor receipt to acknowledge.
             return None
         key = run.execution.submission_key or run.id
         return _run_sync(self._invoke("acknowledge_submission", key))
 
     def acknowledge(self, run):
         """Release a delivered receipt after the manager persisted completion."""
-        if BackendCapability.REATTACH not in self.backend.supports:
+        if self.backend.execution_mode != "managed":
+            # Direct reattachment observes saved files, but does not create
+            # a durable supervisor receipt to acknowledge.
             return None
         self._validate_run(run)
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))

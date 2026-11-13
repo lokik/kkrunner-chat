@@ -177,7 +177,9 @@ def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):
     """Choose backend semantics once, outside the generic client Job."""
     if backend.execution_mode == "direct":
         if ref is not None:
-            raise ValueError("The selected backend does not support reattachment")
+            # An attached direct run is an observer over stored output files,
+            # not the original session-owned execution call.
+            return ManagedExecution(backend, transport, ref=ref, status=status)
         return DirectExecution(backend, transport, local_io=local_io)
     if backend.execution_mode == "managed":
         return ManagedExecution(backend, transport, ref=ref, status=status)

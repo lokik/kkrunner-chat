@@ -90,18 +90,36 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
         BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS,
         BackendCapability.CANCEL,
     })
-    assert DirectBackend().supports == frozenset({BackendCapability.CANCEL})
+    assert DirectBackend().supports == frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
     assert SupervisedBackend().supports == managed
     assert PsijBackend().supports == managed
 
 
-def test_direct_rejects_reattachment_without_resubmission():
+def test_direct_output_attachment_does_not_resubmit(tmp_path):
     from kkrunner.backends import DirectBackend
-    from kkrunner.backends.contracts import UnsupportedCapability
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import EndpointClient, LocalTransport
+    from kkrunner.client.contracts import JobAttachment
+    from kkrunner.files import FileEntry, FileManifest
+    from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
+    from kkrunner.backends.config import BackendConfig
 
-    with pytest.raises(UnsupportedCapability, match="reattachment"):
-        EndpointClient(DirectBackend).open_run_parts(object())
+    output = tmp_path / "output.txt"
+    output.write_text("saved output")
+    client = EndpointClient(DirectBackend)
+    attachment = JobAttachment(
+        ExecutionMetadata(
+            LocalTransport(), WorkingDirectory(str(tmp_path)),
+            backend_id="legacy-opaque-id", backend=BackendConfig("direct"),
+        ),
+        FileManifest(stdout=FileEntry(local_path=str(output))),
+    )
+    parts = client.open_run_parts(attachment)
+    try:
+        assert parts.job.backend_id == "legacy-opaque-id"
+        assert parts.job.spec.argv is None
+        assert parts.files.spec.output_file == str(output)
+    finally:
+        parts.abort()
 
 
 def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):

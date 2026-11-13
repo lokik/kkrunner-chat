@@ -41,8 +41,17 @@ class SshTransport(Transport):
 
     async def follow(self, operation, identity, on_output, **options):
         from .follow import follow_framed_command
-        operation = Operation.for_backend(operation.backend, "follow_framed")
-        process = await self.start_operation(operation, identity, **options)
+        if operation.backend.execution_mode == "direct":
+            # The direct backend needs no target-side kkrunner installation.
+            # Ship the portable follow function with the shared wire encoder.
+            command = operation_command(operation, python=self.python_command, framed=True)
+            process = await self.start(
+                (*command, operation_payload((identity,), options)),
+                stdin=asyncio.subprocess.PIPE,
+            )
+        else:
+            operation = Operation.for_backend(operation.backend, "follow_framed")
+            process = await self.start_operation(operation, identity, **options)
         return await follow_framed_command(process, on_output)
 
     async def call(self, operation: Operation, *args, **kwargs):

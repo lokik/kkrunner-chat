@@ -74,7 +74,8 @@ def test_cancellation_connection_error_preserves_unknown(tmp_path, monkeypatch):
 def test_direct_job_cannot_cancel_after_restart(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = stored(manager, tmp_path, backend="direct")
-    with pytest.raises(UnsupportedCapability, match="cannot cancel"):
+    # Legacy opaque direct IDs have no PID/start-time identity to signal.
+    with pytest.raises(NotImplementedError, match="persistent PID"):
         manager.cancel(record.id)
     assert manager.store.get(record.id) == record
 

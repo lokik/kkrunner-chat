@@ -81,7 +81,7 @@ def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     parts = backend.create_run_parts(spec, submission_key="client-submission-key")
     from kkrunner.client.job import Job
     assert type(parts.job) is Job
-    assert BackendCapability.REATTACH not in backend.backend.supports
+    assert BackendCapability.REATTACH in backend.backend.supports
     assert BackendCapability.RECOVER not in backend.backend.supports
 
 
@@ -228,3 +228,32 @@ def test_direct_ssh_preparation_preserves_spec(tmp_path):
     assert parts.job.spec is spec
     assert parts.files.spec is spec
     assert parts.job.execution.transport is client.transport
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process identity")
+def test_direct_ssh_status_without_target_installation(tmp_path, monkeypatch):
+    import subprocess
+    import os
+    from kkrunner.client import SshTransport
+    monkeypatch.setattr(SshTransport, "_command", lambda self, argv, cwd=None: tuple(argv))
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        with open(f"/proc/{child.pid}/stat", encoding="ascii") as source:
+            fields = source.read().rsplit(")", 1)[1].split()
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as source:
+            boot = source.read().strip()
+        token = f"direct:{child.pid}:{int(fields[19])}:{boot}"
+        from kkrunner.client.contracts import JobAttachment
+        from kkrunner.files import FileManifest
+        from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
+        from kkrunner.backends.config import BackendConfig
+        endpoint = EndpointClient(DirectBackend, transport=SshTransport("loopback", python_command=(sys.executable,)))
+        facts = endpoint.status(JobAttachment(
+            ExecutionMetadata(endpoint.transport, WorkingDirectory(str(tmp_path), str(tmp_path)),
+                              backend_id=token, backend=BackendConfig("direct")),
+            FileManifest(),
+        ))[0]
+        assert facts.state is RunState.RUNNING
+    finally:
+        child.terminate()
+        child.wait()

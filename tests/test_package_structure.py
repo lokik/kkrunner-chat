@@ -39,7 +39,7 @@ def test_run_and_job_ownership_boundaries_are_explicit():
         assert not hasattr(backend, "create_job")
         client = EndpointClient(backend, transport=LocalTransport())
         assert callable(client.create_run_parts)
-    assert BackendCapability.REATTACH not in DirectBackend().supports
+    assert BackendCapability.REATTACH in DirectBackend().supports
     assert BackendCapability.REATTACH in SupervisedBackend().supports
 
 

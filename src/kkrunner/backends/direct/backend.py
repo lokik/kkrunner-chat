@@ -23,7 +23,160 @@ class DirectBackend(Backend, DirectOperations):
 
     def __init__(self, **options):
         super().__init__(**options)
-        self.supports = frozenset({BackendCapability.CANCEL})
+        self.supports = frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
+
+
+    @staticmethod
+    def status(remote_id: str):
+        """Read-only status for a verified direct Linux process identity.
+
+        A vanished/reused PID is FINISHED with unknown exit code. An opaque
+        legacy session ID is deliberately UNKNOWN: it proves no PID identity.
+        This operation is self-contained for target-side source delivery.
+        """
+        import os
+        from uuid import UUID
+
+        def reply(state, message=None):
+            return {"state": state, "return_code": None,
+                    "failure_phase": None, "error": message}
+
+        parts = remote_id.split(":") if isinstance(remote_id, str) else ()
+        if len(parts) != 4 or parts[0] != "direct":
+            return reply("unknown", "Legacy direct execution has no verifiable process identity")
+        try:
+            pid = int(parts[1])
+            ticks = int(parts[2])
+            boot = str(UUID(parts[3]))
+            if pid <= 0 or ticks < 0 or boot != parts[3]:
+                raise ValueError("Invalid process identity")
+        except (ValueError, TypeError, OverflowError):
+            return reply("unknown", "Invalid saved direct process identity")
+
+        try:
+            with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as source:
+                current_boot = source.read().strip()
+        except OSError as exc:
+            return reply("unknown", f"Cannot verify kernel boot identity: {exc}")
+        if current_boot != boot:
+            return reply("finished", "Original process no longer exists (machine rebooted); exit code unknown")
+        try:
+            with open(f"/proc/{pid}/stat", encoding="ascii") as source:
+                data = source.read()
+        except FileNotFoundError:
+            return reply("finished", "Original process no longer exists; exit code unknown")
+        except OSError as exc:
+            return reply("unknown", f"Cannot verify saved process: {exc}")
+        try:
+            fields = data.rsplit(")", 1)[1].split()
+            state, pgrp, session, start_ticks = (
+                fields[0], int(fields[2]), int(fields[3]), int(fields[19])
+            )
+        except (ValueError, IndexError):
+            return reply("unknown", "Cannot parse Linux process identity")
+        if start_ticks != ticks or state in ("Z", "X", "x"):
+            return reply("finished", "Original process no longer exists; exit code unknown")
+        if pgrp != pid or session != pid:
+            return reply("unknown", "Saved PID is not the original session leader")
+        return reply("running")
+
+    @staticmethod
+    async def follow(
+        remote_id, stdout, stderr, *,
+        stdout_offset=0, stderr_offset=0, poll_interval=0.1,
+        stdout_path=None, stderr_path=None, started=None,
+    ):
+        """Follow persisted output files without acquiring or owning the process.
+
+        A legacy opaque ID can be observed but cannot supply an end-of-process
+        fact. Cancelling the follower never terminates the underlying process.
+        The entire operation is portable as a standalone SSH source function.
+        """
+        import asyncio
+        import inspect
+        import os
+        from uuid import UUID
+
+        if not 0.05 <= poll_interval <= 10:
+            raise ValueError("Invalid follow interval")
+        offsets = {"out": stdout_offset, "err": stderr_offset}
+        paths = {"out": stdout_path, "err": stderr_path}
+        sinks = {"out": stdout, "err": stderr}
+        if paths["out"] is not None and paths["out"] == paths["err"]:
+            paths["err"] = None
+        for kind, offset in offsets.items():
+            if offset is not None and (type(offset) is not int or offset < 0):
+                raise ValueError(f"Invalid {kind} output offset")
+
+        # Read a verifiable Linux identity without signalling a process.
+        parts = remote_id.split(":") if isinstance(remote_id, str) else ()
+        try:
+            if len(parts) != 4 or parts[0] != "direct":
+                raise ValueError("No process identity")
+            pid, ticks = int(parts[1]), int(parts[2])
+            boot = str(UUID(parts[3]))
+            verified = pid > 0 and ticks >= 0 and boot == parts[3]
+        except (ValueError, TypeError, OverflowError):
+            verified = False
+
+        def process_gone():
+            if not verified:
+                return False
+            try:
+                with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as source:
+                    if source.read().strip() != boot:
+                        return True
+                with open(f"/proc/{pid}/stat", encoding="ascii") as source:
+                    fields = source.read().rsplit(")", 1)[1].split()
+                # Do not confuse an unrelated process using the same PID with
+                # the process that originally owned this calculation.
+                if int(fields[19]) != ticks or fields[0] in ("Z", "X", "x"):
+                    return True
+                return False
+            except FileNotFoundError:
+                return True
+            except (OSError, ValueError, IndexError):
+                return False  # Unverifiable is not the same as absent.
+
+        def outcome(state, error=None):
+            return {"state": state, "return_code": None,
+                    "failure_phase": None, "error": error}
+
+        async def copy_available():
+            copied = False
+            for kind, path in paths.items():
+                offset = offsets[kind]
+                if path is None or offset is None:
+                    continue
+                try:
+                    with open(path, "rb") as stream:
+                        stream.seek(0, os.SEEK_END)
+                        size = stream.tell()
+                        if size < offset:
+                            raise RuntimeError(f"Observed output was truncated: {path}")
+                        stream.seek(offset)
+                        data = stream.read(65536)
+                except FileNotFoundError:
+                    continue  # The process may not have created its stream yet.
+                if data:
+                    pending = sinks[kind].write(data)
+                    if inspect.isawaitable(pending):
+                        await pending
+                    sinks[kind].flush()
+                    offsets[kind] += len(data)
+                    copied = True
+            return copied
+
+        while True:
+            copied = await copy_available()
+            if process_gone():
+                # Drain output after the process disappeared; allow any last
+                # data already buffered on disk to be delivered.
+                while await copy_available():
+                    pass
+                return outcome("finished", "Original process ended; exit code unavailable")
+            if not copied:
+                await asyncio.sleep(poll_interval)
 
     @staticmethod
     def cancel(remote_id: str, *, timeout: float = 1.0):
