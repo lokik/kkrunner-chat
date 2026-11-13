@@ -793,11 +793,12 @@ class FileSession:
             from kkrunner.runs.base import RunStatus
             self.close()
             self._files = local_manifest(self._files, RunStatus(
-                state, failure_phase=self._status.failure_phase, message=self._status.message))
-            if state == RunState.FINISHED and self._files.failed_artifacts:
+                state, return_code=self._status.return_code,
+                failure_phase=self._status.failure_phase, message=self._status.message))
+            if state == RunState.FINISHED and self._status.return_code == 0 and self._files.failed_artifacts:
                 raise FileNotFoundError(self._files.availability_message)
             return
-        required = state == RunState.FINISHED
+        required = state == RunState.FINISHED and self._status.return_code == 0
         try:
             if self._retrieve_primary_streams:
                 await self._retrieve_target_streams(required=required)
@@ -816,14 +817,20 @@ class FileSession:
     def mark_transfer_failed(self, message):
         self._set_pending_failed(message)
 
-    def finalize(self, status):
-        """Finalize files from native facts and return the sole manifest."""
+    async def finalize_async(self, status):
+        """Finalize owned files on the existing event loop, if any."""
         self._status = status
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
-        _run_sync(self._synchronize(status.state))
-        self.close()
+        try:
+            await self._synchronize(status.state)
+        finally:
+            self.close()
         return self._files
+
+    def finalize(self, status):
+        """Synchronously finalize using the same file authority as SSH recovery."""
+        return _run_sync(self.finalize_async(status))
 
     def close(self):
         """Release owned streams once, even if cleanup itself raises."""

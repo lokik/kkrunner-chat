@@ -86,8 +86,8 @@ def _missing_result_files(result_files):
     return _unique(missing)
 
 
-def capture_result_files(result_files):
-    """Capture local versions once, flushing outputs before recording their digests."""
+def capture_result_files(result_files, *, require_outputs=True):
+    """Capture local versions without assuming an unknown exit means success."""
     if result_files is None or result_files.captured_at is not None:
         return result_files
     from kkrunner.files.availability import discover_local_files
@@ -98,7 +98,7 @@ def capture_result_files(result_files):
         output_versions=_result_files_snapshot(result_files.output_files, sync=True),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )
-    return discover_local_files(captured)
+    return discover_local_files(captured, require_outputs=require_outputs)
 
 
 class RunFiles:

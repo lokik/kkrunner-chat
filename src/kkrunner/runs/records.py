@@ -151,6 +151,15 @@ class RunStore:
         """Exclusive live processing ownership, released by the OS after death."""
         return FileLock(self._run_lock_path(record).with_suffix(".processing.lock"))
 
+    def observation_lock(self, record):
+        """Protect an active direct observer until files and results are committed.
+
+        Its owning process holds this lock across the entire live observation,
+        not merely until the calculation child exits. After client death the
+        operating system releases the lock, permitting independent recovery.
+        """
+        return FileLock(self._run_lock_path(record).with_suffix(".observation.lock"))
+
     @staticmethod
     def _decode(path):
         try:

@@ -183,11 +183,18 @@ class RunManager:
         )
 
     @staticmethod
-    def _merged_state(latest, requested):
+    def _merged_state(latest, requested, *, return_code=None):
         if requested is None:
             return latest.state
         requested = RunState(requested)
         if latest.state.is_terminal:
+            # Later authoritative exit codes refine a FINISHED/unknown-code
+            # observation, including a nonzero execution failure.
+            if (
+                latest.state == RunState.FINISHED and latest.return_code is None
+                and return_code is not None and requested.is_terminal
+            ):
+                return requested
             return latest.state
         if requested == RunState.UNKNOWN:
             # Uncertainty cannot retract confirmed execution completion.
@@ -249,7 +256,13 @@ class RunManager:
                 return latest
             final_locked = latest.state.is_terminal
             now = _now()
-            merged_state = self._merged_state(latest, state)
+            merged_state = self._merged_state(
+                latest, state, return_code=return_code if type(return_code) is int else None,
+            )
+            confirmed_late = (
+                latest.state == RunState.FINISHED and latest.return_code is None
+                and type(return_code) is int and merged_state.is_terminal
+            )
             if state is not None and RunState(state) == RunState.UNKNOWN and merged_state != RunState.UNKNOWN:
                 # Ignore the entire stale observation, including its message
                 # and artifact metadata, not merely its proposed state.
@@ -270,7 +283,9 @@ class RunManager:
                 if not final_locked or latest.return_code is None:
                     changes["return_code"] = return_code
             if message is not _UNCHANGED:
-                if message is None and latest.state == RunState.UNKNOWN and merged_state != RunState.UNKNOWN:
+                if confirmed_late:
+                    changes["message"] = message
+                elif message is None and latest.state == RunState.UNKNOWN and merged_state != RunState.UNKNOWN:
                     # A later scheduler observation supersedes the stale
                     # connection-error diagnostic.
                     changes["message"] = None
@@ -278,7 +293,7 @@ class RunManager:
                     changes["message"] = message
             if failure_phase is not _UNCHANGED:
                 normalized = _failure_phase(failure_phase)
-                if not final_locked or latest.failure_phase is None:
+                if confirmed_late or not final_locked or latest.failure_phase is None:
                     changes["failure_phase"] = normalized
             if all(getattr(latest, key) == value for key, value in changes.items() if key != "updated_at"):
                 return latest
@@ -361,6 +376,7 @@ class RunManager:
 
     def reserve(self, record):
         attempted_recovery = set()
+        attempted_refresh = set()
         while True:
             with self.store.submission_lock():
                 try:
@@ -386,14 +402,28 @@ class RunManager:
                     for conflict in conflicts
                     if conflict.id not in attempted_recovery and self._is_stale_submitting(conflict)
                 )
+                refreshable = tuple(
+                    conflict for conflict in conflicts
+                    if conflict.id not in attempted_refresh
+                    and conflict.execution.backend.name == "direct"
+                    and conflict.execution.backend_id is not None
+                )
 
-            if not stale:
+            if not stale and not refreshable:
                 raise DuplicateSubmissionError(record, conflicts)
             progressed = False
             for conflict in stale:
                 attempted_recovery.add(conflict.id)
                 recovered = self.recover_submitting(conflict)
                 if recovered.state != RunState.SUBMITTING or recovered.execution.backend_id is not None:
+                    progressed = True
+            for conflict in refreshable:
+                attempted_refresh.add(conflict.id)
+                client = self.client_for(conflict)
+                if BackendCapability.STATUS not in client.backend.supports:
+                    continue
+                refreshed = self.refresh((conflict,))[0]
+                if refreshed.state.is_terminal:
                     progressed = True
             if not progressed:
                 raise DuplicateSubmissionError(record, conflicts)
@@ -402,8 +432,8 @@ class RunManager:
     def _observed_run_state(record, status):
         from kkrunner.runs.states import project_run_state
         return project_run_state(status.state,
-                                 files_pending=isinstance(record.execution.transport, SshTransport),
-                                 processing_pending=record.processing_required,
+                                 files_pending=isinstance(record.execution.transport, SshTransport) and status.files is None,
+                                 processing_pending=record.processing_required and status.return_code == 0,
                                  failure_phase=status.failure_phase)
 
     def update(self, record, status: RunStatus):
@@ -421,6 +451,23 @@ class RunManager:
             # manifest projection owns streams and application artifacts.
             from kkrunner.files.availability import local_manifest
             status = replace(status, files=local_manifest(record.files, status))
+        if (
+            record.execution.backend.name == "direct"
+            and isinstance(record.execution.transport, SshTransport)
+            and status.state == RunState.FINISHED
+            and status.return_code is None
+            and status.files is None
+        ):
+            # The live SSH observer is gone. Download whatever was produced
+            # without asserting that an unknown exit code means success.
+            try:
+                files = self.client_for(record).collect_ended_direct_files(record, status)
+            except (OSError, RuntimeError, ValueError) as exc:
+                return self.transition(
+                    record, state=RunState.DOWNLOADING,
+                    message=f"Execution ended; output retrieval pending: {exc}",
+                )
+            status = replace(status, files=files)
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
         state = self._observed_run_state(record, status)
@@ -440,7 +487,9 @@ class RunManager:
             result_files = status.files if status.files is not None else record.files
             if record.execution.directory.remote is None and result_files is not None:
                 from kkrunner.files.availability import discover_local_files
-                result_files = discover_local_files(result_files)
+                result_files = discover_local_files(
+                    result_files, require_outputs=return_code == 0,
+                )
             updated = self.complete(
                 record,
                 state=state,
@@ -496,7 +545,9 @@ class RunManager:
 
         if artifacts_available and result_files is not None:
             try:
-                result_files = capture_result_files(result_files)
+                result_files = capture_result_files(
+                    result_files, require_outputs=state == RunState.FINISHED and return_code == 0,
+                )
             except OSError as exc:
                 state = RunState.FAILED
                 phase = FailurePhase.ARTIFACTS
@@ -591,11 +642,12 @@ class RunManager:
             raise ProcessingPending("Another client owns postprocessing")
         try:
             latest = self.store.get(record.id)
-            if latest.state == RunState.FINISHED:
+            if latest.state == RunState.FINISHED and latest.return_code is not None:
                 # A different observer already completed it; no second callback.
                 raise ProcessingPending("Result already processed by another observer; load its historical result")
             if latest.state.is_terminal and not (
-                retry and latest.state == RunState.FAILED and latest.failure_phase == FailurePhase.POSTPROCESSING
+                (retry and latest.state == RunState.FAILED and latest.failure_phase == FailurePhase.POSTPROCESSING)
+                or (latest.state == RunState.FINISHED and latest.return_code is None)
             ):
                 raise RuntimeError("Run is already terminal")
             manifest = latest.files if files is None else files
@@ -611,7 +663,8 @@ class RunManager:
 
             def claim(current):
                 if current.state.is_terminal and not (
-                    retry and current.state == RunState.FAILED and current.failure_phase == FailurePhase.POSTPROCESSING
+                    (retry and current.state == RunState.FAILED and current.failure_phase == FailurePhase.POSTPROCESSING)
+                    or (current.state == RunState.FINISHED and current.return_code is None)
                 ):
                     raise ProcessingPending("Run completed before processing claim")
                 return replace(
@@ -775,22 +828,49 @@ class RunManager:
 
         for client, group in groups.items():
             if BackendCapability.STATUS not in client.backend.supports:
-                # Direct Jobs have no independently queryable durable status.
-                # Their client-side completion thread remains authoritative;
-                # never infer FINISHED from a PID or a closed SSH channel.
                 for record in group:
                     current[record.id] = self.transition(
                         record, state=RunState.UNKNOWN,
-                        message="Direct execution has no independent recovery status",
+                        message="This execution backend has no independent status query",
                     )
                 continue
-            statuses = client.status(
-                *(JobAttachment(record.execution, record.files) for record in group)
-            )
-            if len(statuses) != len(group):
-                raise RuntimeError("Transport returned wrong number of run statuses")
-            for record, status in zip(group, statuses):
-                current[record.id] = self.update(record, status)
+            locks = []
+            guarded = []
+            try:
+                for record in group:
+                    if client.backend.name == "direct":
+                        ownership = self.store.observation_lock(record)
+                        if not ownership.acquire(blocking=False):
+                            # The original observer is alive, possibly already
+                            # downloading or processing after the child exited.
+                            # It owns completion; do not release its reservation.
+                            current[record.id] = self.store.get(record.id)
+                            continue
+                        locks.append(ownership)
+                    guarded.append(record)
+                if not guarded:
+                    continue
+                try:
+                    statuses = client.status(
+                        *(JobAttachment(record.execution, record.files) for record in guarded)
+                    )
+                except Exception as exc:
+                    if client.backend.name != "direct":
+                        raise
+                    # A lost connection is uncertainty, not proof of exit.
+                    for record in guarded:
+                        current[record.id] = self.transition(
+                            record, state=RunState.UNKNOWN,
+                            message=f"Cannot query direct process status: {exc}",
+                        )
+                    continue
+                if len(statuses) != len(guarded):
+                    raise RuntimeError("Transport returned wrong number of run statuses")
+                for record, status in zip(guarded, statuses):
+                    current[record.id] = self.update(record, status)
+            finally:
+                for ownership in reversed(locks):
+                    ownership.release()
         return tuple(current[record.id] for record in records)
 
     def forget(self, run, *, force=False):

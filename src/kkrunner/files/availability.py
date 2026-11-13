@@ -128,6 +128,12 @@ def local_manifest(files, status):
             continue
         if status.failure_phase in (FailurePhase.ARTIFACTS, FailurePhase.OUTPUT):
             state, message = "failed", status.message or "Output publication failed"
+        elif status.state == RunState.FINISHED and status.return_code is None:
+            # An unobserved exit cannot prove that the stream was published.
+            state, message = (
+                ("available", None) if os.path.isfile(entry.local_path)
+                else ("skipped", None)
+            )
         elif published:
             exists = os.path.isfile(entry.local_path)
             state, message = (
@@ -144,4 +150,7 @@ def local_manifest(files, status):
 
     if status.failure_phase in (FailurePhase.LAUNCH, FailurePhase.SUBMISSION):
         return files
-    return discover_local_files(files, include_streams=False, require_outputs=status.state == RunState.FINISHED)
+    return discover_local_files(
+        files, include_streams=False,
+        require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
+    )

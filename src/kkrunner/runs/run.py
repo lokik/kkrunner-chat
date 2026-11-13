@@ -77,6 +77,7 @@ class Run:
         self._lock = Lock()
         self._completion_lock = Lock()
         self._completion_persisted = False
+        self._direct_observation_lock = None
         self._monitor_record_version = None if record is None else record.updated_at
 
     @classmethod
@@ -215,8 +216,16 @@ class Run:
             if raw_state.is_terminal:
                 self._state = RunState.DOWNLOADING
                 try:
-                    if raw_state == RunState.FINISHED and getattr(self._job, "output_error", None) is not None:
+                    if (
+                        raw_state == RunState.FINISHED and self._job.return_code == 0
+                        and getattr(self._job, "output_error", None) is not None
+                    ):
                         raise self._job.output_error
+                    if raw_state == RunState.FINISHED and self._job.return_code is None:
+                        # The original SSH observer cannot guarantee that it
+                        # delivered every byte. Re-read target-owned streams.
+                        if not self._file_session.is_local:
+                            self._file_session.configure_stream_retrieval(True)
                     self._file_session.finalize(self._job.status())
                     # Flush and close the client-owned streams *before*
                     # postprocessing can durably publish a finished Run.
@@ -250,6 +259,15 @@ class Run:
             if raw_state != RunState.FINISHED:
                 raise RuntimeError(f"Backend observer completed in unexpected state {raw_state.value}")
 
+            # An unobserved exit is terminal, but not proof of successful
+            # execution. Preserve results without running success-only parsers.
+            if self._job.return_code is None:
+                self._state = RunState.FINISHED
+                self._failure_message = (
+                    getattr(self._job, "failure_message", None)
+                    or "Process ended; exit code unavailable"
+                )
+                return
             self._processing = True
             try:
                 if self._record is not None and self._record.processing_required:
@@ -325,8 +343,13 @@ class Run:
                 if self._record.processing_required and self._state != RunState.FINISHED:
                     # An independent observer completed the processing first.
                     self.result = None
-            self._settled = True
-            finish_monitor(self)
+            try:
+                if self._direct_observation_lock is not None:
+                    self._direct_observation_lock.release()
+                    self._direct_observation_lock = None
+            finally:
+                self._settled = True
+                finish_monitor(self)
 
     def _start_completion(self):
         self._started = True
@@ -405,6 +428,9 @@ class Run:
                 self._record = manager.reserve(self._record)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
+                if self.client.backend.name == "direct":
+                    self._direct_observation_lock = manager.store.observation_lock(self._record)
+                    self._direct_observation_lock.acquire()
 
             # Stage using the same session operations for tracked/untracked
             # execution. Only the optional durable snapshot differs.
@@ -476,6 +502,9 @@ class Run:
             finally:
                 if definitely_absent:
                     self._owned_resources.close(suppress_errors=True)
+                if self._direct_observation_lock is not None and not self._started:
+                    self._direct_observation_lock.release()
+                    self._direct_observation_lock = None
                 self._settled = True
             if cancelled:
                 raise self._exception from exc
@@ -540,7 +569,10 @@ class Run:
             if self._completion_persisted:
                 return
             latest = self.manager.store.get(self.id)
-            if latest.state.is_terminal:
+            if latest.state.is_terminal and not (
+                latest.state == RunState.FINISHED and latest.return_code is None
+                and self.return_code is not None and self._state.is_terminal
+            ):
                 self._record = latest
                 self._completion_persisted = True
                 self.manager._acknowledge_result(latest)
