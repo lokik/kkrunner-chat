@@ -16,11 +16,13 @@ if TYPE_CHECKING:
     from kkrunner.runs.files import HistoricalFileMismatchError
     from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
     from kkrunner.runs.processing import ProcessingPending
-    from kkrunner.runs.records import CorruptRunRecord, RunRecord, RunStore
+    from kkrunner.runs.records import ActiveRunDeletionError, CorruptRunRecord, ForgottenRunError, RunRecord, RunStore
     from kkrunner.runs.run import Run
 
 __all__ = [
+    "ActiveRunDeletionError",
     "CorruptRunRecord",
+    "ForgottenRunError",
     "DuplicateSubmissionError",
     "ExecutionMetadata",
     "ExecutionOutcome",
@@ -70,7 +72,9 @@ def __getattr__(name):
     elif name == "ProcessingPending":
         from .processing import ProcessingPending as value
     elif name in (
+        "ActiveRunDeletionError",
         "CorruptRunRecord",
+        "ForgottenRunError",
         "RunRecord",
         "RunStore",
     ):

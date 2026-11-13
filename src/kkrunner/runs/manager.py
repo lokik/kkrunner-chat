@@ -12,7 +12,7 @@ from threading import Lock
 from uuid import uuid4
 
 from kkrunner.backends.config import BackendConfig
-from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition
+from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition, UnsupportedCapability
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.pool import default_client_pool
 from kkrunner.client.transports import (
@@ -23,7 +23,7 @@ from kkrunner.client.transports import (
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
-from kkrunner.runs.conflicts import submission_conflicts
+from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
 from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current, sync_result_files
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
@@ -73,6 +73,7 @@ class DuplicateSubmissionError(RuntimeError):
     def __init__(self, record, conflicts):
         self.record = record
         self.conflicts = tuple(conflicts)
+        self.file_conflicts = {other.id: conflicting_files(record, other) for other in self.conflicts}
         super().__init__(
             "Run conflicts with {} active run{}".format(len(self.conflicts), "" if len(self.conflicts) == 1 else "s")
         )
@@ -791,6 +792,27 @@ class RunManager:
             for record, status in zip(group, statuses):
                 current[record.id] = self.update(record, status)
         return tuple(current[record.id] for record in records)
+
+    def forget(self, run, *, force=False):
+        """Remove stored history without touching native processes or result files."""
+        if self.store is None:
+            raise RuntimeError("No persistent run store is configured")
+        return self.store.forget(run, force=force)
+
+    def cancel(self, run):
+        """Ask a persisted backend to cancel a job, without assuming completion."""
+        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        if record.state.is_terminal:
+            return record
+        if record.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
+            raise RuntimeError("Execution has finished; postprocessing cannot be cancelled as a native job")
+        if record.execution.backend_id is None:
+            raise UnsupportedCapability("No durable execution reference is available for cancellation")
+        client = self.client_for(record)
+        if BackendCapability.CANCEL not in client.backend.supports:
+            raise UnsupportedCapability("This backend cannot cancel a job after restart")
+        status = client.cancel(JobAttachment(record.execution, record.files))
+        return self.update(record, status)
 
     def attach(
         self, run, *, process_result=None, client=None,

@@ -15,10 +15,18 @@ from kkrunner.files.manifest import FileManifest
 from kkrunner.runs.base import FailurePhase, RunState
 from kkrunner.runs.metadata import freeze_metadata
 from kkrunner.runs.model import ExecutionMetadata
-from kkrunner.support.durability import durable_mkdir, durable_write_json
+from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync_directory
 from kkrunner.support.file_locks import FileLock
 
 _RUN_RECORD_SCHEMA_VERSION = 1
+
+
+class ActiveRunDeletionError(RuntimeError):
+    """Removing active history requires an explicit dangerous override."""
+
+
+class ForgottenRunError(RuntimeError):
+    """An old observer cannot recreate deliberately removed history."""
 
 
 class CorruptRunRecord(RuntimeError):
@@ -114,6 +122,13 @@ class RunStore:
     def _run_lock_path(self, record):
         return self.directory / ".locks" / f"{record.id}.lock"
 
+    def _forgotten_path(self, run_id):
+        return self.directory / ".forgotten" / f"{run_id}.json"
+
+    def _assert_not_forgotten(self, run_id):
+        if self._forgotten_path(run_id).exists():
+            raise ForgottenRunError(f"Run {run_id!r} was deliberately removed")
+
     def _path_for_id(self, run_id):
         if (
             not isinstance(run_id, str)
@@ -122,6 +137,8 @@ class RunStore:
             or any(c in run_id for c in ("/", "\\", "\x00"))
         ):
             raise ValueError("Run id must be a nonempty filename component")
+        if self._forgotten_path(run_id).is_file():
+            raise FileNotFoundError(run_id)
         filename = f"{run_id}.json"
         paths = tuple(day / filename for day in self._day_directories(newest=True) if (day / filename).is_file())
         if not paths:
@@ -185,6 +202,7 @@ class RunStore:
         per-ID lock. An ID is unique across all date shards of this store.
         """
         with self._lock, FileLock(self._run_lock_path(record)):
+            self._assert_not_forgotten(record.id)
             try:
                 latest = self.get(record.id)
             except FileNotFoundError:
@@ -195,6 +213,7 @@ class RunStore:
 
     def update(self, record: RunRecord, updater):
         with self._lock, FileLock(self._run_lock_path(record)):
+            self._assert_not_forgotten(record.id)
             try:
                 latest = self.get(record.id)
             except FileNotFoundError:
@@ -216,6 +235,36 @@ class RunStore:
                 raise ValueError("Backend identity cannot change")
             return self._write_unlocked(updated)
 
+    def forget(self, run, *, force=False):
+        """Forget persisted metadata, never the running process or result files.
+
+        Active or unknown jobs require force=True. A durable tombstone prevents
+        a stale observer from recreating the removed record on completion.
+        """
+        if type(force) is not bool:
+            raise TypeError("force must be a bool")
+        run_id = run if isinstance(run, str) else run.id
+        with self.submission_lock():
+            record = self.get(run_id)
+            with self._lock, FileLock(self._run_lock_path(record)):
+                record = self.get(run_id)
+                if not record.state.is_terminal and not force:
+                    raise ActiveRunDeletionError(
+                        f"Run {run_id!r} is {record.state.value}; its process may "
+                        "still be active. Use force=True to forget it without "
+                        "stopping the execution."
+                    )
+                tombstone = self._forgotten_path(run_id)
+                durable_mkdir(tombstone.parent, parents=True, exist_ok=True, mode=0o700)
+                durable_write_json(
+                    tombstone, {"run_id": run_id, "created_at": record.created_at},
+                    mode=0o600, sort_keys=True,
+                )
+                path = self._path(record)
+                path.unlink()
+                fsync_directory(path.parent)
+                return record
+
     def get(self, run_id):
         return self._decode(self._path_for_id(run_id))
 
@@ -228,6 +277,8 @@ class RunStore:
     def _records_in_directory(self, directory, *, newest):
         records = []
         for path in directory.glob("*.json"):
+            if self._forgotten_path(path.stem).is_file():
+                continue
             try:
                 records.append(self._decode(path))
             except CorruptRunRecord:

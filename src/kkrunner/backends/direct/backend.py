@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from kkrunner.backends.contracts import Backend, DirectOperations
+from kkrunner.backends.contracts import Backend, BackendCapability, DirectOperations
 from kkrunner.backends.support.process import prepare_mpi
 from kkrunner.files.availability import prepare_target_outputs
 
@@ -20,6 +20,116 @@ class DirectBackend(Backend, DirectOperations):
     name = "direct"
     prepare_mpi = staticmethod(prepare_mpi)
     prepare_target_outputs = staticmethod(prepare_target_outputs)
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.supports = frozenset({BackendCapability.CANCEL})
+
+    @staticmethod
+    def cancel(remote_id: str, *, timeout: float = 1.0):
+        """Signal the original direct process group using a verified Linux identity.
+
+        This operation is source-portable: it requires only the target's Python
+        standard library, not a target-side KKRunner installation. A legacy
+        random session ID cannot prove a PID and must not be used for killing.
+        """
+        import os
+        import signal
+        import time
+        from uuid import UUID
+
+        parts = remote_id.split(":") if isinstance(remote_id, str) else ()
+        if len(parts) != 4 or parts[0] != "direct":
+            raise NotImplementedError(
+                "This direct run has no persistent PID/start-time identity; "
+                "cancellation after restart is not safe for older runs."
+            )
+        try:
+            pid = int(parts[1])
+            started = int(parts[2])
+            boot = str(UUID(parts[3]))
+            if pid <= 0 or started < 0 or boot != parts[3]:
+                raise ValueError("Invalid direct process reference")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid direct process reference") from exc
+        if type(timeout) not in (int, float) or not 0 <= timeout <= 30:
+            raise ValueError("Cancellation timeout must be between 0 and 30 seconds")
+
+        def reply(state, message=None):
+            return {
+                "state": state,
+                "return_code": None,
+                "failure_phase": None,
+                "error": message,
+            }
+
+        def observe():
+            try:
+                with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as source:
+                    current_boot = source.read().strip()
+            except OSError as exc:
+                return "unknown", f"Cannot verify kernel boot identity: {exc}"
+            if current_boot != boot:
+                return "gone", None
+            try:
+                with open(f"/proc/{pid}/stat", encoding="ascii") as source:
+                    data = source.read()
+            except FileNotFoundError:
+                return "gone", None
+            except OSError as exc:
+                return "unknown", f"Cannot verify process identity: {exc}"
+            try:
+                fields = data.rsplit(")", 1)[1].split()
+                state, pgrp, session, start_ticks = (
+                    fields[0], int(fields[2]), int(fields[3]), int(fields[19])
+                )
+            except (IndexError, ValueError) as exc:
+                return "unknown", f"Cannot parse Linux process identity: {exc}"
+            if start_ticks != started:
+                return "gone", None  # The PID was reused; never signal it.
+            if state in ("Z", "X", "x"):
+                return "gone", None
+            if pgrp != pid or session != pid:
+                return "unknown", "Saved PID does not identify its original session leader"
+            return "running", None
+
+        current, error = observe()
+        if current == "gone":
+            return reply("finished", "The original process is no longer running; exit status unavailable")
+        if current != "running":
+            return reply("unknown", error)
+
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return reply("finished", "Process exited before cancellation; exit status unavailable")
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            current, error = observe()
+            if current != "running":
+                break
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        else:
+            current, error = observe()
+
+        if current == "running":
+            # Recheck original identity immediately before escalating. A group
+            # with a reused PID or an unverifiable leader must not be signalled.
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                current = "gone"
+            else:
+                current, error = observe()
+
+        if current == "gone":
+            return reply("cancelled")
+        return reply(
+            "running" if current == "running" else "unknown",
+            "Cancellation signal sent; termination not yet verified"
+            if current == "running" else error,
+        )
 
     @staticmethod
     async def stream(
@@ -37,8 +147,9 @@ class DirectBackend(Backend, DirectOperations):
         Borrowed sinks may implement synchronous or asynchronous write(). The
         control reader supplies lines: ``cancel`` terminates the process group;
         EOF does so only for attached execution. Calculation stdin is separate.
-        Acceptance and completion carry an opaque session identity and native
-        status. The identity is not a PID and provides no recovery guarantee.
+        Acceptance and completion carry a session identity and native status.
+        On Linux, the identity includes PID/start ticks/boot ID for safe later
+        cancellation; elsewhere it stays opaque and cannot be used to kill.
         """
         import asyncio
         import inspect
@@ -191,6 +302,24 @@ class DirectBackend(Backend, DirectOperations):
                         stop()
                         raise
                     identity = session_id
+                    # A verified Linux process-group leader can be cancelled
+                    # after the original SSH/client session has disappeared.
+                    # Do not require KKRunner or psutil on the target host.
+                    try:
+                        with open(f"/proc/{child.pid}/stat", encoding="ascii") as source:
+                            fields = source.read().rsplit(")", 1)[1].split()
+                        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as source:
+                            boot_id = source.read().strip()
+                        from uuid import UUID
+                        if (
+                            int(fields[2]) == child.pid
+                            and int(fields[3]) == child.pid
+                            and fields[0] not in ("Z", "X", "x")
+                            and str(UUID(boot_id)) == boot_id
+                        ):
+                            identity = f"direct:{child.pid}:{int(fields[19])}:{boot_id}"
+                    except (OSError, IndexError, ValueError):
+                        pass  # Retain an opaque live-session reference.
                     if started is not None:
                         notification = started(outcome("running"))
                         if inspect.isawaitable(notification):

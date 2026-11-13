@@ -32,6 +32,7 @@ class BackendCapability(str, Enum):
     REATTACH = "reattach"
     RECOVER = "recover"
     STATUS = "status"
+    CANCEL = "cancel"
 
 
 class SubmissionNotStarted(RuntimeError):

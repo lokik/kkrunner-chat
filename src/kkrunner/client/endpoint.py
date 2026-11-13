@@ -113,6 +113,27 @@ class EndpointClient:
 
         return _run_sync(query()) if runs else ()
 
+    def cancel(self, attachment):
+        """Cancel an accepted job using its persisted native reference.
+
+        Return backend facts, not a synthetic terminal cancellation status.
+        """
+        from kkrunner.backends.contracts import UnsupportedCapability
+        if BackendCapability.CANCEL not in self.backend.supports:
+            raise UnsupportedCapability("Backend does not support cancellation after restart")
+        self._validate_run(attachment)
+        native_id = attachment.execution.backend_id
+        if native_id is None:
+            raise ValueError("Run has no native execution identity")
+
+        async def request():
+            reply = await self._invoke("cancel", native_id)
+            return RunStatus.from_job_status(
+                decode_job_status(reply), backend_id=native_id,
+            )
+
+        return _run_sync(request())
+
     async def _recover_submission(self, submission_key, submission, *, submitted_at=None):
         context = FileContext(self, StagingSpec())
         directory = await context.resolve_target_path(submission.execution.directory.target)
