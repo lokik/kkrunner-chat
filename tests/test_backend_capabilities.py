@@ -13,7 +13,7 @@ from kkrunner.client.contracts import Operation
 from kkrunner.client.transports.rpc import operation_command
 
 
-MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS})
+MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS, BackendCapability.CANCEL})
 
 
 def test_capabilities_are_immutable_and_instance_specific():
@@ -22,8 +22,8 @@ def test_capabilities_are_immutable_and_instance_specific():
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
-        assert PsijBackend(executor_name=name).supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
-    assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
+        assert PsijBackend(executor_name=name).supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
+    assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
 
 
 def test_backend_owns_its_options_without_a_second_endpoint_copy():
@@ -36,7 +36,7 @@ def test_backend_owns_its_options_without_a_second_endpoint_copy():
         assert not hasattr(endpoint, "backend_options")
         assert not hasattr(endpoint, "supports_reattachment")
         assert not hasattr(endpoint, "requires_backend_identity")
-        assert endpoint.backend.supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS})
+        assert endpoint.backend.supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
         assert dict(endpoint.backend.options) == {"executor_name": "pbs", "url": None}
     assert not hasattr(EndpointClient, "supports_reattachment")
     with pytest.raises(TypeError):
