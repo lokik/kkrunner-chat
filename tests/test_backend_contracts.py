@@ -90,7 +90,7 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
         BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS,
         BackendCapability.CANCEL,
     })
-    assert DirectBackend().supports == frozenset()
+    assert DirectBackend().supports == frozenset({BackendCapability.CANCEL})
     assert SupervisedBackend().supports == managed
     assert PsijBackend().supports == managed
 
