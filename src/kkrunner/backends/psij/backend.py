@@ -53,7 +53,7 @@ class PsijBackend(Backend, ManagedOperations):
             raise ValueError("PSI/J executor_name must be a nonempty string")
         if url is not None and (not isinstance(url, str) or not url):
             raise ValueError("PSI/J url must be a nonempty string or None")
-        supports = {BackendCapability.REATTACH, BackendCapability.STATUS}
+        supports = {BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL}
         if supports_recovery(self.options):
             supports.add(BackendCapability.RECOVER)
         self.supports = frozenset(supports)

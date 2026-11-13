@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+from dataclasses import dataclass
 
 from kkrunner.client.transports import LocalTransport, SshTransport
 from kkrunner.files.paths import has_file_magic
@@ -60,6 +61,63 @@ def _path_overlap(a, b):
 
 def _paths_overlap(first, second):
     return any(_path_overlap(a, b) for a in first for b in second)
+
+
+@dataclass(frozen=True)
+class FileConflict:
+    """A conflicting pair of declared file accesses, on one filesystem."""
+
+    namespace: str
+    first_path: str
+    first_access: str
+    second_path: str
+    second_access: str
+
+
+def conflicting_files(left: RunRecord, right: RunRecord) -> tuple[FileConflict, ...]:
+    """Describe collisions, including conservative wildcard overlaps.
+
+    Paths refer to the declared files and are not fabricated by a filesystem
+    probe; wildcard-vs-wildcard overlaps can be conservative.
+    """
+    def matches(first, second, namespace):
+        reads1, writes1 = first
+        reads2, writes2 = second
+        result = []
+        for access1, paths1 in (("write", writes1), ("read", reads1)):
+            for access2, paths2 in (("write", writes2), ("read", reads2)):
+                if access1 == access2 == "read":
+                    continue
+                for path1 in sorted(paths1):
+                    for path2 in sorted(paths2):
+                        if _path_overlap(path1, path2):
+                            result.append(FileConflict(
+                                namespace, path1, access1, path2, access2,
+                            ))
+        return result
+
+    collisions = matches(
+        _manifest_accesses(left, remote=False),
+        _manifest_accesses(right, remote=False),
+        "local",
+    )
+    def namespace(record):
+        transport = record.execution.transport
+        if isinstance(transport, LocalTransport):
+            return ("local",)
+        mapping = record.files.mapping
+        if mapping is not None and mapping.filesystem_id is not None:
+            return ("filesystem", mapping.filesystem_id)
+        if isinstance(transport, SshTransport):
+            return ("ssh", str(transport.host).rsplit("@", 1)[-1].lower())
+        return ("local",)
+
+    if namespace(left) == namespace(right):
+        collisions.extend(matches(
+            _manifest_accesses(left), _manifest_accesses(right),
+            "target",
+        ))
+    return tuple(dict.fromkeys(collisions))
 
 
 def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
