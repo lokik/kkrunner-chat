@@ -88,6 +88,7 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
     assert SupervisedBackend().execution_mode == PsijBackend().execution_mode == "managed"
     managed = frozenset({
         BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS,
+        BackendCapability.CANCEL,
     })
     assert DirectBackend().supports == frozenset()
     assert SupervisedBackend().supports == managed
