@@ -27,6 +27,8 @@ def test_cancel_unknown_preserves_running_reply(tmp_path, monkeypatch):
     seen = []
     client = SimpleNamespace(
         backend=SimpleNamespace(supports={BackendCapability.CANCEL}),
+        acknowledge_submission=lambda _record: None,
+        acknowledge=lambda _record: None,
         cancel=lambda attachment: seen.append(attachment) or RunStatus(
             RunState.RUNNING, backend_id="opaque-42",
         ),
@@ -43,6 +45,8 @@ def test_cancel_unknown_accepts_confirmed_terminal_reply(tmp_path, monkeypatch):
     record = stored(manager, tmp_path)
     monkeypatch.setattr(manager, "client_for", lambda _record: SimpleNamespace(
         backend=SimpleNamespace(supports={BackendCapability.CANCEL}),
+        acknowledge_submission=lambda _record: None,
+        acknowledge=lambda _record: None,
         cancel=lambda _attachment: RunStatus(
             RunState.CANCELLED, backend_id="opaque-42",
         ),
@@ -58,6 +62,8 @@ def test_cancellation_connection_error_preserves_unknown(tmp_path, monkeypatch):
         raise ConnectionError("ssh unavailable")
     monkeypatch.setattr(manager, "client_for", lambda _record: SimpleNamespace(
         backend=SimpleNamespace(supports={BackendCapability.CANCEL}),
+        acknowledge_submission=lambda _record: None,
+        acknowledge=lambda _record: None,
         cancel=unavailable,
     ))
     with pytest.raises(ConnectionError, match="ssh unavailable"):
