@@ -229,3 +229,66 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
         executor.fetch_result_files(run, (canonical,), destinations={str(canonical): str(staged)})
     assert not staged.exists()
     assert not (outside / "output.dat").exists()
+
+
+def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path):
+    """A vanished optional DOS must not stop restoration of the main SCF output."""
+    from dataclasses import replace
+    from kkrunner.runs.files import RunFiles
+
+    main = tmp_path / "run.out"
+    auxiliary = tmp_path / "run_SCFSTART.dos"
+    main.write_bytes(b"main output")
+    auxiliary.write_bytes(b"auxiliary output")
+    versions = tuple(FileVersion.capture(path, require_digest=True) for path in (auxiliary, main))
+    main.unlink()
+    auxiliary.unlink()
+
+    manifest = FileManifest(
+        stdout=FileEntry(str(main)),
+        outputs=(FileEntry(str(auxiliary), optional=True),),
+        output_versions=versions,
+        captured_at="2026-10-13T08:00:00+00:00",
+    )
+    record = RunRecord(
+        id="missing-auxiliary", state=RunState.FINISHED,
+        created_at="2026-10-13T08:00:00+00:00",
+        updated_at="2026-10-13T08:00:00+00:00",
+        execution=ExecutionMetadata(
+            SshTransport("loopback"),
+            WorkingDirectory(str(tmp_path), "/remote"),
+            "backend-id",
+        ),
+        files=manifest,
+    )
+
+    class Store:
+        current = record
+
+        def get(self, _run):
+            return self.current
+
+        def update(self, _run, updater):
+            self.current = updater(self.current)
+            return self.current
+
+    class Client:
+        supports_result_file_retrieval = True
+
+        def fetch_result_files(self, _record, paths, *, destinations=None):
+            path = str(paths[0])
+            if path == str(main):
+                target = destinations[path] if destinations else path
+                from pathlib import Path
+                Path(target).write_bytes(b"main output")
+            # Missing auxiliary deliberately produces no staged file.
+
+    store = Store()
+    service = RunFiles(store=store, client_pool=None)
+    service._client_for = lambda _record: Client()
+    restored = service.retrieve_result_files(record)
+    assert main.read_bytes() == b"main output"
+    assert not auxiliary.exists()
+    assert restored.files.stdout.availability_state == "available"
+    assert restored.files.outputs[0].availability_state == "failed"
+    assert "not retrieved" in restored.files.outputs[0].availability_message
