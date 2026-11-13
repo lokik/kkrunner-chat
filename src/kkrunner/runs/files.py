@@ -209,13 +209,16 @@ class RunFiles:
                         raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {path}")
                     os.replace(staged, path)
             except OSError as exc:
-                self.update_artifact_availability(
+                # An unavailable historical artifact does not prevent recovery
+                # of unrelated files. Preserve its individual failure status;
+                # consumers decide which files are necessary for their result.
+                record = self.update_artifact_availability(
                     record,
                     path,
                     ArtifactAvailabilityState.FAILED,
                     str(exc),
                 )
-                raise
+                continue
             finally:
                 if staged is not None:
                     staged.unlink(missing_ok=True)
