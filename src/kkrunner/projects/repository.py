@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Iterable, Mapping
 from uuid import UUID, uuid4
 
 from platformdirs import user_state_dir
@@ -311,6 +311,47 @@ class ProjectRepository:
         self._remember_one(saved)
         self._notify(saved.id)
         return saved
+
+    def reassign_runs(
+        self,
+        run_ids: Iterable[str],
+        project_id: str | None,
+        *,
+        store=None,
+        expected_project_ids: Mapping[str, str | None] | None = None,
+    ) -> tuple:
+        """Move run records between projects without changing their execution.
+
+        Prevalidate the full selection under the submission lock. The hierarchy
+        lock prevents destination deletion during the move. Normal run lifecycle
+        transitions synchronize on each run record and keep its latest project.
+        """
+        from kkrunner.runs.records import RunStore
+
+        ids = tuple(dict.fromkeys(str(run_id) for run_id in run_ids))
+        if not ids:
+            return ()
+        target_id = None if project_id is None else _project_id(project_id)
+        run_store = store if store is not None else RunStore(self.directory.parent / "projects_runs")
+        with self._hierarchy_lock(), run_store.submission_lock():
+            if target_id is not None:
+                self._read_path(self._json_path(target_id))
+            records = tuple(run_store.get(run_id) for run_id in ids)
+            for record in records:
+                if (
+                    expected_project_ids is not None
+                    and record.id in expected_project_ids
+                    and record.project_id != expected_project_ids[record.id]
+                ):
+                    raise ProjectRepositoryError(
+                        f"Calculation {record.id!r} was moved by another application"
+                    )
+            return tuple(
+                run_store.reassign_project(
+                    record.id, target_id, expected_project_id=record.project_id,
+                )
+                for record in records
+            )
 
     def delete(self, project_id: str, *, expected_generation: int) -> None:
         """Delete an inactive leaf project and its globally stored run history."""

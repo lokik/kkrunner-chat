@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -234,6 +234,27 @@ class RunStore:
             if latest.execution.backend_id is not None and updated.execution.backend_id != latest.execution.backend_id:
                 raise ValueError("Backend identity cannot change")
             return self._write_unlocked(updated)
+
+    def reassign_project(
+        self, run_id: str, project_id: str | None, *, expected_project_id: str | None,
+    ) -> RunRecord:
+        """Explicitly change a run's project without touching execution or files.
+
+        Ordinary lifecycle updates intentionally cannot modify project_id. This
+        administrative operation has its own lock and checks the previous
+        association to prevent an outdated project browser from overwriting a
+        concurrent reassignment. The owning ProjectRepository validates the
+        destination and serializes reassignment against project deletion.
+        """
+        # Resolve the identity first; the locked read below is authoritative.
+        record = self.get(run_id)
+        with self._lock, FileLock(self._run_lock_path(record)):
+            current = self.get(run_id)
+            if current.project_id != expected_project_id:
+                raise ValueError(f"Run {run_id!r} belongs to a different project now")
+            if current.project_id == project_id:
+                return current
+            return self._write_unlocked(replace(current, project_id=project_id))
 
     def forget(self, run, *, force=False):
         """Forget persisted metadata, never the running process or result files.
