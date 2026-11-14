@@ -1,6 +1,46 @@
 Release notes
 =============
 
+KKRunner is a standalone, program-independent Python library for launching,
+monitoring, recovering and managing scientific jobs. Developed as part of the
+ASE2SPRKKR execution refactoring, it can also be used by other applications.
+It separates execution backends (direct processes, supervised processes and
+PSI/J schedulers) from local and SSH transports, and supports MPI, persistent
+project histories, reconnection to supported jobs, and tracked file transfers.
+ASE2SPRKKR 4.0 uses KKRunner for execution while retaining responsibility
+for SPR-KKR inputs and scientific results.
+
+0.2.0b2
+-------
+
+Execution and recovery
+~~~~~~~~~~~~~~~~~~~~~~
+* Added persistent cancellation for direct and supervised runs, with safe
+  management of previously submitted calculations.
+* Improved recovery of direct-process completion and preservation of
+  persisted cancellation state.
+* Allowed output-only reattachment to direct processes when existing output
+  can be read but live process control is no longer available.
+* Improved process identity validation, backend-capability handling and
+  observation of terminal runs.
+
+Files and remote cleanup
+~~~~~~~~~~~~~~~~~~~~~~~~
+* Added guarded SSH cleanup of declared files and directories, protecting
+  unrelated remote files from deletion.
+* Historical file retrieval now continues when an individual file fails
+  to transfer, allowing other available results to be recovered.
+* Improved cleanup of execution resources and treatment of output and
+  cache files in persistent run histories.
+
+Fixes and compatibility
+~~~~~~~~~~~~~~~~~~~~~~~
+* Fixed remote cleanup, live-stream handling and persistent cancellation
+  regressions, and expanded associated regression tests.
+* The backend/transport API introduced in 0.2.0b1 remains the integration
+  contract. Persisted beta-development records and extension APIs are
+  not guaranteed to remain compatible.
+
 0.2.0b1
 -------
 
