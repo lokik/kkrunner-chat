@@ -100,3 +100,60 @@ def test_endpoint_cleanup_rejects_paths_not_in_manifest(tmp_path):
     assert results[0]["status"] == "deleted"
     assert not path.exists()
     assert rogue.exists()
+
+
+
+def test_manifest_file_in_nested_or_external_tau_directory_is_deletable(tmp_path):
+    """TAUDIR may live under TAUPATH instead of the execution directory."""
+    workdir = tmp_path / "calculation"
+    workdir.mkdir()
+    nested = workdir / "output" / "partial.dat"
+    nested.parent.mkdir()
+    nested.write_text("subdirectory")
+    taupath = tmp_path / "shared-storage"
+    taudir = taupath / "tau-files"
+    taudir.mkdir(parents=True)
+    taufile = taudir / "Fe.tau"
+    taufile.write_text("tau")
+    unlisted = taudir / "other-run.tau"
+    unlisted.write_text("do not delete")
+
+    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    record = SimpleNamespace(
+        execution=ExecutionMetadata(
+            client.transport,
+            WorkingDirectory(str(tmp_path), str(workdir)),
+            backend=client.backend_config,
+        ),
+        files=FileManifest(outputs=(
+            FileEntry(remote_path=str(nested)),
+            FileEntry(remote_path=str(taufile)),
+        )),
+    )
+    selected = (str(nested), str(taufile))
+    preview = client.inspect_remote_files(record, selected)
+    assert {item["path"] for item in preview} == set(selected)
+    assert all(item["status"] == "ok" for item in preview)
+    with pytest.raises(ValueError, match="declared remote manifest"):
+        client.inspect_remote_files(record, (str(unlisted),))
+
+    deleted = client.delete_remote_files(
+        record, {item["path"]: _identity(item) for item in preview},
+    )
+    assert all(item["status"] == "deleted" for item in deleted)
+    assert not nested.exists() and not taufile.exists()
+    assert unlisted.read_text() == "do not delete"
+    assert taudir.is_dir()  # Cleanup never removes whole directories.
+
+
+def test_rootless_operation_rejects_symlinked_tau_paths(tmp_path):
+    """A declared file whose parent is a symlink is not automatically safe."""
+    actual = tmp_path / "scratch"
+    actual.mkdir()
+    tau = actual / "Fe.tau"
+    tau.write_text("tau")
+    alias = tmp_path / "TAUDIR"
+    alias.symlink_to(actual, target_is_directory=True)
+    replies = remote_file_cleanup((str(alias / "Fe.tau"),))
+    assert replies[0]["status"] == "skipped"
+    assert tau.exists()

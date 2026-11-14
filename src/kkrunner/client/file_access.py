@@ -93,7 +93,7 @@ class FileAccess:
 
 
     async def _remote_cleanup(self, run, paths, *, expected=None):
-        """Operate only on exact persisted remote manifest paths inside the run directory."""
+        """Operate on declared remote files, including TAUDIR outside the run directory."""
         if self.client.transport.is_local:
             raise ValueError("Remote-file cleanup requires a remote transport")
         entries = (
@@ -109,10 +109,13 @@ class FileAccess:
         if not set(paths).issubset(declared) or len(paths) != len(set(paths)):
             raise ValueError("Only distinct, declared remote manifest paths may be inspected or deleted")
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
-        root = await context.resolve_target_path(run.execution.directory.target)
-        # Resolve paths once on the client; the remote operation performs the
-        # authoritative path and symlink containment checks on the target.
-        resolved = tuple([await context.resolve_target_path(path) for path in paths])
+        # The manifest is the authority: execution.directory.target is not
+        # necessarily the parent of all output files (e.g. TAUDIR under a
+        # separate TAUPATH). The target still rejects symlinks, directories,
+        # non-absolute paths and changed file identities.
+        resolved = tuple(
+            [await context.resolve_target_path(path) for path in paths]
+        )
         expected_resolved = None if expected is None else {
             resolved_path: list(expected[original_path])
             for original_path, resolved_path in zip(paths, resolved)
@@ -120,7 +123,7 @@ class FileAccess:
         replies = await asyncio.wait_for(
             self.client.transport.call(
                 Operation.standalone(remote_file_cleanup),
-                resolved, root, expected=expected_resolved,
+                resolved, expected=expected_resolved,
             ),
             timeout=45 if expected is not None else 15,
         )

@@ -111,41 +111,60 @@ def finalize_upload(temporary, destination, mtime_ns):
     os.replace(temporary, destination)
 
 
-def remote_file_cleanup(paths, root, *, expected=None):
-    """Preview or delete exact regular files under one SSH run directory.
+def remote_file_cleanup(paths, root=None, *, expected=None):
+    """Inspect/delete exact regular paths, including auxiliary directories.
 
-    Portable stdlib-only function delivered through a standalone operation.
-    No shell or remote KKRunner installation is needed. An expected mapping
-    enables deletion and gives (mtime_ns, size, device, inode) for each file.
-    Errors are returned independently per path, not raised for the whole batch.
+    This is a self-contained, stdlib-only SSH operation. The client must first
+    verify that every requested path is declared in the run's FileManifest.
+    An optional root further confines paths when requested, but a run's
+    execution directory is not a suitable universal boundary: declared files
+    (for example TAUDIR/TAUPATH outputs) may live elsewhere.
+
+    Only exact paths are processed; directories, symlinks, and unverified files
+    cannot be deleted. expected supplies the previously reviewed identity
+    (mtime_ns, size, device, inode) for each requested file.
     """
     import os
     import stat
 
-    root = os.path.normpath(os.fspath(root))
-    if not os.path.isabs(root):
-        raise ValueError("Remote cleanup requires an absolute run directory")
-    real_root = os.path.realpath(root)
+    if root is not None:
+        root = os.path.normpath(os.fspath(root))
+        if not os.path.isabs(root):
+            raise ValueError("Remote cleanup root must be absolute")
+        real_root = os.path.realpath(root)
+
     results = []
     deleting = expected is not None
     for given in paths:
-        path = os.path.normpath(os.fspath(given))
         result = {"path": given}
         try:
-            if not os.path.isabs(path):
-                raise ValueError("Relative file paths cannot be deleted")
-            relative = os.path.relpath(path, root)
-            if relative == "." or relative == ".." or relative.startswith(".." + os.sep):
-                raise ValueError("File is outside the run directory")
-            # Never traverse an intervening symlink, even one resolving
-            # elsewhere inside the run directory.
-            cursor = root
+            original = os.fspath(given)
+            if not os.path.isabs(original):
+                raise ValueError("Remote cleanup requires absolute file paths")
+            if ".." in original.split(os.sep):
+                raise ValueError("Parent traversal is not allowed")
+            path = os.path.normpath(original)
+
+            if root is not None:
+                relative = os.path.relpath(path, root)
+                if relative in (".", "..") or relative.startswith(".." + os.sep):
+                    raise ValueError("File is outside the allowed root")
+                if os.path.commonpath((real_root, os.path.realpath(path))) != real_root:
+                    raise ValueError("Resolved file escapes the allowed root")
+            else:
+                relative = path.lstrip(os.sep)
+
+            # Reject symbolic links at every path component. This is
+            # intentionally independent of the execution directory: a TAUDIR
+            # can be outside it but still must be an explicitly declared path.
+            cursor = os.sep if root is None else root
+            if root is not None and os.path.islink(root):
+                raise ValueError("Cleanup root is a symbolic link")
             for part in relative.split(os.sep):
                 cursor = os.path.join(cursor, part)
                 if os.path.islink(cursor):
                     raise ValueError("A file or parent is a symbolic link")
-            if os.path.commonpath((real_root, os.path.realpath(path))) != real_root:
-                raise ValueError("Resolved file escapes the run directory")
+
             try:
                 info = os.stat(path, follow_symlinks=False)
             except FileNotFoundError:
@@ -164,7 +183,8 @@ def remote_file_cleanup(paths, root, *, expected=None):
                     result["status"] = "changed"
                     result["message"] = "File changed since preview"
                 else:
-                    # Recheck immediately before unlink, independently for each path.
+                    # Recheck each file independently; one failed path never
+                    # prevents cleanup of another approved path.
                     latest = os.stat(path, follow_symlinks=False)
                     if not stat.S_ISREG(latest.st_mode) or [
                         latest.st_mtime_ns, latest.st_size, latest.st_dev, latest.st_ino
