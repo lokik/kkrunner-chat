@@ -109,3 +109,73 @@ def finalize_upload(temporary, destination, mtime_ns):
     info = os.stat(temporary)
     os.utime(temporary, ns=(info.st_atime_ns, int(mtime_ns)))
     os.replace(temporary, destination)
+
+
+def remote_file_cleanup(paths, root, *, expected=None):
+    """Preview or delete exact regular files under one SSH run directory.
+
+    Portable stdlib-only function delivered through a standalone operation.
+    No shell or remote KKRunner installation is needed. An expected mapping
+    enables deletion and gives (mtime_ns, size, device, inode) for each file.
+    Errors are returned independently per path, not raised for the whole batch.
+    """
+    import os
+    import stat
+
+    root = os.path.normpath(os.fspath(root))
+    if not os.path.isabs(root):
+        raise ValueError("Remote cleanup requires an absolute run directory")
+    real_root = os.path.realpath(root)
+    results = []
+    deleting = expected is not None
+    for given in paths:
+        path = os.path.normpath(os.fspath(given))
+        result = {"path": given}
+        try:
+            if not os.path.isabs(path):
+                raise ValueError("Relative file paths cannot be deleted")
+            relative = os.path.relpath(path, root)
+            if relative == "." or relative == ".." or relative.startswith(".." + os.sep):
+                raise ValueError("File is outside the run directory")
+            # Never traverse an intervening symlink, even one resolving
+            # elsewhere inside the run directory.
+            cursor = root
+            for part in relative.split(os.sep):
+                cursor = os.path.join(cursor, part)
+                if os.path.islink(cursor):
+                    raise ValueError("A file or parent is a symbolic link")
+            if os.path.commonpath((real_root, os.path.realpath(path))) != real_root:
+                raise ValueError("Resolved file escapes the run directory")
+            try:
+                info = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError:
+                result["status"] = "missing"
+            else:
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("Not a regular file")
+                identity = [info.st_mtime_ns, info.st_size, info.st_dev, info.st_ino]
+                result.update(
+                    mtime_ns=info.st_mtime_ns, size=info.st_size,
+                    device=info.st_dev, inode=info.st_ino,
+                )
+                if not deleting:
+                    result["status"] = "ok"
+                elif given not in expected or list(expected[given]) != identity:
+                    result["status"] = "changed"
+                    result["message"] = "File changed since preview"
+                else:
+                    # Recheck immediately before unlink, independently for each path.
+                    latest = os.stat(path, follow_symlinks=False)
+                    if not stat.S_ISREG(latest.st_mode) or [
+                        latest.st_mtime_ns, latest.st_size, latest.st_dev, latest.st_ino
+                    ] != identity:
+                        result["status"] = "changed"
+                        result["message"] = "File changed during cleanup"
+                    else:
+                        os.unlink(path)
+                        result["status"] = "deleted"
+        except (OSError, ValueError) as exc:
+            result["status"] = "skipped"
+            result["message"] = str(exc)
+        results.append(result)
+    return results

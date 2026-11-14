@@ -187,6 +187,18 @@ class EndpointClient:
         self._validate_run(run)
         return FileAccess(self).fetch_result_files(run, files, destinations=destinations)
 
+    def inspect_remote_files(self, run, paths):
+        """Inspect declared target files for an optional cleanup preview."""
+        from kkrunner.client.file_access import FileAccess
+        self._validate_run(run)
+        return FileAccess(self).inspect_remote_files(run, paths)
+
+    def delete_remote_files(self, run, expected):
+        """Best-effort per-file remote deletion using approved file identities."""
+        from kkrunner.client.file_access import FileAccess
+        self._validate_run(run)
+        return FileAccess(self).delete_remote_files(run, expected)
+
     async def _open_run_parts(self, attachment, *, callback=None, output_listener=None):
         self._validate_run(attachment)
         execution = attachment.execution
