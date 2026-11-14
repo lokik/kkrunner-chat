@@ -10,7 +10,7 @@ from kkrunner.client import EndpointClient
 from kkrunner.client.contracts import Operation
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.files.queries import remote_file_cleanup
-from kkrunner.runs import ExecutionMetadata, WorkingDirectory
+from kkrunner.runs import WorkingDirectory
 
 from .test_ssh_direct import LoopbackSshTransport
 
@@ -82,6 +82,8 @@ def test_remote_cleanup_uses_ssh_standalone_protocol_without_agent(tmp_path):
     assert not path.exists()
 
 
+# Cleanup tests attach an in-memory loopback transport; a persisted record
+# intentionally allows only exact reconstructible transport implementations.
 def test_endpoint_cleanup_rejects_paths_not_in_manifest(tmp_path):
     root = tmp_path / "run"
     root.mkdir()
@@ -92,7 +94,7 @@ def test_endpoint_cleanup_rejects_paths_not_in_manifest(tmp_path):
     transport = LoopbackSshTransport()
     client = EndpointClient(DirectBackend, transport=transport)
     record = SimpleNamespace(
-        execution=ExecutionMetadata(
+        execution=SimpleNamespace(
             transport, WorkingDirectory(str(tmp_path), str(root)),
             backend=client.backend_config,
         ),
@@ -126,7 +128,7 @@ def test_manifest_file_in_nested_or_external_tau_directory_is_deletable(tmp_path
 
     client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
     record = SimpleNamespace(
-        execution=ExecutionMetadata(
+        execution=SimpleNamespace(
             client.transport,
             WorkingDirectory(str(tmp_path), str(workdir)),
             backend=client.backend_config,
@@ -230,7 +232,7 @@ def test_ssh_endpoint_deletes_recorded_directory_recursively(tmp_path):
     other.write_text("keep")
     client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
     record = SimpleNamespace(
-        execution=ExecutionMetadata(
+        execution=SimpleNamespace(
             client.transport, WorkingDirectory(str(local), str(work)),
             backend=client.backend_config,
         ),
@@ -292,7 +294,7 @@ def test_endpoint_requires_declared_kind_not_actual_filesystem_type(tmp_path):
     transport = LoopbackSshTransport()
     client = EndpointClient(DirectBackend, transport=transport)
     record = SimpleNamespace(
-        execution=ExecutionMetadata(
+        execution=SimpleNamespace(
             transport, WorkingDirectory(str(tmp_path), str(root)),
             backend=client.backend_config,
         ),
