@@ -117,7 +117,11 @@ class FileAccess:
             [await context.resolve_target_path(path) for path in paths]
         )
         expected_resolved = None if expected is None else {
-            resolved_path: list(expected[original_path])
+            resolved_path: (
+                dict(expected[original_path])
+                if isinstance(expected[original_path], dict)
+                else list(expected[original_path])
+            )
             for original_path, resolved_path in zip(paths, resolved)
         }
         replies = await asyncio.wait_for(

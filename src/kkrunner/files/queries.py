@@ -112,87 +112,117 @@ def finalize_upload(temporary, destination, mtime_ns):
 
 
 def remote_file_cleanup(paths, root=None, *, expected=None):
-    """Inspect/delete exact regular paths, including auxiliary directories.
+    """Inspect or remove exact declared paths, including whole directories.
 
-    This is a self-contained, stdlib-only SSH operation. The client must first
-    verify that every requested path is declared in the run's FileManifest.
-    An optional root further confines paths when requested, but a run's
-    execution directory is not a suitable universal boundary: declared files
-    (for example TAUDIR/TAUPATH outputs) may live elsewhere.
-
-    Only exact paths are processed; directories, symlinks, and unverified files
-    cannot be deleted. expected supplies the previously reviewed identity
-    (mtime_ns, size, device, inode) for each requested file.
+    Portable stdlib-only target operation. The client first checks that each
+    requested path is listed in the persisted FileManifest. Directory removal
+    is recursive but never follows symbolic links, and requires a snapshot of
+    every descendant. Unexpected changes cause that directory to be skipped.
+    Errors on one target do not interrupt cleanup of other selected targets.
     """
     import os
+    import shutil
     import stat
 
     if root is not None:
         root = os.path.normpath(os.fspath(root))
         if not os.path.isabs(root):
-            raise ValueError("Remote cleanup root must be absolute")
+            raise ValueError("Cleanup root must be absolute")
         real_root = os.path.realpath(root)
 
+    def snapshot(path):
+        """Use lstat, so a symlink is observed rather than followed."""
+        info = os.stat(path, follow_symlinks=False)
+        kind = ("directory" if stat.S_ISDIR(info.st_mode) else
+                "file" if stat.S_ISREG(info.st_mode) else
+                "symlink" if stat.S_ISLNK(info.st_mode) else "other")
+        return {
+            "path": path, "kind": kind, "mtime_ns": info.st_mtime_ns,
+            "size": info.st_size, "device": info.st_dev, "inode": info.st_ino,
+        }
+
+    def tree(path):
+        """Sorted complete tree snapshot; scandir does not follow links."""
+        members = []
+        def walk(directory):
+            with os.scandir(directory) as entries:
+                children = sorted(entries, key=lambda item: item.name)
+            for entry in children:
+                detail = snapshot(entry.path)
+                members.append(detail)
+                if detail["kind"] == "directory":
+                    walk(entry.path)
+        walk(path)
+        return members
+
     results = []
-    deleting = expected is not None
     for given in paths:
         result = {"path": given}
         try:
             original = os.fspath(given)
             if not os.path.isabs(original):
-                raise ValueError("Remote cleanup requires absolute file paths")
+                raise ValueError("Remote cleanup requires absolute paths")
             if ".." in original.split(os.sep):
                 raise ValueError("Parent traversal is not allowed")
             path = os.path.normpath(original)
-
             if root is not None:
                 relative = os.path.relpath(path, root)
                 if relative in (".", "..") or relative.startswith(".." + os.sep):
-                    raise ValueError("File is outside the allowed root")
+                    raise ValueError("Path outside the allowed root")
                 if os.path.commonpath((real_root, os.path.realpath(path))) != real_root:
-                    raise ValueError("Resolved file escapes the allowed root")
+                    raise ValueError("Resolved path outside the allowed root")
             else:
                 relative = path.lstrip(os.sep)
 
-            # Reject symbolic links at every path component. This is
-            # intentionally independent of the execution directory: a TAUDIR
-            # can be outside it but still must be an explicitly declared path.
             cursor = os.sep if root is None else root
             if root is not None and os.path.islink(root):
                 raise ValueError("Cleanup root is a symbolic link")
             for part in relative.split(os.sep):
                 cursor = os.path.join(cursor, part)
                 if os.path.islink(cursor):
-                    raise ValueError("A file or parent is a symbolic link")
+                    raise ValueError("Path or parent is a symbolic link")
 
             try:
-                info = os.stat(path, follow_symlinks=False)
+                state = snapshot(path)
             except FileNotFoundError:
                 result["status"] = "missing"
+                results.append(result)
+                continue
+            if state["kind"] not in ("file", "directory"):
+                raise ValueError("Not a regular file or directory")
+            members = tree(path) if state["kind"] == "directory" else []
+            result.update(state)
+            result["contents"] = members
+            if expected is None:
+                result["status"] = "ok"
             else:
-                if not stat.S_ISREG(info.st_mode):
-                    raise ValueError("Not a regular file")
-                identity = [info.st_mtime_ns, info.st_size, info.st_dev, info.st_ino]
-                result.update(
-                    mtime_ns=info.st_mtime_ns, size=info.st_size,
-                    device=info.st_dev, inode=info.st_ino,
-                )
-                if not deleting:
-                    result["status"] = "ok"
-                elif given not in expected or list(expected[given]) != identity:
+                confirmed = expected.get(given)
+                # Existing consumers pass a four-number list for regular files.
+                if isinstance(confirmed, list):
+                    confirmed = {
+                        "kind": "file", "mtime_ns": confirmed[0],
+                        "size": confirmed[1], "device": confirmed[2],
+                        "inode": confirmed[3], "contents": [],
+                    }
+                if confirmed is None or any(
+                    confirmed.get(key) != result.get(key)
+                    for key in ("kind", "mtime_ns", "size", "device", "inode", "contents")
+                ):
                     result["status"] = "changed"
-                    result["message"] = "File changed since preview"
+                    result["message"] = "File or directory contents changed since confirmation"
                 else:
-                    # Recheck each file independently; one failed path never
-                    # prevents cleanup of another approved path.
-                    latest = os.stat(path, follow_symlinks=False)
-                    if not stat.S_ISREG(latest.st_mode) or [
-                        latest.st_mtime_ns, latest.st_size, latest.st_dev, latest.st_ino
-                    ] != identity:
+                    # Recheck everything just before deletion, including
+                    # additions and removal of descendants since preview.
+                    latest = snapshot(path)
+                    fresh = tree(path) if latest["kind"] == "directory" else []
+                    if latest != state or fresh != members:
                         result["status"] = "changed"
-                        result["message"] = "File changed during cleanup"
+                        result["message"] = "File or directory changed during cleanup"
                     else:
-                        os.unlink(path)
+                        if state["kind"] == "directory":
+                            shutil.rmtree(path)
+                        else:
+                            os.unlink(path)
                         result["status"] = "deleted"
         except (OSError, ValueError) as exc:
             result["status"] = "skipped"

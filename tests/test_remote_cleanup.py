@@ -50,7 +50,11 @@ def test_remote_cleanup_rejects_unrelated_paths_symlinks_and_directories(tmp_pat
         str(outside), str(root), str(root / "alias"),
         str(root / "linked" / "outside"), str(root / "nested"),
     ]
-    assert all(item["status"] == "skipped" for item in remote_file_cleanup(paths, str(root)))
+    outcomes = remote_file_cleanup(paths, str(root))
+    assert [item["status"] for item in outcomes] == [
+        "skipped", "skipped", "skipped", "skipped", "ok",
+    ]
+    assert outcomes[-1]["kind"] == "directory"
     assert outside.exists()
     assert (root / "nested").is_dir()
 
@@ -157,3 +161,75 @@ def test_rootless_operation_rejects_symlinked_tau_paths(tmp_path):
     replies = remote_file_cleanup((str(alias / "Fe.tau"),))
     assert replies[0]["status"] == "skipped"
     assert tau.exists()
+
+
+
+def test_explicit_directory_removes_complete_tree_but_not_adjacent_files(tmp_path):
+    import os
+    root = tmp_path / "work"
+    taudir = root / "tau"
+    (taudir / "deep").mkdir(parents=True)
+    (taudir / "deep" / "Fe.tau").write_text("tau")
+    (taudir / "other.dat").write_text("data")
+    outside = root / "neighbor.txt"
+    outside.write_text("keep")
+    linked_target = tmp_path / "outside.txt"
+    linked_target.write_text("also keep")
+    (taudir / "alias").symlink_to(linked_target)
+    preview = remote_file_cleanup([str(taudir)], root=str(root))
+    assert preview[0]["kind"] == "directory"
+    assert {os.path.relpath(entry["path"], str(taudir)) for entry in preview[0]["contents"]} == {
+        "deep", os.path.join("deep", "Fe.tau"), "other.dat", "alias",
+    }
+    expected = {str(taudir): {key: preview[0][key] for key in (
+        "kind", "mtime_ns", "size", "device", "inode", "contents",
+    )}}
+    deleted = remote_file_cleanup((str(taudir),), str(root), expected=expected)
+    assert deleted[0]["status"] == "deleted"
+    assert not taudir.exists()
+    assert outside.exists() and linked_target.exists()
+
+
+def test_directory_cleanup_rejects_unreviewed_new_content(tmp_path):
+    root = tmp_path / "work"
+    taudir = root / "tau"
+    taudir.mkdir(parents=True)
+    (taudir / "first").write_text("data")
+    review = remote_file_cleanup((str(taudir),))[0]
+    (taudir / "later").write_text("new data")
+    expected = {str(taudir): {key: review[key] for key in (
+        "kind", "mtime_ns", "size", "device", "inode", "contents",
+    )}}
+    outcome = remote_file_cleanup((str(taudir),), expected=expected)
+    assert outcome[0]["status"] == "changed"
+    assert (taudir / "later").exists()
+
+
+def test_ssh_endpoint_deletes_recorded_directory_recursively(tmp_path):
+    local = tmp_path / "local"
+    work = tmp_path / "work"
+    taupath = tmp_path / "shared"
+    taudir = taupath / "tau"
+    local.mkdir()
+    work.mkdir()
+    (taudir / "nested").mkdir(parents=True)
+    (taudir / "nested" / "one.tau").write_text("tau")
+    other = taupath / "other-project.tau"
+    other.write_text("keep")
+    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    record = SimpleNamespace(
+        execution=ExecutionMetadata(
+            client.transport, WorkingDirectory(str(local), str(work)),
+            backend=client.backend_config,
+        ),
+        files=FileManifest(outputs=(FileEntry(remote_path=str(taudir)),)),
+    )
+    preview = client.inspect_remote_files(record, (str(taudir),))
+    assert preview[0]["kind"] == "directory"
+    assert preview[0]["contents"]
+    expected = {str(taudir): {key: preview[0][key] for key in (
+        "kind", "mtime_ns", "size", "device", "inode", "contents",
+    )}}
+    results = client.delete_remote_files(record, expected)
+    assert results[0]["status"] == "deleted"
+    assert not taudir.exists() and other.exists()
