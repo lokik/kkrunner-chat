@@ -443,10 +443,37 @@ def test_remote_none_stream_files_are_live_only(tmp_path):
     assert outcome.return_code == 0
     assert outcome.output_file is None
     assert outcome.error_file is None
-    assert ("out", "out\n") in observed
-    assert ("err", "err\n") in observed
+    # A detached run without named streams can finish before FOLLOW attaches.
+    # Bytes sent before that connection are live-only and cannot be replayed.
+    assert all((kind, text) in {("out", "out\n"), ("err", "err\n")} for kind, text in observed)
     assert list((tmp_path / "remote").rglob("stdout")) == []
     assert list((tmp_path / "remote").rglob("stderr")) == []
+
+
+def test_supervisor_live_only_streams_reach_connected_followers():
+    """Once attached, unnamed stdout/stderr must still be delivered live."""
+    from kkrunner.backends.supervised.streams import SupervisorStreams, follow_socket
+
+    async def verify():
+        streams = SupervisorStreams(None, None, detached=False)
+        await streams.start()
+        received = []
+        follower = asyncio.create_task(follow_socket(
+            streams.socket_path, {"out": 0, "err": 0},
+            lambda kind, _offset, data: received.append((kind, data)),
+        ))
+        try:
+            await asyncio.wait_for(streams.connected.wait(), timeout=5)
+            streams.publish("out", b"out\n")
+            streams.publish("err", b"err\n")
+            streams.terminal({"state": "finished", "return_code": 0})
+            terminal = await asyncio.wait_for(follower, timeout=5)
+            assert terminal["state"] == "finished"
+            assert received == [("out", b"out\n"), ("err", b"err\n")]
+        finally:
+            await streams.finish()
+
+    asyncio.run(verify())
 
 
 @pytest.mark.parametrize(
