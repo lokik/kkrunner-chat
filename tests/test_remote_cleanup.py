@@ -50,7 +50,9 @@ def test_remote_cleanup_rejects_unrelated_paths_symlinks_and_directories(tmp_pat
         str(outside), str(root), str(root / "alias"),
         str(root / "linked" / "outside"), str(root / "nested"),
     ]
-    outcomes = remote_file_cleanup(paths, str(root))
+    outcomes = remote_file_cleanup(
+        paths, str(root), kinds={path: ("directory" if path == str(root / "nested") else "file") for path in paths},
+    )
     assert [item["status"] for item in outcomes] == [
         "skipped", "skipped", "skipped", "skipped", "ok",
     ]
@@ -176,7 +178,9 @@ def test_explicit_directory_removes_complete_tree_but_not_adjacent_files(tmp_pat
     linked_target = tmp_path / "outside.txt"
     linked_target.write_text("also keep")
     (taudir / "alias").symlink_to(linked_target)
-    preview = remote_file_cleanup([str(taudir)], root=str(root))
+    preview = remote_file_cleanup(
+        [str(taudir)], root=str(root), kinds={str(taudir): "directory"},
+    )
     assert preview[0]["kind"] == "directory"
     assert {os.path.relpath(entry["path"], str(taudir)) for entry in preview[0]["contents"]} == {
         "deep", os.path.join("deep", "Fe.tau"), "other.dat", "alias",
@@ -184,7 +188,10 @@ def test_explicit_directory_removes_complete_tree_but_not_adjacent_files(tmp_pat
     expected = {str(taudir): {key: preview[0][key] for key in (
         "kind", "mtime_ns", "size", "device", "inode", "contents",
     )}}
-    deleted = remote_file_cleanup((str(taudir),), str(root), expected=expected)
+    deleted = remote_file_cleanup(
+        (str(taudir),), str(root), expected=expected,
+        kinds={str(taudir): "directory"},
+    )
     assert deleted[0]["status"] == "deleted"
     assert not taudir.exists()
     assert outside.exists() and linked_target.exists()
@@ -195,12 +202,17 @@ def test_directory_cleanup_rejects_unreviewed_new_content(tmp_path):
     taudir = root / "tau"
     taudir.mkdir(parents=True)
     (taudir / "first").write_text("data")
-    review = remote_file_cleanup((str(taudir),))[0]
+    review = remote_file_cleanup(
+        (str(taudir),), kinds={str(taudir): "directory"},
+    )[0]
     (taudir / "later").write_text("new data")
     expected = {str(taudir): {key: review[key] for key in (
         "kind", "mtime_ns", "size", "device", "inode", "contents",
     )}}
-    outcome = remote_file_cleanup((str(taudir),), expected=expected)
+    outcome = remote_file_cleanup(
+        (str(taudir),), expected=expected,
+        kinds={str(taudir): "directory"},
+    )
     assert outcome[0]["status"] == "changed"
     assert (taudir / "later").exists()
 
@@ -222,7 +234,7 @@ def test_ssh_endpoint_deletes_recorded_directory_recursively(tmp_path):
             client.transport, WorkingDirectory(str(local), str(work)),
             backend=client.backend_config,
         ),
-        files=FileManifest(outputs=(FileEntry(remote_path=str(taudir)),)),
+        files=FileManifest(outputs=(FileEntry(remote_path=str(taudir), kind="directory"),)),
     )
     preview = client.inspect_remote_files(record, (str(taudir),))
     assert preview[0]["kind"] == "directory"
@@ -233,3 +245,85 @@ def test_ssh_endpoint_deletes_recorded_directory_recursively(tmp_path):
     results = client.delete_remote_files(record, expected)
     assert results[0]["status"] == "deleted"
     assert not taudir.exists() and other.exists()
+
+
+
+def test_cleanup_never_reinterprets_declared_file_or_directory(tmp_path):
+    root = tmp_path / "scratch"
+    root.mkdir()
+    real_file = root / "metadata.dir"
+    real_file.write_text("regular despite suffix")
+    real_directory = root / "tau"
+    (real_directory / "nested").mkdir(parents=True)
+    (real_directory / "nested" / "result.tau").write_text("keep")
+    paths = (str(real_file), str(real_directory))
+    mismatches = remote_file_cleanup(
+        paths, kinds={str(real_file): "directory", str(real_directory): "file"},
+    )
+    assert all(item["status"] == "skipped" for item in mismatches)
+    assert all("Declared" in item["message"] for item in mismatches)
+    assert real_file.read_text() == "regular despite suffix"
+    assert (real_directory / "nested" / "result.tau").exists()
+
+    preview = remote_file_cleanup(paths, kinds={
+        str(real_file): "file", str(real_directory): "directory",
+    })
+    assert [item["kind"] for item in preview] == ["file", "directory"]
+    expected = {
+        item["path"]: {k: item[k] for k in (
+            "kind", "mtime_ns", "size", "device", "inode", "contents",
+        )} for item in preview
+    }
+    deleted = remote_file_cleanup(
+        paths, expected=expected,
+        kinds={str(real_file): "directory", str(real_directory): "file"},
+    )
+    assert all(item["status"] == "skipped" for item in deleted)
+    assert real_file.is_file() and real_directory.is_dir()
+
+
+def test_endpoint_requires_declared_kind_not_actual_filesystem_type(tmp_path):
+    root = tmp_path / "scratch"
+    root.mkdir()
+    declared_file = root / "listed-file"
+    declared_file.mkdir()
+    declared_directory = root / "listed-directory"
+    declared_directory.write_text("file instead of expected directory")
+    transport = LoopbackSshTransport()
+    client = EndpointClient(DirectBackend, transport=transport)
+    record = SimpleNamespace(
+        execution=ExecutionMetadata(
+            transport, WorkingDirectory(str(tmp_path), str(root)),
+            backend=client.backend_config,
+        ),
+        files=FileManifest(outputs=(
+            FileEntry(remote_path=str(declared_file), kind="file"),
+            FileEntry(remote_path=str(declared_directory), kind="directory"),
+        )),
+    )
+    replies = client.inspect_remote_files(
+        record, (str(declared_file), str(declared_directory)),
+    )
+    assert all(item["status"] == "skipped" for item in replies)
+    assert declared_file.is_dir() and declared_directory.is_file()
+
+
+def test_manifest_retains_directory_type_from_task_declaration(tmp_path):
+    from kkrunner import TaskFile
+    from kkrunner.files.manifest import FileManifest
+    from kkrunner import ExecutionSpec
+
+    spec = ExecutionSpec(
+        ["true"], directory=str(tmp_path),
+        output_files=(
+            TaskFile("tau", kind="directory"),
+            TaskFile("filename.dir"),
+        ),
+    )
+    manifest = FileManifest.from_spec(spec)
+    kinds = {entry.local_path: entry.kind for entry in manifest.outputs}
+    assert kinds[str(tmp_path / "tau")] == "directory"
+    assert kinds[str(tmp_path / "filename.dir")] == "file"
+    assert FileManifest(outputs=({"remote_path": "/tmp/legacy"},)).outputs[0].kind == "file"
+    with pytest.raises(ValueError, match="kind"):
+        TaskFile("invalid", kind="other")

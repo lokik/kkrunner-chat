@@ -111,13 +111,14 @@ def finalize_upload(temporary, destination, mtime_ns):
     os.replace(temporary, destination)
 
 
-def remote_file_cleanup(paths, root=None, *, expected=None):
+def remote_file_cleanup(paths, root=None, *, expected=None, kinds=None):
     """Inspect or remove exact declared paths, including whole directories.
 
     Portable stdlib-only target operation. The client first checks that each
-    requested path is listed in the persisted FileManifest. Directory removal
-    is recursive but never follows symbolic links, and requires a snapshot of
-    every descendant. Unexpected changes cause that directory to be skipped.
+    requested path is listed in the persisted FileManifest, then passes its
+    declared kind. A declared file must be a file; a declared directory must
+    be a directory. Recursive deletion requires the snapshot of every child.
+    Unexpected changes cause that directory to be skipped.
     Errors on one target do not interrupt cleanup of other selected targets.
     """
     import os
@@ -188,9 +189,14 @@ def remote_file_cleanup(paths, root=None, *, expected=None):
                 result["status"] = "missing"
                 results.append(result)
                 continue
-            if state["kind"] not in ("file", "directory"):
-                raise ValueError("Not a regular file or directory")
-            members = tree(path) if state["kind"] == "directory" else []
+            declared_kind = "file" if kinds is None else kinds.get(given)
+            if declared_kind not in ("file", "directory"):
+                raise ValueError("Missing or invalid declared filesystem kind")
+            if state["kind"] != declared_kind:
+                raise ValueError(
+                    f"Declared {declared_kind} is a {state['kind']}; refusing cleanup"
+                )
+            members = tree(path) if declared_kind == "directory" else []
             result.update(state)
             result["contents"] = members
             if expected is None:

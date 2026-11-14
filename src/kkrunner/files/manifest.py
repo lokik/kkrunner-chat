@@ -20,7 +20,7 @@ class ArtifactAvailabilityState(str, Enum):
 
 @dataclass(frozen=True)
 class FileEntry:
-    """Location of one file, with no assumptions about its content."""
+    """Declared filesystem entry; legacy records default to a regular file."""
 
     local_path: Optional[str] = None
     remote_path: Optional[str] = None
@@ -28,6 +28,7 @@ class FileEntry:
     availability_message: Optional[str] = None
     source_pattern: Optional[str] = None
     optional: bool = False
+    kind: str = "file"
 
     def __post_init__(self):
         import os
@@ -41,6 +42,8 @@ class FileEntry:
                 object.__setattr__(self, name, os.fspath(value))
         if type(self.optional) is not bool:
             raise TypeError("FileEntry.optional must be a bool")
+        if self.kind not in ("file", "directory"):
+            raise ValueError("FileEntry kind must be file or directory")
         if self.local_path is None and self.remote_path is None:
             raise ValueError("A file entry must have at least one location")
         if self.availability_state is not None:
@@ -147,10 +150,17 @@ class FileManifest:
         primary_input = file_path(primary_value, directory)
         if primary_input is not None and getattr(primary_value, "optional", False):
             raise ValueError(f"Primary input {primary_input} cannot be declared optional")
-        inputs = declared_file_paths(
-            (primary_value, *getattr(spec, "input_files", ())),
-            directory,
-        )
+        input_values = (primary_value, *getattr(spec, "input_files", ()))
+        inputs = declared_file_paths(input_values, directory)
+        input_kinds = {}
+        for value in input_values:
+            path = file_path(value, directory)
+            if path is None:
+                continue
+            kind = getattr(value, "kind", "file")
+            if path in input_kinds and input_kinds[path] != kind:
+                raise ValueError(f"Conflicting file kinds for input {path}")
+            input_kinds[path] = kind
         stdout = file_path(getattr(spec, "output_file", None), directory)
         stderr = file_path(getattr(spec, "error_file", None), directory)
         # Output duplicates are ambiguous: the later execution manifest
@@ -165,7 +175,7 @@ class FileManifest:
             if path in output_paths:
                 raise ValueError(f"Duplicate file declaration: output {path}")
             output_paths.add(path)
-            outputs.append((path, not getattr(value, "optional", False)))
+            outputs.append((path, not getattr(value, "optional", False), getattr(value, "kind", "file")))
         # Input declarations may refer to the same physical input (including
         # the primary file), and stdout/stderr may share a destination. Other
         # declaration collisions are errors, not silent deduplication.
@@ -191,12 +201,13 @@ class FileManifest:
                     FileEntry(
                         local_path=path,
                         optional=getattr(value, "optional", False),
+                        kind=getattr(value, "kind", "file"),
                     )
                 )
             )
         return cls(
-            inputs=tuple(FileEntry(local_path=path, optional=not required) for path, required in inputs),
-            outputs=tuple(FileEntry(local_path=path, optional=not required) for path, required in outputs),
+            inputs=tuple(FileEntry(local_path=path, optional=not required, kind=input_kinds[path]) for path, required in inputs),
+            outputs=tuple(FileEntry(local_path=path, optional=not required, kind=kind) for path, required, kind in outputs),
             caches=tuple(caches),
             stdin=None if stdin is None else FileEntry(local_path=stdin),
             stdout=None if stdout is None else FileEntry(local_path=stdout),

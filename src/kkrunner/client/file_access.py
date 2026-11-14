@@ -101,10 +101,13 @@ class FileAccess:
             *(cache.file for cache in run.files.caches),
             run.files.stdin, run.files.stdout, run.files.stderr,
         )
-        declared = {
-            entry.remote_path for entry in entries
-            if entry is not None and entry.remote_path is not None
-        }
+        declared = {}
+        for entry in entries:
+            if entry is None or entry.remote_path is None:
+                continue
+            previous = declared.setdefault(entry.remote_path, entry.kind)
+            if previous != entry.kind:
+                raise ValueError(f"Contradictory declared kinds for {entry.remote_path}")
         paths = tuple(paths)
         if not set(paths).issubset(declared) or len(paths) != len(set(paths)):
             raise ValueError("Only distinct, declared remote manifest paths may be inspected or deleted")
@@ -124,10 +127,14 @@ class FileAccess:
             )
             for original_path, resolved_path in zip(paths, resolved)
         }
+        kinds_resolved = {
+            resolved_path: declared[original_path]
+            for original_path, resolved_path in zip(paths, resolved)
+        }
         replies = await asyncio.wait_for(
             self.client.transport.call(
                 Operation.standalone(remote_file_cleanup),
-                resolved, expected=expected_resolved,
+                resolved, expected=expected_resolved, kinds=kinds_resolved,
             ),
             timeout=45 if expected is not None else 15,
         )
