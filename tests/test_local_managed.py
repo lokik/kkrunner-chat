@@ -51,7 +51,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("process")),
+        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("kkrunner")),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "out.txt")) if stdout else None,
             stderr=FileEntry(local_path=str(tmp_path / "err.txt")) if stderr else None,
@@ -84,7 +84,7 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     handle = runner.backend_id
-    assert decode_handle(handle)["kind"] == "process"
+    assert decode_handle(handle)["kind"] == "kkrunner"
     assert recover_submission(RUN_ID)["remote_id"] == handle
     assert runner.wait().return_code == 0
     assert runner.state == RunState.FINISHED
@@ -148,7 +148,7 @@ def test_missing_ticket_keeps_submission_uncertain(tmp_path):
 def test_missing_supervisor_outcome_is_unknown(tmp_path):
     handle = encode_handle(
         {
-            "kind": "process",
+            "kind": "kkrunner",
             "identity": {"pid": 9999999, "start_time": 0, "time_basis": "linux-boot"},
             "receipt_id": "a" * 32,
             "socket_path": "/missing/socket",
@@ -238,7 +238,7 @@ def _attached_job(tmp_path, *, state="running", return_code=None):
 
     binding = bind_execution(
         SupervisedBackend(), LocalTransport(),
-        ref=JobRef("process", "opaque-target-id"),
+        ref=JobRef("kkrunner", "opaque-target-id"),
         status={"state": state, "return_code": return_code},
     )
     return Job(binding, _spec(tmp_path))

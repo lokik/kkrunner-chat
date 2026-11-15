@@ -10,7 +10,7 @@ from kkrunner.backends.psij import backend as scheduler_operations
 
 def test_direct_remote_process_without_pending_identity_returns_none(tmp_path, monkeypatch):
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path))
-    assert remote_service.recover_remote("a" * 32, {"backend": "process", "directory": "/scratch/case"}) is None
+    assert remote_service.recover_remote("a" * 32, {"backend": "kkrunner", "directory": "/scratch/case"}) is None
 
 
 def test_psij_recovery_uses_backend_native_identity(monkeypatch):
@@ -62,9 +62,9 @@ def test_ticket_and_outcome_share_configured_state_root(tmp_path, monkeypatch):
     remote_mailbox.publish_submission(key, {"remote_id": "job-12"})
     assert ticket.is_file()
     assert remote_mailbox.recover_submission(key) == {"remote_id": "job-12"}
-    assert remote_service.acknowledge_submission("process", key) == {"acknowledged": True}
+    assert remote_service.acknowledge_submission("kkrunner", key) == {"acknowledged": True}
     assert remote_mailbox.recover_submission(key) is None
-    assert remote_service.acknowledge_submission("process", key) == {"acknowledged": False}
+    assert remote_service.acknowledge_submission("kkrunner", key) == {"acknowledged": False}
 
 
 def test_ticket_uses_xdg_state_home_without_override(tmp_path, monkeypatch):

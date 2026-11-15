@@ -19,6 +19,10 @@ Choose an execution backend
      - PSI/J extra and scheduler configuration; scheduler IDs are backend facts.
 
 
+The backend identifiers are ``direct``, ``kkrunner`` (the
+supervised-process implementation) and ``psij``. The choice of backend
+is separate from whether the application stores a persistent run record.
+
 Location and execution mode are independent. ``EndpointClient(BackendClass)``
 and ``EndpointClient(BackendClass, transport=transport)`` construct configured backend
 instances; both also accept an already configured instance. They default to
@@ -104,10 +108,12 @@ configured with ``SshTransport(python_command=("python3.12",))``.
    )
    result = Run.untracked(client, spec).run()
 
-Use ``EndpointClient(SupervisedBackend, transport=transport)`` and a ``RunManager`` for persistent SSH
-runs that need reconnection. Direct SSH retains the process identity for
-STATUS queries and output-only reattachment from named stream files, without
-submission recovery or the original exit code. The portable FOLLOW observer
+Use ``EndpointClient(SupervisedBackend, transport=transport)`` when a job
+needs retained completion status and recovery after disconnection. Persistence
+of run metadata is a separate choice: a ``RunManager`` can persist either
+backend. Direct SSH retains process identity for STATUS queries and permits
+output-only reattachment from named stream files, but cannot recover an
+unknown submission or reconstruct an exit code lost with the original session. The portable FOLLOW observer
 does not own or restart the calculation; detaching it leaves the process
 running. If its process (including surviving group members) has exited, the persisted
 Run becomes FINISHED with an unknown return code and available files are
@@ -186,9 +192,11 @@ record without that ID, even though the backend accepted the command.
      - Uses the selected PSI/J backend's attach/status capabilities.
      - Backend discovery is not implemented.
    * - SSH direct (without agent)
-     - Unsupported.
-     - Unsupported.
-   * - SSH via agent: process or scheduler execution
+     - Limited: with a saved process identity and output paths, status checks
+       and output-only reattachment are supported, but completed exit status
+       cannot be reconstructed after the original session ends.
+     - Unsupported: an unknown submission cannot be discovered.
+   * - SSH with installed supervisor (kkrunner) or scheduler backend
      - Supported through the target service and its backend.
      - Uses a retained target receipt first. Without one, only the target's
        local Slurm recovery is implemented, with the same accounting limits.

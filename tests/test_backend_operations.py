@@ -15,12 +15,12 @@ MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
                       "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
 
 
-@pytest.mark.parametrize("kind", ("process", "psij"))
+@pytest.mark.parametrize("kind", ("kkrunner", "psij"))
 def test_managed_backend_exposes_static_operations(kind):
     assert set(static_methods(backend_class(kind))) == MANAGED_OPERATIONS
 
 
-@pytest.mark.parametrize("kind", ("process", "psij"))
+@pytest.mark.parametrize("kind", ("kkrunner", "psij"))
 def test_backend_imports_in_fresh_interpreter(kind):
     backend = backend_class(kind)
     script = ("import importlib,json,sys\n"
@@ -33,10 +33,10 @@ def test_backend_imports_in_fresh_interpreter(kind):
 
 def test_direct_and_managed_operations_have_distinct_contracts():
     assert set(static_methods(backend_class("direct"))) == {"prepare_mpi", "prepare_target_outputs", "status", "cancel", "stream", "follow"}
-    assert set(static_methods(backend_class("process"))) == MANAGED_OPERATIONS
+    assert set(static_methods(backend_class("kkrunner"))) == MANAGED_OPERATIONS
 
 
-@pytest.mark.parametrize("kind", ("process", "psij"))
+@pytest.mark.parametrize("kind", ("kkrunner", "psij"))
 def test_ssh_helper_imports_one_backend_method(kind):
     backend = backend_class(kind)
     helper = backend.SshHelper
@@ -47,7 +47,7 @@ def test_ssh_helper_imports_one_backend_method(kind):
     assert "def _local_submit" not in source
 
 
-@pytest.mark.parametrize("kind", ("process", "psij"))
+@pytest.mark.parametrize("kind", ("kkrunner", "psij"))
 def test_operation_command_dispatches_static_method(kind):
     backend = backend_class(kind)
     operation = Operation.for_backend(backend, "status")
@@ -57,7 +57,7 @@ def test_operation_command_dispatches_static_method(kind):
     assert f"return {backend.__name__}.status" in command[2]
 
 
-@pytest.mark.parametrize("kind", ("direct", "process", "psij"))
+@pytest.mark.parametrize("kind", ("direct", "kkrunner", "psij"))
 def test_backend_operation_reference_is_well_formed(kind):
     backend = backend_class(kind)
     operation = Operation.for_backend(backend, "stream")

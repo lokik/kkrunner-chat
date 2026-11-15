@@ -50,7 +50,7 @@ def test_create_backend_from_name_class_or_instance():
     assert isinstance(configured_backend(SupervisedBackend), SupervisedBackend)
     backend = PsijBackend(executor_name="pbs")
     assert configured_backend(backend) is backend
-    assert isinstance(EndpointClient("process").backend, SupervisedBackend)
+    assert isinstance(EndpointClient("kkrunner").backend, SupervisedBackend)
     assert isinstance(EndpointClient("psij", transport=SshTransport("example")).backend, PsijBackend)
     with pytest.raises(ValueError, match="Unknown"):
         configured_backend(PsijBackend, options={"executor": "pbs"})
@@ -91,7 +91,7 @@ def test_unsupported_recovery_is_rejected_before_transport_use(location):
 
 
 def test_package_layout_and_ssh_operation_are_class_based():
-    for kind in ("direct", "process", "psij"):
+    for kind in ("direct", "kkrunner", "psij"):
         backend_type = backend_class(kind)
         assert backend_type.__module__.endswith(".backend")
         assert static_methods(backend_type)

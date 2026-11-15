@@ -21,7 +21,7 @@ from kkrunner.remote import service as remote_service
 def _process_handle(tmp_path):
     outcome = tmp_path / "remote-outcomes" / ("a" * 32 + ".json")
     handle = {
-        "kind": "process",
+        "kind": "kkrunner",
         "identity": {"pid": 123, "start_time": 456, "time_basis": "linux-boot"},
         "receipt_id": "a" * 32,
         "socket_path": "/tmp/test-supervisor.sock",
@@ -44,7 +44,7 @@ def test_remote_id_is_opaque_backend_handle_without_lifecycle_state(tmp_path):
     handle, remote_id, _ = _process_handle(tmp_path)
     assert remote_id != str(handle)
     decoded = decode_handle(remote_id)
-    assert decoded["kind"] == "process"
+    assert decoded["kind"] == "kkrunner"
     assert decoded["identity"]["pid"] == 123
     assert "state" not in decoded
     assert "failure_phase" not in decoded
@@ -93,7 +93,7 @@ def test_remote_status_wire_reply_is_shared_between_process_and_psij(
         base64.urlsafe_b64encode(b"not JSON").decode(),
         base64.urlsafe_b64encode(b"\xff").decode(),
         base64.urlsafe_b64encode(b"[]").decode(),
-        base64.urlsafe_b64encode(b'{"kind":"process"}').decode(),
+        base64.urlsafe_b64encode(b'{"kind":"kkrunner"}').decode(),
         base64.urlsafe_b64encode(b'{"kind":"psij","backend":"slurm"}').decode(),
         base64.urlsafe_b64encode(b'{"kind":"unknown"}').decode(),
     ],
@@ -106,13 +106,13 @@ def test_malformed_remote_id_is_rejected_at_decode_boundary(payload):
 def test_remote_id_rejects_wrong_field_types():
     for handle in (
         {
-            "kind": "process",
+            "kind": "kkrunner",
             "identity": {"pid": True, "start_time": 10, "time_basis": "linux-boot"},
             "receipt_id": "a" * 32,
             "socket_path": "/tmp/socket",
         },
         {
-            "kind": "process",
+            "kind": "kkrunner",
             "identity": {"pid": 11, "start_time": 10, "time_basis": "linux-boot"},
             "receipt_id": "../bad",
             "socket_path": "/tmp/socket",
@@ -313,7 +313,7 @@ def test_uncertain_submit_uses_only_temporary_identity_ticket(tmp_path, monkeypa
     run_id = uuid4().hex
     handle = encode_handle(
         {
-            "kind": "process",
+            "kind": "kkrunner",
             "identity": {"pid": 123, "start_time": 456, "time_basis": "linux-boot"},
             "receipt_id": "a" * 32,
             "socket_path": "/tmp/fake-socket",
@@ -321,11 +321,11 @@ def test_uncertain_submit_uses_only_temporary_identity_ticket(tmp_path, monkeypa
     )
     reply = {"remote_id": handle, "directory": str(tmp_path), "state": "running"}
     remote_mailbox.publish_submission(run_id, reply)
-    recovered = remote_service.recover_remote(run_id, {"executor": "process", "directory": str(tmp_path)})
+    recovered = remote_service.recover_remote(run_id, {"executor": "kkrunner", "directory": str(tmp_path)})
     assert recovered["remote_id"] == handle
-    assert remote_service.acknowledge_submission("process", run_id) == {"acknowledged": True}
-    assert remote_service.recover_remote(run_id, {"executor": "process"}) is None
-    assert remote_service.acknowledge_submission("process", run_id) == {"acknowledged": False}
+    assert remote_service.acknowledge_submission("kkrunner", run_id) == {"acknowledged": True}
+    assert remote_service.recover_remote(run_id, {"executor": "kkrunner"}) is None
+    assert remote_service.acknowledge_submission("kkrunner", run_id) == {"acknowledged": False}
 
 
 def test_direct_follow_uses_shared_socket_protocol(tmp_path, monkeypatch):
@@ -355,7 +355,7 @@ def test_direct_follow_uses_shared_socket_protocol(tmp_path, monkeypatch):
             socket_path = (await asyncio.to_thread(source.readline)).decode().strip()
         remote_id = encode_handle(
             {
-                "kind": "process",
+                "kind": "kkrunner",
                 "socket_path": socket_path,
                 "identity": process_operations.ProcessIdentity.read(os.getpid()).to_dict(),
                 "receipt_id": "a" * 32,
@@ -400,7 +400,7 @@ def test_direct_follow_without_stream_files_is_live_only(tmp_path, monkeypatch):
             socket_path = (await asyncio.to_thread(source.readline)).decode().strip()
         remote_id = encode_handle(
             {
-                "kind": "process",
+                "kind": "kkrunner",
                 "socket_path": socket_path,
                 "identity": process_operations.ProcessIdentity.read(os.getpid()).to_dict(),
                 "receipt_id": "b" * 32,
@@ -489,7 +489,7 @@ def test_failed_submission_ticket_cannot_leave_calculation_running(tmp_path, mon
     marker = tmp_path / "must-not-run"
     request = {
         "id": "a" * 32,
-        "executor": "process",
+        "executor": "kkrunner",
         "detached": True,
         "directory": str(tmp_path),
         "argv": [
@@ -788,7 +788,7 @@ def test_remote_submit_json_setup_failure_cleans_pipes_and_directory(tmp_path, m
 
 def test_legacy_tick_identity_is_not_reinterpreted_as_seconds():
     handle = {
-        "kind": "process",
+        "kind": "kkrunner",
         "pid": 42,
         "start_time": "123456",
         "receipt_id": "a" * 32,

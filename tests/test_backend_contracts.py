@@ -37,11 +37,15 @@ def test_job_ref_contains_backend_scoped_identity():
     with pytest.raises(ValueError, match="nonempty"):
         JobRef("", "a")
     with pytest.raises(ValueError, match="nonempty"):
-        JobRef("process", "")
+        JobRef("kkrunner", "")
+
+
+def test_kkrunner_job_ref_is_a_backend_scoped_identity():
+    assert JobRef("kkrunner", "stored-token").backend == "kkrunner"
 
 
 def test_recovery_result_requires_job_identity_only_if_found():
-    ref = JobRef("process", "opaque")
+    ref = JobRef("kkrunner", "opaque")
     result = RecoveryResult.found(ref)
     assert result.disposition is RecoveryDisposition.FOUND
     assert result.ref == ref
@@ -119,7 +123,7 @@ def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):
     assert type(local) is type(remote) is Job
     assert local.execution.transport.is_local
     assert not remote.execution.transport.is_local
-    assert local.execution.backend.name == remote.execution.backend.name == "process"
+    assert local.execution.backend.name == remote.execution.backend.name == "kkrunner"
 
 
 def test_managed_job_rejects_direct_detached_configuration(tmp_path):

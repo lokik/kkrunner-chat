@@ -84,7 +84,7 @@ def _run(tmp_path, state=RunState.FINISHED):
     session._streams = OutputStreams(output, None)
     session._stream_positions = {"out": 0, "err": None}
     execution = ManagedExecution(
-        client.backend, transport, ref=JobRef("process", "opaque-handle"),
+        client.backend, transport, ref=JobRef("kkrunner", "opaque-handle"),
         status={"state": "running", "remote_id": "opaque-handle"},
     )
     job = Job(execution, spec)

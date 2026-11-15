@@ -34,7 +34,7 @@ def _run(tmp_path, *, manager=None, client=None, record=None, callback=None):
     parts = client.create_run_parts(spec)
     job = parts.job
     assert type(job) is Job
-    job.execution.ref = JobRef("process", record.execution.backend_id)
+    job.execution.ref = JobRef("kkrunner", record.execution.backend_id)
     job._apply_status(JobStatus(RunState.RUNNING))
     complete = Event()
 

@@ -115,7 +115,7 @@ def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_p
 
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "mailbox"))
     operation = Operation.for_backend(
-        backend_class("process"), "acknowledge_submission"
+        backend_class("kkrunner"), "acknowledge_submission"
     )
 
     async def verify():
@@ -129,7 +129,7 @@ def test_installed_class_helper_source_never_contains_supervisor_implementation(
     from kkrunner.backends import backend_class
     from kkrunner.client.transports.rpc import operation_command
 
-    op = Operation.for_backend(backend_class("process"), "submit")
+    op = Operation.for_backend(backend_class("kkrunner"), "submit")
     command = operation_command(op, python=(sys.executable,))
     script = command[-1]
     compile(script, "<ssh import-only helper>", "exec")

@@ -112,7 +112,7 @@ def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
     "recovered, grace, expected_state, expected_backend, recovery_calls",
     [
         pytest.param(
-            RecoveryResult.found(JobRef("process", "existing-job")),
+            RecoveryResult.found(JobRef("kkrunner", "existing-job")),
             0,
             RunState.QUEUED,
             "existing-job",

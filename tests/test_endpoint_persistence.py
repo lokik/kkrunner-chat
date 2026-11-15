@@ -33,7 +33,7 @@ def test_manager_reconstructs_local_supervised_client_after_restart(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store, client_pool=ClientPool())
     record = manager.new_record(
-        directory=tmp_path, transport=LocalTransport(), backend=BackendConfig("process"),
+        directory=tmp_path, transport=LocalTransport(), backend=BackendConfig("kkrunner"),
         metadata={"example": {"task": "DOS"}}, processing_required=True,
     )
     store.save(record)
@@ -56,7 +56,7 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
 
     store = RunStore(tmp_path / "runs")
     transport = SshTransport("cluster")
-    backend = BackendConfig("process")
+    backend = BackendConfig("kkrunner")
     manager = RunManager(store, client_pool=ClientPool())
     record = manager.new_record(
         directory=tmp_path, transport=transport, backend=backend,

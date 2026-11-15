@@ -24,7 +24,7 @@ def test_supervised_mode_is_explicit_and_persistable(tmp_path):
     assert isinstance(backend.create_run_parts(spec).job, Job)
     assert isinstance(backend.create_run_parts(spec, submission_key="run-id").job, Job)
     assert backend.transport == LocalTransport()
-    assert backend.backend_config == BackendConfig("process")
+    assert backend.backend_config == BackendConfig("kkrunner")
     restored = EndpointClient.from_config(backend.transport.to_dict(), backend.backend_config)
     assert isinstance(restored.backend, SupervisedBackend)
     assert isinstance(EndpointClient.from_config(LocalTransport().to_dict(), BackendConfig()).backend,

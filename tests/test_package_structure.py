@@ -131,8 +131,10 @@ def test_remote_process_service_reuses_supervised_backend_operations():
     from kkrunner.backends.supervised import SupervisedBackend
     from kkrunner.remote import service
 
-    assert backend_class("process") is SupervisedBackend
-    assert service._backend_for_kind("process") is SupervisedBackend
+    assert backend_class("kkrunner") is SupervisedBackend
+    assert backend_class("kkrunner") is SupervisedBackend
+    assert service._backend_for_kind("kkrunner") is SupervisedBackend
+    assert service._backend_for_kind("kkrunner") is SupervisedBackend
 
 
 def test_direct_process_import_does_not_load_supervisor():
@@ -240,5 +242,5 @@ def test_all_backends_have_local_packages():
 
 def test_agent_and_direct_have_distinct_supported_operations():
     from kkrunner.backends import available_backend_names, installed_backend_names
-    assert available_backend_names() == {"direct", "process", "psij"}
-    assert installed_backend_names() == {"process", "psij"}
+    assert available_backend_names() == {"direct", "kkrunner", "psij"}
+    assert installed_backend_names() == {"kkrunner", "psij"}

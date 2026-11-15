@@ -50,7 +50,7 @@ from .support import _process_outcome
 class SupervisedBackend(Backend, ManagedOperations):
     """Native target operations, independent of endpoints and transport."""
 
-    name = "process"
+    name = "kkrunner"
     resolves_mpi_launcher = True
     SshHelper = imported_ssh_helper
     execution_mode = "managed"
@@ -147,7 +147,7 @@ class SupervisedBackend(Backend, ManagedOperations):
                 raise SubmissionNotStarted("Unable to verify the started remote process identity")
             remote_id = encode_handle(
                 {
-                    "kind": "process",
+                    "kind": "kkrunner",
                     "identity": identity.to_dict(),
                     "receipt_id": receipt_id,
                     "socket_path": socket_path,
@@ -200,8 +200,8 @@ class SupervisedBackend(Backend, ManagedOperations):
     @staticmethod
     def status(remote_id: str) -> StatusReply:
         handle = decode_handle(remote_id)
-        if handle["kind"] != "process":
-            raise ValueError("Not a process job reference")
+        if handle["kind"] != "kkrunner":
+            raise ValueError("Not a KKRunner supervisor job reference")
         outcome = _process_outcome(handle["receipt_id"])
         if outcome is not None:
             state, return_code, failure_phase, error = outcome
@@ -215,8 +215,8 @@ class SupervisedBackend(Backend, ManagedOperations):
     @staticmethod
     def cancel(remote_id: str, timeout: float = 1.0) -> StatusReply:
         handle = decode_handle(remote_id)
-        if handle["kind"] != "process":
-            raise ValueError("Not a process job reference")
+        if handle["kind"] != "kkrunner":
+            raise ValueError("Not a KKRunner supervisor job reference")
         outcome = _process_outcome(handle["receipt_id"])
         if outcome is not None:
             return SupervisedBackend.status(remote_id)
@@ -235,8 +235,8 @@ class SupervisedBackend(Backend, ManagedOperations):
     @staticmethod
     def acknowledge(remote_id: str) -> AcknowledgeReply:
         handle = decode_handle(remote_id)
-        if handle["kind"] != "process":
-            raise ValueError("Not a process job reference")
+        if handle["kind"] != "kkrunner":
+            raise ValueError("Not a KKRunner supervisor job reference")
         return {"acknowledged": mailbox.acknowledge_outcome(handle["receipt_id"])}
 
     @staticmethod
@@ -273,7 +273,7 @@ class SupervisedBackend(Backend, ManagedOperations):
             "err": stderr_path,
         }
 
-        if handle["kind"] != "process":
+        if handle["kind"] != "kkrunner":
             raise ValueError("Unknown execution backend")
 
         path = handle.get("socket_path")

@@ -7,11 +7,11 @@ from __future__ import annotations
 
 
 def backend_class(kind):
-    """Static-operation backend type, separate from client Job instances."""
+    """Resolve one of the supported backend identifiers."""
     if kind == "direct":
         from .direct.backend import DirectBackend
         return DirectBackend
-    if kind == "process":
+    if kind == "kkrunner":
         from .supervised.backend import SupervisedBackend
         return SupervisedBackend
     if kind == "psij":
@@ -38,12 +38,12 @@ def configured_backend(backend=None, *, options=None):
 
 
 def available_backend_names():
-    return frozenset(("direct", "process", "psij"))
+    return frozenset(("direct", "kkrunner", "psij"))
 
 
 def installed_backend_names():
     """Backends the installed agent can submit and reattach."""
-    return frozenset(("process", "psij"))
+    return frozenset(("kkrunner", "psij"))
 
 
 __all__ = ["DirectBackend", "SupervisedBackend", "PsijBackend", "BackendConfig"]
@@ -54,7 +54,7 @@ def __getattr__(name):
         from .config import BackendConfig
         globals()[name] = BackendConfig
         return BackendConfig
-    kinds = {"DirectBackend": "direct", "SupervisedBackend": "process", "PsijBackend": "psij"}
+    kinds = {"DirectBackend": "direct", "SupervisedBackend": "kkrunner", "PsijBackend": "psij"}
     try:
         value = backend_class(kinds[name])
     except KeyError:

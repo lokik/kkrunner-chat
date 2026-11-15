@@ -38,7 +38,7 @@ class _BackendExecution:
             # A lost reply is not a proof of non-submission.
             self.snapshot = JobStatus(RunState.UNKNOWN, message=str(self.submit_error))
             raise self.submit_error
-        self.ref = JobRef("process", "opaque-job")
+        self.ref = JobRef("kkrunner", "opaque-job")
         self.snapshot = JobStatus(RunState.QUEUED)
         return self.snapshot
 
@@ -92,7 +92,7 @@ def test_backend_job_status_excludes_download_and_processing(tmp_path):
     _configure(job, tmp_path)
     job.submit()
     assert job.wait().return_code == 0
-    assert job.ref == JobRef("process", "opaque-job")
+    assert job.ref == JobRef("kkrunner", "opaque-job")
     # status() is passive; refresh_status() explicitly invokes the backend.
     status = job.status()
     assert status.state is RunState.FINISHED
@@ -325,7 +325,7 @@ def test_managed_follow_writer_failure_preserves_native_success(tmp_path):
 
     execution = ManagedExecution(
         SupervisedBackend(), FollowTransport(),
-        ref=JobRef("process", "opaque"), status={"state": "running"},
+        ref=JobRef("kkrunner", "opaque"), status={"state": "running"},
     )
     job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))
 

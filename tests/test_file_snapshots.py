@@ -44,7 +44,7 @@ def running_run(tmp_path, remote=False, output="result.dat"):
     )
     record = manager.new_record(
         directory=local, remote_directory=str(target) if remote else None,
-        transport=transport, backend=BackendConfig("process"), files=files,
+        transport=transport, backend=BackendConfig("kkrunner"), files=files,
     )
     record = replace(record, state=RunState.RUNNING, execution=record.execution.submitted("job-123"))
     manager.store.save(record)

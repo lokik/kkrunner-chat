@@ -29,7 +29,7 @@ def decode_handle(value):
     if not isinstance(data, dict):
         raise ValueError("Invalid remote execution id")
     kind = data.get("kind")
-    if kind == "process":
+    if kind == "kkrunner":
         try:
             ProcessIdentity.from_dict(data.get("identity"))
         except ValueError as exc:

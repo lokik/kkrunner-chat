@@ -10,8 +10,8 @@ from kkrunner.client.contracts import Operation
 def test_backend_selection_matches_target_capabilities():
     from kkrunner.remote.service import _backend_for_kind
 
-    assert available_backend_names() == {"direct", "process", "psij"}
-    assert installed_backend_names() == {"process", "psij"}
+    assert available_backend_names() == {"direct", "kkrunner", "psij"}
+    assert installed_backend_names() == {"kkrunner", "psij"}
     for kind in installed_backend_names():
         cls = backend_class(kind)
         assert _backend_for_kind(kind) is cls
@@ -25,7 +25,19 @@ def test_backend_selection_rejects_unknown_kind_or_invalid_operation():
     with pytest.raises(ValueError, match="Unsupported"):
         backend_class("nonexistent")
     with pytest.raises(ValueError, match="static backend operation"):
-        Operation.for_backend(backend_class("process"), "not-a-function!")
+        Operation.for_backend(backend_class("kkrunner"), "not-a-function!")
+
+
+def test_removed_process_backend_name_is_rejected():
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.remote.service import _backend_for_kind
+
+    with pytest.raises(ValueError, match="Unsupported"):
+        backend_class("process")
+    with pytest.raises(ValueError, match="Unsupported"):
+        BackendConfig("process")
+    with pytest.raises(ValueError, match="installed agent"):
+        _backend_for_kind("process")
 
 
 def test_direct_backend_is_portable_without_agent():

@@ -55,7 +55,7 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
 
 
 def test_remote_terminal_status_does_not_claim_client_completion():
-    executor = EndpointClient("process", transport=SshTransport("cluster"))
+    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -63,19 +63,19 @@ def test_remote_terminal_status_does_not_claim_client_completion():
         return {"state": "finished", "return_code": 0}
 
     executor._invoke = request
-    (status,) = executor.status(_attachment(_run("opaque-process", backend="process")))
+    (status,) = executor.status(_attachment(_run("opaque-process", backend="kkrunner")))
     assert status.state == RunState.FINISHED
     assert calls == [("status", ("opaque-process",), {})]
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
-    executor = EndpointClient("process", transport=SshTransport("cluster"))
+    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
     with pytest.raises(ValueError, match="different transport or backend"):
         executor.status(_attachment(_run("job", backend="psij")))
 
 
 def test_recovery_proves_identity_without_claiming_execution_status():
-    executor = EndpointClient("process", transport=SshTransport("cluster"))
+    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -87,16 +87,16 @@ def test_recovery_proves_identity_without_claiming_execution_status():
 
     executor._invoke = request
     result = executor.recover_submission(
-        "run-1", _attachment(_run(None, backend="process")),
+        "run-1", _attachment(_run(None, backend="kkrunner")),
         submitted_at="2026-10-13T08:00:00+02:00",
     )
     assert calls == [(
         "recover",
-        ("run-1", {"backend": "process", "backend_options": {}, "directory": "/work/case"}),
+        ("run-1", {"backend": "kkrunner", "backend_options": {}, "directory": "/work/case"}),
         {"submitted_at": "2026-10-13T08:00:00+02:00"},
     )]
     assert result.disposition == RecoveryDisposition.FOUND
-    assert result.ref.backend == "process"
+    assert result.ref.backend == "kkrunner"
     assert result.ref.token == "opaque-job"
     assert result.directory == "/work/case"
     assert result.output_file == "/work/case/run.out"
@@ -112,14 +112,14 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     ],
 )
 def test_remote_recovery_does_not_guess_non_submission(reply, expected):
-    executor = EndpointClient("process", transport=SshTransport("cluster"))
+    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
 
     async def request(action, *args, **kwargs):
         assert action == "recover"
         return reply
 
     executor._invoke = request
-    result = executor.recover_submission("run-1", _attachment(_run(None, backend="process")))
+    result = executor.recover_submission("run-1", _attachment(_run(None, backend="kkrunner")))
     assert result.disposition == expected
     assert result.ref is None
 
@@ -137,7 +137,7 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     ],
 )
 def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
-    executor = EndpointClient("process", transport=SshTransport("cluster"))
+    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
 
     async def request(action, *args, **kwargs):
         assert action == "status"
@@ -145,7 +145,7 @@ def test_status_reports_backend_facts_without_claiming_client_transfer(facts, ex
         return dict(facts)
 
     executor._invoke = request
-    (status,) = executor.status(_attachment(_run("opaque-job", backend="process")))
+    (status,) = executor.status(_attachment(_run("opaque-job", backend="kkrunner")))
     assert status.state == expected_state
     assert status.backend_id == "opaque-job"
     assert status.return_code == facts.get("return_code")

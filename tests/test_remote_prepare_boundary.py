@@ -23,7 +23,7 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
         argv=("ignored",), directory=str(local), output_file="run.out",
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
-    client = EndpointClient("process", transport=SshTransport("cluster"))
+    client = EndpointClient("kkrunner", transport=SshTransport("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = manager.create_run(client, spec, metadata={"example": {"task": "DOS"}})
     expected = asyncio.run(FileContext(client, spec.staging).map_manifest(FileManifest.from_spec(spec)))
@@ -73,7 +73,7 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
     local = FileManifest.from_spec(spec)
-    client = EndpointClient("process", transport=SshTransport("cluster"))
+    client = EndpointClient("kkrunner", transport=SshTransport("cluster"))
     manifest = asyncio.run(FileContext(client, spec.staging).map_manifest(local))
 
     assert tuple(e.local_path for e in manifest.inputs) == (
@@ -109,7 +109,7 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
             input_sync="never", output_sync="never",
         ),
     )
-    client = EndpointClient("process", transport=SshTransport("cluster"))
+    client = EndpointClient("kkrunner", transport=SshTransport("cluster"))
     session = client.create_run_parts(spec).files
     manifest = FileManifest.from_spec(spec)
 
@@ -187,6 +187,6 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
         output_files=output_files, cache_files=cache_files,
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    client = EndpointClient("process", transport=NoSideEffectTransport("cluster"))
+    client = EndpointClient("kkrunner", transport=NoSideEffectTransport("cluster"))
     with pytest.raises(ValueError, match="Conflicting optionality|Duplicate file declaration"):
         client.create_run_parts(spec)
