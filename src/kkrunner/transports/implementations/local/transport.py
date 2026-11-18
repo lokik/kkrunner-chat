@@ -117,6 +117,28 @@ class LocalTransport(Transport):
     async def get_file(self, source, destination):
         await self.put_file(source, destination)
 
+    async def put_directory(self, source, destination):
+        source, destination = Path(source), Path(destination)
+        if source.is_symlink() or not source.is_dir():
+            raise ValueError(f"Directory source is invalid: {source}")
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(destination)
+        await asyncio.to_thread(shutil.copytree, source, destination)
+
+    async def get_directory(self, source, destination):
+        source, destination = Path(source), Path(destination)
+        if source.is_symlink() or not source.is_dir():
+            raise ValueError(f"Directory source is invalid: {source}")
+        if source.resolve() == destination.resolve():
+            return
+        if destination.is_symlink():
+            raise ValueError(f"Cannot replace symbolic link with directory: {destination}")
+        if destination.is_dir():
+            await asyncio.to_thread(shutil.rmtree, destination)
+        elif destination.exists():
+            raise ValueError(f"Directory destination is a file: {destination}")
+        await asyncio.to_thread(shutil.copytree, source, destination)
+
     async def query_files(self, sources, *, root=None, digest=False):
         return checked_files(await asyncio.to_thread(query_files, sources, root=root, digest=digest))
 

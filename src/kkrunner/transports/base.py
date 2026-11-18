@@ -59,6 +59,14 @@ class Transport:
     async def put_file(self, source, destination):
         raise NotImplementedError
 
+    async def put_directory(self, source, destination):
+        """Transfer a complete directory tree."""
+        raise NotImplementedError
+
+    async def get_directory(self, source, destination):
+        """Retrieve and replace a complete directory tree."""
+        raise NotImplementedError
+
     async def get_file(self, source, destination):
         raise NotImplementedError
 

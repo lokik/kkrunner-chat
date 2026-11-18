@@ -238,6 +238,29 @@ class FileSession:
         used[target] = source
         return target
 
+    async def _stage_directory(self, value, used, *, required=True):
+        """Stage an exact directory, rather than hashing it as a single file."""
+        source = self._local_path(value)
+        if source is None:
+            return None
+        target = await self.context.map_path(source)
+        if os.path.islink(source):
+            raise ValueError(f"Directory input is a symbolic link: {source}")
+        local_exists = os.path.isdir(source)
+        observed = (await self.context.transport.query_files([target]))[0]
+        remote_exists = observed["status"] == "ok" and observed["type"] == "directory"
+        if observed["status"] == "ok" and not remote_exists:
+            raise ValueError(f"Target directory input is not a directory: {target}")
+        if not remote_exists and local_exists and self.context.input_files != FileSyncPolicy.NEVER:
+            await self.context.transport.put_directory(source, target)
+            remote_exists = True
+        if required and not remote_exists:
+            raise FileNotFoundError(f"Required directory exists neither locally nor on target: {source}")
+        if not remote_exists:
+            return None
+        used[target] = source
+        return target
+
     async def _stage_input_pattern(self, value, used, *, required=True):
         source = self._local_path(value)
         matches = expand_local_files(source, self.context.local_root)
@@ -277,7 +300,11 @@ class FileSession:
 
             # Cache inputs obey precisely the same staging policy as ordinary
             # inputs, except that a missing local cache is allowed.
-            remote = await self._stage_file(local, used, required=False)
+            remote = (
+                await self._stage_directory(local, used, required=False)
+                if cache.file.kind == "directory"
+                else await self._stage_file(local, used, required=False)
+            )
             if remote is None:
                 # A missing cache need not be uploaded, but remains declared:
                 # the calculation may create it and it must be collected.
@@ -316,13 +343,29 @@ class FileSession:
                 patterns.append(remote)
             else:
                 targets[local] = remote
-        # Cleanup belongs to the target-side submit operation, where input
-        # and cache wildcard protections are resolved together. Never delete
-        # remote files during client-side staging.
+        # After reservation, invalidate local output copies before remote
+        # execution as well. Otherwise output_sync=MISSING can keep a stale
+        # local result after the target has generated a new one (or none).
+        # Target-side cleanup still runs immediately before backend launch.
+        if not self.is_local:
+            from kkrunner.files.availability import prepare_target_outputs
+            prepare_target_outputs({
+                "directory": self.spec.directory,
+                "input_file": self._local_path(self.spec.input_file),
+                "stdin": self._local_path(self.spec.stdin),
+                "input_files": [self._local_path(x) for x in self.spec.input_files],
+                "cache_files": [x.file.local_path for x in manifest.caches],
+                "output_file": self._local_path(self.spec.output_file),
+                "error_file": self._local_path(self.spec.error_file),
+                "output_files": [x.local_path for x in manifest.outputs],
+                "output_directories": [
+                    x.local_path for x in manifest.outputs if x.kind == "directory"
+                ],
+            })
         self._output_targets = targets
         self._output_patterns = tuple(patterns)
 
-    async def _sync_output_entry(self, local, remote, required, *, source_pattern=None):
+    async def _sync_output_entry(self, local, remote, required, *, source_pattern=None, kind="file"):
         """Synchronize one concrete output and record its availability."""
         if source_pattern is not None:
             self._set_file_availability(
@@ -332,7 +375,7 @@ class FileSession:
                 source_pattern=source_pattern,
             )
         try:
-            available = await self._sync_one_output(local, remote, required)
+            available = await self._sync_one_output(local, remote, required, kind=kind)
         except Exception as exc:
             self._set_file_availability(local, "failed", str(exc))
             raise
@@ -408,11 +451,13 @@ class FileSession:
         # outputs may be absent. This also works on historical attach, whose
         # reconstructed ExecutionSpec has no output declarations.
         optional = {entry.remote_path: entry.optional for entry in self._files.outputs}
+        kinds = {entry.remote_path: entry.kind for entry in self._files.outputs}
         for local, remote in self._output_targets.items():
             await self._sync_output_entry(
                 local,
                 remote,
                 required and not optional.get(remote, False),
+                kind=kinds.get(remote, "file"),
             )
 
         if self._output_patterns:
@@ -429,8 +474,18 @@ class FileSession:
                     seen_remote=seen_remote,
                 )
 
-    async def _sync_one_output(self, local, remote, required):
+    async def _sync_one_output(self, local, remote, required, *, kind="file"):
         policy = self.context.output_files
+        if kind == "directory":
+            entry = (await self.context.transport.query_files([remote]))[0]
+            if entry["status"] == "missing":
+                if required:
+                    raise FileNotFoundError(f"Required directory output not created: {remote}")
+                return False
+            if entry["status"] != "ok" or entry["type"] != "directory":
+                raise ValueError(f"Declared directory output is not a directory: {remote}")
+            await self.context.transport.get_directory(remote, local)
+            return True
         remote_digest = await self.context.transport.file_digest(remote)
         if remote_digest is None:
             if required:
@@ -441,7 +496,7 @@ class FileSession:
             await self.context.transport.get_file(remote, local)
         return True
 
-    async def _sync_cache_entry(self, local, remote, before, *, source_pattern=None):
+    async def _sync_cache_entry(self, local, remote, before, *, source_pattern=None, kind="file"):
         """Synchronize one concrete cache using its pre-run signature."""
         if source_pattern is not None:
             self._set_file_availability(
@@ -452,6 +507,17 @@ class FileSession:
                 source_pattern=source_pattern,
             )
         try:
+            if kind == "directory":
+                entry = (await self.context.transport.query_files([remote]))[0]
+                if entry["status"] == "ok" and entry["type"] == "directory":
+                    await self.context.transport.get_directory(remote, local)
+                    state = "available"
+                elif entry["status"] == "missing":
+                    state = "skipped"
+                else:
+                    raise ValueError(f"Declared directory cache is not a directory: {remote}")
+                self._set_file_availability(local, state, kind="cache")
+                return
             after = await self.context.transport.file_signature(remote)
             if (
                 after is None
@@ -474,8 +540,11 @@ class FileSession:
         if self.context.output_files == FileSyncPolicy.NEVER:
             return
 
+        kinds = {entry.file.local_path: entry.file.kind for entry in self._files.caches}
         for local, (remote, before) in self._cache_targets.items():
-            await self._sync_cache_entry(local, remote, before)
+            await self._sync_cache_entry(
+                local, remote, before, kind=kinds.get(local, "file"),
+            )
 
         if self._cache_patterns:
             await self._sync_patterns(
@@ -507,6 +576,8 @@ class FileSession:
             required = input_requirements.get(source, True)
             if source is not None and has_file_magic(source):
                 await self._stage_input_pattern(value, used, required=required)
+            elif getattr(value, "kind", "file") == "directory":
+                await self._stage_directory(value, used, required=required)
             else:
                 await self._stage_file(value, used, required=required)
 
@@ -525,6 +596,10 @@ class FileSession:
             "output_file": output_target,
             "error_file": error_target,
             "output_files": [*self._output_targets.values(), *self._output_patterns],
+            "output_directories": [
+                await self.context.map_path(x.local_path)
+                for x in manifest.outputs if x.kind == "directory"
+            ],
             "cache_files": [*(remote for remote, _ in self._cache_targets.values()), *self._cache_patterns],
             "input_files": list(used.keys()),
         }
