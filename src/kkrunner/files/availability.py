@@ -54,7 +54,7 @@ def prepare_target_outputs(request):
     directory_outputs = set(request.get("output_directories", ()))
     if any(glob.has_magic(path) for path in directory_outputs):
         raise ValueError("Directory outputs must use exact paths")
-    execution_dir = os.path.normpath(request["directory"])
+    execution_dir = os.path.normpath(request.get("directory") or os.getcwd())
     for path in streams:
         if is_protected(path):
             raise ValueError("Output stream conflicts with input/cache: " + path)
