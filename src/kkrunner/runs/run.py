@@ -36,7 +36,7 @@ class Run:
 
     def __init__(
         self, job, *, client=None, manager=None, record=None,
-        process_result=None, callback=None, file_session=None, parts=None, owned_resources=None,
+        process_result=None, prepare_artifacts=None, callback=None, file_session=None, parts=None, owned_resources=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
@@ -61,6 +61,7 @@ class Run:
         self.manager = manager
         self._record = record
         self._process_result = process_result
+        self._prepare_artifacts = prepare_artifacts
         self.callback = callback
         self.result = None
         self._state = RunState.NEW
@@ -83,7 +84,7 @@ class Run:
     @classmethod
     def create(
         cls, client, spec, *, persistent=None, detached=None,
-        process_result=None, callback=None, owned_resources=None, **record_options,
+        process_result=None, prepare_artifacts=None, callback=None, owned_resources=None, **record_options,
     ):
         """Create one Run; persistence never selects its execution mechanism."""
         from kkrunner.runs.manager import RunManager
@@ -107,16 +108,18 @@ class Run:
         if manager is not None:
             return manager.create_run(
                 client, spec, process_result=process_result,
-                callback=callback, detached=detached, owned_resources=owned_resources, **record_options,
+                prepare_artifacts=prepare_artifacts, callback=callback,
+                detached=detached, owned_resources=owned_resources, **record_options,
             )
         if record_options:
             raise ValueError("Record metadata requires a persistent RunManager")
         return cls.untracked(client, spec, process_result=process_result,
+                          prepare_artifacts=prepare_artifacts,
                           callback=callback, detached=detached, owned_resources=owned_resources)
 
     @classmethod
     def untracked(
-        cls, client, spec, *, process_result=None, callback=None, detached=None, owned_resources=None,
+        cls, client, spec, *, process_result=None, prepare_artifacts=None, callback=None, detached=None, owned_resources=None,
     ):
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
@@ -126,7 +129,8 @@ class Run:
             client.default_detached if detached is None else detached,
         )
         return cls(parts.job, client=client, parts=parts,
-                   process_result=process_result, callback=callback, owned_resources=owned_resources)
+                   process_result=process_result, prepare_artifacts=prepare_artifacts,
+                   callback=callback, owned_resources=owned_resources)
 
     @property
     def id(self):
@@ -273,10 +277,13 @@ class Run:
                 if self._record is not None and self._record.processing_required:
                     self.result = self.manager._process_outcome(
                         self._record, outcome, self._process_result,
+                        prepare_artifacts=self._prepare_artifacts,
                         files=self.files,
                         execution=self.execution or self._record.execution,
                     )
                 elif self._process_result is not None:
+                    if self._prepare_artifacts is not None and outcome.return_code == 0:
+                        self._prepare_artifacts(outcome)
                     self.result = self._process_result(outcome)
             except ProcessingPending as exc:
                 self.result = None
