@@ -5,11 +5,18 @@ RunState/FailurePhase, ExecutionMetadata/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
 ExecutionResources. The root `kkrunner` package exports
 the small, backend-independent API; specialized types live in `kkrunner.runs`,
-`kkrunner.backends`, `kkrunner.client` and `kkrunner.files`.
+`kkrunner.backends`, `kkrunner.client`, `kkrunner.transports` and `kkrunner.files`.
 `RunManager` tracks runs in an explicit RunStore without requiring a project.
 `ProjectRunManager` and ProjectRepository organize runs in projects.
 Both managers use the same lifecycle. Each public class has one name that
 describes its role.
+
+Concrete transport implementations live in
+`kkrunner.transports.implementations.local` and
+`kkrunner.transports.implementations.ssh`. Both packages separate their
+transport class (`transport.py`) from the per-execution call (`call.py`);
+shared contracts and invocation helpers remain in `kkrunner.transports`.
+
 
 Applications own input preparation, executable selection, file-template
 resolution, parsers, result types and their own metadata namespace. KKRunner

@@ -18,7 +18,8 @@ from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
 from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command, operation_payload
+from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.transports.rpc import operation_payload
 
 
 class LoopbackSshTransport(SshTransport):
@@ -143,7 +144,7 @@ def test_cancel_stops_calculation_while_remote_output_is_blocked(tmp_path, descr
 
 def test_native_scheduler_status_contains_only_execution_facts(monkeypatch):
     from kkrunner.backends.contracts import JobStatus
-    from kkrunner.backends.psij import slurm
+    from kkrunner.backends.implementations.psij import slurm
 
     monkeypatch.setattr(slurm, "_slurm_details", lambda identity: {"JobState": "COMPLETED", "ExitCode": "7:0"})
     status = slurm.status("42")
@@ -173,7 +174,7 @@ def test_local_direct_preserves_client_streams_and_working_directory(tmp_path):
 
 def test_native_psij_status_contains_only_execution_facts(monkeypatch):
     from types import SimpleNamespace
-    from kkrunner.backends.psij import support as psij_support
+    from kkrunner.backends.implementations.psij import support as psij_support
     from kkrunner.remote.handles import encode_handle
 
     native_status = SimpleNamespace(state=SimpleNamespace(name="COMPLETED"), exit_code=7, message="native")

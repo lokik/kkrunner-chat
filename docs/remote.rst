@@ -12,7 +12,8 @@ No separate agent endpoint or persistent agent service is required.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+   from kkrunner.client import EndpointClient, StagingSpec
+   from kkrunner.transports import SshTransport
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
@@ -74,8 +75,9 @@ or configure ``pool_size`` and ``pool_idle_seconds`` on ``SshTransport``.
 Portable code is immutable for the lifetime of a pool: restart the pool after
 reloading code. Closing the client or transport closes its shared pool.
 
-The SSH transport obtains the selected backend's ``SshHelper`` and transfers
-the selected ``@portable``-marked source and its declared dependencies.
+The SSH transport selects native portable direct methods or generates an
+import-only wrapper for managed backend methods, then transfers the
+``@portable``-marked source and its declared dependencies.
 Direct uses its own method. Supervisor and PSI/J use generated, import-only
 helpers. Local execution calls the original methods, without another Python
 interpreter. ``DirectOperations`` and ``ManagedOperations`` define static

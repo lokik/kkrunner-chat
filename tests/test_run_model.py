@@ -2,7 +2,7 @@ from dataclasses import asdict
 
 import pytest
 
-from kkrunner.client.transports import LocalTransport, SshTransport
+from kkrunner.transports import LocalTransport, SshTransport
 from kkrunner.client.staging import StagingSpec
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files.manifest import (

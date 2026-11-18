@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     )
 
 from kkrunner.execution import RunState
-from kkrunner.support.decorators import class_property
 
 
 class BackendCapability(str, Enum):
@@ -278,7 +277,7 @@ class Backend:
     recover(key, request, submitted_at=...) returns a receipt, None when
     indeterminate, or an explicit unsupported reply. It never resubmits.
     Each instance owns validated immutable options and its actual capabilities.
-    Static native operations and SSH helpers remain methods of its class.
+    Static native operations remain methods of its class.
     The client supplies its transport and client resources.
     """
 
@@ -304,10 +303,6 @@ class Backend:
         self.options = MappingProxyType(defaults)
         self.supports = frozenset()
 
-    @class_property
-    def SshHelper(cls):
-        """Portable implementations are sent unchanged, one method at a time."""
-        return cls
 
 
 __all__ = [

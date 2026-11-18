@@ -13,7 +13,7 @@ from kkrunner.client.backend_execution import ManagedExecution
 from kkrunner.client.file_context import FileContext
 from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
-from kkrunner.client.transports import LocalTransport
+from kkrunner.transports import LocalTransport
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.files.streams import OutputStreams
 from kkrunner.runs.base import FailurePhase

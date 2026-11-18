@@ -18,11 +18,11 @@ def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
     from kkrunner.client.endpoint import EndpointClient
-    from kkrunner.client.transports.ssh import SshTransport
+    from kkrunner.transports.implementations.ssh.transport import SshTransport
     from kkrunner.runs.run import Run
 
     assert EndpointClient.__module__ == "kkrunner.client.endpoint"
-    assert SshTransport.__module__ == "kkrunner.client.transports.ssh"
+    assert SshTransport.__module__ == "kkrunner.transports.implementations.ssh.transport"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
@@ -97,11 +97,11 @@ from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore, backends
 assert 'DirectBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.psij', 'kkrunner.client.transports.ssh', 'kkrunner.projects', 'psij',
+    'kkrunner.backends.implementations.psij', 'kkrunner.transports.implementations.ssh.transport', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import DirectBackend
 assert backends.DirectBackend is DirectBackend
-assert 'kkrunner.backends.psij' not in sys.modules
+assert 'kkrunner.backends.implementations.psij' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -109,8 +109,8 @@ assert 'kkrunner.backends.psij' not in sys.modules
 
 def test_process_strategies_have_distinct_implementations():
     from kkrunner.backends import DirectBackend, SupervisedBackend
-    assert DirectBackend.__module__ == "kkrunner.backends.direct.backend"
-    assert SupervisedBackend.__module__ == "kkrunner.backends.supervised.backend"
+    assert DirectBackend.__module__ == "kkrunner.backends.implementations.direct.backend"
+    assert SupervisedBackend.__module__ == "kkrunner.backends.implementations.supervised.backend"
 
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
@@ -128,7 +128,7 @@ def test_local_process_backend_selects_one_execution_strategy(tmp_path):
 
 def test_remote_process_service_reuses_supervised_backend_operations():
     from kkrunner.backends import backend_class
-    from kkrunner.backends.supervised import SupervisedBackend
+    from kkrunner.backends.implementations.supervised import SupervisedBackend
     from kkrunner.remote import service
 
     assert backend_class("kkrunner") is SupervisedBackend
@@ -141,7 +141,7 @@ def test_direct_process_import_does_not_load_supervisor():
     code = """
 import sys
 from kkrunner.client.job import Job
-assert 'kkrunner.backends.supervised' not in sys.modules
+assert 'kkrunner.backends.implementations.supervised' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -149,10 +149,10 @@ assert 'kkrunner.backends.supervised' not in sys.modules
 def test_slurm_native_module_does_not_load_psij_executor():
     code = """
 import sys
-from kkrunner.backends.psij import slurm
+from kkrunner.backends.implementations.psij import slurm
 assert callable(slurm.status)
 assert 'psij' not in sys.modules
-assert 'kkrunner.backends.psij.executor' not in sys.modules
+assert 'kkrunner.backends.implementations.psij.executor' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
@@ -162,9 +162,9 @@ def test_psij_agent_import_does_not_load_executor_implementation():
     # the reusable PSI/J executor; it is only needed on actual submission.
     code = """
 import sys
-from kkrunner.backends.psij import PsijBackend
+from kkrunner.backends.implementations.psij import PsijBackend
 assert callable(PsijBackend.follow)
-assert 'kkrunner.backends.psij' in sys.modules
+assert 'kkrunner.backends.implementations.psij' in sys.modules
 assert 'psij' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
@@ -236,7 +236,7 @@ def test_all_backends_have_local_packages():
     import kkrunner.backends
     root = Path(kkrunner.backends.__file__).parent
     for name in ("direct", "supervised", "psij"):
-        assert (root / name / "backend.py").is_file()
+        assert (root / "implementations" / name / "backend.py").is_file()
     assert (root / "support").is_dir()
 
 
@@ -244,3 +244,61 @@ def test_agent_and_direct_have_distinct_supported_operations():
     from kkrunner.backends import available_backend_names, installed_backend_names
     assert available_backend_names() == {"direct", "kkrunner", "psij"}
     assert installed_backend_names() == {"kkrunner", "psij"}
+
+
+def test_concrete_implementations_are_separated_from_contracts():
+    import kkrunner.backends
+    import kkrunner.transports
+    from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
+    from kkrunner.transports import LocalTransport, SshTransport
+
+    root = Path(kkrunner.__file__).parent
+    backend_impls = root / "backends" / "implementations"
+    transport_impls = root / "transports" / "implementations"
+    assert {p.name for p in backend_impls.iterdir() if p.is_dir() and p.name != "__pycache__"} == {
+        "direct", "supervised", "psij"
+    }
+    assert (transport_impls / "local" / "transport.py").is_file()
+    assert (transport_impls / "local" / "call.py").is_file()
+    assert (transport_impls / "ssh" / "transport.py").is_file()
+    assert (transport_impls / "ssh" / "call.py").is_file()
+    assert not (transport_impls / "local.py").exists()
+    assert not (transport_impls / "local_call.py").exists()
+    assert (transport_impls / "unavailable.py").is_file()
+    assert not (root / "client" / "transports").exists()
+    assert all(cls.__module__.startswith("kkrunner.backends.implementations.")
+               for cls in (DirectBackend, SupervisedBackend, PsijBackend))
+    assert all(cls.__module__.startswith("kkrunner.transports.implementations.")
+               for cls in (LocalTransport, SshTransport))
+    assert all(not hasattr(cls, "SshHelper") for cls in (DirectBackend, SupervisedBackend, PsijBackend))
+
+
+def test_transport_contracts_are_lazy_without_concrete_backends():
+    script = """
+import sys
+from kkrunner.transports import Transport
+from kkrunner.transports.contracts import Operation, RunningCommand
+assert 'kkrunner.backends.implementations.direct' not in sys.modules
+assert 'kkrunner.backends.implementations.psij' not in sys.modules
+assert 'kkrunner.transports.implementations.ssh.transport' not in sys.modules
+assert Transport is not None and Operation is not None and RunningCommand is not None
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=10)
+
+
+def test_transport_implementations_have_symmetric_package_exports():
+    from kkrunner.transports import LocalTransport, SshTransport, transport_from_dict
+    from kkrunner.client import LocalTransport as ClientLocalTransport
+    from kkrunner.transports.implementations.local import LocalTransport as LocalFromPackage
+    from kkrunner.transports.implementations.ssh import SshTransport as SshFromPackage
+    from kkrunner.transports.implementations.local.call import LocalCall
+    from kkrunner.transports.implementations.ssh.call import SshCall
+
+    assert LocalFromPackage is LocalTransport is ClientLocalTransport
+    assert SshFromPackage is SshTransport
+    assert LocalTransport.__module__ == "kkrunner.transports.implementations.local.transport"
+    assert SshTransport.__module__ == "kkrunner.transports.implementations.ssh.transport"
+    assert LocalCall.__module__ == "kkrunner.transports.implementations.local.call"
+    assert SshCall.__module__ == "kkrunner.transports.implementations.ssh.call"
+    assert isinstance(transport_from_dict({"kind": "local"}), LocalTransport)
+    assert isinstance(transport_from_dict({"kind": "ssh", "host": "example"}), SshTransport)

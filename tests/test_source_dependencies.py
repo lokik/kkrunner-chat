@@ -6,8 +6,9 @@ import sys
 import pytest
 
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command, operation_payload, operation_result
-from kkrunner.client.transports.source import function_definition
+from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.transports.rpc import operation_payload, operation_result
+from kkrunner.transports.implementations.ssh.source import function_definition
 from kkrunner.support.decorators import depends_on, portable
 
 

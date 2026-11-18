@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files.versions import FileVersion, file_digest
-from kkrunner.client.transports import LocalTransport, SshTransport
+from kkrunner.transports import LocalTransport, SshTransport
 
 
 def test_local_transport_run_start_and_files(tmp_path):
@@ -490,7 +490,7 @@ def test_ssh_upload_preserves_original_error_when_remote_cleanup_fails(tmp_path)
 
 
 def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, monkeypatch):
-    from kkrunner.client.transports import ssh as module
+    from kkrunner.transports.implementations.ssh import transport as module
 
     class UnavailableTransport(SshTransport):
         async def file_signature(self, path):

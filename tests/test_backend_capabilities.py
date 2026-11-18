@@ -10,7 +10,7 @@ from kkrunner.client import EndpointClient, LocalTransport, SshTransport
 from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.support.class_helper import static_methods
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command
+from kkrunner.transports.implementations.ssh.rpc import operation_command
 
 
 MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS, BackendCapability.CANCEL})

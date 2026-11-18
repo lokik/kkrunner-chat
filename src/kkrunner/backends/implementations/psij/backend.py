@@ -11,7 +11,6 @@ from kkrunner.backends.contracts import (
     ManagedOperations,
     SubmissionNotStarted,
 )
-from kkrunner.backends.support.class_helper import imported_ssh_helper
 from kkrunner.backends.support.messages import (
     AcknowledgeReply,
     ExecutionRequest,
@@ -42,7 +41,6 @@ class PsijBackend(Backend, ManagedOperations):
 
     name = "psij"
     default_options = (("executor_name", "slurm"), ("url", None))
-    SshHelper = imported_ssh_helper
     execution_mode = "managed"
     default_detached = True
     def __init__(self, **options):

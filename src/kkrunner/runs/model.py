@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
-from kkrunner.client.transports import Transport, require_persistable_transport, transport_from_dict
+from kkrunner.transports import Transport, require_persistable_transport, transport_from_dict
 from kkrunner.backends.config import BackendConfig
 
 

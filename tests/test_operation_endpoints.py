@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports import LocalTransport, SshTransport
+from kkrunner.transports import LocalTransport, SshTransport
 from kkrunner.support.decorators import portable
 
 
@@ -70,7 +70,7 @@ def test_reject_nonportable_operation_before_submission():
     def nested(value):
         return captured + value
     # Source delivery requires explicit @portable; detailed validation is test-only.
-    from kkrunner.client.transports.rpc import operation_command
+    from kkrunner.transports.implementations.ssh.rpc import operation_command
     with pytest.raises(TypeError, match="@portable"):
         operation_command(Operation.standalone(nested))
     from kkrunner.backends import SupervisedBackend
@@ -129,12 +129,12 @@ def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_p
 
 def test_installed_class_helper_source_never_contains_supervisor_implementation():
     from kkrunner.backends import backend_class
-    from kkrunner.client.transports.rpc import operation_command
+    from kkrunner.transports.implementations.ssh.rpc import operation_command
 
     op = Operation.for_backend(backend_class("kkrunner"), "submit")
     command = operation_command(op, python=(sys.executable,))
     script = command[-1]
     compile(script, "<ssh import-only helper>", "exec")
-    assert "from kkrunner.backends.supervised.backend import SupervisedBackend" in script
+    assert "from kkrunner.backends.implementations.supervised.backend import SupervisedBackend" in script
     assert "_local_submit" not in script
     assert "class SupervisorStreams" not in script

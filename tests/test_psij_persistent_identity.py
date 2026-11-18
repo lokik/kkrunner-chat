@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kkrunner.backends.psij.slurm import submission_marker
-from kkrunner.backends.psij.submission import prepare_job
+from kkrunner.backends.implementations.psij.slurm import submission_marker
+from kkrunner.backends.implementations.psij.submission import prepare_job
 from kkrunner.client import EndpointClient
 from kkrunner.backends import PsijBackend
 from kkrunner import ExecutionSpec

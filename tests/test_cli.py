@@ -186,3 +186,52 @@ else:
 assert not any(name == "kkrunner" or name.startswith("kkrunner.") for name in sys.modules)
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+
+def test_client_ssh_status_uses_public_transport(monkeypatch):
+    from kkrunner_cli import client
+    import kkrunner.transports as transports
+    import kkrunner.remote.protocol as protocol
+
+    seen = []
+
+    class FakeSshTransport:
+        def __init__(self, host, *, options):
+            seen.append(("transport", host, options))
+
+    async def request(transport, command, action, remote_id, *, payload=None):
+        seen.append(("call", command, action, remote_id))
+        return {"state": "running"}
+
+    monkeypatch.setattr(transports, "SshTransport", FakeSshTransport)
+    monkeypatch.setattr(protocol, "json_request", request)
+    args = SimpleNamespace(host="example", ssh_option=["-p", "2222"],
+                           agent="kkrunner-agent", remote_id="opaque")
+    assert client._direct(args, action="status") == {"state": "running"}
+    assert seen == [
+        ("transport", "example", ["-p", "2222"]),
+        ("call", ("kkrunner-agent",), "status", "opaque"),
+    ]
+
+
+def test_client_ssh_follow_imports_transport_framing(monkeypatch):
+    from kkrunner_cli import client
+    from kkrunner.transports.implementations.ssh import follow
+
+    seen = []
+    process = object()
+
+    class FakeTransport:
+        async def start(self, command):
+            seen.append(("start", command))
+            return process
+
+    async def fake_follow(actual, callback):
+        assert actual is process
+        seen.append(("follow", actual))
+        return "completed"
+
+    monkeypatch.setattr(follow, "follow_framed_command", fake_follow)
+    assert client._follow_remote(FakeTransport(), ("kkrunner-agent",), "remote-ref",
+                                 False, None, None) == "completed"
+    assert [event[0] for event in seen] == ["start", "follow"]
