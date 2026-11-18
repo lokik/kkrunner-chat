@@ -60,3 +60,53 @@ def test_directory_reservation_conflicts_with_child_file(tmp_path):
         files=FileManifest(inputs=(FileEntry(str(directory / "P1E1")),)),
     )
     assert submission_conflicts(output, reader)
+
+
+def test_target_request_declares_directory_outputs(tmp_path):
+    from kkrunner.client.execution_request import execution_request
+    from kkrunner.files import TaskFile
+    from kkrunner.runs.base import ExecutionSpec
+
+    spec = ExecutionSpec(
+        argv=("true",), directory=str(tmp_path),
+        output_files=(TaskFile("Fe.tau.dir", kind="directory", optional=True),),
+    )
+    request = execution_request(spec)
+    assert request["output_directories"] == [str(tmp_path / "Fe.tau.dir")]
+    assert request["output_files"] == [str(tmp_path / "Fe.tau.dir")]
+
+
+def test_directory_output_refuses_to_remove_working_directory(tmp_path):
+    with pytest.raises(ValueError, match="working directory"):
+        prepare_target_outputs(request(tmp_path, tmp_path))
+
+
+def test_directory_output_rejects_symlink_without_removing_target(tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "keep").write_text("safe")
+    link = tmp_path / "Fe.tau.dir"
+    link.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        prepare_target_outputs(request(tmp_path, link))
+    assert (actual / "keep").read_text() == "safe"
+
+
+def test_local_transport_copies_complete_directory_tree(tmp_path):
+    import asyncio
+
+    from kkrunner.transports import LocalTransport
+
+    source = tmp_path / "source"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "P1E1").write_text("tau")
+    (source / ".hidden").write_text("metadata")
+    target = tmp_path / "copy"
+    transport = LocalTransport()
+    asyncio.run(transport.put_directory(source, target))
+    assert (target / "nested" / "P1E1").read_text() == "tau"
+    assert (target / ".hidden").read_text() == "metadata"
+    (source / "obsolete").write_text("old")
+    asyncio.run(transport.get_directory(target, source))
+    assert not (source / "obsolete").exists()
+    assert (source / "nested" / "P1E1").read_text() == "tau"
