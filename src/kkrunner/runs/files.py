@@ -40,6 +40,26 @@ def _concrete_result_files(manifests):
     return tuple(paths)
 
 
+def _capturable_output_paths(result_files):
+    """Only versions actually delivered for this run enter its provenance.
+
+    A skipped auxiliary output can still exist locally from an earlier run.
+    Expanded glob declarations likewise must not capture unrelated old local
+    matches: concrete discovered outputs have their own manifest entries.
+    """
+    entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
+    return _unique(
+        entry.local_path
+        for entry in entries
+        if entry is not None and entry.local_path is not None
+        and entry.availability_state not in ("skipped", "failed")
+        and (
+            not has_file_magic(entry.local_path)
+            or entry.availability_state in (None, "pending")
+        )
+    )
+
+
 def _result_files_snapshot(manifests, *, sync=False):
     versions = []
     for path in _concrete_result_files(manifests):
@@ -95,7 +115,7 @@ def capture_result_files(result_files, *, require_outputs=True):
     captured = replace(
         result_files,
         input_versions=_result_files_snapshot(result_files.input_files),
-        output_versions=_result_files_snapshot(result_files.output_files, sync=True),
+        output_versions=_result_files_snapshot(_capturable_output_paths(result_files), sync=True),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )
     return discover_local_files(captured, require_outputs=require_outputs)
