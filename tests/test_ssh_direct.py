@@ -13,7 +13,8 @@ from kkrunner.files.queries import finalize_upload, query_files
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command, operation_result
+from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.transports.rpc import operation_result
 
 _FINALIZE_SOURCE = operation_command(Operation.standalone(finalize_upload), python=(sys.executable,))[-1]
 _QUERY_SOURCE = operation_command(Operation.standalone(query_files), python=(sys.executable,))[-1]
@@ -148,8 +149,8 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
 
 
 def test_direct_endpoint_round_trip_and_normalized_identity():
-    from kkrunner.client.transports import transport_from_dict
-    from kkrunner.client.transports import require_persistable_transport
+    from kkrunner.transports import transport_from_dict
+    from kkrunner.transports import require_persistable_transport
     from dataclasses import asdict
 
     transport = SshTransport("user@example.net", options=("-p", "2200"))

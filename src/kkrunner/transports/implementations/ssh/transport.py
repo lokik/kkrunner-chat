@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, Tuple
 from uuid import uuid4
 
-from kkrunner.client.contracts import Operation
+from kkrunner.transports.contracts import Operation
 from kkrunner.files.queries import (
     _sources,
     checked_files,
@@ -23,8 +23,9 @@ from kkrunner.files.queries import (
 )
 from kkrunner.files.snapshots import snapshot_destination
 
-from .base import Transport, _completed_process, _local_temporary_path
-from .rpc import operation_command, operation_payload, operation_result
+from ...base import Transport, _completed_process, _local_temporary_path
+from ...rpc import operation_payload, operation_result
+from .rpc import operation_command
 
 
 @dataclass(frozen=True)

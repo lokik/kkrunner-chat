@@ -16,7 +16,7 @@ from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
-from kkrunner.backends.supervised.mailbox import recover_submission
+from kkrunner.backends.implementations.supervised.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.runs.base import FailurePhase, RunStatus
@@ -206,7 +206,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.backends.supervised import backend as process_operations
+    from kkrunner.backends.implementations.supervised import backend as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):

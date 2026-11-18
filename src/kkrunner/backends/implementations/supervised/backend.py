@@ -21,13 +21,13 @@ from kkrunner.backends.contracts import (
     ManagedOperations,
     SubmissionNotStarted,
 )
-from kkrunner.backends.supervised import mailbox
-from kkrunner.backends.supervised.streams import (
+from kkrunner.backends.implementations.supervised import mailbox
+from kkrunner.backends.implementations.supervised.streams import (
     SupervisorClosedBeforeFollow,
     SupervisorConnectionError,
     follow_socket,
 )
-from kkrunner.backends.supervised.worker import _SPEC_ENV, _START_FD_ENV
+from kkrunner.backends.implementations.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.backends.support.class_helper import imported_ssh_helper
 from kkrunner.backends.support.messages import (
     AcknowledgeReply,
@@ -123,7 +123,7 @@ class SupervisedBackend(Backend, ManagedOperations):
             env[_START_FD_ENV] = str(start_fd)
             try:
                 process = subprocess.Popen(
-                    [sys.executable, "-m", "kkrunner.backends.supervised.worker"],
+                    [sys.executable, "-m", "kkrunner.backends.implementations.supervised.worker"],
                     cwd=directory,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,

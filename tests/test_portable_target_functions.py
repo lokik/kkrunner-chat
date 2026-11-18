@@ -11,7 +11,8 @@ import pytest
 from kkrunner.backends.support.process import prepare_mpi, resolve_mpi_options
 from kkrunner.client import EndpointClient
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command, operation_result
+from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.transports.rpc import operation_result
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.files.queries import finalize_upload, query_files
 
@@ -117,7 +118,7 @@ def test_remote_function_requires_portable_marker():
 def test_remote_bootstraps_are_source_only_and_compile(mode):
     """Target bootstrap modules must not be imported by the remote script."""
     from kkrunner.remote import bootstrap
-    from kkrunner.client.transports import rpc
+    from kkrunner.transports.implementations.ssh import rpc
 
     implementation = {
         "json": bootstrap._json_call,

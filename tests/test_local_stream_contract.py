@@ -9,7 +9,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.backends import DirectBackend
 from kkrunner.client import EndpointClient
-from kkrunner.client.transports.calls import OutputSink
+from kkrunner.transports.support.calls import OutputSink
 from kkrunner.execution import MpiSpec
 
 

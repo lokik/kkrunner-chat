@@ -12,7 +12,7 @@ from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.remote.handles import encode_handle
-from kkrunner.backends.supervised import backend as process_operations
+from kkrunner.backends.implementations.supervised import backend as process_operations
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import ExecutionMetadata, FailurePhase, RunRecord, WorkingDirectory
 

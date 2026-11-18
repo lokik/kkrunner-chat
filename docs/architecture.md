@@ -164,8 +164,9 @@ clock change that reverses entirely between sampled reads can evade detection.
 | Package | Responsibility |
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
-| `kkrunner.backends` | Flat direct/supervised/PSI-J functional implementations, common process/MPI support, and backend contracts. |
-| `kkrunner.client` | EndpointClient, backend composition, client pools, transports, Job and FileSession. |
+| `kkrunner.backends` | Backend contracts and common process/MPI support; concrete backends live exclusively under `kkrunner.backends.implementations`. |
+| `kkrunner.client` | EndpointClient, backend composition, client pools, Job and FileSession. |
+| `kkrunner.transports` | Transport contracts, common RPC helpers, and concrete local/SSH/unavailable transports under `kkrunner.transports.implementations`. |
 | `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
 | `kkrunner.files` | TaskFile, manifests, transfer policy, pathname declarations, captured versions and artifact availability. |
@@ -200,13 +201,13 @@ returns native status, including confirmed cancellation and launch failures.
 cancel, without inspecting PID, exit codes or backend execution modes.
 `client.backend_execution` binds those operations to the selected transport;
 session-bound and managed semantics are selected once at composition.
-`client.transports.calls` owns local coroutine/control resources or the SSH
-command and framed delivery. A calculation's exit code is payload data,
+`transports.support.calls` defines shared call acceptance; concrete local/SSH calls own the
+subprocess and framed delivery. A calculation's exit code is payload data,
 independent of the SSH command's exit status. No additional local interpreter
 or worker thread runs the direct backend.
 
-Native supervisor and scheduler internals live in `backends/supervised` and
-`backends/psij`, split into worker, streams, receipts, submission and scheduler
+Native supervisor and scheduler internals live in `backends/implementations/supervised` and
+`backends/implementations/psij`, split into worker, streams, receipts, submission and scheduler
 operations. The supervisor remains an independent process with its existing
 release barrier. Its output pump publishes synchronously to LIVE followers;
 per-follower asynchronous REPLAY catches up from the spool and returns to LIVE
@@ -214,7 +215,7 @@ without yielding between the EOF check and mode switch.
 
 Local managed FOLLOW awaits the existing backend coroutine. SSH runs a Python
 follower that invokes that coroutine and sends framed calculation output and
-terminal facts; transport stderr carries diagnostics. `client.transports.follow`
+terminal facts; transport stderr carries diagnostics. `transports.implementations.ssh.follow`
 owns reading and reaping that SSH follower. `Job.stop_observation()` cancels
 only its observation task. The supervisor/calculation survives; `Job.cancel()`
 invokes the separate backend cancellation operation. PSI/J uses native status
@@ -341,21 +342,21 @@ recovery never authorizes a duplicate submission.
 | Local and SSH session composition | `EndpointClient` |
 | Path previews and resolved manifest projection | `client.file_context.FileContext` |
 | Backend execution semantics bound to a transport | `client.backend_execution`, `client.contracts.BackendExecution` |
-| Live invocation/control resources and transport diagnostics | `client.transports.calls` |
-| Managed output delivery and SSH follower cleanup | `client.transports.follow` |
-| Immutable connection settings, calls and file transport | `client.transports.LocalTransport`, `client.transports.SshTransport` |
+| Live invocation/control resources and transport diagnostics | `transports.support.calls` |
+| Managed output delivery and SSH follower cleanup | `transports.implementations.ssh.follow` |
+| Immutable connection settings, calls and file transport | `transports.LocalTransport`, `transports.SshTransport` |
 | Persistence and end-to-end completion | `RunManager`, `Run`, `RunStore` |
 | Reuse of configured clients | `ClientPool` |
 
 The backend contract and pure identity/status/recovery values live in
 `backends.contracts`. Client Job/composition protocols and attachment contexts
-live in `client.contracts`. `Operation` in that module describes which backend
-method or standalone function to call. `client.transports.rpc` assembles remote commands,
-encodes JSON arguments and decodes replies. The actual target-side
+live in `client.contracts`. `Operation` in `transports.contracts` describes which backend
+method or standalone function to call. `transports.implementations.ssh.rpc` assembles remote commands;
+`transports.rpc` encodes JSON arguments and decodes replies. The actual target-side
 `@portable` entry points (`_json_call`, `_stream_call`, `_framed_call`)
 live in `remote.bootstrap`; their function sources travel with each SSH
 operation without importing KKRunner on the target.
-`client.transports.source` requires an explicit `@portable`
+`transports.implementations.ssh.source` requires an explicit `@portable`
 marker and extracts the selected function's source and its `@depends_on`
 dependencies when building a remote command. Detailed portability validation
 of direct-backend methods belongs to `tests/test_direct_portability.py`, not
@@ -379,7 +380,7 @@ PSI/J client Job, or process-based local FOLLOW fallback.
 `EndpointClient(BackendClass, transport=...)` is the sole standard execution client.
 LocalTransport calls the selected static operation directly; SshTransport delivers
 its actual portable method or import-only helper. ExecutionMetadata.transport holds the
-immutable LocalTransport or SshTransport under client/transports; these serialize
+immutable LocalTransport or SshTransport under `kkrunner.transports`; these serialize
 their connection settings directly. ExecutionMetadata.backend is a separate BackendConfig. Persistent custom transports without a supported reconstruction
 are rejected before creating a Run.
 

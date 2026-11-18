@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from kkrunner.client.contracts import Operation
+from kkrunner.transports.contracts import Operation
 from kkrunner.files.queries import (
     checked_files,
     expand_local_files,
@@ -20,8 +20,8 @@ from kkrunner.files.queries import (
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
 
-from .base import Transport, _completed_process, _local_temporary_path
-from .rpc import operation_payload
+from ..base import Transport, _completed_process, _local_temporary_path
+from ..rpc import operation_payload
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class LocalTransport(Transport):
             raise ValueError("LocalTransport.kind must be 'local'")
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
-        from .calls import LocalCall
+        from .local_calls import LocalCall
         files, stdin = ({}, None) if local_io is None else local_io(request.get("detached", False))
         paths = {
             kind: path for kind, path in (("out", request.get("output_file")), ("err", request.get("error_file")))
@@ -48,7 +48,7 @@ class LocalTransport(Transport):
         )
 
     async def follow(self, operation, identity, on_output, **options):
-        from .calls import OutputSink
+        from ..support.calls import OutputSink
         return await getattr(operation.backend, operation.method)(
             identity, OutputSink(on_output, "out"), OutputSink(on_output, "err"), **options,
         )

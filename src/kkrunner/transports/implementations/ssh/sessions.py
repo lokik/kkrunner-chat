@@ -15,9 +15,9 @@ import threading
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 
-from kkrunner.remote.session_worker import WORKER_SOURCE
+from .worker import WORKER_SOURCE
 
-from .rpc import operation_result
+from ...rpc import operation_result
 from .source import portable_bundle
 
 

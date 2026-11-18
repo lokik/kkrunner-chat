@@ -9,13 +9,13 @@ from __future__ import annotations
 def backend_class(kind):
     """Resolve one of the supported backend identifiers."""
     if kind == "direct":
-        from .direct.backend import DirectBackend
+        from .implementations.direct.backend import DirectBackend
         return DirectBackend
     if kind == "kkrunner":
-        from .supervised.backend import SupervisedBackend
+        from .implementations.supervised.backend import SupervisedBackend
         return SupervisedBackend
     if kind == "psij":
-        from .psij.backend import PsijBackend
+        from .implementations.psij.backend import PsijBackend
         return PsijBackend
     raise ValueError(f"Unsupported backend: {kind!r}")
 

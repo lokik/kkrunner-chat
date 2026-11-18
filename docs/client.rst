@@ -25,7 +25,7 @@ error is decoded separately from a broken transport; a confirmed
 ``SubmissionNotStarted`` remains a confirmed non-submission across SSH.
 An interrupted transport remains uncertain and is never retried as a new job.
 
-Transports live under ``kkrunner.client.transports``. ``LocalTransport`` and
+Transports are a separate top-level subsystem, ``kkrunner.transports``. Concrete implementations live under ``kkrunner.transports.implementations``. ``LocalTransport`` and
 ``SshTransport`` combine immutable connection settings with the actual calls;
 there is no separate endpoint type. ``ExecutionMetadata.transport`` stores the transport,
 whose dataclass fields serialize to JSON, including an explicit ``kind`` tag.

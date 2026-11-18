@@ -73,7 +73,7 @@ contains only delegated method imports; actual code is imported on the target
 host. Direct SSH is deliberately independent and sends the compact worker
 source. Target-side invocation functions live in ``remote.bootstrap``;
 the client-side command assembly and reply decoding stay in
-``client.transports.rpc``. Calculation stream FOLLOW uses framed data to
+``transports.implementations.ssh.rpc``. Calculation stream FOLLOW uses framed data to
 distinguish native stdout/stderr from SSH diagnostics and delivers a terminal
 receipt.
 

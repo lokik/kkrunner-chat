@@ -30,7 +30,7 @@ class ClientPool:
     def for_config(self, transport, backend):
         from kkrunner.backends.config import BackendConfig
         from kkrunner.client.endpoint import EndpointClient
-        from kkrunner.client.transports import (
+        from kkrunner.transports import (
             require_persistable_transport,
             transport_from_dict,
         )

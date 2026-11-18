@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files import queries
-from kkrunner.client.transports import LocalTransport
+from kkrunner.transports import LocalTransport
 
 from .test_transport import _LoopbackSshTransport
 

@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from kkrunner.backends.direct.backend import DirectBackend
+from kkrunner.backends.implementations.direct.backend import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.client import EndpointClient, LocalTransport
 from kkrunner.client.contracts import JobAttachment
@@ -71,7 +71,8 @@ def test_direct_backend_cancels_verified_process_group():
 def test_cancellation_terminates_descendant_ignoring_term(tmp_path, remote, leader_already_exited):
     """A dead leader must neither confirm cancellation nor prevent escalation."""
     from kkrunner.client.contracts import Operation
-    from kkrunner.client.transports.rpc import operation_command, operation_payload, operation_result
+    from kkrunner.transports.implementations.ssh.rpc import operation_command
+    from kkrunner.transports.rpc import operation_payload, operation_result
 
     descendant = (
         "import os,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "

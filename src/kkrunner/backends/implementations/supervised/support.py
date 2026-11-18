@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kkrunner.backends.supervised import mailbox
+from kkrunner.backends.implementations.supervised import mailbox
 from kkrunner.execution import FailurePhase, RunState
 
 

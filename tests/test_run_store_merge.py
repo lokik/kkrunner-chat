@@ -1,4 +1,4 @@
-from kkrunner.client.transports import LocalTransport
+from kkrunner.transports import LocalTransport
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
