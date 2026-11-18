@@ -642,7 +642,8 @@ class RunManager:
 
         return self.store.update(record, reopen)
 
-    def _process_outcome(self, record, outcome, process_result, *, files=None, execution=None, retry=False):
+    def _process_outcome(self, record, outcome, process_result, *, prepare_artifacts=None,
+                         files=None, execution=None, retry=False):
         """Claim processing until its durable completion, including across clients.
 
         All clients of a store must share its filesystem lock namespace. The OS
@@ -665,6 +666,12 @@ class RunManager:
             manifest = latest.files if files is None else files
             if latest.files.captured_at is not None:
                 manifest = latest.files
+            elif prepare_artifacts is not None and outcome.return_code == 0:
+                # The application may normalize freshly retrieved outputs, but
+                # only while holding the shared processing lock and BEFORE
+                # KKRunner fingerprints their immutable historical versions.
+                # Retries must never rewrite already-captured artifacts.
+                prepare_artifacts(outcome)
             manifest = capture_result_files(manifest)
             if manifest.failed_artifacts:
                 raise OSError(manifest.availability_message or "Output artifacts unavailable")
@@ -789,7 +796,7 @@ class RunManager:
     def create_run(
         self, client, spec, *, process_result=None, metadata=None,
         processing_required=None, callback=None, run_id=None, detached=None,
-        owned_resources=None,
+        prepare_artifacts=None, owned_resources=None,
     ):
         """Create one tracked Run through the configured client."""
         from kkrunner.runs.run import Run
@@ -818,7 +825,8 @@ class RunManager:
         )
         return Run(
             parts.job, client=client, manager=self, record=record,
-            process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
+            process_result=process_result, prepare_artifacts=prepare_artifacts,
+            callback=callback, parts=parts, owned_resources=owned_resources,
         )
 
     def refresh(self, records=None, *, on_error=None):
@@ -921,7 +929,7 @@ class RunManager:
 
     def attach(
         self, run, *, process_result=None, client=None,
-        callback=None, output_listener=None, owned_resources=None,
+        callback=None, output_listener=None, prepare_artifacts=None, owned_resources=None,
     ):
         """Open a tracked Run without resubmitting its backend job."""
         from kkrunner.runs.run import Run
@@ -944,7 +952,8 @@ class RunManager:
         try:
             attached = Run(
                 parts.job, client=client, manager=self, record=record,
-                process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
+                process_result=process_result, prepare_artifacts=prepare_artifacts,
+                callback=callback, parts=parts, owned_resources=owned_resources,
             )
             attached.start()
         except BaseException:
