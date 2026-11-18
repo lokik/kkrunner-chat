@@ -72,6 +72,9 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
         "error_file": path(spec.error_file),
         "input_files": paths(spec.input_files),
         "output_files": paths(spec.output_files),
+        "output_directories": paths(
+            value for value in spec.output_files if getattr(value, "kind", "file") == "directory"
+        ),
         "cache_files": paths(spec.cache_files),
     }
     import json

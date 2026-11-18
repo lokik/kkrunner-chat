@@ -21,6 +21,7 @@ def prepare_target_outputs(request):
     """
     import glob
     import os
+    import shutil
 
     streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
     protected_declarations = [
@@ -50,6 +51,10 @@ def prepare_target_outputs(request):
         return False
 
     patterns = request.get("output_files", ())
+    directory_outputs = set(request.get("output_directories", ()))
+    if any(glob.has_magic(path) for path in directory_outputs):
+        raise ValueError("Directory outputs must use exact paths")
+    execution_dir = os.path.normpath(request["directory"])
     for path in streams:
         if is_protected(path):
             raise ValueError("Output stream conflicts with input/cache: " + path)
@@ -57,6 +62,22 @@ def prepare_target_outputs(request):
     # must not leave a partially cleared directory after a preflight failure.
     removable = []
     for declaration in dict.fromkeys(patterns):
+        if declaration in directory_outputs:
+            normalized = os.path.normpath(declaration)
+            if (not os.path.isabs(normalized) or normalized == os.sep
+                    or os.path.commonpath((normalized, execution_dir)) == normalized):
+                raise ValueError("Refusing to clear a root or working directory: " + declaration)
+            cursor = normalized
+            while cursor != os.path.dirname(cursor):
+                if os.path.islink(cursor):
+                    raise ValueError("Directory output crosses a symbolic link: " + declaration)
+                cursor = os.path.dirname(cursor)
+            if os.path.lexists(normalized) and not os.path.isdir(normalized):
+                raise ValueError("Declared directory output is not a directory: " + declaration)
+            prefix = os.path.realpath(normalized) + os.sep
+            if any(candidate.startswith(prefix) or candidate == os.path.realpath(normalized)
+                   for candidate in protected):
+                raise ValueError("Directory output contains input/cache: " + declaration)
         wildcard = glob.has_magic(declaration)
         matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]
         for path in matches:
@@ -66,14 +87,16 @@ def prepare_target_outputs(request):
                 if wildcard:
                     continue
                 raise ValueError("Explicit output conflicts with input/cache: " + path)
-            if os.path.exists(path) and not wildcard and not (
+            if path not in directory_outputs and os.path.exists(path) and not wildcard and not (
                 os.path.islink(path) or os.path.isfile(path)
             ):
                 raise IsADirectoryError(path)
             removable.append(path)
 
     for path in dict.fromkeys(removable):
-        if os.path.islink(path) or os.path.isfile(path):
+        if path in directory_outputs and os.path.isdir(path):
+            shutil.rmtree(path)
+        elif os.path.islink(path) or os.path.isfile(path):
             os.unlink(path)
 
 
@@ -105,7 +128,8 @@ def discover_local_files(files, *, include_streams=True, require_outputs=True):
                 )
             state = "available" if matches else "skipped"
         else:
-            state = "available" if os.path.isfile(path) else "skipped"
+            exists = os.path.isdir(path) if entry.kind == "directory" else os.path.isfile(path)
+            state = "available" if exists else "skipped"
         message = None
         if state == "skipped" and kind == "output" and require_outputs and not entry.optional:
             state, message = "failed", f"Required output file is missing: {path}"

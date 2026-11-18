@@ -33,10 +33,23 @@ def _manifest_accesses(record, *, remote=None):
             return None
         return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.target, value))
 
-    reads = {path(entry) for entry in (*files.inputs, files.stdin)}
-    reads.update(path(cache.file) for cache in files.caches)
-    writes = {path(entry) for entry in (files.stdout, files.stderr, *files.outputs)}
-    writes.update(path(cache.file) for cache in files.caches)
+    def accesses(entries):
+        result = set()
+        for entry in entries:
+            if entry is None:
+                continue
+            target = path(entry)
+            if target is None:
+                continue
+            result.add(target)
+            if entry.kind == "directory":
+                # Directory reservations cover descendant files as well.
+                result.add(os.path.join(target, "*"))
+        return result
+
+    reads = accesses((*files.inputs, files.stdin, *(x.file for x in files.caches)))
+    writes = accesses((files.stdout, files.stderr, *files.outputs,
+                       *(x.file for x in files.caches)))
     return reads - {None}, writes - {None}
 
 
