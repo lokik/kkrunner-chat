@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 
-from .base import Transport
+from ..base import Transport
 
 
 @dataclass(frozen=True, init=False)

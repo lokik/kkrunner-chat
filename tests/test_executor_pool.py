@@ -7,7 +7,7 @@ from kkrunner.client.pool import ClientPool
 
 def test_client_profile_identity_normalizes_backend_options_without_host_resolution():
     from kkrunner.backends.config import BackendConfig
-    from kkrunner.client.transports import LocalTransport, SshTransport
+    from kkrunner.transports import LocalTransport, SshTransport
 
     assert BackendConfig("psij") == BackendConfig("psij", {"executor_name": "slurm"})
     assert SshTransport("cluster") == SshTransport("cluster", python_command=("python3",))

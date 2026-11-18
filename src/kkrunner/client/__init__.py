@@ -1,4 +1,4 @@
-"""Client-side execution composition, pooling, and transports."""
+"""Client-side execution composition and endpoint caching."""
 
 from typing import TYPE_CHECKING
 
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     )
     from kkrunner.client.pool import ClientPool, default_client_pool
     from kkrunner.client.staging import StagingSpec
-    from kkrunner.client.transports import LocalTransport, SshTransport, Transport
+    from kkrunner.transports import LocalTransport, SshTransport, Transport
 
 __all__ = [
     "EndpointClient", "StagingSpec",
@@ -33,7 +33,7 @@ def __getattr__(name):
         from . import pool
         value = getattr(pool, name)
     elif name in ("LocalTransport", "SshTransport", "Transport"):
-        from . import transports
+        from kkrunner import transports
         value = getattr(transports, name)
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

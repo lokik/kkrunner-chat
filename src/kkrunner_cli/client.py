@@ -54,7 +54,7 @@ def _direct(args, *, action):
         return follow_remote(args.remote_id, sys.stdout.buffer, sys.stderr.buffer,
                              stdout_offset=offset, stderr_offset=offset,
                              stdout_path=args.stdout_path, stderr_path=args.stderr_path)
-    from kkrunner.client.transports import SshTransport
+    from kkrunner.transports import SshTransport
     from kkrunner.remote.protocol import json_request
     transport = SshTransport(args.host, options=args.ssh_option)
     if action != "follow":
@@ -66,7 +66,7 @@ def _direct(args, *, action):
 
 def _follow_remote(transport, command, remote_id, from_start, stdout_path, stderr_path):
     from kkrunner.remote.protocol import control_command
-    from kkrunner.client.transports.follow import follow_framed_command
+    from kkrunner.transports.implementations.ssh.follow import follow_framed_command
     from kkrunner.support.async_utils import run_coro_sync
 
     async def observe():

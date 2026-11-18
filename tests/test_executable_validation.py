@@ -13,8 +13,9 @@ from kkrunner.backends.contracts import SubmissionNotStarted
 from kkrunner.backends.support.process import prepare_mpi, validate_executable
 from kkrunner.client.contracts import Operation
 from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.client.transports.local import LocalTransport
-from kkrunner.client.transports.rpc import operation_command, operation_result
+from kkrunner.transports import LocalTransport
+from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.transports.rpc import operation_result
 
 
 def mpi_request(directory, executable):

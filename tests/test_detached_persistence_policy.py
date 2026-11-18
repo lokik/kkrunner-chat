@@ -14,7 +14,7 @@ from kkrunner.client import EndpointClient, SshTransport, StagingSpec
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends import DirectBackend
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command
+from kkrunner.transports.implementations.ssh.rpc import operation_command
 WORKER_SOURCE = operation_command(Operation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
 
 

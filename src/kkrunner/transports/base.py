@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
-from kkrunner.client.contracts import Operation, RunningCommand
+from kkrunner.transports.contracts import Operation, RunningCommand
 from kkrunner.files.snapshots import snapshot_destination
 
 

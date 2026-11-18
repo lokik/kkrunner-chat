@@ -12,9 +12,9 @@ import types
 
 import pytest
 
-from kkrunner.backends.direct.backend import DirectBackend
+from kkrunner.backends.implementations.direct.backend import DirectBackend
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command
+from kkrunner.transports.implementations.ssh.rpc import operation_command
 from kkrunner.support.decorators import portable
 
 

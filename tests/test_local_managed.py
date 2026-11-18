@@ -11,12 +11,12 @@ import pytest
 from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import SupervisedBackend
-from kkrunner.backends.contracts import RecoveryDisposition
+from kkrunner.backends.contracts import RecoveryDisposition, SubmissionNotStarted
 from kkrunner.client.contracts import SubmissionContext
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.files.availability import local_manifest
-from kkrunner.backends.supervised.mailbox import recover_submission
+from kkrunner.backends.implementations.supervised.mailbox import recover_submission
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.runs.base import FailurePhase, RunStatus
@@ -168,14 +168,26 @@ def test_wildcards_track_concrete_file_availability(tmp_path):
     assert updated.outputs[1].availability_state == "available"
 
 
-def test_failed_launch_clears_stale_stdout(tmp_path):
+def test_missing_executable_does_not_modify_existing_stdout(tmp_path):
     out = tmp_path / "out.txt"
     out.write_bytes(b"previous")
     runner = _managed_job(_spec(tmp_path, (str(tmp_path / "missing-program"),)), submission_key=RUN_ID)
+    with pytest.raises(SubmissionNotStarted, match="Executable not found"):
+        runner.submit()
+    # Failed pre-launch validation does not initiate a calculation or touch files.
+    assert out.read_bytes() == b"previous"
+
+
+def test_failed_execution_replaces_stale_stdout(tmp_path):
+    out = tmp_path / "out.txt"
+    out.write_bytes(b"previous")
+    runner = _managed_job(
+        _spec(tmp_path, (sys.executable, "-c", "import sys; sys.exit(7)")), submission_key=RUN_ID
+    )
     runner.submit()
     runner.wait()
     assert runner.state == RunState.FAILED
-    assert runner.failure_phase == FailurePhase.LAUNCH
+    assert runner.failure_phase == FailurePhase.EXECUTION
     assert out.read_bytes() == b""
 
 
@@ -206,7 +218,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
 
 def test_local_prelaunch_error_is_known_submission_failure(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
-    from kkrunner.backends.supervised import backend as process_operations
+    from kkrunner.backends.implementations.supervised import backend as process_operations
     from kkrunner.runs.base import SubmissionNotStarted
 
     def failed_launch(*args, **kwargs):

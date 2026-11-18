@@ -26,7 +26,7 @@ class EndpointClient:
     supports_result_file_retrieval = True
 
     def __init__(self, backend=None, *, transport=None, backend_options=None):
-        from kkrunner.client.transports import LocalTransport
+        from kkrunner.transports import LocalTransport
         self.backend = configured_backend(backend, options=backend_options)
         self.transport = LocalTransport() if transport is None else transport
         if not self.transport.available:
@@ -43,7 +43,7 @@ class EndpointClient:
     @classmethod
     def from_config(cls, transport, backend):
         """Reconstruct a client from supported stored connection/backend data."""
-        from kkrunner.client.transports import require_persistable_transport, transport_from_dict
+        from kkrunner.transports import require_persistable_transport, transport_from_dict
         if isinstance(transport, dict):
             transport = transport_from_dict(transport)
         if isinstance(backend, dict):

@@ -15,7 +15,7 @@ from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition, UnsupportedCapability
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.pool import default_client_pool
-from kkrunner.client.transports import (
+from kkrunner.transports import (
     LocalTransport,
     SshTransport,
     require_persistable_transport,

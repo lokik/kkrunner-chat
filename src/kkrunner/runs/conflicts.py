@@ -6,7 +6,7 @@ import fnmatch
 import os
 from dataclasses import dataclass
 
-from kkrunner.client.transports import LocalTransport, SshTransport
+from kkrunner.transports import LocalTransport, SshTransport
 from kkrunner.files.paths import has_file_magic
 from kkrunner.runs.records import RunRecord
 

@@ -8,8 +8,9 @@ import pytest
 
 from kkrunner.backends import backend_class
 from kkrunner.backends.support.class_helper import static_methods
+from kkrunner.transports.implementations.ssh.helpers import class_helper
 from kkrunner.client.contracts import Operation
-from kkrunner.client.transports.rpc import operation_command
+from kkrunner.transports.implementations.ssh.rpc import operation_command
 
 MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
                       "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
@@ -39,7 +40,8 @@ def test_direct_and_managed_operations_have_distinct_contracts():
 @pytest.mark.parametrize("kind", ("kkrunner", "psij"))
 def test_ssh_helper_imports_one_backend_method(kind):
     backend = backend_class(kind)
-    helper = backend.SshHelper
+    helper = class_helper(backend)
+    assert not hasattr(backend, 'SshHelper')
     assert set(static_methods(helper)) == set(static_methods(backend))
     source = helper.submit.__source__
     assert f"from {backend.__module__} import {backend.__name__}" in source

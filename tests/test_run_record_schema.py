@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from kkrunner.runs import CorruptRunRecord, ExecutionMetadata, RunRecord, WorkingDirectory
-from kkrunner.client.transports import LocalTransport
+from kkrunner.transports import LocalTransport
 from kkrunner.files import FileManifest
 from kkrunner import RunState, RunStore
 

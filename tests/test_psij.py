@@ -15,10 +15,10 @@ import pytest
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import PsijBackend
 from kkrunner.backends.contracts import JobFailurePhase, JobStatus, SubmissionNotStarted
-from kkrunner.backends.psij import backend as operations
-from kkrunner.backends.psij import slurm
-from kkrunner.backends.psij.submission import prepare_job, prepare_outputs
-from kkrunner.backends.psij.support import psij_state, supports_recovery
+from kkrunner.backends.implementations.psij import backend as operations
+from kkrunner.backends.implementations.psij import slurm
+from kkrunner.backends.implementations.psij.submission import prepare_job, prepare_outputs
+from kkrunner.backends.implementations.psij.support import psij_state, supports_recovery
 from kkrunner.client.execution_request import execution_request
 from kkrunner.execution import MpiSpec
 from kkrunner.remote.handles import decode_handle, encode_handle
@@ -132,7 +132,7 @@ def test_status_uses_native_attach_for_non_slurm_scheduler(monkeypatch):
         calls.append(ref)
         return native
 
-    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", attach)
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", attach)
     facts = PsijBackend.status(handle("pbs-123", "pbs"))
     assert calls == [{
         "kind": "psij", "native_id": "pbs-123",
@@ -425,7 +425,7 @@ def test_target_follow_writes_output_from_scheduler_owned_file(monkeypatch, tmp_
     stdout.write_bytes(b"hello\n")
     native = NativeJob()
     native.update("COMPLETED", 0)
-    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", lambda identity: native)
     out, err = io.BytesIO(), io.BytesIO()
     facts = asyncio.run(PsijBackend.follow(
         handle(executor_name="pbs"), out, err, stdout_path=str(stdout), stderr_path=None,
@@ -441,7 +441,7 @@ def test_slurm_follow_uses_scheduler_facts_when_native_exit_code_is_missing(monk
     stdout.write_bytes(b"hello\n")
     native = NativeJob()
     native.update("COMPLETED")
-    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", lambda identity: native)
     queries = []
 
     def scheduler_status(native_id):
@@ -462,7 +462,7 @@ def test_slurm_follow_uses_scheduler_facts_when_native_exit_code_is_missing(monk
 def test_slurm_follow_prefers_authoritative_failure_to_native_success(monkeypatch, tmp_path):
     native = NativeJob()
     native.update("COMPLETED", 0)
-    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", lambda identity: native)
     monkeypatch.setattr(
         slurm, "status",
         lambda native_id: JobStatus(RunState.FAILED, 7, JobFailurePhase.EXECUTION),
@@ -477,7 +477,7 @@ def test_slurm_follow_waits_for_authoritative_terminal_state(monkeypatch):
     """PSI/J completion may precede the scheduler's terminal record."""
     native = NativeJob()
     native.update("COMPLETED")
-    monkeypatch.setattr("kkrunner.backends.psij.support._attach_job", lambda identity: native)
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", lambda identity: native)
     states = iter((JobStatus(RunState.RUNNING), JobStatus(RunState.FINISHED, return_code=0)))
     queries = []
 

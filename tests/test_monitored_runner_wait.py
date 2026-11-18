@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner.client.job import Job
 from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.client.transports import LocalTransport
+from kkrunner.transports import LocalTransport
 from kkrunner.backends import DirectBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 

@@ -15,10 +15,11 @@ import threading
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 
-from kkrunner.remote.session_worker import WORKER_SOURCE
+from kkrunner.transports.implementations.ssh.worker import WORKER_SOURCE
 
-from .rpc import operation_result
+from ...rpc import operation_result
 from .source import portable_bundle
+from .helpers import ssh_helper
 
 
 class _Session:
@@ -173,7 +174,7 @@ class SshSessionPool:
     def _invoke(self, operation, args, kwargs, cancelled):
         function = (
             operation.function if operation.function is not None
-            else getattr(operation.backend.SshHelper, operation.method)
+            else getattr(ssh_helper(operation.backend), operation.method)
         )
         symbol, definitions = portable_bundle(function)
         session = self._take(cancelled)

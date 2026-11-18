@@ -28,7 +28,7 @@ and ``EndpointClient(BackendClass, transport=transport)`` construct configured b
 instances; both also accept an already configured instance. They default to
 ``DirectBackend``. ``client.backend`` is always an instance. Its immutable
 ``options`` and ``supports`` are computed when constructed; the backend class
-still supplies the static native operations and ``SshHelper``. Location never
+still supplies the static native operations. Location never
 selects supervision.
 ``ExecutionMetadata.transport`` is an immutable ``LocalTransport`` or ``SshTransport``
 combining connection settings with the operations that use them. ``ExecutionMetadata.backend`` separately stores a
@@ -40,8 +40,9 @@ Target-side backend code and SSH helpers
 ----------------------------------------
 
 All target backend operations are declared as static methods on their
-backend class. The SSH transport selects ``type(client.backend)`` and applies its
-``SshHelper`` and transmits only the selected method definition. The helper
+backend class. The SSH transport selects ``type(client.backend)``, either
+transmits the direct portable method or generates an import-only helper for
+managed backends, and transfers only the selected definition. The helper
 does **not** create a new job state machine.
 
 .. list-table::
@@ -71,9 +72,10 @@ Transferring the full supervised or PSI/J runtime would duplicate installed
 dependencies and complicate persistence and recovery. Their helper source
 contains only delegated method imports; actual code is imported on the target
 host. Direct SSH is deliberately independent and sends the compact worker
-source. Target-side invocation functions live in ``remote.bootstrap``;
-the client-side command assembly and reply decoding stay in
-``client.transports.rpc``. Calculation stream FOLLOW uses framed data to
+source. Target-side invocation functions live in
+``kkrunner.transports.implementations.ssh.bootstrap``; the SSH command
+assembly lives in ``kkrunner.transports.implementations.ssh.rpc`` and shared
+reply decoding in ``kkrunner.transports.rpc``. Calculation stream FOLLOW uses framed data to
 distinguish native stdout/stderr from SSH diagnostics and delivers a terminal
 receipt.
 
@@ -270,9 +272,10 @@ Architecture boundary
 Backend classes define static target operations; their configured instances
 own the immutable ``options`` and ``supports``. They neither create client Jobs
 nor receive client file manifests. ``EndpointClient`` holds a configured
-backend instance and invokes its static methods. SSH selects
-``type(client.backend).SshHelper`` and sends a single method definition. The client
-creates the client ``Job`` and composes it with a file session as ``RunParts``.
+backend instance and invokes its static methods. The SSH transport sends
+portable direct backend methods as source or builds import-only wrappers for
+managed backends; no SSH-specific helper is exposed by backend classes.
+The client creates the ``Job`` and composes it with a file session as ``RunParts``.
 
 The file session prepares mapped paths and a manifest, but does not decide
 which backend runs or whether the submission is detached. The client builds

@@ -9,7 +9,8 @@ It can serve multiple runs and composes their ``Job``, backend binding and
 
    from kkrunner import ExecutionSpec, Run
    from kkrunner.backends import DirectBackend, PsijBackend
-   from kkrunner.client import EndpointClient, SshTransport
+   from kkrunner.client import EndpointClient
+   from kkrunner.transports import SshTransport
 
    local = EndpointClient(DirectBackend)
    remote = EndpointClient(
@@ -25,17 +26,22 @@ error is decoded separately from a broken transport; a confirmed
 ``SubmissionNotStarted`` remains a confirmed non-submission across SSH.
 An interrupted transport remains uncertain and is never retried as a new job.
 
-Transports live under ``kkrunner.client.transports``. ``LocalTransport`` and
+Transports live under ``kkrunner.transports``. Their concrete implementations
+are organized symmetrically in ``implementations/local/`` and
+``implementations/ssh/``, each with a ``transport.py`` and ``call.py``.
+Shared transport contracts and invocation helpers remain in the parent package.
+``LocalTransport`` and
 ``SshTransport`` combine immutable connection settings with the actual calls;
 there is no separate endpoint type. ``ExecutionMetadata.transport`` stores the transport,
 whose dataclass fields serialize to JSON, including an explicit ``kind`` tag.
 ``Transport.to_dict()`` exposes the same connection settings.
 ``EndpointClient.from_config(transport, backend)`` reconstructs supported clients from
 objects or JSON dictionaries. Only local/ssh transports and the backend names
-direct/process/psij are allowed; records never contain arbitrary Python imports.
+direct/kkrunner/psij are allowed; records never contain arbitrary Python imports.
 Persistent unsupported custom transports are rejected before a Run is created.
-ClientPool uses the transport/backend pair as its identity. Transports own no
-persistent open connection: each operation owns its process and stream handles.
+ClientPool uses the transport/backend pair as its identity. The SSH transport reuses a bounded pool of persistent SSH/Python sessions for
+short RPC calls; streaming operations and file transfers keep their own
+processes and stream handles.
 
 A single FileSession handles local and remote files. It owns live client file
 handles and finalizes the sole FileManifest. Local execution needs no copying;

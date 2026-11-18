@@ -452,7 +452,7 @@ def test_remote_none_stream_files_are_live_only(tmp_path):
 
 def test_supervisor_live_only_streams_reach_connected_followers():
     """Once attached, unnamed stdout/stderr must still be delivered live."""
-    from kkrunner.backends.supervised.streams import SupervisorStreams, follow_socket
+    from kkrunner.backends.implementations.supervised.streams import SupervisorStreams, follow_socket
 
     async def verify():
         streams = SupervisorStreams(None, None, detached=False)

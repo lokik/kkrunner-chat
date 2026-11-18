@@ -315,7 +315,7 @@ def test_managed_follow_writer_failure_preserves_native_success(tmp_path):
     """Delivery failure is a client error, not a false backend failure."""
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.backend_execution import ManagedExecution
-    from kkrunner.client.transports import LocalTransport
+    from kkrunner.transports import LocalTransport
 
     class FollowTransport(LocalTransport):
         async def follow(self, operation, identity, on_output, **options):
