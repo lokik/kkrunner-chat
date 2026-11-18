@@ -80,6 +80,45 @@ def query_files(sources, *, root=None, digest=False):
     return results
 
 
+@portable
+def directory_digest(root):
+    """Content digest of a tree, including dotfiles and empty directories.
+
+    Return None for symlinks or other nonregular entries, which cannot be
+    compared reliably. The function is portable to SSH without dependencies.
+    """
+    import hashlib
+    import os
+    import stat
+
+    root = os.fspath(root)
+    if not os.path.isdir(root) or os.path.islink(root):
+        return None
+    digest = hashlib.sha256()
+    for current, dirs, files in os.walk(root, followlinks=False):
+        dirs.sort()
+        files.sort()
+        for name in sorted((*dirs, *files)):
+            path = os.path.join(current, name)
+            info = os.lstat(path)
+            relative = os.fsencode(os.path.relpath(path, root))
+            if stat.S_ISDIR(info.st_mode):
+                kind = b"D"
+            elif stat.S_ISREG(info.st_mode):
+                kind = b"F"
+            else:
+                return None
+            digest.update(kind)
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            if kind == b"F":
+                digest.update(info.st_size.to_bytes(8, "big"))
+                with open(path, "rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
+    return digest.hexdigest()
+
+
 def checked_files(results):
     """Raise genuine filesystem errors, leaving missing entries explicit."""
     for item in results:

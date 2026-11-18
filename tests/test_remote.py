@@ -274,50 +274,140 @@ def test_remote_input_policy_always_requires_local_file(tmp_path):
         _processed_run(executor, spec).run()
 
 
+@pytest.mark.parametrize("policy", tuple(FileSyncPolicy))
 @pytest.mark.parametrize(
-    "policy, local_value, generated_value, expected, downloads",
+    "case, local_value, generated_value",
     [
-        (FileSyncPolicy.CHANGED, "old", "new", "new", 1),
-        (FileSyncPolicy.CHANGED, "same", "same", "same", 0),
-        (FileSyncPolicy.ALWAYS, "local", "remote", "remote", 1),
-        (FileSyncPolicy.MISSING, "local", "remote", "local", 0),
-        (FileSyncPolicy.NEVER, "local", "remote", "local", 0),
+        ("same", "same", "same"),
+        ("different", "local", "remote"),
+        ("missing-on-server", "local", None),
+        ("missing-locally", None, "remote"),
     ],
-    ids=("changed", "unchanged", "always", "missing", "never"),
 )
-def test_remote_output_file_policies(tmp_path, policy, local_value, generated_value, expected, downloads):
+def test_remote_output_file_policies(tmp_path, policy, case, local_value, generated_value):
+    """All four policies obey the non-destructive source/target matrix."""
+    from kkrunner import TaskFile
+
     transport = _SpyTransport()
     workdir = tmp_path / "local" / "calculation"
     workdir.mkdir(parents=True)
     artifact = workdir / "artifact.dat"
-    artifact.write_text(local_value)
-    executor, spec, _, remote_root = _text_run(
-        tmp_path,
-        transport,
-        declared_output_files=(artifact,),
-        output_files=policy,
-        code=f"import pathlib; pathlib.Path('artifact.dat').write_text({generated_value!r}); print('done')",
+    if local_value is not None:
+        artifact.write_text(local_value)
+    code = (
+        "print('done')" if generated_value is None
+        else f"import pathlib; pathlib.Path('artifact.dat').write_text({generated_value!r}); print('done')"
     )
-    result = _processed_run(executor, spec).run()
+    executor, spec, _, remote_root = _text_run(
+        tmp_path, transport, declared_output_files=(TaskFile(artifact, optional=True),),
+        output_files=policy, code=code,
+    )
+    runner = _processed_run(executor, spec)
+    assert runner.run().return_code == 0
     remote_artifact = remote_root / "calculation" / "artifact.dat"
-    assert result.return_code == 0
-    assert artifact.read_text() == expected
-    assert transport.downloads == ([(remote_artifact, artifact)] if downloads else [])
+    assert remote_artifact.exists() == (generated_value is not None)
+    if generated_value is not None:
+        assert remote_artifact.read_text() == generated_value
+
+    download = (
+        generated_value is not None and policy != FileSyncPolicy.NEVER
+        and (
+            policy == FileSyncPolicy.ALWAYS or local_value is None
+            or (policy == FileSyncPolicy.CHANGED and local_value != generated_value)
+        )
+    )
+    expected_local = generated_value if download else local_value
+    if expected_local is None:
+        assert not artifact.exists()
+    else:
+        assert artifact.read_text() == expected_local
+    assert transport.downloads == ([(remote_artifact, artifact)] if download else [])
+
+    state = (
+        "available" if generated_value is not None and policy != FileSyncPolicy.NEVER
+        and (download or local_value == generated_value) else "skipped"
+    )
+    entry = next(x for x in runner.files.outputs if x.local_path == str(artifact))
+    assert entry.availability_state == state
 
 
-def test_remote_executor_does_not_reuse_stale_output(tmp_path):
+@pytest.mark.parametrize("policy", (FileSyncPolicy.ALWAYS, FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING))
+def test_remote_executor_does_not_reuse_stale_output(tmp_path, policy):
+    """A missing required server result fails but preserves local data."""
     transport = _SpyTransport()
     workdir = tmp_path / "local" / "calculation"
     workdir.mkdir(parents=True)
     artifact = workdir / "artifact.dat"
+    artifact.write_text("old local result")
     remote_artifact = tmp_path / "remote" / "calculation" / "artifact.dat"
     remote_artifact.parent.mkdir(parents=True)
-    remote_artifact.write_text("stale")
-    executor, spec, _, _ = _text_run(tmp_path, transport, declared_output_files=(artifact,), code="print('done')")
+    remote_artifact.write_text("stale remote result")
+    executor, spec, _, _ = _text_run(
+        tmp_path, transport, declared_output_files=(artifact,),
+        output_files=policy, code="print('done')",
+    )
+    runner = _processed_run(executor, spec)
     with pytest.raises(FileNotFoundError, match="was not created"):
-        _processed_run(executor, spec).run()
+        runner.run()
     assert not remote_artifact.exists()
-    assert not artifact.exists()
+    assert artifact.read_text() == "old local result"
+    entry = next(x for x in runner.files.outputs if x.local_path == str(artifact))
+    assert entry.availability_state == "failed"
+
+
+@pytest.mark.parametrize(
+    "policy, local_value, generated_value, expected, transfer, state",
+    [
+        (FileSyncPolicy.ALWAYS, "same", "same", "same", True, "available"),
+        (FileSyncPolicy.CHANGED, "same", "same", "same", False, "available"),
+        (FileSyncPolicy.CHANGED, "old", "new", "new", True, "available"),
+        (FileSyncPolicy.MISSING, "old", "new", "old", False, "skipped"),
+        (FileSyncPolicy.MISSING, None, "new", "new", True, "available"),
+        (FileSyncPolicy.NEVER, "old", "new", "old", False, "skipped"),
+        (FileSyncPolicy.ALWAYS, "old", None, "old", False, "skipped"),
+    ],
+)
+def test_remote_directory_output_policies(tmp_path, policy, local_value, generated_value, expected, transfer, state):
+    """Whole output directories follow the same non-destructive policies."""
+    from kkrunner import TaskFile
+
+    class DirectorySpy(_SpyTransport):
+        def __init__(self):
+            super().__init__()
+            self.directory_downloads = []
+
+        async def get_directory(self, source, destination):
+            self.directory_downloads.append((Path(source), Path(destination)))
+            await super().get_directory(source, destination)
+
+    transport = DirectorySpy()
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    local = workdir / "result-tree"
+    if local_value is not None:
+        local.mkdir()
+        (local / "value.dat").write_text(local_value)
+    code = (
+        "print('done')" if generated_value is None
+        else f"from pathlib import Path; p=Path('result-tree'); p.mkdir(); (p/'value.dat').write_text({generated_value!r})"
+    )
+    executor, spec, _, remote_root = _text_run(
+        tmp_path, transport, code=code, output_files=policy,
+        declared_output_files=(TaskFile(local, kind="directory", optional=True),),
+    )
+    runner = _processed_run(executor, spec)
+    assert runner.run().return_code == 0
+    remote = remote_root / "calculation" / "result-tree"
+    assert remote.exists() == (generated_value is not None)
+    if generated_value is not None:
+        assert (remote / "value.dat").read_text() == generated_value
+    if expected is None:
+        assert not local.exists()
+    else:
+        assert (local / "value.dat").read_text() == expected
+    assert transport.directory_downloads == ([(remote, local)] if transfer else [])
+    entry = next(x for x in runner.files.outputs if x.local_path == str(local))
+    assert entry.availability_state == state
 
 
 def test_remote_cache_creation_content_and_mtime_changes_in_one_run(tmp_path):

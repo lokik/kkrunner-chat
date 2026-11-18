@@ -16,6 +16,34 @@ from kkrunner.transports import LocalTransport
 from .test_transport import _LoopbackSshTransport
 
 
+def test_directory_digest_covers_dotfiles_and_empty_directories(tmp_path):
+    first, second = tmp_path / "first", tmp_path / "second"
+    for directory in (first, second):
+        (directory / "nested" / "empty").mkdir(parents=True)
+        (directory / "nested" / ".hidden").write_bytes(b"secret")
+        (directory / "plain").write_bytes(b"visible")
+    assert queries.directory_digest(first) == queries.directory_digest(second)
+    (second / "nested" / ".hidden").write_bytes(b"changed")
+    assert queries.directory_digest(first) != queries.directory_digest(second)
+    (second / "nested" / ".hidden").write_bytes(b"secret")
+    (second / "nested" / "empty").rmdir()
+    assert queries.directory_digest(first) != queries.directory_digest(second)
+    (second / "nested" / "alias").symlink_to(second / "plain")
+    assert queries.directory_digest(second) is None
+
+
+def test_directory_digest_portable_over_ssh(tmp_path):
+    from kkrunner.transports.contracts import Operation
+
+    directory = tmp_path / "tree"
+    directory.mkdir()
+    (directory / ".hidden").write_bytes(b"data")
+    observed = asyncio.run(
+        _LoopbackSshTransport().call(Operation.standalone(queries.directory_digest), str(directory))
+    )
+    assert observed == queries.directory_digest(directory)
+
+
 def test_batch_metadata_missing_types_and_nanoseconds(tmp_path):
     regular = tmp_path / "file"
     regular.write_bytes(b"contents")

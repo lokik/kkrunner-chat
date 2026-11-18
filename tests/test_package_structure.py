@@ -265,7 +265,9 @@ def test_concrete_implementations_are_separated_from_contracts():
     assert not (transport_impls / "local.py").exists()
     assert not (transport_impls / "local_call.py").exists()
     assert (transport_impls / "unavailable.py").is_file()
-    assert not (root / "client" / "transports").exists()
+    # Ignored __pycache__ artifacts can survive a package move in a local tree.
+    # Assert the old Python sources are gone without requiring empty directories.
+    assert not list((root / "client" / "transports").rglob("*.py"))
     assert all(cls.__module__.startswith("kkrunner.backends.implementations.")
                for cls in (DirectBackend, SupervisedBackend, PsijBackend))
     assert all(cls.__module__.startswith("kkrunner.transports.implementations.")

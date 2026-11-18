@@ -19,12 +19,13 @@ from kkrunner.files.manifest import (
     FileSyncPolicy,
 )
 from kkrunner.files.paths import file_path, has_file_magic
-from kkrunner.files.queries import expand_local_files
+from kkrunner.files.queries import directory_digest, expand_local_files
 from kkrunner.files.streams import OutputStreams, open_output_streams
 from kkrunner.files.versions import file_digest
 from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.support.file_locks import FileLock
+from kkrunner.transports.contracts import Operation
 
 
 class FileSession:
@@ -343,25 +344,8 @@ class FileSession:
                 patterns.append(remote)
             else:
                 targets[local] = remote
-        # After reservation, invalidate local output copies before remote
-        # execution as well. Otherwise output_sync=MISSING can keep a stale
-        # local result after the target has generated a new one (or none).
-        # Target-side cleanup still runs immediately before backend launch.
-        if not self.is_local:
-            from kkrunner.files.availability import prepare_target_outputs
-            prepare_target_outputs({
-                "directory": self.spec.directory,
-                "input_file": self._local_path(self.spec.input_file),
-                "stdin": self._local_path(self.spec.stdin),
-                "input_files": [self._local_path(x) for x in self.spec.input_files],
-                "cache_files": [x.file.local_path for x in manifest.caches],
-                "output_file": self._local_path(self.spec.output_file),
-                "error_file": self._local_path(self.spec.error_file),
-                "output_files": [x.local_path for x in manifest.outputs],
-                "output_directories": [
-                    x.local_path for x in manifest.outputs if x.kind == "directory"
-                ],
-            })
+        # Only the execution target clears previous outputs before launch.
+        # A download never invalidates existing local copies in advance.
         self._output_targets = targets
         self._output_patterns = tuple(patterns)
 
@@ -476,6 +460,8 @@ class FileSession:
 
     async def _sync_one_output(self, local, remote, required, *, kind="file"):
         policy = self.context.output_files
+        if policy == FileSyncPolicy.NEVER:
+            return False
         if kind == "directory":
             entry = (await self.context.transport.query_files([remote]))[0]
             if entry["status"] == "missing":
@@ -484,6 +470,19 @@ class FileSession:
                 return False
             if entry["status"] != "ok" or entry["type"] != "directory":
                 raise ValueError(f"Declared directory output is not a directory: {remote}")
+            if os.path.lexists(local):
+                if os.path.islink(local) or not os.path.isdir(local):
+                    raise ValueError(f"Local directory output is not a directory: {local}")
+                if policy in (FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING):
+                    remote_digest = await self.context.transport.call(
+                        Operation.standalone(directory_digest), remote,
+                    )
+                    local_digest = directory_digest(local)
+                    if remote_digest is not None and remote_digest == local_digest:
+                        return True
+                if policy == FileSyncPolicy.MISSING:
+                    # An existing but different local tree is not this run's result.
+                    return False
             await self.context.transport.get_directory(remote, local)
             return True
         remote_digest = await self.context.transport.file_digest(remote)
@@ -494,7 +493,10 @@ class FileSession:
         local_digest = file_digest(local, missing_ok=True)
         if policy.should_transfer(remote_digest, local_digest):
             await self.context.transport.get_file(remote, local)
-        return True
+            return True
+        # A MISSING policy can preserve a stale copy. Do not publish that
+        # copy as an artifact of this run unless the contents actually match.
+        return local_digest is not None and local_digest == remote_digest
 
     async def _sync_cache_entry(self, local, remote, before, *, source_pattern=None, kind="file"):
         """Synchronize one concrete cache using its pre-run signature."""

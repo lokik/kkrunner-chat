@@ -64,8 +64,10 @@ def test_remote_executor_rejects_unmatched_input_wildcard(tmp_path):
         raise AssertionError("unmatched input wildcard was accepted")
 
 
-def test_remote_executor_downloads_output_wildcards_and_discards_stale_matches(tmp_path):
+def test_remote_executor_downloads_output_wildcards_without_deleting_local_matches(tmp_path):
     workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    (workdir / "artifact-stale.dat").write_text("old local result")
     remote_workdir = tmp_path / "remote" / "calculation"
     remote_workdir.mkdir(parents=True)
     (remote_workdir / "artifact-stale.dat").write_text("stale")
@@ -78,7 +80,7 @@ def test_remote_executor_downloads_output_wildcards_and_discards_stale_matches(t
     assert result.return_code == 0
     assert (workdir / "artifact-a.dat").read_text() == "a"
     assert (workdir / "artifact-b.dat").read_text() == "b"
-    assert not (workdir / "artifact-stale.dat").exists()
+    assert (workdir / "artifact-stale.dat").read_text() == "old local result"
     assert not (remote_workdir / "artifact-stale.dat").exists()
 
 
