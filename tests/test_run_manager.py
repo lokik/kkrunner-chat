@@ -199,3 +199,69 @@ def test_duplicate_submission_is_blocked_by_persisted_namespace(tmp_path):
     )
     with pytest.raises(DuplicateSubmissionError):
         second.submit()
+
+
+@pytest.mark.parametrize("return_code", [0, 139])
+def test_prepare_artifacts_precedes_persistent_snapshot_and_parsing(tmp_path, return_code):
+    manager = _manager(tmp_path)
+    executor = _Executor()
+    output = tmp_path / "case.out"
+    prepared = []
+    parsed = []
+
+    def normalize(_outcome):
+        prepared.append(output.read_text())
+        output.write_text("normalized")
+
+    def parse(_outcome):
+        parsed.append(output.read_text())
+        return "result"
+
+    run = manager.create_run(
+        executor, _spec(tmp_path),
+        process_result=parse,
+        prepare_artifacts=normalize,
+        metadata={"test": {"task": "SCF"}},
+    )
+    run.submit()
+    output.write_text("native")
+    executor.runners[0].finish(return_code)
+    if return_code == 0:
+        assert run.wait() == "result"
+        assert prepared == ["native"]
+        assert parsed == ["normalized"]
+        record = manager.store.get(run.id)
+        assert record.files.captured_at is not None
+        assert output.read_text() == "normalized"
+        assert next(v for v in record.files.output_versions if str(v.path) == str(output)).is_current()
+    else:
+        run.wait()
+        assert not prepared and not parsed
+        assert output.read_text() == "native"
+
+
+def test_prepare_artifacts_precedes_untracked_result_parsing(tmp_path):
+    from kkrunner.runs.run import Run
+
+    executor = _Executor()
+    output = tmp_path / "case.out"
+    seen = []
+
+    def prepare(_outcome):
+        seen.append("prepare")
+        output.write_text("normalized")
+
+    def parse(_outcome):
+        seen.append("parse")
+        assert output.read_text() == "normalized"
+        return "result"
+
+    run = Run.untracked(
+        executor, _spec(tmp_path),
+        prepare_artifacts=prepare, process_result=parse,
+    )
+    run.submit()
+    output.write_text("native")
+    executor.runners[0].finish(0)
+    assert run.wait() == "result"
+    assert seen == ["prepare", "parse"]
