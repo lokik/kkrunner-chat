@@ -21,7 +21,7 @@ from kkrunner.files.manifest import (
 from kkrunner.files.paths import file_path, has_file_magic
 from kkrunner.files.queries import directory_digest, expand_local_files
 from kkrunner.files.streams import OutputStreams, open_output_streams
-from kkrunner.files.versions import file_digest
+from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.support.file_locks import FileLock
@@ -583,6 +583,7 @@ class FileSession:
             else:
                 await self._stage_file(value, used, required=required)
 
+        self._staging["inputs"] = dict(used)
         await self._prepare_cache_files(used, manifest)
         staged = {source: target for target, source in used.items()}
         await self._prepare_output_files(manifest)
@@ -606,6 +607,41 @@ class FileSession:
             "input_files": list(used.keys()),
         }
 
+    async def _target_versions(self, paths):
+        transport = self.context.transport
+        files = [target for target, (_, kind) in paths.items() if kind == "file"]
+        observed = await transport.query_files(files, digest=True) if files else ()
+        digests = {item["path"]: item.get("digest") for item in observed}
+        versions = []
+        for target, (local, kind) in paths.items():
+            digest = digests.get(target)
+            if kind == "directory":
+                digest = await transport.call(Operation.standalone(directory_digest), target)
+            if digest is not None:
+                versions.append(FileVersion(local, fingerprint=None, digest=digest, kind=kind))
+        return tuple(versions)
+
+    async def _target_input_versions(self, manifest):
+        directories = {entry.local_path for entry in manifest.input_entries if entry.kind == "directory"}
+        return await self._target_versions({
+            target: (local, "directory" if local in directories else "file")
+            for target, local in self._staging.get("inputs", {}).items()
+        })
+
+    async def _target_cache_versions(self):
+        paths = {}
+        for cache in self._files.caches:
+            entry = cache.file
+            if entry.remote_path is None or entry.local_path is None:
+                continue
+            if has_file_magic(entry.remote_path):
+                root = await self.context._resolved_remote_root()
+                for target in await self.context.transport.expand_files(entry.remote_path, root):
+                    paths[target] = (await self.context.unmap_path(target), entry.kind)
+            else:
+                paths[entry.remote_path] = (entry.local_path, entry.kind)
+        return await self._target_versions(paths)
+
     async def _submitted_manifest(self, request, local):
         mapped = await self.context.map_manifest(local)
         caches = []
@@ -618,6 +654,7 @@ class FileSession:
         return replace(
             mapped,
             caches=tuple(caches),
+            input_versions=await self._target_input_versions(local),
             stdout=None
             if mapped.stdout is None
             else replace(
@@ -635,15 +672,21 @@ class FileSession:
     async def _prepare_async(self):
         if self.is_local:
             from kkrunner.client.execution_request import execution_request
+            from kkrunner.runs.files import snapshot_file_entries
             self.spec.require_complete()
             manifest = FileManifest.from_spec(self.spec)
             declaration = self.spec
-            if self.context.client.backend.execution_mode == "direct":
-                declaration = replace(self.spec, **{
-                    name: file_path(getattr(self.spec, name), self.spec.directory)
-                    for name in ("stdin", "output_file", "error_file")
-                })
-            return execution_request(declaration), manifest
+            try:
+                if self.context.client.backend.execution_mode == "direct":
+                    declaration = replace(self.spec, **{
+                        name: file_path(getattr(self.spec, name), self.spec.directory, flush=name == "stdin")
+                        for name in ("stdin", "output_file", "error_file")
+                    })
+                request = execution_request(declaration)
+                manifest = replace(manifest, input_versions=snapshot_file_entries(manifest.input_entries))
+            except OSError as exc:
+                raise SubmissionNotStarted(str(exc)) from exc
+            return request, manifest
         try:
             # Reject invalid file declarations *before* creating target folders
             # or uploading anything. The same validated manifest then owns
@@ -903,6 +946,13 @@ class FileSession:
             await self._synchronize(status.state)
         finally:
             self.close()
+        from kkrunner.runs.files import capture_result_files
+
+        if self._files is not None and self._files.captured_at is None:
+            self._files = capture_result_files(
+                self._files, require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
+                cache_versions=None if self.is_local else await self._target_cache_versions(),
+            )
         return self._files
 
     def finalize(self, status):

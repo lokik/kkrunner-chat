@@ -53,3 +53,46 @@ def test_capture_still_discovers_pending_local_outputs(tmp_path):
     )))
     assert tuple(str(version.path) for version in captured.output_versions) == (str(output),)
     assert captured.outputs[0].availability_state == "available"
+
+
+def test_local_staging_versions_inputs_before_launch_and_caches_afterwards(tmp_path):
+    import sys
+
+    from kkrunner import ExecutionSpec, RunState
+    from kkrunner.backends import DirectBackend
+    from kkrunner.files import TaskFile
+    from kkrunner.files.versions import file_digest
+    from kkrunner.runs.base import RunStatus
+
+    source = tmp_path / "input"
+    tau = tmp_path / "tau"
+    tau.mkdir()
+    (tau / "mesh").write_text("input mesh")
+    output = tmp_path / "output"
+    cache = tmp_path / "cache"
+    cache.write_text("old cache")
+    with source.open("w+") as stream:
+        stream.write("launch input")
+        spec = ExecutionSpec(
+            argv=(sys.executable,), directory=tmp_path,
+            stdin=stream, input_files=(TaskFile(tau, kind="directory"),),
+            output_file=output, cache_files=(cache,),
+        )
+        parts = EndpointClient(DirectBackend).create_run_parts(spec)
+        parts.prepare_submission()
+        before = parts.files.files
+        assert source.read_text() == "launch input"
+        assert before.input_version(source).digest == file_digest(source)
+    assert before.input_version(tau).is_current()
+    assert not before.output_versions and not before.cache_versions
+
+    source.write_text("different input")
+    (tau / "mesh").write_text("different mesh")
+    output.write_text("run output")
+    cache.write_text("new cache")
+    result = parts.files.finalize(RunStatus(RunState.FINISHED, return_code=0))
+    assert result.input_versions == before.input_versions
+    assert all(version.state() is FileState.OVERWRITTEN for version in result.input_versions)
+    assert result.output_versions[0].is_current()
+    assert result.cache_versions[0].path == cache
+    assert result.cache_versions[0].is_current()

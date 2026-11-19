@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 
 from kkrunner.files.fingerprints import FileFingerprint, file_fingerprint
+from kkrunner.files.queries import directory_digest
 
 _DIGEST_CHUNK_SIZE = 1024 * 1024
 _STABLE_CAPTURE_ATTEMPTS = 2
@@ -27,8 +28,9 @@ class FileVersionCaptureError(OSError):
     """A stable content identity could not be captured for an existing file."""
 
 
-def _is_file(fingerprint: FileFingerprint) -> bool:
-    return stat_module.S_ISREG(fingerprint.mode)
+def _matches_kind(fingerprint: FileFingerprint, kind: str) -> bool:
+    return (stat_module.S_ISDIR(fingerprint.mode) if kind == "directory"
+            else stat_module.S_ISREG(fingerprint.mode))
 
 
 def file_digest(path: str | Path, *, missing_ok: bool = False) -> str | None:
@@ -67,10 +69,13 @@ class FileVersion:
     path: Path
     fingerprint: FileFingerprint | None
     digest: str | None = None
+    kind: str = "file"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path).expanduser().absolute())
         object.__setattr__(self, "fingerprint", _fingerprint(self.fingerprint))
+        if self.kind not in ("file", "directory"):
+            raise ValueError("FileVersion kind must be file or directory")
 
     @classmethod
     def capture(
@@ -79,6 +84,7 @@ class FileVersion:
         *,
         digest: bool = True,
         require_digest: bool = False,
+        kind: str = "file",
     ) -> "FileVersion":
         """Capture *path*, optionally requiring a stable content digest.
 
@@ -92,27 +98,29 @@ class FileVersion:
         except OSError:
             if require_digest:
                 raise
-            return cls(path=resolved, fingerprint=None)
+            return cls(path=resolved, fingerprint=None, kind=kind)
 
-        if not digest or not _is_file(fingerprint):
-            return cls(path=resolved, fingerprint=fingerprint)
+        if not digest or not _matches_kind(fingerprint, kind):
+            return cls(path=resolved, fingerprint=fingerprint, kind=kind)
 
+        digest_file = directory_digest if kind == "directory" else file_digest
         last_error = None
         for _ in range(_STABLE_CAPTURE_ATTEMPTS if require_digest else 1):
             try:
-                content_digest = file_digest(resolved)
+                content_digest = digest_file(resolved)
                 after = file_fingerprint(resolved)
             except OSError as exc:
                 last_error = exc
                 if require_digest:
                     continue
-                return cls(path=resolved, fingerprint=fingerprint)
+                return cls(path=resolved, fingerprint=fingerprint, kind=kind)
 
-            if after == fingerprint:
+            if after == fingerprint and content_digest is not None:
                 return cls(
                     path=resolved,
                     fingerprint=fingerprint,
                     digest=content_digest,
+                    kind=kind,
                 )
             fingerprint = after
 
@@ -121,17 +129,19 @@ class FileVersion:
             if last_error is not None:
                 raise FileVersionCaptureError(message) from last_error
             raise FileVersionCaptureError(message)
-        return cls(path=resolved, fingerprint=fingerprint)
+        return cls(path=resolved, fingerprint=fingerprint, kind=kind)
 
     @property
     def available(self) -> bool:
         """Whether this snapshot has usable content identity."""
-        return self.fingerprint is not None and _is_file(self.fingerprint) and self.digest is not None
+        return self.digest is not None and (
+            self.fingerprint is None or _matches_kind(self.fingerprint, self.kind)
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FileVersion):
             return NotImplemented
-        if self.path != other.path:
+        if self.path != other.path or self.kind != other.kind:
             return False
         if self.digest is not None or other.digest is not None:
             return self.digest is not None and other.digest is not None and self.digest == other.digest
@@ -139,14 +149,14 @@ class FileVersion:
 
     def __hash__(self) -> int:
         if self.digest is not None:
-            return hash((self.path, self.digest))
-        return hash((self.path, self.fingerprint))
+            return hash((self.path, self.kind, self.digest))
+        return hash((self.path, self.kind, self.fingerprint))
 
     def current(self) -> "FileVersion":
         """Return this version if current, otherwise capture the version on disk."""
         if self.is_current():
             return self
-        return type(self).capture(self.path)
+        return type(self).capture(self.path, kind=self.kind)
 
     def is_current(self) -> bool:
         return self.state() is FileState.CURRENT
@@ -160,15 +170,16 @@ class FileVersion:
         except OSError:
             return FileState.UNAVAILABLE
 
-        if self.fingerprint is not None and before == self.fingerprint:
+        if self.kind == "file" and self.fingerprint is not None and before == self.fingerprint:
             return FileState.CURRENT
-        if not _is_file(before):
+        if not _matches_kind(before, self.kind):
             return FileState.OVERWRITTEN
         if self.digest is None:
             return FileState.OVERWRITTEN
 
         try:
-            digest = file_digest(self.path)
+            digest_file = directory_digest if self.kind == "directory" else file_digest
+            digest = digest_file(self.path)
             after = file_fingerprint(self.path)
         except FileNotFoundError:
             return FileState.MISSING

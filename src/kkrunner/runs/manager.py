@@ -220,6 +220,8 @@ class RunManager:
             # Immutable historical evidence: an old runner must not replace
             # the captured digests with its uncaptured in-memory manifest.
             return current
+        if current.input_versions:
+            return replace(requested, input_versions=current.input_versions)
         return requested
 
     def transition(
@@ -662,9 +664,7 @@ class RunManager:
                 or (latest.state == RunState.FINISHED and latest.return_code is None)
             ):
                 raise RuntimeError("Run is already terminal")
-            manifest = latest.files if files is None else files
-            if latest.files.captured_at is not None:
-                manifest = latest.files
+            manifest = self._merged_result_files(latest, files)
             manifest = capture_result_files(manifest)
             if manifest.failed_artifacts:
                 raise OSError(manifest.availability_message or "Output artifacts unavailable")

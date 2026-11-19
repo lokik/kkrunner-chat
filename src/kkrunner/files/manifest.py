@@ -136,6 +136,7 @@ class FileManifest:
     output_versions: tuple[FileVersion, ...] = ()
     captured_at: Optional[str] = None
     stdin: Optional[FileEntry] = None
+    cache_versions: tuple[FileVersion, ...] = ()
 
     @classmethod
     def from_spec(cls, spec):
@@ -232,7 +233,7 @@ class FileManifest:
             object.__setattr__(self, "mapping", FileMapping(**self.mapping))
         elif self.mapping is not None and not isinstance(self.mapping, FileMapping):
             raise TypeError("FileManifest.mapping must be a FileMapping or None")
-        for name in ("input_versions", "output_versions"):
+        for name in ("input_versions", "output_versions", "cache_versions"):
             object.__setattr__(
                 self,
                 name,
@@ -355,9 +356,19 @@ class FileManifest:
         return self.stdout.local_path if self.stdout is not None else None
 
     @property
+    def input_entries(self):
+        return (*self.inputs, *((self.stdin,) if self.stdin is not None else ()))
+
+    @property
     def input_files(self):
-        entries = (*self.inputs, *((self.stdin,) if self.stdin is not None else ()))
-        return tuple(dict.fromkeys(entry.local_path for entry in entries if entry.local_path is not None))
+        return tuple(dict.fromkeys(entry.local_path for entry in self.input_entries if entry.local_path is not None))
+
+    def input_version(self, path):
+        """Return the version observed before launch for a local manifest path."""
+        from pathlib import Path
+
+        normalized = Path(path).expanduser().absolute()
+        return next((item for item in self.input_versions if item.path == normalized), None)
 
     @property
     def output_files(self):
@@ -373,7 +384,9 @@ class FileManifest:
 
     @property
     def all_versions(self):
-        by_path = {str(item.path): item for item in (*self.input_versions, *self.output_versions)}
+        by_path = {str(item.path): item for item in (
+            *self.cache_versions, *self.input_versions, *self.output_versions,
+        )}
         return tuple(by_path[key] for key in sorted(by_path))
 
     @property

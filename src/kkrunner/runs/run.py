@@ -387,12 +387,14 @@ class Run:
                 "File cleanup after failed submission also failed: %s", cleanup_error,
             )
 
-    def submit(self):
+    def submit(self, *, validate_inputs=None):
         """Submit exactly once, whether or not a RunRecord is persisted.
 
         The irreversible boundary is Job.submit(). File staging precedes it,
         and accepted backend identity is stored before the completion monitor
         starts. A lost reply after that boundary is never retried implicitly.
+        An optional validate_inputs callback receives the staged FileManifest
+        immediately before Job.submit().
         """
         with self._lock:
             if self._closed:
@@ -407,12 +409,12 @@ class Run:
                 raise RuntimeError(f"Job is already {self._job.state.value}")
             self._submitting = True
         try:
-            return self._submit()
+            return self._submit(validate_inputs)
         finally:
             with self._lock:
                 self._submitting = False
 
-    def _submit(self):
+    def _submit(self, validate_inputs=None):
         manager = self.manager
         submitted = False
         reserved = False
@@ -449,6 +451,10 @@ class Run:
             if self._job.state == RunState.CANCELLED:
                 raise asyncio.CancelledError("Run was cancelled before submission")
             self._parts.prepare_job()
+            if validate_inputs is not None:
+                validate_inputs(self.files)
+                if self._job.state == RunState.CANCELLED:
+                    raise asyncio.CancelledError("Run was cancelled before submission")
 
             submitted = True
             self._job.submit()

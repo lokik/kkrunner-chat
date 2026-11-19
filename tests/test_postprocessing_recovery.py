@@ -1,7 +1,6 @@
 """Durable completion and retry ownership without application result readers."""
 
 from threading import Event
-from types import SimpleNamespace
 
 import pytest
 
@@ -204,7 +203,7 @@ def test_retry_exception_does_not_overwrite_concurrent_completion(tmp_path):
 @pytest.mark.parametrize("input_change", ("overwritten", "missing"))
 def test_postprocessing_retry_accepts_unchanged_output_with_stale_input(tmp_path, input_change):
     """Captured output remains retryable when the original input is stale."""
-    from kkrunner.files import FileEntry, FileManifest, FileState
+    from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     output = tmp_path / "result.out"
@@ -213,13 +212,20 @@ def test_postprocessing_retry_accepts_unchanged_output_with_stale_input(tmp_path
     source.write_bytes(b"original input")
     record = manager.new_record(
         directory=tmp_path,
-        files=FileManifest(inputs=(FileEntry(local_path=str(source)),), stdout=FileEntry(local_path=str(output))),
+        files=FileManifest(
+            inputs=(FileEntry(local_path=str(source)),), stdout=FileEntry(local_path=str(output)),
+            input_versions=(FileVersion.capture(source),),
+        ),
         metadata={"example": {"task": "DOS".upper()}},
         processing_required=True,
     )
     prepared = manager.transition(
         record, state=RunState.RUNNING, execution=record.execution.submitted("existing-backend")
     )
+    if input_change == "missing":
+        source.unlink()
+    else:
+        source.write_bytes(b"changed input")
     failed = manager.complete(
         prepared,
         state=RunState.FAILED,
@@ -228,11 +234,7 @@ def test_postprocessing_retry_accepts_unchanged_output_with_stale_input(tmp_path
         artifacts_available=True,
     )
     assert failed.files.output_versions
-    assert failed.files.input_versions
-    if input_change == "missing":
-        source.unlink()
-    else:
-        source.write_bytes(b"changed input")
+    assert failed.files.input_versions == record.files.input_versions
     assert all(item.state() is FileState.CURRENT for item in failed.files.output_versions)
     assert any(item.state() is not FileState.CURRENT for item in failed.files.input_versions)
     seen = []

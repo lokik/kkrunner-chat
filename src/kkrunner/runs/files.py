@@ -40,16 +40,15 @@ def _concrete_result_files(manifests):
     return tuple(paths)
 
 
-def _capturable_output_paths(result_files):
+def _capturable_entries(entries):
     """Only versions actually delivered for this run enter its provenance.
 
     A skipped auxiliary output can still exist locally from an earlier run.
     Expanded glob declarations likewise must not capture unrelated old local
     matches: concrete discovered outputs have their own manifest entries.
     """
-    entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
-    return _unique(
-        entry.local_path
+    return tuple(
+        entry
         for entry in entries
         if entry is not None and entry.local_path is not None
         and entry.availability_state not in ("skipped", "failed")
@@ -60,13 +59,23 @@ def _capturable_output_paths(result_files):
     )
 
 
-def _result_files_snapshot(manifests, *, sync=False):
+def snapshot_file_entries(entries, *, sync=False):
+    """Capture concrete local files and declared directory contents."""
+    paths = {}
+    for entry in entries:
+        if entry.local_path is None:
+            continue
+        if entry.kind == "directory":
+            if os.path.isdir(entry.local_path):
+                paths[os.path.abspath(entry.local_path)] = entry.kind
+        else:
+            paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,)), "file"))
     versions = []
-    for path in _concrete_result_files(manifests):
-        if sync:
+    for path, kind in sorted(paths.items()):
+        if sync and kind == "file":
             sync_file(path)
-        versions.append(FileVersion.capture(path, require_digest=True))
-    return tuple(sorted(versions, key=lambda value: os.fspath(value.path)))
+        versions.append(FileVersion.capture(path, require_digest=True, kind=kind))
+    return tuple(versions)
 
 
 def sync_result_files(manifests):
@@ -80,7 +89,7 @@ def file_is_current(result_files, path, versions):
     if result_files is None or path is None:
         return False
     path = os.path.abspath(path)
-    if result_files.captured_at is None:
+    if result_files.captured_at is None and not versions:
         return os.path.isfile(path)
     for version in versions:
         if os.path.abspath(os.fspath(version.path)) == path:
@@ -92,8 +101,10 @@ def _missing_result_files(result_files):
     if result_files is None:
         return ()
     if result_files.captured_at is not None:
-        return tuple(
-            os.fspath(item.path) for item in result_files.all_versions if item.state() is FileState.MISSING
+        # Automatic artifact retrieval works on ordinary files and excludes caches.
+        return _unique(
+            os.fspath(item.path) for item in (*result_files.input_versions, *result_files.output_versions)
+            if item.kind == "file" and item.state() is FileState.MISSING
         )
 
     missing = []
@@ -106,16 +117,19 @@ def _missing_result_files(result_files):
     return _unique(missing)
 
 
-def capture_result_files(result_files, *, require_outputs=True):
-    """Capture local versions without assuming an unknown exit means success."""
+def capture_result_files(result_files, *, require_outputs=True, cache_versions=None):
+    """Capture published outputs and caches, retaining submission-time inputs."""
     if result_files is None or result_files.captured_at is not None:
         return result_files
     from kkrunner.files.availability import discover_local_files
 
+    output_entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
+    cache_entries = tuple(item.file for item in result_files.caches)
     captured = replace(
         result_files,
-        input_versions=_result_files_snapshot(result_files.input_files),
-        output_versions=_result_files_snapshot(_capturable_output_paths(result_files), sync=True),
+        output_versions=snapshot_file_entries(_capturable_entries(output_entries), sync=True),
+        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries))
+                        if cache_versions is None else cache_versions),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )
     return discover_local_files(captured, require_outputs=require_outputs)

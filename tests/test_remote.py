@@ -105,6 +105,42 @@ def _expose_shared_input(remote_root, name, data):
     return remote
 
 
+def test_remote_provenance_uses_target_input_and_final_cache_without_sync(tmp_path):
+    from kkrunner.files.queries import query_files
+    from kkrunner.files.versions import file_digest
+    from kkrunner.runs.base import RunStatus
+
+    class FilesOnlyTransport(_OperationLoopbackTransport):
+        async def run(self, argv, **_kwargs):
+            assert argv[:3] == ("mkdir", "-p", "--")
+            Path(argv[3]).mkdir(parents=True, exist_ok=True)
+
+        async def query_files(self, sources, *, root=None, digest=False):
+            return query_files(sources, root=root, digest=digest)
+
+    client, spec, local, remote = _text_run(
+        tmp_path, transport=FilesOnlyTransport(),
+        input_files=FileSyncPolicy.NEVER, output_files=FileSyncPolicy.NEVER,
+        declared_cache_files=("cache.dat",),
+    )
+    target_input = _expose_shared_input(remote, "input.txt", b"already on target")
+    target_cache = _expose_shared_input(remote, "cache.dat", b"old cache")
+    parts = client.create_run_parts(spec)
+    parts.prepare_submission()
+    version = parts.files.files.input_version(local / "input.txt")
+    assert version.digest == file_digest(target_input)
+    assert not version.is_current()
+    assert not parts.files.files.cache_versions
+
+    target_input.write_bytes(b"changed after launch")
+    target_cache.write_bytes(b"new cache")
+    manifest = parts.files.finalize(RunStatus(RunState.FINISHED, return_code=None))
+    assert manifest.input_version(local / "input.txt") == version
+    assert len(manifest.cache_versions) == 1
+    assert manifest.cache_versions[0].path == local / "cache.dat"
+    assert manifest.cache_versions[0].digest == file_digest(target_cache)
+
+
 def test_remote_executor_local_transport_streams_output(tmp_path):
     input_file = (tmp_path / "input.txt").open("w+b")
     input_file.write(b"hello")
