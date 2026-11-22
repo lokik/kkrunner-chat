@@ -1,16 +1,6 @@
 """Project tracking is opt-in by project identity, never by a persistent flag."""
 
-import pytest
-
 from kkrunner.projects.repository import ProjectRepository
-from kkrunner.projects.resolution import resolve_project_manager
-
-
-def test_untracked_run_has_no_store():
-    assert resolve_project_manager(None) is None
-    assert resolve_project_manager(False) is None
-    with pytest.raises(TypeError):
-        resolve_project_manager(True)
 
 
 def test_project_schema_has_no_run_reference_list(tmp_path):

@@ -17,6 +17,8 @@ def test_persistence_requires_an_existing_project(tmp_path):
     manager = _manager(tmp_path)
     assert resolve_project_manager(None) is None
     assert resolve_project_manager(False) is None
+    with pytest.raises(TypeError):
+        resolve_project_manager(True)
     with pytest.raises(ValueError, match="bound to a project"):
         resolve_project_manager(manager)
     with pytest.raises(ValueError, match="require a project"):
