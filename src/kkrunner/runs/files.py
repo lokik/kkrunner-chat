@@ -51,6 +51,7 @@ def _capturable_entries(entries):
         entry
         for entry in entries
         if entry is not None and entry.local_path is not None
+        and entry.collect
         and entry.availability_state not in ("skipped", "failed")
         and (
             not has_file_magic(entry.local_path)
