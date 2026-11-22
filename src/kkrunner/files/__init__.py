@@ -6,6 +6,7 @@ Imports of this package are lightweight; concrete interfaces load on demand.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from kkrunner.files.operations import FileOperations
     from kkrunner.files.fingerprints import FileFingerprint
     from kkrunner.files.manifest import ArtifactAvailabilityState, CacheEntry, FileEntry, FileManifest, FileMapping, FileSyncPolicy
     from kkrunner.files.task_file import TaskFile
@@ -16,6 +17,7 @@ __all__ = [
     "CacheEntry",
     "FileEntry",
     "FileFingerprint",
+    "FileOperations",
     "FileManifest",
     "FileMapping",
     "FileState",
@@ -27,7 +29,10 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name == "FileFingerprint":
+    if name == "FileOperations":
+        from . import operations
+        value = getattr(operations, name)
+    elif name == "FileFingerprint":
         from .fingerprints import FileFingerprint as value
     elif name in (
         "ArtifactAvailabilityState",

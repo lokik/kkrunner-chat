@@ -238,6 +238,41 @@ execution facts. `projects` adds project membership to that existing lifecycle.
 A scheduler job is the backend part of a run, while a run also includes staging,
 transfer and any required result processing.
 
+## Short-lived filesystem observations
+
+`kkrunner.files.FileOperations` provides short-lived synchronous local
+filesystem observations. It offers `stat`, `exists`, `is_file`,
+`fingerprint`, `listdir` (sorted names), `iterdir` (paths), `glob`
+(sorted paths), `capture_version`. It delegates content
+identity to `FileVersion` instead of introducing a second hashing or
+provenance format. A caller constructs one per import or work batch and
+discards it afterwards; it is not part of `RunManager` or persistent history.
+
+Every cacheable filesystem query accepts `refresh`. With `False`,
+existing cached observations may be reused. With `True`, the filesystem
+is queried again and the new observation replaces the cached entry.
+A refreshed missing path also evicts stale positive stat/version entries.
+`invalidate()` clears all entries, including wildcard matches.
+Refreshing a stat observation invalidates cached versions of that
+pathname, even if metadata is unchanged: only a fresh digest can confirm
+unchanged contents, especially for directories. A refreshed directory listing
+likewise invalidates its cached stat and directory content version.
+Conversely, capturing a fresh version discards conflicting cached metadata,
+since version capture must take fresh before/after readings around hashing.
+
+`FileVersion.state()` is the sole live currentness check. It must not be
+replaced by an observation cached for batch import.
+Each refreshed observation is independent. Callers must refresh dependent
+directory/glob queries separately or invalidate the whole cache when a
+filesystem mutation may affect multiple cached entries.
+
+This is a **local filesystem** abstraction, not a transfer session or a
+replacement for `kkrunner.files.queries` and `LocalTransport`/
+`SshTransport`. Their existing asynchronous metadata queries, SSH
+portability, remote paths, file transfer, cleanup and run lifecycles remain
+unchanged. Decisions about which scientific result owns a file are made by
+the application, not by FileOperations.
+
 ## Portable remote file operations
 
 File metadata and discovery use the stateless `kkrunner remote query-files`

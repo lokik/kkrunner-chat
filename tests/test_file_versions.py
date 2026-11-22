@@ -53,3 +53,19 @@ def test_metadata_only_snapshot_is_not_available_content_identity(tmp_path):
 
     assert version.digest is None
     assert version.available is False
+
+
+def test_metadata_only_capture_cannot_validate_directory_as_regular_file(tmp_path):
+    from kkrunner.files import FileState, FileVersion
+
+    directory = tmp_path / "data"
+    directory.mkdir()
+    wrongly_typed = FileVersion.capture(directory, digest=False)
+    assert wrongly_typed.kind == "file"
+    assert not wrongly_typed.available
+    assert wrongly_typed.state() is FileState.OVERWRITTEN
+    assert not wrongly_typed.is_current()
+
+    proper = FileVersion.capture(directory, digest=False, kind="directory")
+    # A directory metadata-only identity does not claim verified contents.
+    assert not proper.available

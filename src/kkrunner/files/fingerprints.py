@@ -21,15 +21,15 @@ class FileFingerprint(NamedTuple):
     mtime_ns: int
     ctime_ns: int
 
+    @classmethod
+    def from_stat(cls, info):
+        """Build a fingerprint from a single existing stat observation."""
+        return cls(
+            info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns,
+        )
+
 
 def file_fingerprint(path: str | Path) -> FileFingerprint:
     """Return a cheap fingerprint for ``path`` based on one ``stat()`` call."""
-    info = Path(path).stat()
-    return FileFingerprint(
-        info.st_dev,
-        info.st_ino,
-        info.st_mode,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
+    return FileFingerprint.from_stat(Path(path).stat())
