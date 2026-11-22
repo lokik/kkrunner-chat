@@ -434,9 +434,12 @@ class FileSession:
         # The persisted manifest is the sole authority for which declared
         # outputs may be absent. This also works on historical attach, whose
         # reconstructed ExecutionSpec has no output declarations.
-        optional = {entry.remote_path: entry.optional for entry in self._files.outputs}
+        collected = {entry.remote_path for entry in self._files.outputs if entry.collect}
+        optional = {entry.remote_path: entry.optional for entry in self._files.outputs if entry.collect}
         kinds = {entry.remote_path: entry.kind for entry in self._files.outputs}
         for local, remote in self._output_targets.items():
+            if remote not in collected:
+                continue
             await self._sync_output_entry(
                 local,
                 remote,
@@ -450,6 +453,8 @@ class FileSession:
             # required/optional policies differ. Exact outputs seed it.
             seen_remote = set(self._output_targets.values())
             for pattern in self._output_patterns:
+                if pattern not in collected:
+                    continue
                 await self._sync_patterns(
                     (pattern,),
                     kind="output",

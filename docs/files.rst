@@ -61,6 +61,16 @@ resolve pathname templates and callbacks before handing a concrete execution
 specification to the runner. An optional declared file may be absent after
 successful execution.
 
+For an output created by the program but not useful as a result, declare
+``TaskFile("unused.dos", collect=False)``. It remains a write path for
+managed-run reservations and is cleared before launch just like other outputs.
+Unlike collected outputs, it is not checked for existence, downloaded, hashed,
+captured in the result versions, listed as an artifact, or available for
+``snapshot_file``. This does not protect old results of *finished* runs:
+reservations only cover active runs. ``collect=False`` is only valid in
+``output_files``; it does not mean the producer will refrain from writing the
+file. The default is ``collect=True``.
+
 Reservations
 --------------
 

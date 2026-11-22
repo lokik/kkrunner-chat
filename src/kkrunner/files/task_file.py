@@ -16,6 +16,8 @@ class TaskFile(os.PathLike):
     Clients resolve their own templates and callbacks before execution.
     ``type`` and ``info`` are opaque client-owned descriptive strings.
     ``kind`` is a filesystem contract: a directory is never inferred from a suffix.
+    ``collect=False`` retains write reservations and preflight cleanup but
+    excludes the file from artifact collection and transfer.
     A pathname may be a template or callback; a callback returning None means
     the file is not declared for that parameter set.  An optional declared
     file may be absent even after successful execution.
@@ -26,6 +28,7 @@ class TaskFile(os.PathLike):
     info: Optional[str] = None
     optional: bool = False
     kind: str = "file"
+    collect: bool = True
 
     def __post_init__(self):
         path = self.pathname
@@ -42,6 +45,8 @@ class TaskFile(os.PathLike):
             raise TypeError("TaskFile info must be a string or None")
         if type(self.optional) is not bool:
             raise TypeError("TaskFile optional must be a bool")
+        if type(self.collect) is not bool:
+            raise TypeError("TaskFile collect must be a bool")
         if self.kind not in ("file", "directory"):
             raise ValueError("TaskFile kind must be 'file' or 'directory'")
 
@@ -55,14 +60,14 @@ class TaskFile(os.PathLike):
 
     def __eq__(self, other):
         if isinstance(other, TaskFile):
-            return (self.pathname, self.type, self.info, self.optional, self.kind) == (
-                other.pathname, other.type, other.info, other.optional, other.kind,
+            return (self.pathname, self.type, self.info, self.optional, self.kind, self.collect) == (
+                other.pathname, other.type, other.info, other.optional, other.kind, other.collect,
             )
         if isinstance(other, str):
-            return not self.optional and self.type is None and self.info is None and self.kind == "file" and self.pathname == other
+            return self.collect and not self.optional and self.type is None and self.info is None and self.kind == "file" and self.pathname == other
         return NotImplemented
 
     def __hash__(self):
-        if not self.optional and self.type is None and self.info is None and self.kind == "file":
+        if self.collect and not self.optional and self.type is None and self.info is None and self.kind == "file":
             return hash(self.pathname)
-        return hash((self.pathname, self.type, self.info, self.optional, self.kind))
+        return hash((self.pathname, self.type, self.info, self.optional, self.kind, self.collect))

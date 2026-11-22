@@ -111,6 +111,7 @@ def discover_local_files(files, *, include_streams=True, require_outputs=True):
     for kind, entry in declarations:
         if (
             entry is None
+            or not entry.collect
             or entry.local_path is None
             or entry.source_pattern is not None
             or entry.availability_state not in (None, "pending")
