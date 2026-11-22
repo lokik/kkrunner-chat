@@ -9,7 +9,3 @@ from kkrunner.runs.base import RunState
 def test_terminal_state_has_single_definition(state):
     assert state.is_terminal is (state in {RunState.FINISHED, RunState.FAILED, RunState.CANCELLED})
 
-
-def test_unknown_is_recoverable_and_never_terminal():
-    assert not RunState.UNKNOWN.is_terminal
-    assert not RunState.POSTPROCESSING.is_terminal

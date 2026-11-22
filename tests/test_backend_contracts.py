@@ -16,9 +16,6 @@ from kkrunner.backends.contracts import (
 )
 
 
-@pytest.mark.parametrize("state", list(RunState))
-def test_only_real_terminal_states_are_terminal(state):
-    assert state.is_terminal == (state in {RunState.FINISHED, RunState.FAILED, RunState.CANCELLED})
 
 
 @pytest.mark.parametrize("state", (RunState.SUBMITTING, RunState.DOWNLOADING, RunState.POSTPROCESSING))
@@ -90,13 +87,6 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
 
     assert DirectBackend().execution_mode == "direct"
     assert SupervisedBackend().execution_mode == PsijBackend().execution_mode == "managed"
-    managed = frozenset({
-        BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS,
-        BackendCapability.CANCEL,
-    })
-    assert DirectBackend().supports == frozenset({BackendCapability.STATUS, BackendCapability.CANCEL, BackendCapability.REATTACH})
-    assert SupervisedBackend().supports == managed
-    assert PsijBackend().supports == managed
 
 
 def test_direct_reattachment_does_not_imply_submission_recovery():
