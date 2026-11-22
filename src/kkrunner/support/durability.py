@@ -39,6 +39,19 @@ def fsync_directory(directory):
     return True
 
 
+def _check_directory_fsync(policy):
+    if policy not in ("strict", "best_effort"):
+        raise ValueError("directory_fsync must be 'strict' or 'best_effort'")
+
+
+def _sync_directory_for_replace(directory, policy):
+    try:
+        fsync_directory(directory)
+    except OSError:
+        if policy == "strict":
+            raise
+
+
 def durable_mkdir(path, *, parents=False, exist_ok=False, mode=0o777):
     """Create a directory and durably publish its path where supported.
 
@@ -69,18 +82,31 @@ def durable_mkdir(path, *, parents=False, exist_ok=False, mode=0o777):
     return path
 
 
-def durable_replace(source, destination):
-    """Atomically replace *destination* and durably publish the rename."""
+def durable_replace(source, destination, *, directory_fsync="strict"):
+    """Atomically replace *destination* and synchronize its name.
+
+    With directory_fsync='best_effort' only directory synchronization errors
+    are ignored; a failed replacement still raises. The strict default is
+    required for persistent execution state.
+    """
+    _check_directory_fsync(directory_fsync)
     source = Path(source)
     destination = Path(destination)
     os.replace(source, destination)
-    fsync_directory(destination.parent)
+    _sync_directory_for_replace(destination.parent, directory_fsync)
     if source.parent != destination.parent:
-        fsync_directory(source.parent)
+        _sync_directory_for_replace(source.parent, directory_fsync)
 
 
-def durable_write_text(path, text, *, encoding="utf-8", mode=None):
-    """Atomically replace text after synchronizing contents and its new name."""
+def durable_write_text(path, text, *, encoding="utf-8", mode=None, directory_fsync="strict"):
+    """Atomically replace text after synchronizing contents and its new name.
+
+    mode controls new-file permissions (e.g. 0o600 for private data).
+    directory_fsync='best_effort' relaxes only the final directory barrier;
+    file-content fsync and os.replace errors always propagate. A failed strict
+    directory barrier may raise *after* the destination has been replaced.
+    """
+    _check_directory_fsync(directory_fsync)
     path = Path(path)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     descriptor = None
@@ -101,7 +127,7 @@ def durable_write_text(path, text, *, encoding="utf-8", mode=None):
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        durable_replace(temporary, path)
+        durable_replace(temporary, path, directory_fsync=directory_fsync)
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -111,12 +137,13 @@ def durable_write_text(path, text, *, encoding="utf-8", mode=None):
             pass
 
 
-def durable_write_json(path, data, *, mode=None, **json_options):
+def durable_write_json(path, data, *, mode=None, directory_fsync="strict", **json_options):
     """Serialize JSON and commit it with :func:`durable_write_text`."""
     durable_write_text(
         path,
         json.dumps(data, **json_options),
         mode=mode,
+        directory_fsync=directory_fsync,
     )
 
 

@@ -144,3 +144,86 @@ def test_artifact_publication_syncs_outputs_before_terminal_record(tmp_path, mon
     assert finalized.state == RunState.FINISHED
     assert events[:2] == [("sync", "output.out"), ("state", "finished")]
     assert len(finalized.files.output_versions) == 1
+
+
+def test_best_effort_directory_fsync_still_writes_complete_file(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text("old")
+
+    def fail_directory_fsync(_directory):
+        raise OSError("directory fsync unsupported")
+
+    monkeypatch.setattr(durability, "fsync_directory", fail_directory_fsync)
+    durability.durable_write_json(
+        path, {"new": True}, mode=0o600, directory_fsync="best_effort"
+    )
+    assert path.read_text() == '{"new": true}'
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+def test_best_effort_still_propagates_file_fsync_errors(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text("old")
+
+    def fail_file_fsync(_descriptor):
+        raise OSError("file fsync failed")
+
+    monkeypatch.setattr(durability.os, "fsync", fail_file_fsync)
+    with pytest.raises(OSError, match="file fsync failed"):
+        durability.durable_write_text(path, "new", directory_fsync="best_effort")
+    assert path.read_text() == "old"
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+def test_best_effort_still_propagates_replace_errors(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text("old")
+
+    def fail_replace(_source, _destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(durability.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        durability.durable_write_text(path, "new", directory_fsync="best_effort")
+    assert path.read_text() == "old"
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+def test_invalid_directory_fsync_rejected_without_touching_destination(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text("old")
+    with pytest.raises(ValueError, match="directory_fsync"):
+        durability.durable_write_text(path, "new", directory_fsync="invalid")
+    assert path.read_text() == "old"
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+def test_best_effort_replace_ignores_failures_for_both_parent_directories(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    destination_dir = tmp_path / "dest"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    source = source_dir / "file"
+    destination = destination_dir / "file"
+    source.write_text("new")
+    visited = []
+
+    def fail_directory_fsync(directory):
+        visited.append(Path(directory))
+        raise OSError("directory sync failed")
+
+    monkeypatch.setattr(durability, "fsync_directory", fail_directory_fsync)
+    durability.durable_replace(source, destination, directory_fsync="best_effort")
+    assert destination.read_text() == "new"
+    assert not source.exists()
+    assert visited == [destination_dir, source_dir]
+
+
+def test_private_mode_remains_enforced_with_permissive_umask(tmp_path):
+    path = tmp_path / "private.json"
+    previous_umask = os.umask(0)
+    try:
+        durability.durable_write_json(path, {"private": True}, mode=0o600)
+    finally:
+        os.umask(previous_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
