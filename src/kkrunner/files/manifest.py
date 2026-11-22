@@ -29,6 +29,7 @@ class FileEntry:
     source_pattern: Optional[str] = None
     optional: bool = False
     kind: str = "file"
+    collect: bool = True
 
     def __post_init__(self):
         import os
@@ -40,6 +41,8 @@ class FileEntry:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, os.fspath(value))
+        if type(self.collect) is not bool:
+            raise TypeError("FileEntry.collect must be a bool")
         if type(self.optional) is not bool:
             raise TypeError("FileEntry.optional must be a bool")
         if self.kind not in ("file", "directory"):
@@ -152,6 +155,12 @@ class FileManifest:
         if primary_input is not None and getattr(primary_value, "optional", False):
             raise ValueError(f"Primary input {primary_input} cannot be declared optional")
         input_values = (primary_value, *getattr(spec, "input_files", ()))
+        if any(not getattr(value, "collect", True) for value in input_values if value is not None):
+            raise ValueError("collect=False is only supported for output_files")
+        if any(not getattr(value, "collect", True) for value in (spec.output_file, spec.error_file) if value is not None):
+            raise ValueError("collect=False is not supported for output streams")
+        if any(not getattr(value, "collect", True) for value in getattr(spec, "cache_files", ())):
+            raise ValueError("collect=False is only supported for output_files")
         inputs = declared_file_paths(input_values, directory)
         input_kinds = {}
         for value in input_values:
@@ -176,7 +185,7 @@ class FileManifest:
             if path in output_paths:
                 raise ValueError(f"Duplicate file declaration: output {path}")
             output_paths.add(path)
-            outputs.append((path, not getattr(value, "optional", False), getattr(value, "kind", "file")))
+            outputs.append((path, not getattr(value, "optional", False), getattr(value, "kind", "file"), getattr(value, "collect", True)))
         # Input declarations may refer to the same physical input (including
         # the primary file), and stdout/stderr may share a destination. Other
         # declaration collisions are errors, not silent deduplication.
@@ -208,7 +217,8 @@ class FileManifest:
             )
         return cls(
             inputs=tuple(FileEntry(local_path=path, optional=not required, kind=input_kinds[path]) for path, required in inputs),
-            outputs=tuple(FileEntry(local_path=path, optional=not required, kind=kind) for path, required, kind in outputs),
+            outputs=tuple(FileEntry(local_path=path, optional=not required, kind=kind, collect=collect)
+                          for path, required, kind, collect in outputs),
             caches=tuple(caches),
             stdin=None if stdin is None else FileEntry(local_path=stdin),
             stdout=None if stdout is None else FileEntry(local_path=stdout),
@@ -246,7 +256,8 @@ class FileManifest:
     @property
     def artifacts(self):
         """Output streams, declared outputs and caches (one status per local file)."""
-        entries = (self.stdout, self.stderr, *self.outputs, *(x.file for x in self.caches))
+        entries = (self.stdout, self.stderr, *(x for x in self.outputs if x.collect),
+                   *(x.file for x in self.caches))
         unique = {}
         for entry in entries:
             if entry is not None and entry.local_path is not None:
@@ -298,7 +309,7 @@ class FileManifest:
             self,
             stdout=None if self.stdout is None else transform(self.stdout),
             stderr=None if self.stderr is None else transform(self.stderr),
-            outputs=tuple(transform(x) for x in self.outputs),
+            outputs=tuple(transform(x) if x.collect else x for x in self.outputs),
             caches=tuple(replace(x, file=transform(x.file)) for x in self.caches),
         )
 
@@ -375,7 +386,8 @@ class FileManifest:
         streams = (self.stdout, self.stderr)
         entries = tuple(entry for entry in streams if entry is not None)
         return tuple(
-            dict.fromkeys(entry.local_path for entry in (*entries, *self.outputs) if entry.local_path is not None)
+            dict.fromkeys(entry.local_path for entry in (*entries, *(e for e in self.outputs if e.collect))
+                          if entry.local_path is not None)
         )
 
     @property
