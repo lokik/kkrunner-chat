@@ -170,10 +170,10 @@ class FileVersion:
         except OSError:
             return FileState.UNAVAILABLE
 
-        if self.kind == "file" and self.fingerprint is not None and before == self.fingerprint:
-            return FileState.CURRENT
         if not _matches_kind(before, self.kind):
             return FileState.OVERWRITTEN
+        if self.kind == "file" and self.fingerprint is not None and before == self.fingerprint:
+            return FileState.CURRENT
         if self.digest is None:
             return FileState.OVERWRITTEN
 
