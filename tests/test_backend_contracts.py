@@ -37,9 +37,6 @@ def test_job_ref_contains_backend_scoped_identity():
         JobRef("kkrunner", "")
 
 
-def test_kkrunner_job_ref_is_a_backend_scoped_identity():
-    assert JobRef("kkrunner", "stored-token").backend == "kkrunner"
-
 
 def test_recovery_result_requires_job_identity_only_if_found():
     ref = JobRef("kkrunner", "opaque")

@@ -32,9 +32,8 @@ def test_backend_imports_in_fresh_interpreter(kind):
     assert set(json.loads(result.stdout)) == MANAGED_OPERATIONS
 
 
-def test_direct_and_managed_operations_have_distinct_contracts():
+def test_direct_backend_exposes_its_own_operations():
     assert set(static_methods(backend_class("direct"))) == {"prepare_mpi", "prepare_target_outputs", "status", "cancel", "stream", "follow"}
-    assert set(static_methods(backend_class("kkrunner"))) == MANAGED_OPERATIONS
 
 
 @pytest.mark.parametrize("kind", ("kkrunner", "psij"))
