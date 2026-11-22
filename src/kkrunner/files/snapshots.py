@@ -13,7 +13,8 @@ from kkrunner.files.paths import has_file_magic
 def matching_file(manifest, path):
     """Find a declared concrete output, stream or cache without mutating the manifest."""
     path = os.path.abspath(os.fspath(path))
-    entries = (manifest.stdout, manifest.stderr, *manifest.outputs, *(c.file for c in manifest.caches))
+    entries = (manifest.stdout, manifest.stderr, *(x for x in manifest.outputs if x.collect),
+               *(c.file for c in manifest.caches))
     entries = tuple(e for e in entries if e is not None and e.local_path is not None)
     for entry in entries:
         if os.path.abspath(entry.local_path) == path:
