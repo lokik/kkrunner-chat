@@ -143,12 +143,15 @@ def test_unverified_completion_does_not_claim_postprocessing(tmp_path):
     record = manager.new_record(directory=tmp_path, processing_required=True)
     record = manager.transition(record, state=RunState.RUNNING)
     from kkrunner.runs.base import RunStatus
-    finished = manager.update(record, RunStatus(RunState.FINISHED, return_code=None))
+    pending = manager.update(record, RunStatus(RunState.FINISHED, return_code=None))
+    assert pending.state == RunState.DOWNLOADING
+    assert pending.return_code is None
+    finished = manager.complete(pending, state=RunState.FINISHED, artifacts_available=True)
     assert finished.state == RunState.FINISHED
     assert finished.return_code is None
 
 
-@pytest.mark.parametrize("code,expected", ((0, RunState.POSTPROCESSING), (7, RunState.FAILED)))
+@pytest.mark.parametrize("code,expected", ((0, RunState.DOWNLOADING), (7, RunState.FAILED)))
 def test_liveness_observation_preserves_known_exit_outcome(tmp_path, code, expected):
     from kkrunner.runs.base import RunStatus
 
@@ -191,7 +194,11 @@ def test_ssh_refresh_collects_available_outputs_without_exit_code(process, tmp_p
     )
     process.terminate()
     process.wait(timeout=5)
-    finished = manager.refresh((record,))[0]
+    pending = manager.refresh((record,))[0]
+    assert pending.state == RunState.DOWNLOADING
+    assert not (local / "out.log").exists()
+    assert not (local / "result.dat").exists()
+    finished = manager.refresh((pending,), retrieve_ended=True)[0]
     assert finished.state == RunState.FINISHED
     assert finished.return_code is None
     assert (local / "out.log").read_text() == "remote output\\n"
@@ -236,3 +243,34 @@ def test_live_observer_keeps_reservation_during_postprocess(process, tmp_path):
             manager.reserve(replacement)
     assert manager.reserve(replacement).state == RunState.SUBMITTING
     assert manager.store.get(original.id).state == RunState.FINISHED
+
+
+def test_update_only_persists_supplied_status(tmp_path, monkeypatch):
+    from kkrunner.runs.base import RunStatus
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    manifest = FileManifest(stdout=FileEntry(
+        local_path=str(local / "stdout"), remote_path=str(remote / "stdout"),
+    ))
+    record = manager.new_record(
+        directory=local, remote_directory=str(remote),
+        transport=SshTransport("example"), backend=BackendConfig("direct"),
+        files=manifest,
+    )
+    record = manager.transition(
+        record, state=RunState.RUNNING,
+        execution=record.execution.submitted("direct:123:4:fake-boot"),
+    )
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Updating status must not use a client or inspect result files")
+
+    monkeypatch.setattr(manager, "client_for", unexpected)
+    monkeypatch.setattr("kkrunner.runs.manager.capture_result_files", unexpected)
+    updated = manager.update(record, RunStatus(RunState.FINISHED))
+    assert updated.state == RunState.DOWNLOADING
+    assert updated.files == record.files
+    assert manager.store.get(record.id) == updated
+    assert not local.exists()
