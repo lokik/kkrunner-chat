@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from kkrunner.files.manifest import ArtifactAvailabilityState
+from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import FileState, FileVersion, file_digest
 from kkrunner.support.durability import sync_file
@@ -191,7 +191,7 @@ class RunFiles:
         record = resolve_record(run, self.store)
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has not been submitted")
-        selected = file.local_path if hasattr(file, "local_path") else file
+        selected = file.local_path if isinstance(file, FileEntry) else file
         path = file_path(selected, record.execution.directory.local, required=True)
         if has_file_magic(path):
             raise ValueError("Snapshot requires one concrete file, not a wildcard")

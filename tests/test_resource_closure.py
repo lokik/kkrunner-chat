@@ -14,6 +14,8 @@ class _Closable:
         self.closed = False
 
     def close(self):
+        if self.closed:
+            return
         self.calls.append(self.name)
         self.closed = True
         if self.error is not None:
@@ -46,7 +48,7 @@ def test_execution_resources_close_attempts_all_and_preserves_first_failure():
     assert calls == ["first", "second"]
 
 
-def test_execution_resources_can_suppress_close_errors_and_skip_preclosed():
+def test_execution_resources_can_suppress_close_errors_with_preclosed_resources():
     calls = []
     already = _Closable("preclosed", calls)
     already.closed = True

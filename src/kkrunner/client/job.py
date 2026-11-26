@@ -283,10 +283,12 @@ class Job:
             return self._cancel_future
 
     def _schedule(self, action):
-        try:
-            self._loop.call_soon_threadsafe(action)
-        except (AttributeError, RuntimeError):
-            pass  # Observation has already closed its loop.
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(action)
+            except RuntimeError:
+                pass  # Observation has already closed its loop.
 
     def _stop_observation(self):
         if self._stop_task is None:

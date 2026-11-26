@@ -123,6 +123,10 @@ def test_native_status_normalization(native, code, attached, expected):
     assert psij_state(status, attached=attached) is expected
 
 
+def test_native_status_unknown_state_preserves_exit_code():
+    assert psij_state(NativeStatus("FUTURE_STATE", None)) is RunState.UNKNOWN
+
+
 def test_status_uses_native_attach_for_non_slurm_scheduler(monkeypatch):
     native = NativeJob()
     native.update("COMPLETED", 9, "native failure")

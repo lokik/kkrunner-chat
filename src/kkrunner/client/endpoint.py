@@ -31,14 +31,12 @@ class EndpointClient:
         self.transport = LocalTransport() if transport is None else transport
         if not self.transport.available:
             raise ValueError(f"Unsupported transport {self.transport.kind!r}; only local history is available")
-        self.computer = getattr(self.transport, "host", None)
+        self.computer = self.transport.host
         self._remote_home_cache = None
 
     def close(self):
         """Release transport resources owned by the configured client."""
-        close = getattr(self.transport, "close", None)
-        if close is not None:
-            close()
+        self.transport.close()
 
     @classmethod
     def from_config(cls, transport, backend):

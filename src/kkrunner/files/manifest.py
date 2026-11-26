@@ -146,80 +146,78 @@ class FileManifest:
         """Build the local file manifest for an execution specification."""
         import os
 
-        from kkrunner.files.paths import declared_file_paths, file_path
+        from kkrunner.files.paths import file_path
+        from kkrunner.files.task_file import TaskFile
 
         directory = os.path.abspath(os.fspath(spec.directory))
 
-        primary_value = spec.input_file
-        primary_input = file_path(primary_value, directory)
-        if primary_input is not None and getattr(primary_value, "optional", False):
-            raise ValueError(f"Primary input {primary_input} cannot be declared optional")
-        input_values = (primary_value, *spec.input_files)
-        if any(not getattr(value, "collect", True) for value in input_values if value is not None):
-            raise ValueError("collect=False is only supported for output_files")
-        if any(not getattr(value, "collect", True) for value in (spec.output_file, spec.error_file) if value is not None):
-            raise ValueError("collect=False is not supported for output streams")
-        if any(not getattr(value, "collect", True) for value in spec.cache_files):
-            raise ValueError("collect=False is only supported for output_files")
-        inputs = declared_file_paths(input_values, directory)
-        input_kinds = {}
-        for value in input_values:
+        def declared_entry(value):
             path = file_path(value, directory)
             if path is None:
+                return None
+            if isinstance(value, TaskFile):
+                return FileEntry(local_path=path, optional=value.optional,
+                                 kind=value.kind, collect=value.collect)
+            return FileEntry(local_path=path)
+
+        primary = declared_entry(spec.input_file)
+        if primary is not None and primary.optional:
+            raise ValueError(f"Primary input {primary.local_path} cannot be declared optional")
+
+        inputs = {}
+        for entry in (primary, *(declared_entry(value) for value in spec.input_files)):
+            if entry is None:
                 continue
-            kind = getattr(value, "kind", "file")
-            if path in input_kinds and input_kinds[path] != kind:
-                raise ValueError(f"Conflicting file kinds for input {path}")
-            input_kinds[path] = kind
+            if not entry.collect:
+                raise ValueError("collect=False is only supported for output_files")
+            path = entry.local_path
+            previous = inputs.get(path)
+            if previous is not None:
+                if previous.optional != entry.optional:
+                    raise ValueError(f"Conflicting optionality for file {path}: the same input cannot be both required and optional")
+                if previous.kind != entry.kind:
+                    raise ValueError(f"Conflicting file kinds for input {path}")
+            inputs[path] = entry
+
+        for value in (spec.output_file, spec.error_file):
+            if isinstance(value, TaskFile) and not value.collect:
+                raise ValueError("collect=False is not supported for output streams")
         stdout = file_path(spec.output_file, directory)
         stderr = file_path(spec.error_file, directory)
-        # Output duplicates are ambiguous: the later execution manifest
-        # rejects them instead of silently weakening file ownership.
-        output_values = spec.output_files
-        outputs = []
-        output_paths = set()
-        for value in output_values:
-            path = file_path(value, directory)
-            if path is None or path in {stdout, stderr}:
+
+        outputs = {}
+        for value in spec.output_files:
+            entry = declared_entry(value)
+            if entry is None or entry.local_path in {stdout, stderr}:
                 continue
-            if path in output_paths:
+            path = entry.local_path
+            if path in outputs:
                 raise ValueError(f"Duplicate file declaration: output {path}")
-            output_paths.add(path)
-            outputs.append((path, not getattr(value, "optional", False), getattr(value, "kind", "file"), getattr(value, "collect", True)))
-        # Input declarations may refer to the same physical input (including
-        # the primary file), and stdout/stderr may share a destination. Other
-        # declaration collisions are errors, not silent deduplication.
-        input_paths = {path for path, _required in inputs}
+            outputs[path] = entry
+
         stdin = file_path(spec.stdin, directory)
-        read_paths = input_paths | ({stdin} if stdin is not None else set())
-        write_paths = output_paths | ({p for p in (stdout, stderr) if p is not None})
+        read_paths = inputs.keys() | ({stdin} if stdin is not None else set())
+        write_paths = outputs.keys() | ({p for p in (stdout, stderr) if p is not None})
         if read_paths & write_paths:
             raise ValueError("Duplicate file declaration: input/output collision")
-        caches = []
-        seen_caches = set()
+
+        caches = {}
         for value in spec.cache_files:
-            path = file_path(value, directory)
-            if path is None:
+            entry = declared_entry(value)
+            if entry is None:
                 continue
-            if path in seen_caches:
+            if not entry.collect:
+                raise ValueError("collect=False is only supported for output_files")
+            path = entry.local_path
+            if path in caches:
                 raise ValueError(f"Duplicate file declaration: cache {path}")
-            seen_caches.add(path)
             if path in read_paths or path in write_paths:
                 raise ValueError(f"Duplicate file declaration: cache collision {path}")
-            caches.append(
-                CacheEntry(
-                    FileEntry(
-                        local_path=path,
-                        optional=getattr(value, "optional", False),
-                        kind=getattr(value, "kind", "file"),
-                    )
-                )
-            )
+            caches[path] = CacheEntry(entry)
         return cls(
-            inputs=tuple(FileEntry(local_path=path, optional=not required, kind=input_kinds[path]) for path, required in inputs),
-            outputs=tuple(FileEntry(local_path=path, optional=not required, kind=kind, collect=collect)
-                          for path, required, kind, collect in outputs),
-            caches=tuple(caches),
+            inputs=tuple(inputs.values()),
+            outputs=tuple(outputs.values()),
+            caches=tuple(caches.values()),
             stdin=None if stdin is None else FileEntry(local_path=stdin),
             stdout=None if stdout is None else FileEntry(local_path=stdout),
             stderr=None if stderr is None else FileEntry(local_path=stderr),
