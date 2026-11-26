@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from kkrunner.client.file_session import FileSession
-    from kkrunner.client.job import Job
+    from kkrunner.client.contracts import JobProtocol
 
 
 @dataclass
 class RunParts:
     """Constructed together and handed over to a Run as one resource unit."""
 
-    job: "Job"
+    job: "JobProtocol"
     files: "FileSession"
     submission_builder: Optional[Callable[[dict], dict]] = field(default=None, repr=False)
     _claimed: bool = field(default=False, init=False, repr=False)

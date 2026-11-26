@@ -9,7 +9,10 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kkrunner.runs.stores import RunStoreProtocol
 
 from kkrunner.files.manifest import FileManifest
 from kkrunner.runs.base import FailurePhase, RunState
@@ -37,6 +40,15 @@ class CorruptRunRecord(RuntimeError):
         super().__init__(f"Corrupt run record {self.path}: {message}")
 
 
+def validate_run_id(run_id):
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in (".", "..")
+        or any(c in run_id for c in ("/", "\\", "\x00"))
+    ):
+        raise ValueError("Run id must be a nonempty filename component")
+
 @dataclass(frozen=True)
 class RunRecord:
     """Single durable identity, file manifest and lifecycle of one calculation."""
@@ -56,15 +68,13 @@ class RunRecord:
     metadata: dict = field(default_factory=dict)
     processing_required: bool = False
     processing_attempt: Optional[str] = None
+    # Native execution lifetime, independent of the store and observation.
+    detached: bool = False
+    # Runtime owner, not part of record identity or serialized data.
+    store: Optional[RunStoreProtocol] = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
-        if (
-            not isinstance(self.id, str)
-            or not self.id
-            or self.id in (".", "..")
-            or any(c in self.id for c in ("/", "\\", "\x00"))
-        ):
-            raise ValueError("Run id must be a nonempty filename component")
+        validate_run_id(self.id)
         for name in ("created_at", "updated_at", "finished_at"):
             value = getattr(self, name)
             if value is None and name == "finished_at":
@@ -81,6 +91,8 @@ class RunRecord:
             if getattr(self, name) is not None and not isinstance(getattr(self, name), str):
                 raise TypeError(f"{name} must be a string or None")
         object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
+        if type(self.detached) is not bool:
+            raise TypeError("detached must be a bool")
         if type(self.processing_required) is not bool:
             raise TypeError("processing_required must be a bool")
         if self.project_id is not None:
@@ -101,13 +113,54 @@ class RunRecord:
             raise ValueError(f"unsupported schema version {self.schema_version}; expected {_RUN_RECORD_SCHEMA_VERSION}")
 
 
+    @property
+    def key(self):
+        """Process-local identity, including the owning storage namespace."""
+        return (None if self.store is None else self.store.lock_key, self.id)
+
+    def to_dict(self):
+        """Serialize the record without its runtime store reference."""
+        data = asdict(
+            replace(self, store=None),
+            dict_factory=lambda items: {
+                key: os.fspath(value) if isinstance(value, os.PathLike) else value
+                for key, value in items
+            },
+        )
+        del data["store"]
+        data["execution"]["transport"] = self.execution.transport.to_dict()
+        return data
+
+
+def validate_update(latest, updated):
+    """Enforce the same immutable identity rules in every store."""
+    if (
+        updated.id != latest.id
+        or updated.created_at != latest.created_at
+        or updated.metadata != latest.metadata
+        or updated.processing_required != latest.processing_required
+        or updated.project_id != latest.project_id
+        or updated.detached != latest.detached
+    ):
+        raise ValueError("Run update cannot change persistent identity or metadata")
+    if updated.execution.submission_key != latest.execution.submission_key:
+        raise ValueError("Submission key cannot change")
+    if latest.execution.backend_id is not None and updated.execution.backend_id != latest.execution.backend_id:
+        raise ValueError("Backend identity cannot change")
+
+
 class RunStore:
     """Run history stored as date-sharded durable JSON files."""
 
     def __init__(self, directory):
         """Store runs in an explicit directory, with optional project membership per record."""
-        self.directory = Path(directory).expanduser()
+        self.directory = Path(directory).expanduser().resolve()
         self._lock = RLock()
+
+    @property
+    def lock_key(self):
+        # Distinct objects for the same directory share a submission lock.
+        return (0, str(self.directory))
 
     @staticmethod
     def _bucket(created_at):
@@ -130,13 +183,7 @@ class RunStore:
             raise ForgottenRunError(f"Run {run_id!r} was deliberately removed")
 
     def _path_for_id(self, run_id):
-        if (
-            not isinstance(run_id, str)
-            or not run_id
-            or run_id in (".", "..")
-            or any(c in run_id for c in ("/", "\\", "\x00"))
-        ):
-            raise ValueError("Run id must be a nonempty filename component")
+        validate_run_id(run_id)
         if self._forgotten_path(run_id).is_file():
             raise FileNotFoundError(run_id)
         filename = f"{run_id}.json"
@@ -189,8 +236,8 @@ class RunStore:
         durable_mkdir(self.directory, parents=True, exist_ok=True, mode=0o700)
         path = self._path(record)
         durable_mkdir(path.parent, parents=True, exist_ok=True, mode=0o700)
-        data = asdict(record)
-        data["execution"]["transport"] = record.execution.transport.to_dict()
+        record = replace(record, store=self)
+        data = record.to_dict()
         durable_write_json(
             path,
             data,
@@ -228,22 +275,11 @@ class RunStore:
             try:
                 latest = self.get(record.id)
             except FileNotFoundError:
-                latest = record
+                latest = replace(record, store=self)
             if latest.created_at != record.created_at:
                 raise ValueError("Run id already belongs to a different persistent identity")
             updated = updater(latest)
-            if (
-                updated.id != latest.id
-                or updated.created_at != latest.created_at
-                or updated.metadata != latest.metadata
-                or updated.processing_required != latest.processing_required
-                or updated.project_id != latest.project_id
-            ):
-                raise ValueError("Run update cannot change persistent identity or metadata")
-            if updated.execution.submission_key != latest.execution.submission_key:
-                raise ValueError("Submission key cannot change")
-            if latest.execution.backend_id is not None and updated.execution.backend_id != latest.execution.backend_id:
-                raise ValueError("Backend identity cannot change")
+            validate_update(latest, updated)
             return self._write_unlocked(updated)
 
     def reassign_project(
@@ -298,7 +334,7 @@ class RunStore:
                 return record
 
     def get(self, run_id):
-        return self._decode(self._path_for_id(run_id))
+        return replace(self._decode(self._path_for_id(run_id)), store=self)
 
     def _day_directories(self, *, newest):
         if not self.directory.is_dir():
@@ -312,7 +348,7 @@ class RunStore:
             if self._forgotten_path(path.stem).is_file():
                 continue
             try:
-                records.append(self._decode(path))
+                records.append(replace(self._decode(path), store=self))
             except CorruptRunRecord as exc:
                 if on_error is None:
                     raise

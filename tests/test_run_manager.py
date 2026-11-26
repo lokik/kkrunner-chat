@@ -20,6 +20,7 @@ class _RawRunner:
         self.backend_id = None
         self.result = ExecutionOutcome(return_code=None)
         self.exception = None
+        self.output_error = None
         self.failure_phase = None
         self.failure_message = None
         self._done = Event()

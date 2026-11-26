@@ -21,9 +21,14 @@ class _Runner:
         self.backend_id = None
         self.result = SimpleNamespace(return_code=None)
         self.exception = None
+        self.output_error = None
         self.failure_phase = None
         self.failure_message = None
         self._done = Event()
+
+    @property
+    def return_code(self):
+        return self.result.return_code
 
     @property
     def requires_stream_retrieval(self):
@@ -78,8 +83,6 @@ class _RecoveringExecutor(EndpointClient):
 
     def recover_submission(self, run_id, submission, *, submitted_at=None):
         self.recovery_calls.append((run_id, submission, submitted_at))
-        if self.recovered is NotImplemented:
-            raise NotImplementedError
         return self.recovered
 
 
@@ -119,7 +122,7 @@ def test_confirmed_absent_stale_submission_releases_namespace(tmp_path):
             1,
             id="recovered-backend-blocks-duplicate",
         ),
-        pytest.param(NotImplemented, 0, RunState.SUBMITTING, None, 1, id="unsupported-recovery-keeps-namespace"),
+        pytest.param(RecoveryResult.unsupported(), 0, RunState.UNKNOWN, None, 1, id="unsupported-recovery-keeps-namespace"),
         pytest.param(RecoveryResult.indeterminate(), 0, RunState.SUBMITTING, None, 1, id="unknown-recovery-keeps-namespace"),
         pytest.param(RecoveryResult.absent(), 3600, RunState.SUBMITTING, None, 0, id="fresh-submitting-is-not-recovered"),
     ],

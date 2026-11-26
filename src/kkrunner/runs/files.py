@@ -17,6 +17,7 @@ from kkrunner.files.manifest import ArtifactAvailabilityState
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import FileState, FileVersion, file_digest
 from kkrunner.support.durability import sync_file
+from kkrunner.runs.stores import resolve_record, store_for
 
 
 class HistoricalFileMismatchError(OSError):
@@ -147,7 +148,7 @@ class RunFiles:
         return self.client_pool.for_config(record.execution.transport, record.execution.backend)
 
     def input_file_is_current(self, run):
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         result_files = record.files
         return file_is_current(
             result_files,
@@ -156,7 +157,7 @@ class RunFiles:
         )
 
     def output_file_is_current(self, run):
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         result_files = record.files
         return file_is_current(
             result_files,
@@ -175,7 +176,7 @@ class RunFiles:
                 files=latest.files.with_file_availability(path, state.value, message),
             )
 
-        return self.store.update(record, update)
+        return store_for(record, self.store).update(record, update)
 
     def snapshot_file(self, run, file, *, destination=None):
         """Read current bytes of a declared output/cache, regardless of run state.
@@ -187,7 +188,7 @@ class RunFiles:
         from kkrunner.files.paths import file_path, has_file_magic
         from kkrunner.files.snapshots import matching_file, check_destination
 
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has not been submitted")
         selected = file.local_path if hasattr(file, "local_path") else file
@@ -205,7 +206,7 @@ class RunFiles:
         return self._client_for(record).snapshot_file(record, path, destination=destination)
 
     def retrieve_result_files(self, run):
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
@@ -257,7 +258,7 @@ class RunFiles:
             finally:
                 if staged is not None:
                     staged.unlink(missing_ok=True)
-            refreshed = self.store.get(record.id)
+            refreshed = resolve_record(record, self.store)
             if path in _missing_result_files(refreshed.files):
                 record = self.update_artifact_availability(
                     refreshed,

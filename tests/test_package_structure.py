@@ -72,6 +72,7 @@ def test_root_has_only_backend_independent_entry_points():
         "ExecutionOutcome",
         "RunManager",
         "RunStore",
+        "MemoryRunStore",
         "RunState",
         "TaskFile",
         "ProcessingPending",
