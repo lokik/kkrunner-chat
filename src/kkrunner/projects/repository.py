@@ -175,16 +175,18 @@ class ProjectRepository:
         self.directory = Path(directory) if directory is not None else default_projects_directory()
         self._state_lock = RLock()
         self._listeners: set[ProjectChangedListener] = set()
-        self._known: dict[str, Project] = {}
+        self._known: dict[str, Project] | None = None
 
     def subscribe(self, listener: ProjectChangedListener) -> Callable[[], None]:
-        """Subscribe to local or refreshed project changes."""
+        """Subscribe to local changes; the first refresh establishes the external baseline."""
         with self._state_lock:
             self._listeners.add(listener)
 
         def unsubscribe() -> None:
             with self._state_lock:
                 self._listeners.discard(listener)
+                if not self._listeners:
+                    self._known = None
 
         return unsubscribe
 
@@ -197,34 +199,30 @@ class ProjectRepository:
             except Exception:  # noqa: BLE001 - subscriber isolation boundary
                 logger.exception("Project listener failed for %s", project_id)
 
-    def _remember(self, projects: tuple[Project, ...]) -> None:
-        with self._state_lock:
-            self._known = {project.id: project for project in projects}
-
     def _remember_one(self, project: Project) -> None:
         with self._state_lock:
-            self._known[project.id] = project
+            if self._known is not None:
+                self._known[project.id] = project
 
     def projects(self) -> tuple[Project, ...]:
-        """Load and remember the complete project forest."""
-        projects = self._read_projects()
-        self._remember(projects)
-        return projects
+        """Load the complete project forest."""
+        return self._read_projects()
 
     def project(self, project_id: str) -> Project:
-        """Load and remember one project by UUID."""
-        canonical = _project_id(project_id)
-        project = self._read_path(self._json_path(canonical))
-        self._remember_one(project)
-        return project
+        """Load one project by UUID."""
+        return self._read_path(self._json_path(_project_id(project_id)))
 
     def refresh(self) -> tuple[Project, ...]:
-        """Reload project files and publish ids whose snapshots changed."""
-        projects = self._read_projects()
-        current = {project.id: project for project in projects}
+        """Establish or compare the external change snapshot for active subscribers."""
+        projects = self.projects()
         with self._state_lock:
+            if not self._listeners:
+                return projects
             previous = self._known
+            current = {project.id: project for project in projects}
             self._known = current
+        if previous is None:
+            return projects
         changed = tuple(
             project_id
             for project_id in set(previous) | set(current)
@@ -386,7 +384,8 @@ class ProjectRepository:
                     raise ProjectRepositoryError(f"Cannot delete project {canonical!r}: {exc}") from exc
 
         with self._state_lock:
-            self._known.pop(canonical, None)
+            if self._known is not None:
+                self._known.pop(canonical, None)
         self._notify(canonical)
 
     def _read_projects(self) -> tuple[Project, ...]:

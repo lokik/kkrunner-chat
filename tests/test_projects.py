@@ -122,14 +122,20 @@ def test_refresh_publishes_external_project_change(tmp_path):
     directory = tmp_path / "projects"
     first = ProjectRepository(directory)
     project = first.create("Original")
-    first.projects()
     changed = []
     first.subscribe(changed.append)
+    first.refresh()
     second = ProjectRepository(directory)
     second_snapshot = second.project(project.id)
     second.save(second_snapshot.modify(name="Elsewhere"), expected_generation=second_snapshot.generation)
+    # Ordinary reads must not consume an externally published change.
+    assert first.project(project.id).name == "Elsewhere"
+    assert first.projects()[0].name == "Elsewhere"
+    assert changed == []
     refreshed = first.refresh()
     assert refreshed[0].name == "Elsewhere"
+    assert changed == [project.id]
+    first.refresh()
     assert changed == [project.id]
 
 
@@ -214,3 +220,26 @@ def test_modify_all_changeable_attributes_in_one_call(tmp_path):
     assert changed.directory == str((tmp_path / "results").resolve())
     assert changed.generation == 3
     assert original.directory is None
+
+
+def test_first_refresh_after_subscription_establishes_current_project_forest(tmp_path):
+    directory = tmp_path / "projects"
+    observer = ProjectRepository(directory)
+    writer = ProjectRepository(directory)
+    project = writer.create("Original")
+    changed = []
+    unsubscribe = observer.subscribe(changed.append)
+    observer.refresh()
+    assert changed == []
+    unsubscribe()
+
+    project = writer.save(project.modify(name="While unsubscribed"),
+                          expected_generation=project.generation)
+    observer.subscribe(changed.append)
+    observer.refresh()
+    assert changed == []
+
+    writer.save(project.modify(name="While subscribed"),
+                expected_generation=project.generation)
+    observer.refresh()
+    assert changed == [project.id]
