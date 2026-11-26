@@ -12,6 +12,20 @@ from kkrunner.runs.manager import RunManager
 from kkrunner.runs.run import Run
 
 
+def test_endpoint_transport_host_and_cleanup(monkeypatch):
+    from kkrunner.transports.implementations.ssh import sessions
+
+    closed = []
+    monkeypatch.setattr(sessions, "close_pool", closed.append)
+    local = EndpointClient(transport=LocalTransport())
+    remote = EndpointClient(transport=SshTransport("cluster"))
+    assert local.computer is None
+    assert remote.computer == "cluster"
+    local.close()
+    remote.close()
+    assert closed == [remote.transport]
+
+
 def test_run_store_roundtrips_transport_and_backend_independently(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store, client_pool=ClientPool())

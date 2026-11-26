@@ -29,6 +29,10 @@ class Transport:
 
     is_local = False
     available = True
+    host: str | None
+
+    def close(self):
+        """Release transport resources, if any."""
 
     def to_dict(self):
         """Return the immutable connection settings used for persistence."""

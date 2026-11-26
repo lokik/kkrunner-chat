@@ -59,3 +59,20 @@ def test_remote_directory_requires_explicit_mapping(tmp_path):
     # A remote command without file declarations needs no file mapping.
     plain = ExecutionSpec(("true",), directory=str(tmp_path))
     assert execution_request(plain, directory="/remote/job")["directory"] == "/remote/job"
+
+
+def test_file_declaration_metadata_agrees_with_manifest(tmp_path):
+    from kkrunner.files import FileManifest, TaskFile
+
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        input_files=(TaskFile("data", kind="directory", optional=True),),
+        output_files=("log", TaskFile("tree", kind="directory", collect=False)),
+        cache_files=(TaskFile("cache", optional=True),),
+    )
+    manifest = FileManifest.from_spec(spec)
+    assert manifest.inputs[0].kind == "directory" and manifest.inputs[0].optional
+    assert manifest.outputs[0].kind == "file" and manifest.outputs[0].collect
+    assert manifest.outputs[1].kind == "directory" and not manifest.outputs[1].collect
+    assert manifest.caches[0].file.optional
+    assert execution_request(spec)["output_directories"] == [str(tmp_path / "tree")]

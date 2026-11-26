@@ -575,15 +575,16 @@ class FileSession:
         # The declared manifest merges aliases with required-wins semantics.
         # Stage the primary input and stdin first: an optional auxiliary alias
         # must never weaken a mandatory stream.
-        input_requirements = {entry.local_path: not entry.optional for entry in manifest.inputs}
+        input_entries = {entry.local_path: entry for entry in manifest.inputs}
         input_target = await self._stage_file(self.spec.input_file, used)
         stdin_target = await self._stage_file(self.spec.stdin, used)
         for value in self.spec.input_files:
             source = self._local_path(value)
-            required = input_requirements.get(source, True)
+            entry = input_entries[source] if source is not None else None
+            required = entry is None or not entry.optional
             if source is not None and has_file_magic(source):
                 await self._stage_input_pattern(value, used, required=required)
-            elif getattr(value, "kind", "file") == "directory":
+            elif entry is not None and entry.kind == "directory":
                 await self._stage_directory(value, used, required=required)
             else:
                 await self._stage_file(value, used, required=required)
@@ -976,6 +977,6 @@ class FileSession:
             # A supplied file object belongs to this session even if staging
             # failed before the runtime stream acquisition.
             OutputStreams(
-                self.spec.output_file if hasattr(self.spec.output_file, "close") else None,
-                self.spec.error_file if hasattr(self.spec.error_file, "close") else None,
+                self.spec.output_file,
+                self.spec.error_file,
             ).close()
