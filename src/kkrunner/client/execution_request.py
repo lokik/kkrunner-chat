@@ -13,6 +13,7 @@ from dataclasses import asdict
 from typing import Callable
 
 from kkrunner.files.paths import file_path
+from kkrunner.files.task_file import TaskFile
 
 
 def _named_path(value, directory, mapping):
@@ -73,7 +74,7 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
         "input_files": paths(spec.input_files),
         "output_files": paths(spec.output_files),
         "output_directories": paths(
-            value for value in spec.output_files if getattr(value, "kind", "file") == "directory"
+            value for value in spec.output_files if isinstance(value, TaskFile) and value.kind == "directory"
         ),
         "cache_files": paths(spec.cache_files),
     }

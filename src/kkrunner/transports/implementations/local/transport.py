@@ -30,6 +30,7 @@ class LocalTransport(Transport):
 
     kind: Literal["local"] = "local"
     is_local = True
+    host = None
 
     def __post_init__(self):
         if self.kind != "local":

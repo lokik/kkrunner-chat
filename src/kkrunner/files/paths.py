@@ -3,6 +3,8 @@
 import glob
 import os
 
+from kkrunner.files.task_file import TaskFile
+
 
 def file_path(value, directory=None, *, flush=False, required=False):
     """Resolve a named file or path, returning None for unnamed descriptors."""
@@ -39,7 +41,7 @@ def declared_file_paths(values, directory, *, excluded=(), flush=False):
         path = file_path(value, directory, flush=flush)
         if path is None or path in excluded:
             continue
-        required = not getattr(value, "optional", False)
+        required = not (isinstance(value, TaskFile) and value.optional)
         previous = merged.get(path)
         if previous is not None and previous != required:
             raise ValueError(

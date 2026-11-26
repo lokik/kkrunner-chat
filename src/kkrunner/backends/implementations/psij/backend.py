@@ -86,7 +86,7 @@ class PsijBackend(Backend, ManagedOperations):
         return {
             "remote_id": remote_id,
             **status_reply(
-                state, getattr(native_status, "exit_code", None),
+                state, native_status.exit_code,
                 failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
             ),
             "directory": request["directory"],

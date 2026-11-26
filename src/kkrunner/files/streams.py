@@ -12,18 +12,15 @@ from kkrunner.files.paths import file_path
 
 
 def _close_distinct(resources, *, suppress_errors=False):
-    """Close each distinct resource once; keep closing after an error."""
+    """Close distinct resources with an idempotent close() contract."""
     seen = set()
     first_error = None
     for resource in resources:
         if resource is None or id(resource) in seen:
             continue
         seen.add(id(resource))
-        close = getattr(resource, "close", None)
-        if close is None or getattr(resource, "closed", False):
-            continue
         try:
-            close()
+            resource.close()
         except BaseException as exc:
             if first_error is None:
                 first_error = exc
@@ -37,7 +34,7 @@ def close_output_files(*files):
     Paths and absent streams need no closing. An error must not leave another
     open output handle behind; propagate the first error after cleanup.
     """
-    _close_distinct(files)
+    _close_distinct(file for file in files if not isinstance(file, (str, bytes, os.PathLike, int)))
 
 
 

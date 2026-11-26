@@ -41,19 +41,22 @@ def test_client_pool_close_attempts_all_after_failure():
         pool.close()
     assert caught.value is first_error
     assert closed == ["first", "second", "third"]
-    replacement = object()
+    replacement = Executor("replacement")
     assert pool.get("first", lambda: replacement) is replacement
     assert replacement is not backends["first"]
     pool.close()
-    assert closed == ["first", "second", "third"]
+    assert closed == ["first", "second", "third", "replacement"]
 
 
-def test_client_pool_close_accepts_backends_without_close():
+def test_client_pool_discard_closes_client_and_recreates_it():
+    from kkrunner.client import EndpointClient
+
     pool = ClientPool()
-    executor = object()
-    pool.get("no-close", lambda: executor)
+    client = pool.get("local", EndpointClient)
+    assert pool.discard("local") is client
+    assert pool.discard("local") is None
+    assert pool.get("local", EndpointClient) is not client
     pool.close()
-    assert pool.get("no-close", object) is not executor
 
 
 def test_client_pool_closes_shared_backend_only_once():

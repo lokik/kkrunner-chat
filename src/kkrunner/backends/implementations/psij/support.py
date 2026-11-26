@@ -33,12 +33,14 @@ def psij_state(status, *, attached=False, return_code=None):
     scheduler status. That is UNKNOWN, not evidence of a new submission.
     A completed job with a nonzero exit code is an execution failure.
     """
-    name = getattr(getattr(status, "state", None), "name", None)
+    if status is None:
+        return RunState.UNKNOWN
+    name = status.state.name
     if attached and name == "NEW":
         return RunState.UNKNOWN
     state = _STATE_MAP.get(name, RunState.UNKNOWN)
     if return_code is None:
-        return_code = getattr(status, "exit_code", None)
+        return_code = status.exit_code
     if state == RunState.FINISHED and return_code not in (None, 0):
         return RunState.FAILED
     return state
@@ -86,9 +88,9 @@ def job_status(handle, *, native=None, attached=False):
         native = _attach_job(handle).status
     state = psij_state(native, attached=attached)
     return JobStatus(
-        state, return_code=getattr(native, "exit_code", None),
+        state, return_code=native.exit_code,
         failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
-        message=getattr(native, "message", None),
+        message=native.message,
     )
 
 

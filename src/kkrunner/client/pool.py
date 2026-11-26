@@ -48,13 +48,11 @@ class ClientPool:
         return self.for_config(*self.key_for_profile(profile))
 
     def discard(self, key):
-        """Forget one pooled provider and close it when supported."""
+        """Forget one pooled client and close it."""
         with self._lock:
             client = self._clients.pop(key, None)
         if client is not None:
-            close = getattr(client, "close", None)
-            if close is not None:
-                close()
+            client.close()
         return client
 
     def discard_profile(self, profile):

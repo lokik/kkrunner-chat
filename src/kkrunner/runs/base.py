@@ -166,7 +166,7 @@ class ExecutionOutcome:
 
 
 class ExecutionResources:
-    """Closable resources whose ownership is transferred to a calculation run."""
+    """Resources with idempotent close() whose ownership is transferred to a run."""
 
     def __init__(self, *resources):
         self._resources = tuple(resources)
