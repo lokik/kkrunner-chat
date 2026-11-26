@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from subprocess import SubprocessError
 from contextlib import contextmanager, ExitStack
 from contextvars import ContextVar
 from dataclasses import replace
@@ -596,19 +597,30 @@ class RunManager:
         if (
             record.execution.backend.name == "direct"
             and isinstance(record.execution.transport, SshTransport)
-            and status.state == RunState.FINISHED
-            and status.return_code is None
+            and (status.state == RunState.CANCELLED or (
+                status.state == RunState.FINISHED and status.return_code is None
+            ))
             and status.files is None
         ):
-            # The live SSH observer is gone. Download whatever was produced
-            # without asserting that an unknown exit code means success.
+            # No live client owns finalization. Direct status/follow cannot
+            # recover cancellation on a later observation, so collect any
+            # diagnostics now, under the same ownership as completion.
             try:
                 files = self.client_for(record).collect_ended_direct_files(record, status)
-            except (OSError, RuntimeError, ValueError) as exc:
-                return self.transition(
-                    record, state=RunState.DOWNLOADING,
-                    message=f"Execution ended; output retrieval pending: {exc}",
+            except (OSError, RuntimeError, ValueError, SubprocessError) as exc:
+                if status.state != RunState.CANCELLED:
+                    return self.transition(
+                        record, state=RunState.DOWNLOADING,
+                        message=f"Execution ended; output retrieval pending: {exc}",
+                    )
+                # As in Run._finish(), diagnostic transfer failure cannot
+                # change a confirmed cancelled execution into another outcome.
+                message = f"Execution cancelled; output retrieval failed: {exc}"
+                files = record.files._map_artifacts(
+                    lambda item: replace(item, availability_state="failed", availability_message=message)
+                    if item.availability_state in (None, "pending") else item
                 )
+                status = replace(status, message=message)
             status = replace(status, files=files)
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code

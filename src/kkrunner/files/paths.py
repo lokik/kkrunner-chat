@@ -2,6 +2,9 @@
 
 import glob
 import os
+from fnmatch import fnmatchcase
+from functools import lru_cache
+from pathlib import PurePath
 
 from kkrunner.files.task_file import TaskFile
 
@@ -64,3 +67,57 @@ def expand_local_candidates(path):
     if has_file_magic(path):
         return tuple(sorted(glob.glob(path, recursive=True)))
     return (path,)
+
+
+
+def path_matches(path, pattern, *, include_hidden=False):
+    """Match a concrete pathname using filesystem glob component semantics."""
+    path, pattern = os.path.normpath(path), os.path.normpath(pattern)
+    if not has_file_magic(pattern):
+        return path == pattern
+    components, parts = PurePath(path).parts, PurePath(pattern).parts
+
+    @lru_cache(None)
+    def match(i, j):
+        if j == len(parts):
+            return i == len(components)
+        if parts[j] == "**":
+            return match(i, j + 1) or (
+                i < len(components)
+                and (include_hidden or not components[i].startswith("."))
+                and match(i + 1, j)
+            )
+        return (
+            i < len(components)
+            and (include_hidden or not components[i].startswith(".") or parts[j].startswith("."))
+            and fnmatchcase(components[i], parts[j])
+            and match(i + 1, j + 1)
+        )
+
+    return match(0, 0)
+
+
+def paths_overlap(first, second):
+    """Conservative overlap: exact/glob uses the shared component matcher."""
+    first, second = os.path.normpath(first), os.path.normpath(second)
+    first_magic, second_magic = has_file_magic(first), has_file_magic(second)
+    if not first_magic:
+        return path_matches(first, second, include_hidden=True)
+    if not second_magic:
+        return path_matches(second, first, include_hidden=True)
+    if first == second:
+        return True
+
+    # A recursive wildcard may match zero path components. The literal
+    # prefix before the first wildcard is still a necessary prefix.
+    def prefix(pattern):
+        return pattern[:min(pattern.find(c) for c in "*?[" if c in pattern)]
+
+    a, b = prefix(first), prefix(second)
+    return a.startswith(b) or b.startswith(a)
+
+
+def declaration_paths(path, *, directory=False):
+    """An exact directory reserves the entire tree, including hidden files."""
+    path = os.path.normpath(path)
+    return (path, os.path.join(path, "**")) if directory else (path,)

@@ -699,3 +699,86 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         runner.submit()
     with pytest.raises(RuntimeError, match="cannot be restarted"):
         runner.start()
+
+
+@pytest.mark.parametrize("policy,remote_value,expected,upload", [
+    ("always", "same", "same", True),
+    ("changed", "same", "same", False),
+    ("changed", "old", "same", True),
+    ("missing", "old", "old", False),
+    ("missing", None, "same", True),
+    ("never", "old", "old", False),
+])
+def test_remote_directory_input_policy(tmp_path, policy, remote_value, expected, upload):
+    from kkrunner import TaskFile
+
+    class DirectorySpy(_SpyTransport):
+        def __init__(self):
+            super().__init__()
+            self.directory_uploads = []
+
+        async def put_directory(self, source, destination):
+            self.directory_uploads.append((Path(source), Path(destination)))
+            await super().put_directory(source, destination)
+
+    transport = DirectorySpy()
+    local = tmp_path / "local/calculation/tree"
+    local.mkdir(parents=True)
+    (local / "value").write_text("same")
+    remote = tmp_path / "remote/calculation/tree"
+    if remote_value is not None:
+        remote.mkdir(parents=True)
+        (remote / "value").write_text(remote_value)
+        if remote_value == "old":
+            (remote / "obsolete").write_text("obsolete")
+    executor, spec, _, remote_root = _text_run(
+        tmp_path, transport, input_files=policy,
+        declared_input_files=(TaskFile(local, kind="directory"),),
+        code=f"from pathlib import Path; assert Path('tree/value').read_text() == {expected!r}",
+    )
+    if policy == "never":
+        _expose_shared_input(remote_root, "input.txt", b"hello")
+    assert _processed_run(executor, spec).run().return_code == 0
+    assert transport.directory_uploads == ([(local, remote)] if upload else [])
+    assert (remote / "value").read_text() == expected
+    if upload:
+        assert not (remote / "obsolete").exists()
+        assert not (remote / "tree").exists()
+
+
+@pytest.mark.parametrize("policy,modify,expected,transfer", [
+    ("changed", True, "new", True),
+    ("always", True, "new", True),
+    ("missing", True, "old", False),
+    ("never", True, "old", False),
+    ("changed", False, "old", False),
+    ("always", False, "old", False),
+])
+def test_remote_directory_cache_policy(tmp_path, policy, modify, expected, transfer):
+    from kkrunner import TaskFile
+
+    class DirectorySpy(_SpyTransport):
+        def __init__(self):
+            super().__init__()
+            self.directory_downloads = []
+
+        async def get_directory(self, source, destination):
+            self.directory_downloads.append((Path(source), Path(destination)))
+            await super().get_directory(source, destination)
+
+    local = tmp_path / "local/calculation/cache-tree"
+    local.mkdir(parents=True)
+    (local / "value").write_text("old")
+    (local / "obsolete").write_text("old")
+    transport = DirectorySpy()
+    executor, spec, _, remote_root = _text_run(
+        tmp_path, transport, output_files=policy,
+        declared_cache_files=(TaskFile(local, kind="directory"),),
+        code=("from pathlib import Path; p=Path('cache-tree'); "
+              "(p/'value').write_text('new'); (p/'obsolete').unlink()" if modify else "pass"),
+    )
+    assert _processed_run(executor, spec).run().return_code == 0
+    assert (local / "value").read_text() == expected
+    assert (local / "obsolete").exists() is not transfer
+    remote = remote_root / "calculation/cache-tree"
+    assert transport.directory_downloads == ([(remote, local)] if transfer else [])

@@ -23,7 +23,7 @@ from kkrunner.files.queries import (
 )
 from kkrunner.files.snapshots import snapshot_destination
 
-from kkrunner.files.staging import staged_local_file
+from kkrunner.files.staging import publish_directory, staged_local_file
 from ...base import Transport, _completed_process
 from ...rpc import operation_payload, operation_result
 from .rpc import operation_command
@@ -198,7 +198,7 @@ class SshTransport(Transport):
             os.utime(temporary, ns=(stat.st_atime_ns, signature[1]))
 
     async def put_directory(self, source, destination):
-        """Stage a complete directory to a previously absent target path."""
+        """Stage a complete directory before replacing the target tree."""
         source = Path(source)
         if source.is_symlink() or not source.is_dir():
             raise ValueError(f"Directory source is invalid: {source}")
@@ -211,13 +211,13 @@ class SshTransport(Transport):
                         "-cf", "-", "--", source.name)
             consumer = self._command((*self._tar_command, "-C", temporary, "-xf", "-"))
             await self._transfer_tar(producer, consumer)
-            await self.run(("mv", "--", posixpath.join(temporary, source.name), destination))
+            await self.call(Operation.standalone(publish_directory),
+                            posixpath.join(temporary, source.name), destination)
         finally:
             await self.run(("rm", "-rf", "--", temporary), check=False)
 
     async def get_directory(self, source, destination):
         """Retrieve a complete directory via tar and replace the local tree."""
-        import shutil
         import tempfile
         source = posixpath.normpath(os.fspath(source))
         destination = Path(destination)
@@ -228,15 +228,7 @@ class SshTransport(Transport):
             consumer = (*self._tar_command, "-C", stage, "-xf", "-")
             await self._transfer_tar(producer, consumer)
             received = Path(stage) / posixpath.basename(source)
-            if not received.is_dir() or received.is_symlink():
-                raise ValueError(f"Remote directory archive is invalid: {source}")
-            if destination.is_symlink():
-                raise ValueError(f"Cannot replace symbolic link with directory: {destination}")
-            if destination.is_dir():
-                shutil.rmtree(destination)
-            elif destination.exists():
-                raise ValueError(f"Directory destination is a file: {destination}")
-            os.replace(received, destination)
+            publish_directory(received, destination)
 
     async def snapshot_file(self, source, *, destination=None):
         if destination is None:

@@ -206,18 +206,37 @@ class FileSession:
         return target
 
     async def _stage_directory(self, entry, used, *, required=True):
-        """Stage an exact directory, rather than hashing it as a single file."""
+        """Apply the input transfer policy to complete directory contents."""
         source, target = entry.local_path, entry.remote_path
-        if os.path.islink(source):
-            raise ValueError(f"Directory input is a symbolic link: {source}")
+        previous = used.get(target)
+        if previous is not None:
+            if previous != source:
+                raise ValueError(f"Remote input target collision: {target}")
+            return target
+        if os.path.lexists(source) and (os.path.islink(source) or not os.path.isdir(source)):
+            raise ValueError(f"Directory input is not a regular directory: {source}")
         local_exists = os.path.isdir(source)
-        observed = (await self.context.transport.query_files([target]))[0]
+        transport = self.context.transport
+        observed = (await transport.query_files([target]))[0]
         remote_exists = observed["status"] == "ok" and observed["type"] == "directory"
         if observed["status"] == "ok" and not remote_exists:
             raise ValueError(f"Target directory input is not a directory: {target}")
-        if not remote_exists and local_exists and self.context.input_files != FileSyncPolicy.NEVER:
-            await self.context.transport.put_directory(source, target)
-            remote_exists = True
+        policy = self.context.input_files
+        if required and policy == FileSyncPolicy.ALWAYS and not local_exists:
+            raise FileNotFoundError(f"Local input directory does not exist: {source}")
+        if local_exists and policy != FileSyncPolicy.NEVER:
+            # Existence alone decides ALWAYS/MISSING. Only CHANGED needs to
+            # read an existing destination tree.
+            transfer = policy == FileSyncPolicy.ALWAYS or not remote_exists
+            if policy == FileSyncPolicy.CHANGED and remote_exists:
+                local_digest = directory_digest(source)
+                remote_digest = await transport.call(Operation.standalone(directory_digest), target)
+                if local_digest is None or remote_digest is None:
+                    raise ValueError(f"Cannot compare directory input contents: {source} -> {target}")
+                transfer = policy.should_transfer(local_digest, remote_digest)
+            if transfer:
+                await transport.put_directory(source, target)
+                remote_exists = True
         if required and not remote_exists:
             raise FileNotFoundError(f"Required directory exists neither locally nor on target: {source}")
         if not remote_exists:
@@ -276,6 +295,17 @@ class FileSession:
                 for item in entries
                 if item["status"] == "ok" and item["type"] == "file"
             }
+            directories = {item["path"] for item in entries
+                           if item["status"] == "ok" and item["type"] == "directory"}
+            for cache in manifest.caches:
+                entry = cache.file
+                if entry.kind == "directory" and entry.remote_path in directories:
+                    digest = await self.context.transport.call(
+                        Operation.standalone(directory_digest), entry.remote_path,
+                    )
+                    if digest is None:
+                        raise ValueError(f"Cannot identify cache directory contents: {entry.remote_path}")
+                    signatures[entry.remote_path] = ("directory", digest)
             targets = {local: (remote, signatures.get(remote)) for local, (remote, _) in targets.items()}
             pattern_before = {remote: before for remote, before in signatures.items() if remote not in exact}
 
@@ -366,17 +396,15 @@ class FileSession:
         # The persisted manifest is the sole authority for which declared
         # outputs may be absent. This also works on historical attach, whose
         # reconstructed ExecutionSpec has no output declarations.
-        collected = {entry.remote_path for entry in self._files.outputs if entry.collect}
-        optional = {entry.remote_path: entry.optional for entry in self._files.outputs if entry.collect}
-        kinds = {entry.remote_path: entry.kind for entry in self._files.outputs}
+        collected = {entry.remote_path: entry for entry in self._files.outputs if entry.collect}
         for local, remote in self._output_targets.items():
             if remote not in collected:
                 continue
             await self._sync_output_entry(
                 local,
                 remote,
-                required and not optional.get(remote, False),
-                kind=kinds.get(remote, "file"),
+                required and not collected[remote].optional,
+                kind=collected[remote].kind,
             )
 
         if self._output_patterns:
@@ -390,7 +418,7 @@ class FileSession:
                 await self._sync_patterns(
                     (pattern,),
                     kind="output",
-                    required=required and not optional.get(pattern, False),
+                    required=required and not collected[pattern].optional,
                     excluded_local=primary,
                     seen_remote=seen_remote,
                 )
@@ -448,11 +476,22 @@ class FileSession:
         try:
             if kind == "directory":
                 entry = (await self.context.transport.query_files([remote]))[0]
-                if entry["status"] == "ok" and entry["type"] == "directory":
-                    await self.context.transport.get_directory(remote, local)
-                    state = "available"
-                elif entry["status"] == "missing":
+                if entry["status"] == "missing":
                     state = "skipped"
+                elif entry["status"] == "ok" and entry["type"] == "directory":
+                    digest = await self.context.transport.call(
+                        Operation.standalone(directory_digest), remote,
+                    )
+                    if digest is None:
+                        raise ValueError(f"Cannot identify cache directory contents: {remote}")
+                    if ("directory", digest) == before or (
+                        self.context.output_files == FileSyncPolicy.MISSING
+                        and os.path.isdir(local)
+                    ):
+                        state = "skipped"
+                    else:
+                        available = await self._sync_one_output(local, remote, False, kind=kind)
+                        state = "available" if available else "skipped"
                 else:
                     raise ValueError(f"Declared directory cache is not a directory: {remote}")
                 self._set_file_availability(local, state, kind="cache")
@@ -482,7 +521,7 @@ class FileSession:
         kinds = {entry.file.local_path: entry.file.kind for entry in self._files.caches}
         for local, (remote, before) in self._cache_targets.items():
             await self._sync_cache_entry(
-                local, remote, before, kind=kinds.get(local, "file"),
+                local, remote, before, kind=kinds[local],
             )
 
         if self._cache_patterns:

@@ -1,13 +1,11 @@
 """Observational copies of files still being written by a producer."""
 
 from contextlib import contextmanager
-from fnmatch import fnmatchcase
-from functools import lru_cache
 import os
 from pathlib import Path
 from kkrunner.files.staging import staged_local_file
 
-from kkrunner.files.paths import has_file_magic
+from kkrunner.files.paths import declaration_paths, path_matches, paths_overlap
 
 
 def matching_file(manifest, path):
@@ -20,29 +18,8 @@ def matching_file(manifest, path):
         if os.path.abspath(entry.local_path) == path:
             return entry
 
-    components = Path(path).parts
     for entry in entries:
-        pattern = os.path.abspath(entry.local_path)
-        if not has_file_magic(pattern):
-            continue
-        parts = Path(pattern).parts
-
-        @lru_cache(None)
-        def match(i, j):
-            if j == len(parts):
-                return i == len(components)
-            if parts[j] == "**":
-                return match(i, j + 1) or (
-                    i < len(components) and not components[i].startswith(".") and match(i + 1, j)
-                )
-            return (
-                i < len(components)
-                and (not components[i].startswith(".") or parts[j].startswith("."))
-                and fnmatchcase(components[i], parts[j])
-                and match(i + 1, j + 1)
-            )
-
-        if match(0, 0):
+        if path_matches(path, os.path.abspath(entry.local_path)):
             return entry
     return None
 
@@ -64,16 +41,14 @@ def check_destination(manifest, source, destination):
     )
     if os.path.realpath(source) == os.path.realpath(target):
         raise ValueError("Snapshot destination overlaps a declared file")
-    if matching_file(manifest, target) is not None:
-        raise ValueError("Snapshot destination overlaps a declared file")
+    targets = (target, os.path.realpath(target))
     for entry in originals:
-        if entry is not None and entry.local_path is not None:
-            if os.path.realpath(target) == os.path.realpath(entry.local_path):
-                raise ValueError("Snapshot destination overlaps a declared file")
-            if has_file_magic(entry.local_path):
-                # Protect wildcard input declarations as well.
-                from kkrunner.files.manifest import FileManifest
-                if matching_file(FileManifest(outputs=(entry,)), target):
+        if entry is None or entry.local_path is None:
+            continue
+        path = os.path.abspath(entry.local_path)
+        for identity in (path, os.path.realpath(path)):
+            for reference in declaration_paths(identity, directory=entry.kind == "directory"):
+                if any(paths_overlap(candidate, reference) for candidate in targets):
                     raise ValueError("Snapshot destination overlaps a declared file")
     return Path(destination)
 

@@ -234,7 +234,7 @@ class Run:
 
     def _finish(self):
         try:
-            outcome = self._job.wait()
+            self._job.wait()
             raw_state = self._job.state
             outcome = self._file_session.result
             outcome.return_code = self._job.return_code

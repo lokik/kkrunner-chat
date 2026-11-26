@@ -589,3 +589,19 @@ def test_local_staging_does_not_replace_concurrent_destination(tmp_path):
             destination.write_bytes(b"new result")
     assert destination.read_bytes() == b"new result"
     assert list(tmp_path.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+def test_directory_upload_replaces_whole_tree(tmp_path, factory):
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / "new").write_text("new")
+    (target / "old").write_text("old")
+
+    async def transfer():
+        await factory().put_directory(source, target)
+
+    asyncio.run(transfer())
+    assert sorted(p.name for p in target.iterdir()) == ["new"]
+    assert (target / "new").read_text() == "new"

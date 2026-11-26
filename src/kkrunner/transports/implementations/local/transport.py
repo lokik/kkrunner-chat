@@ -20,7 +20,7 @@ from kkrunner.files.queries import (
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
 
-from kkrunner.files.staging import staged_local_file
+from kkrunner.files.staging import publish_directory, staged_local_file
 from ...base import Transport, _completed_process
 from ...rpc import operation_payload
 
@@ -113,26 +113,25 @@ class LocalTransport(Transport):
     get_file = put_file
 
     async def put_directory(self, source, destination):
+        """Copy a whole tree before replacing the destination."""
+        import tempfile
         source, destination = Path(source), Path(destination)
         if source.is_symlink() or not source.is_dir():
             raise ValueError(f"Directory source is invalid: {source}")
-        if destination.exists() or destination.is_symlink():
-            raise FileExistsError(destination)
-        await asyncio.to_thread(shutil.copytree, source, destination)
-
-    async def get_directory(self, source, destination):
-        source, destination = Path(source), Path(destination)
-        if source.is_symlink() or not source.is_dir():
-            raise ValueError(f"Directory source is invalid: {source}")
-        if source.resolve() == destination.resolve():
-            return
         if destination.is_symlink():
             raise ValueError(f"Cannot replace symbolic link with directory: {destination}")
-        if destination.is_dir():
-            await asyncio.to_thread(shutil.rmtree, destination)
-        elif destination.exists():
-            raise ValueError(f"Directory destination is a file: {destination}")
-        await asyncio.to_thread(shutil.copytree, source, destination)
+        source_path, destination_path = source.resolve(), destination.resolve()
+        if source_path == destination_path:
+            return
+        if source_path in destination_path.parents or destination_path in source_path.parents:
+            raise ValueError("Directory source and destination overlap")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".kkrunner-copy-", dir=destination.parent) as stage:
+            received = Path(stage) / "tree"
+            await asyncio.to_thread(shutil.copytree, source, received)
+            await asyncio.to_thread(publish_directory, received, destination)
+
+    get_directory = put_directory
 
     async def query_files(self, sources, *, root=None, digest=False):
         return checked_files(await asyncio.to_thread(query_files, sources, root=root, digest=digest))

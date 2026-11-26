@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from kkrunner.support.decorators import portable
+
 
 def _local_temporary_path(destination):
     destination = Path(destination)
@@ -39,3 +41,28 @@ def staged_local_file(destination, *, verify=None, overwrite=True):
         raise
     else:
         temporary.unlink(missing_ok=True)
+
+
+@portable
+def publish_directory(staged, destination):
+    """Publish a complete staged tree, retaining the old tree until publication."""
+    import os
+    import shutil
+    from uuid import uuid4
+
+    staged, destination = os.fspath(staged), os.fspath(destination)
+    if os.path.islink(staged) or not os.path.isdir(staged):
+        raise ValueError(f"Invalid staged directory: {staged}")
+    if os.path.islink(destination) or (os.path.lexists(destination) and not os.path.isdir(destination)):
+        raise ValueError(f"Directory destination is not a regular directory: {destination}")
+    if not os.path.exists(destination):
+        os.replace(staged, destination)
+        return
+    backup = os.path.join(os.path.dirname(destination), ".kkrunner-backup-" + uuid4().hex)
+    os.replace(destination, backup)
+    try:
+        os.replace(staged, destination)
+    except BaseException:
+        os.replace(backup, destination)
+        raise
+    shutil.rmtree(backup)
