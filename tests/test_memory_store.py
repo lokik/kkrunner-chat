@@ -254,7 +254,8 @@ def test_failed_direct_attach_releases_observation_claim(tmp_path, monkeypatch, 
     manager = RunManager(store)
     client = EndpointClient(DirectBackend)
     record = manager.new_record(directory=tmp_path, transport=client.transport,
-                                backend=client.backend_config, detached=True)
+                                backend=client.backend_config, detached=True,
+                                files=FileManifest(stdout=FileEntry(str(tmp_path / "stdout"))))
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))
     def fail(*args, **kwargs):
@@ -278,7 +279,8 @@ def test_failed_direct_observer_start_closes_streams_before_releasing_claim(tmp_
     manager = RunManager(store)
     client = EndpointClient(DirectBackend)
     record = manager.new_record(directory=tmp_path, transport=client.transport,
-                                backend=client.backend_config, detached=True)
+                                backend=client.backend_config, detached=True,
+                                files=FileManifest(stdout=FileEntry(str(tmp_path / "stdout"))))
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))
     parts = client.create_run_parts(ExecutionSpec(("unused",), directory=tmp_path))

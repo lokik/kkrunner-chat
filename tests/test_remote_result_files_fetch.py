@@ -231,10 +231,9 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     assert not (outside / "output.dat").exists()
 
 
-def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path):
+def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path, monkeypatch):
     """A vanished optional DOS must not stop restoration of the main SCF output."""
-    from dataclasses import replace
-    from kkrunner.runs.files import RunFiles
+    from kkrunner import RunManager, RunStore
 
     main = tmp_path / "run.out"
     auxiliary = tmp_path / "run_SCFSTART.dos"
@@ -262,16 +261,6 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
         files=manifest,
     )
 
-    class Store:
-        current = record
-
-        def get(self, _run):
-            return self.current
-
-        def update(self, _run, updater):
-            self.current = updater(self.current)
-            return self.current
-
     class Client:
         supports_result_file_retrieval = True
 
@@ -283,12 +272,108 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
                 Path(target).write_bytes(b"main output")
             # Missing auxiliary deliberately produces no staged file.
 
-    store = Store()
-    service = RunFiles(store=store, client_pool=None)
-    service._client_for = lambda _record: Client()
-    restored = service.retrieve_result_files(record)
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.store.save(record)
+    monkeypatch.setattr(manager._files, "_client_for", lambda _: Client())
+    restored = manager.retrieve_result_files(record)
     assert main.read_bytes() == b"main output"
     assert not auxiliary.exists()
     assert restored.files.stdout.availability_state == "available"
     assert restored.files.outputs[0].availability_state == "failed"
     assert "not retrieved" in restored.files.outputs[0].availability_message
+
+
+@pytest.mark.parametrize("concurrent", ("reserve", "create", "none"))
+def test_historical_retrieval_publishes_only_to_unreserved_missing_path(tmp_path, monkeypatch, concurrent):
+    from pathlib import Path
+    from kkrunner import RunManager, RunStore
+
+    output = tmp_path / "result.out"
+    output.write_bytes(b"historical output")
+    version = FileVersion.capture(output, require_digest=True)
+    output.unlink()
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=tmp_path, transport=SshTransport("loopback"), remote_directory="/remote",
+        files=FileManifest(
+            stdout=FileEntry(str(output)), output_versions=(version,),
+            captured_at="2026-10-13T08:00:00+00:00",
+        ),
+    )
+    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+                                execution=record.execution.submitted("historical"))
+    other = RunManager(RunStore(tmp_path / "runs"))
+
+    class Client:
+        supports_result_file_retrieval = True
+
+        def fetch_result_files(self, record, paths, *, destinations):
+            Path(destinations[str(output)]).write_bytes(b"historical output")
+            if concurrent == "reserve":
+                # This runs during network transfer, outside the reservation lock.
+                other.reserve(other.new_record(
+                    directory=tmp_path, files=FileManifest(stdout=FileEntry(str(output))),
+                ))
+            elif concurrent == "create":
+                output.write_bytes(b"new calculation")
+
+    monkeypatch.setattr(manager._files, "_client_for", lambda _: Client())
+    restored = manager.retrieve_result_files(record)
+    if concurrent == "reserve":
+        assert not output.exists()
+        assert "active run" in restored.files.stdout.availability_message
+    elif concurrent == "create":
+        assert output.read_bytes() == b"new calculation"
+        assert restored.files.stdout.availability_state == "failed"
+    else:
+        assert output.read_bytes() == b"historical output"
+        assert restored.files.stdout.availability_state == "available"
+    assert not list(tmp_path.glob(".result.out.*.tmp"))
+
+
+def test_staged_wildcard_fetch_only_writes_explicit_destinations(tmp_path):
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    (remote / "one.dat").write_text("one")
+    (remote / "two.dat").write_text("two")
+    client = EndpointClient(transport=SshTransport("loopback"))
+    run = RunRecord(
+        id="staged-wildcard", state=RunState.FINISHED,
+        created_at="2026-10-13T08:00:00+00:00",
+        updated_at="2026-10-13T08:00:00+00:00",
+        execution=ExecutionMetadata(client.transport, WorkingDirectory(str(local), str(remote)), "id"),
+        files=FileManifest(mapping=FileMapping(str(local), str(remote))),
+    )
+    staged = local / ".one.staged"
+    client.fetch_result_files(run, (local / "*.dat",),
+                              destinations={str(local / "one.dat"): str(staged)})
+    assert staged.read_text() == "one"
+    assert list(local.iterdir()) == [staged]
+
+
+def test_retrieval_does_not_verify_existing_artifacts(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from kkrunner import RunManager, RunStore
+
+    output = tmp_path / "existing.out"
+    output.write_bytes(b"old")
+    version = FileVersion.capture(output, require_digest=True)
+    output.write_bytes(b"new calculation output")
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=tmp_path, transport=SshTransport("loopback"), remote_directory="/remote",
+        files=FileManifest(
+            stdout=FileEntry(str(output)), output_versions=(version,),
+            captured_at="2026-10-13T08:00:00+00:00",
+        ),
+    )
+    record = manager.store.save(replace(
+        record, state=RunState.FINISHED, execution=record.execution.submitted("historical"),
+        return_code=0,
+    ))
+    monkeypatch.setattr(FileVersion, "state", lambda self: pytest.fail("Existing content was verified"))
+    monkeypatch.setattr(manager._files, "_client_for", lambda _: pytest.fail("Opened remote connection"))
+    assert manager.retrieve_result_files(record).id == record.id
+    assert output.read_bytes() == b"new calculation output"

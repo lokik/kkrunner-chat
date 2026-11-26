@@ -23,7 +23,10 @@ from kkrunner.transports import (
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
-from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
+from kkrunner.runs.conflicts import (
+    conflicting_files, submission_conflicts, file_reference_overlaps,
+    filesystem_namespace, referenced_paths,
+)
 from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current, sync_result_files
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
@@ -129,12 +132,14 @@ class RunManager:
     def _record_key(self, record):
         return record.key if record.store is not None else (self.store.lock_key, record.id)
 
-    def _reservation_stores(self):
+    def _reservation_stores(self, extra_store=None):
         # Deduplicate disk stores opened through separate objects. The primary
         # store wins, and all managers take locks in the same order.
         stores = {self.store.lock_key: self.store}
         for store in self.conflict_stores:
             stores.setdefault(store.lock_key, store)
+        if extra_store is not None:
+            stores.setdefault(extra_store.lock_key, extra_store)
         return tuple(stores[key] for key in sorted(stores))
 
     def register_client(self, client):
@@ -162,8 +167,10 @@ class RunManager:
         return self._files.snapshot_file(run, file, destination=destination)
 
     def retrieve_result_files(self, run):
-        """Restore missing results, verifying captured digests before replacement."""
-        return self._files.retrieve_result_files(run)
+        """Restore missing verified results without replacing existing paths."""
+        return self._files.retrieve_result_files(
+            run, guard=lambda paths: self.file_mutation_guard(paths, extra_store=self._store_for(run)),
+        )
 
     def new_record(
         self,
@@ -394,12 +401,50 @@ class RunManager:
             and submission_conflicts(record, active)
         )
 
-    def conflicts(self, record):
-        """Inspect the same reservation domain as reserve(), without reserving."""
-        stores = self._reservation_stores()
+    @contextmanager
+    def _reservation_lock(self, extra_store=None):
+        stores = self._reservation_stores(extra_store)
         with ExitStack() as locks:
             for store in stores:
                 locks.enter_context(store.submission_lock())
+            yield stores
+
+    def file_mutation_conflicts(self, paths, *, target=None):
+        """Inspect active references without reserving paths (best-effort remote cleanup)."""
+        return self._file_mutation_conflicts(paths, self._reservation_stores(), target=target)
+
+    def _file_mutation_conflicts(self, paths, stores, *, target=None):
+        normalize = os.path.realpath if target is None else os.path.normpath
+        candidates = {path: normalize(path) for path in paths}
+        blocked = {}
+        for store in stores:
+            for record in store.runs(active=True):
+                if target is not None:
+                    namespaces = (filesystem_namespace(target), filesystem_namespace(record))
+                    if namespaces[0] != namespaces[1] and ("unknown",) not in namespaces:
+                        continue
+                references = referenced_paths(record, remote=False if target is None else None)
+                if target is None:
+                    references.update(str(version.path) for version in record.files.all_versions)
+                references = tuple(map(normalize, references))
+                for path, kind in paths.items():
+                    if any(file_reference_overlaps(candidates[path], ref, directory=kind == "directory")
+                           for ref in references):
+                        blocked.setdefault(path, f"Cannot modify {path}: active run {record.id} references it")
+        return blocked
+
+    @contextmanager
+    def file_mutation_guard(self, paths, *, extra_store=None):
+        """Protect local file publication/deletion against cooperating reservations."""
+        with self._reservation_lock(extra_store) as stores:
+            blocked = self._file_mutation_conflicts(paths, stores)
+            if blocked:
+                raise OSError(next(iter(blocked.values())))
+            yield
+
+    def conflicts(self, record):
+        """Inspect the same reservation domain as reserve(), without reserving."""
+        with self._reservation_lock() as stores:
             return self._conflicts(record, stores)
 
     def reserve(self, record):
@@ -408,11 +453,8 @@ class RunManager:
         record = replace(record, store=self.store)
         attempted_recovery = set()
         attempted_refresh = set()
-        stores = self._reservation_stores()
         while True:
-            with ExitStack() as locks:
-                for store in stores:
-                    locks.enter_context(store.submission_lock())
+            with self._reservation_lock() as stores:
                 try:
                     existing = self.store.get(record.id)
                 except FileNotFoundError:
@@ -670,7 +712,13 @@ class RunManager:
                 updated_at=_now(),
             )
 
-        return self._store_for(record).update(record, reopen)
+        store = self._store_for(record)
+        with self._reservation_lock(store) as stores:
+            latest = store.get(record.id)
+            conflicts = self._conflicts(latest, stores)
+            if conflicts:
+                raise DuplicateSubmissionError(latest, conflicts)
+            return store.update(latest, reopen)
 
     def _process_outcome(self, record, outcome, process_result, *, files=None, execution=None, retry=False):
         """Claim processing until its durable completion, including across clients.
@@ -721,10 +769,21 @@ class RunManager:
                     execution=current.execution if execution is None else execution,
                 )
 
-            claimed = store.update(latest, claim)
+            with self._reservation_lock(store) as stores:
+                latest = store.get(record.id)
+                if latest.state.is_terminal:
+                    conflicts = self._conflicts(latest, stores)
+                    if conflicts:
+                        raise DuplicateSubmissionError(latest, conflicts)
+                claimed = store.update(latest, claim)
             if process_result is None:
                 raise ProcessingPending("Postprocessing requires a client callback")
             try:
+                # A cleanup may have finished between the initial snapshot
+                # and the processing claim. Once claimed, it cannot delete
+                # these files while the callback is using them.
+                if any(v.state() is not FileState.CURRENT for v in manifest.output_versions):
+                    raise OSError("Historical artifacts changed before postprocessing")
                 result = process_result(outcome)
                 if any(v.state() is not FileState.CURRENT for v in manifest.output_versions):
                     raise RuntimeError("Historical artifacts changed during postprocessing retry")
@@ -935,13 +994,10 @@ class RunManager:
         record = resolve_record(run, self.store)
         if record.state.is_terminal:
             return record
-        if record.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
-            raise RuntimeError("Execution has finished; postprocessing cannot be cancelled as a native job")
-        if record.execution.backend_id is None:
-            raise UnsupportedCapability("No durable execution reference is available for cancellation")
+        reason = record.cancellation_unavailable_reason()
+        if reason is not None:
+            raise UnsupportedCapability(reason)
         client = self.client_for(record)
-        if BackendCapability.CANCEL not in client.backend.supports:
-            raise UnsupportedCapability("This backend cannot cancel a job after restart")
         try:
             status = client.cancel(JobAttachment(record.execution, record.files))
         except NotImplementedError as exc:
@@ -966,25 +1022,22 @@ class RunManager:
         """Open a tracked Run without resubmitting its backend job."""
         from kkrunner.runs.run import Run
         record = resolve_record(run, self.store)
-        if record.state.is_terminal:
-            raise RuntimeError("Run is already terminal; use explicit retry")
+        reason = record.reattachment_unavailable_reason()
+        if reason is not None:
+            raise UnsupportedCapability(reason)
         if process_result is not None and not record.processing_required:
             raise ValueError("This Run did not request postprocessing")
-        if record.execution.backend_id is None:
-            raise RuntimeError(f"Run {record.id} has no backend reference")
         client = self.client_for(record) if client is None else client
         self.register_client(client)
-        if BackendCapability.REATTACH not in client.backend.supports:
-            from kkrunner.backends.contracts import UnsupportedCapability
-            raise UnsupportedCapability("This backend does not support reattachment")
         # Claim before opening streams or querying native status. Refresh
         # and another attach must not finalize the same direct files.
         ownership = self._claim_observation(record)
         parts = None
         try:
             record = resolve_record(record, self.store)
-            if record.state.is_terminal:
-                raise RuntimeError("Run is already terminal; use explicit retry")
+            reason = record.reattachment_unavailable_reason()
+            if reason is not None:
+                raise UnsupportedCapability(reason)
             parts = client.open_run_parts(
                 JobAttachment(record.execution, record.files),
                 output_listener=output_listener,

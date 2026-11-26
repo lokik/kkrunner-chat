@@ -1,10 +1,33 @@
 """Portable observations of a direct process and its original process group."""
 
 
-from kkrunner.support.decorators import portable
+from kkrunner.support.decorators import depends_on, portable
 
 
 @portable
+def parse_direct_process_identity(remote_id):
+    """Decode a cancellable Linux process reference, without probing the host."""
+    from uuid import UUID
+
+    parts = remote_id.split(":") if isinstance(remote_id, str) else ()
+    if len(parts) != 4 or parts[0] != "direct":
+        raise NotImplementedError(
+            "This direct run has no persistent PID/start-time identity; "
+            "cancellation after restart is not safe for older runs."
+        )
+    try:
+        pid = int(parts[1])
+        started = int(parts[2])
+        boot = str(UUID(parts[3]))
+        if pid <= 0 or started < 0 or boot != parts[3]:
+            raise ValueError("Invalid direct process reference")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Invalid direct process reference") from exc
+    return pid, started, boot
+
+
+@portable
+@depends_on(parse_direct_process_identity)
 def observe_process(remote_id):
     """Return (state, explanation), including descendants of an ended leader.
 
@@ -15,8 +38,6 @@ def observe_process(remote_id):
     import os
     import subprocess
     import sys
-    from uuid import UUID
-
     parts = remote_id.split(":") if isinstance(remote_id, str) else ()
     if len(parts) != 4 or parts[0] not in ("direct", "ps"):
         return "unknown", "A verifiable direct process identity is unavailable"
@@ -31,10 +52,7 @@ def observe_process(remote_id):
         if not sys.platform.startswith("linux"):
             return "unknown", "Linux process identity cannot be verified on this host"
         try:
-            start = int(parts[2])
-            boot = str(UUID(parts[3]))
-            if start < 0 or boot != parts[3]:
-                raise ValueError("Invalid process identity")
+            pid, start, boot = parse_direct_process_identity(remote_id)
         except (TypeError, ValueError, OverflowError):
             return "unknown", "Invalid direct process identity"
         try:

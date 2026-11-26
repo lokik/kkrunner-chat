@@ -15,17 +15,13 @@ from uuid import uuid4
 
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
-from kkrunner.files.versions import FileState, FileVersion, file_digest
+from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.support.durability import sync_file
 from kkrunner.runs.stores import resolve_record, store_for
 
 
 class HistoricalFileMismatchError(OSError):
     """Restored contents differ from a run's captured SHA-256 digest."""
-
-
-def _unique(values):
-    return tuple(dict.fromkeys(value for value in values if value is not None))
 
 
 def _concrete_result_files(manifests):
@@ -99,24 +95,11 @@ def file_is_current(result_files, path, versions):
     return False
 
 
-def _missing_result_files(result_files):
-    if result_files is None:
-        return ()
-    if result_files.captured_at is not None:
-        # Automatic artifact retrieval works on ordinary files and excludes caches.
-        return _unique(
-            os.fspath(item.path) for item in (*result_files.input_versions, *result_files.output_versions)
-            if item.kind == "file" and item.state() is FileState.MISSING
-        )
-
-    missing = []
-    for manifest in result_files.manifests:
-        if has_file_magic(manifest):
-            if not expand_local_candidates(manifest):
-                missing.append(manifest)
-        elif not os.path.isfile(manifest):
-            missing.append(manifest)
-    return _unique(missing)
+def _missing_result_versions(manifest):
+    """Only captured ordinary inputs and outputs are automatically restored."""
+    versions = {version.path: version for version in (*manifest.input_versions, *manifest.output_versions)}
+    return tuple(version for version in versions.values()
+                 if version.kind == "file" and version.available and not os.path.lexists(version.path))
 
 
 def capture_result_files(result_files, *, require_outputs=True, cache_versions=None):
@@ -205,12 +188,16 @@ class RunFiles:
             return local_snapshot(path, destination=destination)
         return self._client_for(record).snapshot_file(record, path, destination=destination)
 
-    def retrieve_result_files(self, run):
+    def retrieve_result_files(self, run, *, guard):
         record = resolve_record(run, self.store)
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
+        if record.files.captured_at is None:
+            # There is no authoritative identity to restore. The explicit
+            # endpoint fetch operation remains available for unverified files.
+            return record
 
-        missing = _missing_result_files(record.files)
+        missing = _missing_result_versions(record.files)
         if not missing or record.execution.backend_id is None or not record.execution.available:
             return record
 
@@ -218,32 +205,29 @@ class RunFiles:
         if not client.supports_result_file_retrieval:
             return record
 
-        versions = {
-            os.path.abspath(os.fspath(version.path)): version
-            for version in (() if record.files is None else record.files.all_versions)
-        }
-        for path in missing:
-            path = os.path.abspath(os.fspath(path))
-            version = versions.get(path)
-            staged = (
-                Path(path).with_name(f".{Path(path).name}.{uuid4().hex}.tmp")
-                if version is not None and version.digest is not None
-                else None
-            )
+        for version in missing:
+            path = os.fspath(version.path)
+            staged = version.path.with_name(f".{version.path.name}.{uuid4().hex}.tmp")
             try:
-                if staged is None:
-                    client.fetch_result_files(record, (path,))
-                else:
-                    client.fetch_result_files(
-                        record,
-                        (path,),
-                        destinations={path: os.fspath(staged)},
-                    )
-                    if not staged.is_file():
-                        raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
-                    if file_digest(staged) != version.digest:
-                        raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {path}")
-                    os.replace(staged, path)
+                client.fetch_result_files(
+                    record, (path,), destinations={path: os.fspath(staged)},
+                )
+                if not staged.is_file():
+                    raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
+                if file_digest(staged) != version.digest:
+                    raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {path}")
+                with guard({path: "file"}):
+                    latest = resolve_record(record, self.store)
+                    if not latest.state.is_terminal:
+                        raise OSError(f"Run {record.id} is no longer finished")
+                    # An existing path is never replaced, even if an external
+                    # writer creates it between the check and publication.
+                    try:
+                        os.link(staged, path)
+                    except FileExistsError:
+                        pass
+                if not version.is_current():
+                    raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {path}")
             except OSError as exc:
                 # An unavailable historical artifact does not prevent recovery
                 # of unrelated files. Preserve its individual failure status;
@@ -256,20 +240,8 @@ class RunFiles:
                 )
                 continue
             finally:
-                if staged is not None:
-                    staged.unlink(missing_ok=True)
-            refreshed = resolve_record(record, self.store)
-            if path in _missing_result_files(refreshed.files):
-                record = self.update_artifact_availability(
-                    refreshed,
-                    path,
-                    ArtifactAvailabilityState.FAILED,
-                    "Historical artifact is still missing",
-                )
-            else:
-                record = self.update_artifact_availability(
-                    refreshed,
-                    path,
-                    ArtifactAvailabilityState.AVAILABLE,
-                )
+                staged.unlink(missing_ok=True)
+            record = self.update_artifact_availability(
+                record, path, ArtifactAvailabilityState.AVAILABLE,
+            )
         return record

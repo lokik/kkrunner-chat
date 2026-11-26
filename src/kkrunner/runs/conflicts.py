@@ -31,7 +31,8 @@ def _manifest_accesses(record, *, remote=None):
             return os.path.normpath(os.path.join(directory.remote, relative))
         if value is None:
             return None
-        return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.target, value))
+        base = directory.target if remote else directory.local
+        return os.path.normpath(value if os.path.isabs(value) else os.path.join(base, value))
 
     def accesses(entries):
         result = set()
@@ -47,9 +48,9 @@ def _manifest_accesses(record, *, remote=None):
                 result.add(os.path.join(target, "*"))
         return result
 
-    reads = accesses((*files.inputs, files.stdin, *(x.file for x in files.caches)))
-    writes = accesses((files.stdout, files.stderr, *files.outputs,
-                       *(x.file for x in files.caches)))
+    caches = tuple(x.file for x in files.caches)
+    reads = accesses((*files.input_entries, *caches))
+    writes = accesses((*files.output_entries, *caches))
     return reads - {None}, writes - {None}
 
 
@@ -90,9 +91,9 @@ def filesystem_namespace(record):
     return ("unknown",)
 
 
-def referenced_paths(record):
-    """All declared reads and writes on the execution filesystem, including globs."""
-    reads, writes = _manifest_accesses(record)
+def referenced_paths(record, *, remote=None):
+    """All declared reads and writes, including globs; default to the execution filesystem."""
+    reads, writes = _manifest_accesses(record, remote=remote)
     return reads | writes
 
 

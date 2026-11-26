@@ -126,12 +126,13 @@ class EndpointClient:
         Return backend facts, not a synthetic terminal cancellation status.
         """
         from kkrunner.backends.contracts import UnsupportedCapability
-        if BackendCapability.CANCEL not in self.backend.supports:
-            raise UnsupportedCapability("Backend does not support cancellation after restart")
         self._validate_run(attachment)
         native_id = attachment.execution.backend_id
         if native_id is None:
             raise ValueError("Run has no native execution identity")
+        reason = self.backend.cancellation_unavailable_reason(attachment.execution, attachment.files)
+        if reason is not None:
+            raise UnsupportedCapability(reason)
 
         async def request():
             reply = await self._invoke("cancel", native_id)
@@ -210,6 +211,10 @@ class EndpointClient:
         execution = attachment.execution
         if execution.backend_id is None:
             raise ValueError("Run lacks a backend identity")
+        from kkrunner.backends.contracts import UnsupportedCapability
+        reason = self.backend.reattachment_unavailable_reason(execution, attachment.files)
+        if reason is not None:
+            raise UnsupportedCapability(reason)
         status = await self._invoke("status", execution.backend_id)
         context = FileContext(self, StagingSpec.from_mapping(attachment.files.mapping))
         files = await FileSession.from_attachment(context, attachment)
@@ -248,7 +253,4 @@ class EndpointClient:
         return _run_sync(collect())
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-        if BackendCapability.REATTACH not in self.backend.supports:
-            from kkrunner.backends.contracts import UnsupportedCapability
-            raise UnsupportedCapability("The selected backend does not support reattachment")
         return _run_sync(self._open_run_parts(attachment, callback=callback, output_listener=output_listener))

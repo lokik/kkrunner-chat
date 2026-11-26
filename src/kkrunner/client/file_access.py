@@ -49,24 +49,16 @@ class FileAccess:
     async def _fetch_result_files(self, run, files, *, destinations=None):
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         remote_root = await context._resolved_remote_root()
-        destinations = (
-            {}
-            if destinations is None
-            else {os.path.abspath(os.fspath(path)): os.fspath(target) for path, target in destinations.items()}
-        )
+        if destinations is not None:
+            destinations = {os.path.abspath(os.fspath(path)): os.fspath(target)
+                            for path, target in destinations.items()}
         for value in files:
             local = os.path.abspath(os.fspath(value))
             entry = next(
                 (
                     item
-                    for item in (
-                        *run.files.inputs,
-                        *run.files.outputs,
-                        *(cache.file for cache in run.files.caches),
-                        run.files.stdout,
-                        run.files.stderr,
-                    )
-                    if item is not None and item.local_path == local
+                    for item in run.files.entries
+                    if item.local_path == local
                 ),
                 None,
             )
@@ -78,7 +70,11 @@ class FileAccess:
             for matched in await self.client.transport.expand_files(remote, remote_root):
                 destination = os.fspath(await context.unmap_path(matched)) if glob.has_magic(remote) else local
                 _relative_local_path(destination, context.local_root)
-                target = destinations.get(destination, destination)
+                if destinations is not None and destination not in destinations:
+                    # Explicit staging must never fall back to publishing
+                    # unmatched wildcard results to their canonical paths.
+                    continue
+                target = destination if destinations is None else destinations[destination]
                 if not os.path.isfile(target):
                     await self.client.transport.get_file(matched, target)
 
@@ -96,14 +92,9 @@ class FileAccess:
         """Operate on declared remote files, including TAUDIR outside the run directory."""
         if self.client.transport.is_local:
             raise ValueError("Remote-file cleanup requires a remote transport")
-        entries = (
-            *run.files.inputs, *run.files.outputs,
-            *(cache.file for cache in run.files.caches),
-            run.files.stdin, run.files.stdout, run.files.stderr,
-        )
         declared = {}
-        for entry in entries:
-            if entry is None or entry.remote_path is None:
+        for entry in run.files.entries:
+            if entry.remote_path is None:
                 continue
             previous = declared.setdefault(entry.remote_path, entry.kind)
             if previous != entry.kind:

@@ -18,7 +18,7 @@ MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, Back
 
 def test_capabilities_are_immutable_and_instance_specific():
     assert DirectBackend().supports == frozenset({BackendCapability.STATUS, BackendCapability.CANCEL, BackendCapability.REATTACH})
-    assert SupervisedBackend().supports == MANAGED
+    assert SupervisedBackend().supports == MANAGED | {BackendCapability.REATTACH_LIVE_OUTPUT}
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
@@ -118,3 +118,52 @@ def test_psij_constructor_validates_options():
         PsijBackend(executor_name="")
     with pytest.raises(ValueError, match="nonempty"):
         PsijBackend(url="")
+
+
+def test_saved_direct_run_reports_record_specific_capabilities(tmp_path):
+    from dataclasses import replace
+    from kkrunner import RunManager, MemoryRunStore, RunState
+    from kkrunner.files import FileEntry, FileManifest
+    manager = RunManager(MemoryRunStore())
+    record = manager.new_record(directory=tmp_path, backend=BackendConfig("direct"))
+    record = replace(record, state=RunState.RUNNING,
+                     execution=replace(record.execution, backend_id="legacy"))
+    assert record.reattachment_unavailable_reason() is None
+    assert "verified PID" in record.cancellation_unavailable_reason()
+    record = replace(record, files=FileManifest(stdout=FileEntry(str(tmp_path / "out"))),
+                     execution=replace(record.execution,
+                                       backend_id="direct:42:137:00000000-0000-0000-0000-000000000000"))
+    assert record.reattachment_unavailable_reason() is None
+    assert record.cancellation_unavailable_reason() is None
+    malformed = replace(record, execution=replace(record.execution, backend_id="direct:bad:0:x"))
+    assert malformed.cancellation_unavailable_reason() is not None
+    finalizing = replace(record, state=RunState.POSTPROCESSING)
+    assert finalizing.reattachment_unavailable_reason() is None
+    assert "Execution has finished" in finalizing.cancellation_unavailable_reason()
+
+
+def test_manager_rejects_unavailable_saved_run_operations_before_backend_io(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from kkrunner import RunManager, MemoryRunStore, RunState
+    from kkrunner.backends.contracts import UnsupportedCapability
+    manager = RunManager(MemoryRunStore())
+    record = manager.new_record(directory=tmp_path, backend=BackendConfig("direct"))
+    record = manager.store.save(replace(record, state=RunState.RUNNING,
+                                        execution=record.execution.submitted("legacy")))
+    monkeypatch.setattr(manager, "client_for", lambda _: pytest.fail("Opened an unsupported backend operation"))
+    with pytest.raises(UnsupportedCapability, match="verified PID"):
+        manager.cancel(record)
+    terminal = manager.transition(record, state=RunState.FINISHED, return_code=0)
+    with pytest.raises(UnsupportedCapability, match="finished"):
+        manager.attach(terminal)
+
+
+@pytest.mark.parametrize("backend_type,live_output", (
+    (DirectBackend, False),
+    (PsijBackend, False),
+    (SupervisedBackend, True),
+))
+def test_backend_declares_file_independent_reattachment_output(backend_type, live_output):
+    backend = backend_type()
+    assert BackendCapability.REATTACH in backend.supports
+    assert (BackendCapability.REATTACH_LIVE_OUTPUT in backend.supports) is live_output
