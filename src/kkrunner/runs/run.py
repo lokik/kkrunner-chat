@@ -29,6 +29,10 @@ class Run:
     state; it never independently writes a RunRecord.  The supplied job handles
     raw execution and observation, not client postprocessing or persistence.
 
+    preprocess is an optional zero-argument client callback, invoked after the
+    file footprint is reserved and before staging or backend submission. Its
+    writes must be declared in ExecutionSpec.preprocessing_files.
+
     owned_resources transfers additional application resources to this Run.
     They outlive file finalization and postprocessing; uncertain execution or
     pending processing retains them until completion can be confirmed.
@@ -36,7 +40,7 @@ class Run:
 
     def __init__(
         self, job, *, client=None, manager=None, record=None,
-        process_result=None, callback=None, file_session=None, parts=None, owned_resources=None,
+        process_result=None, callback=None, file_session=None, parts=None, owned_resources=None, preprocess=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
@@ -60,6 +64,11 @@ class Run:
         self.client = client
         self.manager = manager
         self._record = record
+        if preprocess is not None and manager is None:
+            raise ValueError("Preprocessing requires a reserved Run")
+        if preprocess is not None and not callable(preprocess):
+            raise TypeError("preprocess must be callable")
+        self._preprocess = preprocess
         self._process_result = process_result
         self.callback = callback
         self.result = None
@@ -83,7 +92,7 @@ class Run:
     @classmethod
     def create(
         cls, client, spec, *, persistent=None, detached=None,
-        process_result=None, callback=None, owned_resources=None, **record_options,
+        process_result=None, callback=None, owned_resources=None, preprocess=None, **record_options,
     ):
         """Create one Run; persistence never selects its execution mechanism."""
         from kkrunner.runs.manager import RunManager
@@ -107,8 +116,11 @@ class Run:
         if manager is not None:
             return manager.create_run(
                 client, spec, process_result=process_result,
-                callback=callback, detached=detached, owned_resources=owned_resources, **record_options,
+                callback=callback, detached=detached, owned_resources=owned_resources, preprocess=preprocess,
+                **record_options,
             )
+        if preprocess is not None or getattr(spec, "preprocessing_files", ()):
+            raise ValueError("Preprocessing requires a reserved Run")
         if record_options:
             raise ValueError("Record metadata requires a persistent RunManager")
         return cls.untracked(client, spec, process_result=process_result,
@@ -121,6 +133,8 @@ class Run:
         """Create one untracked Run with the same client lifecycle."""
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
+        if getattr(spec, "preprocessing_files", ()):
+            raise ValueError("Preprocessing requires a reserved Run")
         parts = client.create_run_parts(spec)
         parts.configure_detached(
             client.default_detached if detached is None else detached,
@@ -179,6 +193,8 @@ class Run:
             return self._record.state
         if self._settled:
             current = self._state
+        elif self._state == RunState.PREPROCESSING:
+            current = RunState.PREPROCESSING
         elif self._processing:
             current = RunState.POSTPROCESSING
         else:
@@ -418,6 +434,7 @@ class Run:
         manager = self.manager
         submitted = False
         reserved = False
+        preprocessing_lock = None
         try:
             if manager is not None:
                 from dataclasses import replace
@@ -427,9 +444,24 @@ class Run:
                     execution=replace(self._record.execution, directory=directory),
                 )
                 # Reservation and duplicate-submit checks are atomic at the store.
-                self._record = manager.reserve(self._record)
+                if self._preprocess is not None:
+                    preprocessing_lock = manager.store.preprocessing_lock(self._record)
+                    preprocessing_lock.acquire()
+                self._record = manager.reserve(self._record, preprocessing=self._preprocess is not None)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
+                if self._preprocess is not None:
+                    self._state = RunState.PREPROCESSING
+                    if self._job.state == RunState.CANCELLED:
+                        raise asyncio.CancelledError("Run was cancelled before preprocessing")
+                    self._preprocess()
+                    if self._job.state == RunState.CANCELLED:
+                        raise asyncio.CancelledError("Run was cancelled during preprocessing")
+                    self._record = manager.begin_submission(self._record)
+                    self._state = RunState.SUBMITTING
+                    self._monitor_record_version = self._record.updated_at
+                    preprocessing_lock.release()
+                    preprocessing_lock = None
                 if self.client.backend.name == "direct":
                     self._direct_observation_lock = manager.store.observation_lock(self._record)
                     self._direct_observation_lock.acquire()
@@ -485,8 +517,10 @@ class Run:
             self._failure_message = str(self._exception)
             try:
                 if definitely_absent:
+                    phase = (FailurePhase.PREPROCESSING if self._state == RunState.PREPROCESSING
+                             else FailurePhase.SUBMISSION)
                     self._state = RunState.CANCELLED if cancelled else RunState.FAILED
-                    self._failure_phase = None if cancelled else FailurePhase.SUBMISSION
+                    self._failure_phase = None if cancelled else phase
                     if reserved:
                         self._record = manager.complete(
                             self._record,
@@ -515,6 +549,9 @@ class Run:
             if cancelled:
                 raise self._exception from exc
             raise
+        finally:
+            if preprocessing_lock is not None:
+                preprocessing_lock.release()
 
         if manager is not None:
             manager.register_client(self.client)

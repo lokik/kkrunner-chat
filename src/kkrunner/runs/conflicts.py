@@ -50,6 +50,10 @@ def _manifest_accesses(record, *, remote=None):
     reads = accesses((*files.inputs, files.stdin, *(x.file for x in files.caches)))
     writes = accesses((files.stdout, files.stderr, *files.outputs,
                        *(x.file for x in files.caches)))
+    # Preprocessing writes are client-local, even when execution is remote.
+    # Keep them reserved through completion; generated inputs are subsequently read.
+    if not remote:
+        writes |= accesses(files.preprocessing_files)
     return reads - {None}, writes - {None}
 
 

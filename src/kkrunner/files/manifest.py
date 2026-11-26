@@ -140,6 +140,7 @@ class FileManifest:
     captured_at: Optional[str] = None
     stdin: Optional[FileEntry] = None
     cache_versions: tuple[FileVersion, ...] = ()
+    preprocessing_files: tuple[FileEntry, ...] = ()
 
     @classmethod
     def from_spec(cls, spec):
@@ -215,7 +216,13 @@ class FileManifest:
                     )
                 )
             )
+        preprocessing = {}
+        for value in getattr(spec, "preprocessing_files", ()):
+            path = file_path(value, directory)
+            if path is not None:
+                preprocessing[path] = FileEntry(local_path=path, kind=getattr(value, "kind", "file"))
         return cls(
+            preprocessing_files=tuple(preprocessing.values()),
             inputs=tuple(FileEntry(local_path=path, optional=not required, kind=input_kinds[path]) for path, required in inputs),
             outputs=tuple(FileEntry(local_path=path, optional=not required, kind=kind, collect=collect)
                           for path, required, kind, collect in outputs),
@@ -226,7 +233,8 @@ class FileManifest:
         ).initialize_availability()
 
     def __post_init__(self):
-        for name, cls in (("inputs", FileEntry), ("outputs", FileEntry), ("caches", CacheEntry)):
+        for name, cls in (("inputs", FileEntry), ("outputs", FileEntry), ("caches", CacheEntry),
+                          ("preprocessing_files", FileEntry)):
             items = getattr(self, name)
             object.__setattr__(
                 self,

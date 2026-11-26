@@ -31,17 +31,19 @@ from kkrunner.runs.records import RunRecord
 
 _STATE_RANK = {
     RunState.NEW: 0,
-    RunState.SUBMITTING: 1,
-    RunState.QUEUED: 2,
-    RunState.RUNNING: 3,
-    RunState.DOWNLOADING: 4,
-    RunState.POSTPROCESSING: 5,
-    RunState.FINISHED: 6,
-    RunState.FAILED: 6,
-    RunState.CANCELLED: 6,
+    RunState.PREPROCESSING: 1,
+    RunState.SUBMITTING: 2,
+    RunState.QUEUED: 3,
+    RunState.RUNNING: 4,
+    RunState.DOWNLOADING: 5,
+    RunState.POSTPROCESSING: 6,
+    RunState.FINISHED: 7,
+    RunState.FAILED: 7,
+    RunState.CANCELLED: 7,
 }
 _UNCHANGED = object()
 _NO_ARTIFACTS_FAILURES = {
+    FailurePhase.PREPROCESSING,
     FailurePhase.SUBMISSION,
     FailurePhase.LAUNCH,
     FailurePhase.OUTPUT,
@@ -376,8 +378,33 @@ class RunManager:
 
         return self.store.update(record, mark_absent)
 
-    def reserve(self, record):
+    def recover_preprocessing(self, record):
+        """Abandon preprocessing only after its owning client has released its OS lock."""
+        lock = self.store.preprocessing_lock(record)
+        if not lock.acquire(blocking=False):
+            return self.store.get(record.id)
+        try:
+            latest = self.store.get(record.id)
+            if latest.state != RunState.PREPROCESSING:
+                return latest
+            return self.complete(
+                latest, state=RunState.FAILED, failure_phase=FailurePhase.PREPROCESSING,
+                message="Client preprocessing was interrupted before submission",
+            )
+        finally:
+            lock.release()
+
+    def begin_submission(self, record):
+        """Publish the irreversible submission phase only after preprocessing and input sync."""
+        if record.state != RunState.PREPROCESSING:
+            raise ValueError("Run is not preprocessing")
+        sync_result_files(record.files.input_files)
+        return self.transition(record, state=RunState.SUBMITTING, expected_record=record)
+
+    def reserve(self, record, *, preprocessing=False):
+        """Reserve the footprint; preprocessing callers must hold their ownership lock."""
         attempted_recovery = set()
+        attempted_preprocessing = set()
         attempted_refresh = set()
         while True:
             with self.store.submission_lock():
@@ -393,12 +420,16 @@ class RunManager:
                     if active.id != record.id and submission_conflicts(record, active)
                 )
                 if not conflicts:
-                    if record.files is not None:
+                    if not preprocessing and record.files is not None:
                         sync_result_files(record.files.input_files)
                     return self.transition(
                         record,
-                        state=RunState.SUBMITTING,
+                        state=RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING,
                     )
+                preparing = tuple(
+                    conflict for conflict in conflicts
+                    if conflict.id not in attempted_preprocessing and conflict.state == RunState.PREPROCESSING
+                )
                 stale = tuple(
                     conflict
                     for conflict in conflicts
@@ -413,9 +444,14 @@ class RunManager:
                     and conflict.execution.backend_id is not None
                 )
 
-            if not stale and not refreshable:
+            if not preparing and not stale and not refreshable:
                 raise DuplicateSubmissionError(record, conflicts)
             progressed = False
+            for conflict in preparing:
+                attempted_preprocessing.add(conflict.id)
+                recovered = self.recover_preprocessing(conflict)
+                if recovered.state != RunState.PREPROCESSING:
+                    progressed = True
             for conflict in stale:
                 attempted_recovery.add(conflict.id)
                 recovered = self.recover_submitting(conflict)
@@ -444,7 +480,7 @@ class RunManager:
         # Backend refresh is observational. It cannot retract local processing
         # or a terminal result, including when a scheduler returns stale data.
         latest = self.store.get(record.id)
-        if latest.state.is_terminal or latest.state == RunState.POSTPROCESSING:
+        if latest.state.is_terminal or latest.state in (RunState.PREPROCESSING, RunState.POSTPROCESSING):
             return latest
         record = latest
         if status.return_code is None and record.return_code is not None:
@@ -789,7 +825,7 @@ class RunManager:
     def create_run(
         self, client, spec, *, process_result=None, metadata=None,
         processing_required=None, callback=None, run_id=None, detached=None,
-        owned_resources=None,
+        owned_resources=None, preprocess=None,
     ):
         """Create one tracked Run through the configured client."""
         from kkrunner.runs.run import Run
@@ -819,6 +855,7 @@ class RunManager:
         return Run(
             parts.job, client=client, manager=self, record=record,
             process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
+            preprocess=preprocess,
         )
 
     def refresh(self, records=None, *, on_error=None):
@@ -829,6 +866,9 @@ class RunManager:
         current = {record.id: record for record in records}
         groups = {}
         for record in records:
+            if record.state == RunState.PREPROCESSING:
+                current[record.id] = self.recover_preprocessing(record)
+                continue
             if not record.execution.available:
                 continue  # Browsable history; no supported target implementation.
             if record.execution.backend_id is None and self._is_stale_submitting(record):

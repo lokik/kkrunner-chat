@@ -258,6 +258,8 @@ class ExecutionSpec:
     # The MPI command may have a different stdin contract from serial argv.
     # Generic executors preserve stdin unless the caller explicitly opts out.
     mpi_uses_stdin: bool = True
+    # Client-side writes, including generated inputs; not transfer artifacts.
+    preprocessing_files: Sequence[Any] = ()
 
     def __post_init__(self):
         for name, expected in (("mpi", MpiSpec), ("staging", StagingSpec)):
@@ -272,7 +274,7 @@ class ExecutionSpec:
         object.__setattr__(self, "directory", os.fspath(self.directory))
         for name in ("input_file", "output_file", "stdin", "error_file"):
             object.__setattr__(self, name, _pathlike(getattr(self, name)))
-        for name in ("input_files", "output_files", "cache_files"):
+        for name in ("input_files", "output_files", "cache_files", "preprocessing_files"):
             object.__setattr__(
                 self,
                 name,

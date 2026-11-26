@@ -151,6 +151,10 @@ class RunStore:
         """Exclusive live processing ownership, released by the OS after death."""
         return FileLock(self._run_lock_path(record).with_suffix(".processing.lock"))
 
+    def preprocessing_lock(self, record):
+        """Exclusive live client preprocessing ownership, released on process death."""
+        return FileLock(self._run_lock_path(record).with_suffix(".preprocessing.lock"))
+
     def observation_lock(self, record):
         """Protect an active direct observer until files and results are committed.
 
