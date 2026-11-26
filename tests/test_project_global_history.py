@@ -10,7 +10,7 @@ from kkrunner.projects.repository import ProjectDeleteError, ProjectRepository
 from kkrunner.projects.resolution import resolve_project_manager
 from kkrunner.runs.base import RunState
 from kkrunner.runs.manager import DuplicateSubmissionError
-from kkrunner.runs.records import RunStore
+from kkrunner.runs.records import ForgottenRunError, RunStore
 
 
 def test_different_projects_share_one_store_and_keep_project_identity(tmp_path):
@@ -61,13 +61,15 @@ def test_cross_project_active_conflict_and_project_deletion(tmp_path):
     a.complete(first_record, state=RunState.FAILED)
     projects.delete(first.id, expected_generation=first.generation)
     assert all((r.project_id != first.id for r in b.store.runs()))
+    with pytest.raises(ForgottenRunError):
+        a.store.update(first_record, lambda latest: latest)
 
 
 def test_for_project_preserves_explicit_run_store(tmp_path):
-    projects = ProjectRepository(tmp_path / "projects")
-    project = projects.create("Project")
     custom_store = RunStore(tmp_path / "custom-runs")
-    original = ProjectRunManager(store=custom_store, project_repository=projects, submitting_grace=17)
+    projects = ProjectRepository(tmp_path / "projects", run_store=custom_store)
+    project = projects.create("Project")
+    original = ProjectRunManager(project_repository=projects, submitting_grace=17)
     bound = original.for_project(project)
     assert bound.store is custom_store
     assert bound.submitting_grace == 17
@@ -108,3 +110,63 @@ def test_unknown_run_prevents_project_deletion_until_terminal(tmp_path):
     manager.store.update(record, lambda latest: replace(latest, state=RunState.FINISHED))
     projects.delete(project.id, expected_generation=project.generation)
     assert manager.store.runs() == ()
+
+def test_failed_history_deletion_keeps_project(tmp_path):
+    from kkrunner.projects.repository import ProjectRepositoryError
+
+    projects = ProjectRepository(tmp_path / "projects")
+    root = projects.create("Root")
+    project = projects.create("Child", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects, project=project)
+    record = manager.new_record(directory=tmp_path / "work")
+    manager.complete(record, state=RunState.FAILED)
+    # A filesystem error during history removal must not remove its owner.
+    (manager.store.directory / ".forgotten").write_text("not a directory")
+    with pytest.raises(ProjectRepositoryError):
+        projects.delete(project.id, expected_generation=project.generation)
+    assert projects.project(project.id) == project
+    assert manager.store.get(record.id).state == RunState.FAILED
+
+
+def test_project_deletion_respects_live_client_ownership(tmp_path):
+    projects = ProjectRepository(tmp_path / "projects")
+    root = projects.create("Root")
+    project = projects.create("Child", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects, project=project)
+    record = manager.complete(manager.new_record(directory=tmp_path / "work"),
+                              state=RunState.FAILED)
+    with manager.store.observation_lock(record):
+        with pytest.raises(ProjectDeleteError, match="client owns"):
+            projects.delete(project.id, expected_generation=project.generation)
+        assert projects.project(project.id) == project
+        assert manager.store.get(record.id) == record
+    projects.delete(project.id, expected_generation=project.generation)
+    assert manager.store.runs() == ()
+
+
+def test_custom_project_store_is_used_for_move_and_delete(tmp_path):
+    store = RunStore(tmp_path / "history")
+    projects = ProjectRepository(tmp_path / "metadata" / "projects", run_store=store)
+    root = projects.create("Root")
+    source = projects.create("Source", parent_id=root.id)
+    target = projects.create("Target", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects, project=source)
+    active = manager.reserve(manager.new_record(directory=tmp_path / "work"))
+    with pytest.raises(ProjectDeleteError, match="active"):
+        projects.delete(source.id, expected_generation=source.generation)
+    manager.complete(active, state=RunState.FAILED)
+    moved, = projects.reassign_runs((active.id,), target.id)
+    assert moved.project_id == target.id
+    projects.delete(source.id, expected_generation=source.generation)
+    assert store.get(moved.id).project_id == target.id
+    projects.delete(target.id, expected_generation=target.generation)
+    assert not store.runs()
+    with pytest.raises(ForgottenRunError):
+        store.update(moved, lambda record: record)
+    assert not (tmp_path / "metadata" / "projects_runs").exists()
+
+
+def test_project_manager_rejects_a_different_store(tmp_path):
+    projects = ProjectRepository(tmp_path / "projects")
+    with pytest.raises(ValueError, match="same run store"):
+        ProjectRunManager(RunStore(tmp_path / "other"), project_repository=projects)

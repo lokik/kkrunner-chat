@@ -9,7 +9,7 @@ from kkrunner.projects.resolution import resolve_project_manager
 
 def _manager(tmp_path):
     return ProjectRunManager(
-        RunStore(tmp_path / "runs"), project_repository=ProjectRepository(tmp_path / "projects")
+        project_repository=ProjectRepository(tmp_path / "projects", run_store=RunStore(tmp_path / "runs"))
     )
 
 

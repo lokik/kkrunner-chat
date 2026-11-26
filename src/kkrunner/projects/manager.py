@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from kkrunner.projects.repository import Project, ProjectRepository
 from kkrunner.runs.manager import RunManager
-from kkrunner.runs.records import RunStore
 
 
 class ProjectRunManager(RunManager):
@@ -25,16 +24,17 @@ class ProjectRunManager(RunManager):
         project_repository=None,
         project=None,
     ):
-        self.projects = project_repository if project_repository is not None else ProjectRepository()
+        self.projects = (ProjectRepository(run_store=store)
+                         if project_repository is None else project_repository)
+        if store is not None and store.lock_key != self.projects.run_store.lock_key:
+            raise ValueError("Project manager and repository must use the same run store")
         self._project_id = None
         if project is not None:
             identity = project.id if isinstance(project, Project) else str(project)
             current = self.projects.project(identity)
             self._project_id = current.id
-        if store is None:
-            store = RunStore(self.projects.directory.parent / "projects_runs")
         super().__init__(
-            store,
+            self.projects.run_store,
             client_pool=client_pool,
             submitting_grace=submitting_grace,
             conflict_stores=conflict_stores,
@@ -57,7 +57,6 @@ class ProjectRunManager(RunManager):
         if self._project_id == current.id:
             return self
         return type(self)(
-            store=self.store,
             client_pool=self.client_pool,
             submitting_grace=self.submitting_grace,
             conflict_stores=self.conflict_stores,

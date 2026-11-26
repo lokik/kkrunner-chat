@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
@@ -171,11 +171,20 @@ class ProjectRepository:
     corresponding stable sidecar lock.
     """
 
-    def __init__(self, directory: str | Path | None = None) -> None:
+    def __init__(self, directory: str | Path | None = None, *, run_store=None) -> None:
+        from kkrunner.runs.records import RunStore
+
         self.directory = Path(directory) if directory is not None else default_projects_directory()
+        self._run_store = (RunStore(self.directory.parent / "projects_runs")
+                           if run_store is None else run_store)
         self._state_lock = RLock()
         self._listeners: set[ProjectChangedListener] = set()
         self._known: dict[str, Project] | None = None
+
+    @property
+    def run_store(self):
+        """The shared run history for this project namespace."""
+        return self._run_store
 
     def subscribe(self, listener: ProjectChangedListener) -> Callable[[], None]:
         """Subscribe to local changes; the first refresh establishes the external baseline."""
@@ -315,7 +324,6 @@ class ProjectRepository:
         run_ids: Iterable[str],
         project_id: str | None,
         *,
-        store=None,
         expected_project_ids: Mapping[str, str | None] | None = None,
     ) -> tuple:
         """Move run records between projects without changing their execution.
@@ -324,13 +332,11 @@ class ProjectRepository:
         lock prevents destination deletion during the move. Normal run lifecycle
         transitions synchronize on each run record and keep its latest project.
         """
-        from kkrunner.runs.records import RunStore
-
         ids = tuple(dict.fromkeys(str(run_id) for run_id in run_ids))
         if not ids:
             return ()
         target_id = None if project_id is None else _project_id(project_id)
-        run_store = store if store is not None else RunStore(self.directory.parent / "projects_runs")
+        run_store = self.run_store
         with self._hierarchy_lock(), run_store.submission_lock():
             if target_id is not None:
                 self._read_path(self._json_path(target_id))
@@ -366,20 +372,28 @@ class ProjectRepository:
             projects = self._read_projects()
             if any(item.parent_id == canonical for item in projects):
                 raise ProjectDeleteError("Projects with child projects cannot be deleted")
-            from kkrunner.runs.records import RunStore
+            from kkrunner.runs.records import ActiveRunDeletionError
 
-            run_store = RunStore(self.directory.parent / "projects_runs")
-            with run_store.submission_lock():
+            run_store = self.run_store
+            with run_store.submission_lock(), ExitStack() as owners:
                 histories = tuple(record for record in run_store.runs() if record.project_id == canonical)
                 if any(not record.state.is_terminal for record in histories):
                     raise ProjectDeleteError("Cannot delete a project with active runs")
+                # Match RunManager.forget(): a live client still owns its
+                # history even after publishing a terminal state. Never wait
+                # for observation ownership while holding the submission lock.
+                for record in histories:
+                    owner = run_store.observation_lock(record)
+                    if not owner.acquire(blocking=False):
+                        raise ProjectDeleteError("Cannot delete a project while a client owns its runs")
+                    owners.callback(owner.release)
                 try:
+                    for record in histories:
+                        run_store.forget_under_submission_lock(record)
                     self._json_path(canonical).unlink()
                     fsync_directory(self.directory)
-                    for record in histories:
-                        record_path = run_store._path(record)
-                        record_path.unlink(missing_ok=True)
-                        fsync_directory(record_path.parent)
+                except ActiveRunDeletionError as exc:
+                    raise ProjectDeleteError("Cannot delete a project with active runs") from exc
                 except OSError as exc:
                     raise ProjectRepositoryError(f"Cannot delete project {canonical!r}: {exc}") from exc
 
