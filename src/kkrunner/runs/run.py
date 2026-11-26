@@ -86,7 +86,7 @@ class Run:
         self._lock = Lock()
         self._completion_lock = Lock()
         self._completion_persisted = False
-        self._direct_observation_lock = None
+        self._observation_lock = None
         self._monitor_record_version = None if record is None else record.updated_at
 
     @classmethod
@@ -364,9 +364,9 @@ class Run:
                     # An independent observer completed the processing first.
                     self.result = None
             try:
-                if self._direct_observation_lock is not None:
-                    self._direct_observation_lock.release()
-                    self._direct_observation_lock = None
+                if self._observation_lock is not None:
+                    self._observation_lock.release()
+                    self._observation_lock = None
             finally:
                 self._settled = True
                 finish_monitor(self)
@@ -449,9 +449,8 @@ class Run:
                 )
                 # Acquire owner lock before making the reservation visible. The same
                 # lock protects staging, execution, processing and resource cleanup.
-                if not self._record.retain_history or self.client.backend.name == "direct":
-                    self._direct_observation_lock = manager.store.observation_lock(self._record)
-                    self._direct_observation_lock.acquire()
+                self._observation_lock = manager.store.observation_lock(self._record)
+                self._observation_lock.acquire()
                 # Reservation and duplicate-submit checks are atomic at the store.
                 if self._preprocess is not None:
                     preprocessing_lock = manager.store.preprocessing_lock(self._record)
@@ -547,9 +546,9 @@ class Run:
             finally:
                 if definitely_absent:
                     self._owned_resources.close(suppress_errors=True)
-                if self._direct_observation_lock is not None and not self._started:
-                    self._direct_observation_lock.release()
-                    self._direct_observation_lock = None
+                if self._observation_lock is not None and not self._started:
+                    self._observation_lock.release()
+                    self._observation_lock = None
                 self._settled = True
             if cancelled:
                 raise self._exception from exc

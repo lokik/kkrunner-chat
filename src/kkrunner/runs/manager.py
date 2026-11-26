@@ -405,6 +405,39 @@ class RunManager:
         finally:
             lock.release()
 
+    @contextmanager
+    def preprocessing_reservation(self, spec):
+        """Reserve local application reads/writes without submitting a backend job.
+
+        Use this for operations such as saving generated input files. The spec
+        declares the local footprint only; no native execution is constructed.
+        The reservation is hidden from history and collected after cleanup.
+        """
+        record = self.new_record(
+            directory=spec.directory, files=FileManifest.from_spec(spec), retain_history=False,
+        )
+        reserved = None
+        try:
+            with self.store.observation_lock(record), self.store.preprocessing_lock(record):
+                reserved = self.reserve(record, preprocessing=True)
+                try:
+                    yield
+                    sync_result_files((*reserved.files.input_files, *(
+                        entry.local_path for entry in reserved.files.preprocessing_files
+                        if entry.local_path is not None
+                    )))
+                except BaseException as exc:
+                    reserved = self.complete(
+                        reserved, state=RunState.FAILED, failure_phase=FailurePhase.PREPROCESSING,
+                        message=str(exc),
+                    )
+                    raise
+                else:
+                    reserved = self.complete(reserved, state=RunState.FINISHED)
+        finally:
+            if reserved is not None and reserved.state.is_terminal:
+                self.store.discard_terminal_reservation(reserved)
+
     def begin_submission(self, record):
         """Publish the irreversible submission phase only after preprocessing and input sync."""
         if record.state != RunState.PREPROCESSING:
@@ -430,9 +463,17 @@ class RunManager:
                     if active.id == record.id:
                         continue
                     if active.state.is_terminal:
-                        if active.retain_history or self.store.discard_terminal_reservation(active):
+                        if active.retain_history or (
+                            (active.execution.backend_id is None or active.execution.backend.name == "direct")
+                            and self.store.discard_terminal_reservation(active)
+                        ):
                             continue
-                        # Terminal metadata can precede the owner's final cleanup.
+                        # A failed ACK does not imply live file access. Only the
+                        # still-held owner lock makes terminal metadata conflicting.
+                        owner = self.store.observation_lock(active)
+                        if owner.acquire(blocking=False):
+                            owner.release()
+                            continue
                     if submission_conflicts(record, active):
                         conflicts.append(active)
                 conflicts = tuple(conflicts)
@@ -467,12 +508,24 @@ class RunManager:
             progressed = False
             for conflict in preparing:
                 attempted_preprocessing.add(conflict.id)
-                recovered = self.recover_preprocessing(conflict)
+                try:
+                    recovered = self.recover_preprocessing(conflict)
+                except FileNotFoundError:
+                    if conflict.retain_history:
+                        raise
+                    progressed = True
+                    continue
                 if recovered.state != RunState.PREPROCESSING:
                     progressed = True
             for conflict in stale:
                 attempted_recovery.add(conflict.id)
-                recovered = self.recover_submitting(conflict)
+                try:
+                    recovered = self.recover_submitting(conflict)
+                except FileNotFoundError:
+                    if conflict.retain_history:
+                        raise
+                    progressed = True
+                    continue
                 if recovered.state != RunState.SUBMITTING or recovered.execution.backend_id is not None:
                     progressed = True
             for conflict in refreshable:
@@ -484,7 +537,7 @@ class RunManager:
                     if BackendCapability.STATUS not in client.backend.supports:
                         continue
                     refreshed = self.refresh((conflict,))[0]
-                if refreshed.state.is_terminal:
+                if refreshed is None or refreshed.state.is_terminal:
                     progressed = True
             if not progressed:
                 raise DuplicateSubmissionError(record, conflicts)
@@ -824,6 +877,15 @@ class RunManager:
             self._acknowledged_results.add(key)
             return True
 
+    def discard_reservation(self, record):
+        """Collect hidden history only after any recoverable backend receipt is acknowledged."""
+        if record.retain_history or not record.state.is_terminal:
+            return False
+        if (record.execution.available and record.execution.backend_id is not None
+                and record.execution.backend.name != "direct" and not self._acknowledge_result(record)):
+            return False
+        return self.store.discard_terminal_reservation(record)
+
     def reconcile_acknowledgements(self, *, on_error=None):
         """Retry idempotent result ACKs for durable terminal records."""
         options = {} if on_error is None else {"on_error": on_error}
@@ -899,7 +961,7 @@ class RunManager:
             try:
                 current = self.store.get(record.id)
             except FileNotFoundError:
-                return replace(record, state=RunState.FINISHED)
+                return None  # Another instance already collected this reservation.
             if current.state.is_terminal:
                 return current
             if current.state == RunState.PREPROCESSING:
@@ -941,14 +1003,17 @@ class RunManager:
             for reservation in self.store.runs(include_reservations=True, **options):
                 if not reservation.retain_history:
                     refreshed = self._refresh_reservation(reservation)
-                    self.store.discard_terminal_reservation(refreshed)
+                    if refreshed is not None:
+                        self.discard_reservation(refreshed)
             records = self.store.runs(active=True, **options)
         records = tuple(records)
         current = {record.id: record for record in records}
         groups = {}
         for record in records:
             if not record.retain_history:
-                current[record.id] = self._refresh_reservation(record)
+                refreshed = self._refresh_reservation(record)
+                if refreshed is not None:
+                    current[record.id] = refreshed
                 continue
             if record.state == RunState.PREPROCESSING:
                 current[record.id] = self.recover_preprocessing(record)

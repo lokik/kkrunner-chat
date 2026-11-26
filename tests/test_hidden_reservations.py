@@ -8,6 +8,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunManager, RunState, RunStore
 from kkrunner.client import EndpointClient
 from kkrunner.runs import DuplicateSubmissionError
+from kkrunner.files import FileManifest
 
 
 @pytest.mark.parametrize("first_tracked, second_tracked", [(False, False), (False, True), (True, False)])
@@ -73,3 +74,27 @@ def test_project_manager_can_reserve_without_project(tmp_path):
     assert run.record is None
     run.run()
     assert not manager.store.runs()
+
+
+def test_save_only_preprocessing_conflicts_and_never_enters_history(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    other = RunManager(RunStore(tmp_path / "runs"))
+    spec = ExecutionSpec((), directory=tmp_path, preprocessing_files=("input",))
+    reader = other.new_record(directory=tmp_path, files=FileManifest.from_spec(
+        ExecutionSpec((), directory=tmp_path, input_file="input")))
+    with manager.preprocessing_reservation(spec):
+        assert not manager.store.runs()
+        with pytest.raises(DuplicateSubmissionError):
+            other.reserve(reader)
+        (tmp_path / "input").write_text("prepared")
+    assert not manager.store.runs(include_reservations=True)
+    assert other.reserve(reader).state == RunState.SUBMITTING
+
+
+def test_save_only_preprocessing_failure_does_not_leave_reservation(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    spec = ExecutionSpec((), directory=tmp_path, preprocessing_files=("input",))
+    with pytest.raises(ValueError, match="bad input"):
+        with manager.preprocessing_reservation(spec):
+            raise ValueError("bad input")
+    assert not manager.store.runs(include_reservations=True)

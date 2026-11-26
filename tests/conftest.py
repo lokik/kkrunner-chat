@@ -3,6 +3,18 @@
 import pytest
 
 from kkrunner.client import pool
+from kkrunner.runs.manager import RunManager
+
+
+@pytest.fixture(autouse=True)
+def isolated_default_run_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    previous = RunManager._fallback
+    RunManager._fallback = None
+    try:
+        yield
+    finally:
+        RunManager._fallback = previous
 
 
 @pytest.fixture(autouse=True)

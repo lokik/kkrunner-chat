@@ -327,6 +327,10 @@ class RunStore:
                 continue
             try:
                 records.append(self._decode(path))
+            except FileNotFoundError:
+                # A concurrent owner may have collected a terminal reservation
+                # between directory enumeration and opening its record.
+                continue
             except CorruptRunRecord as exc:
                 if on_error is None:
                     raise
