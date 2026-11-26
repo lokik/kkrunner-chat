@@ -1,6 +1,8 @@
 """History visibility does not decide whether a Run protects its files."""
 
+import subprocess
 import sys
+import time
 from dataclasses import replace
 
 import pytest
@@ -98,3 +100,64 @@ def test_save_only_preprocessing_failure_does_not_leave_reservation(tmp_path):
         with manager.preprocessing_reservation(spec):
             raise ValueError("bad input")
     assert not manager.store.runs(include_reservations=True)
+
+
+@pytest.mark.parametrize("crash", [False, True])
+def test_preprocessing_reservation_is_interprocess(tmp_path, crash):
+    store = tmp_path / "runs"
+    manager = RunManager(RunStore(store))
+    spec = ExecutionSpec((), directory=tmp_path, preprocessing_files=("input",))
+    child_script = """
+import sys
+from pathlib import Path
+from kkrunner import ExecutionSpec, RunManager, RunStore
+root, store = map(Path, sys.argv[1:])
+manager = RunManager(RunStore(store))
+with manager.preprocessing_reservation(
+    ExecutionSpec((), directory=root, preprocessing_files=("input",))
+):
+    (root / "ready").touch()
+    sys.stdin.read()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_script, str(tmp_path), str(store)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "ready").exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert (tmp_path / "ready").exists(), "child did not enter preprocessing"
+        with pytest.raises(DuplicateSubmissionError):
+            with manager.preprocessing_reservation(spec):
+                pytest.fail("conflicting preprocessing was allowed")
+        if crash:
+            child.kill()
+        child.communicate(timeout=10)
+        if not crash:
+            assert child.returncode == 0
+        # The OS releases ownership even when the child is killed. Recovery
+        # must not query a backend because preprocessing never launched one.
+        with manager.preprocessing_reservation(spec):
+            pass
+        manager.refresh()
+        assert not manager.store.runs(include_reservations=True)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=10)
+
+
+def test_persistent_terminal_record_keeps_live_cleanup_reservation(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    spec = ExecutionSpec((), directory=tmp_path, preprocessing_files=("input",))
+    first = manager.new_record(directory=tmp_path, files=FileManifest.from_spec(spec))
+    with manager.store.observation_lock(first):
+        reserved = manager.reserve(first)
+        manager.complete(reserved, state=RunState.FINISHED)
+        with pytest.raises(DuplicateSubmissionError):
+            with manager.preprocessing_reservation(spec):
+                pytest.fail("live cleanup was not protected")
+    with manager.preprocessing_reservation(spec):
+        pass
+    assert len(manager.store.runs()) == 1

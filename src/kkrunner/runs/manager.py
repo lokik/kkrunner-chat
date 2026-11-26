@@ -460,22 +460,20 @@ class RunManager:
                     raise ValueError(f"Run id {record.id!r} already exists; use attach()")
                 conflicts = []
                 for active in self.store.runs(include_reservations=True):
-                    if active.id == record.id:
+                    if active.id == record.id or not submission_conflicts(record, active):
                         continue
                     if active.state.is_terminal:
-                        if active.retain_history or (
-                            (active.execution.backend_id is None or active.execution.backend.name == "direct")
-                            and self.store.discard_terminal_reservation(active)
-                        ):
-                            continue
-                        # A failed ACK does not imply live file access. Only the
-                        # still-held owner lock makes terminal metadata conflicting.
+                        # Both tracked and hidden runs can publish a terminal state
+                        # before their owner finishes closing application resources.
                         owner = self.store.observation_lock(active)
                         if owner.acquire(blocking=False):
                             owner.release()
+                            if (not active.retain_history and (
+                                active.execution.backend_id is None or active.execution.backend.name == "direct"
+                            )):
+                                self.store.discard_terminal_reservation(active)
                             continue
-                    if submission_conflicts(record, active):
-                        conflicts.append(active)
+                    conflicts.append(active)
                 conflicts = tuple(conflicts)
                 if not conflicts:
                     if not preprocessing and record.files is not None:
@@ -1126,20 +1124,32 @@ class RunManager:
         if BackendCapability.REATTACH not in client.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("This backend does not support reattachment")
-        parts = client.open_run_parts(
-            JobAttachment(record.execution, record.files),
-            output_listener=output_listener,
-        )
+        owner = None
+        parts = None
         try:
+            if not record.retain_history or client.backend.name == "direct":
+                owner = self.store.observation_lock(record)
+                if not owner.acquire(blocking=False):
+                    raise RuntimeError("Run already has a live client observer")
+                # A concurrent refresh may have completed the run just before
+                # we acquired ownership. Do not open streams for a terminal run.
+                record = self.store.get(record.id)
+                if record.state.is_terminal:
+                    raise RuntimeError("Run is already terminal; use explicit retry")
+            parts = client.open_run_parts(
+                JobAttachment(record.execution, record.files),
+                output_listener=output_listener,
+            )
             attached = Run(
                 parts.job, client=client, manager=self, record=record,
                 process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
             )
+            attached._observation_lock = owner
             attached.start()
         except BaseException:
-            # Opening an attachment transfers stream ownership to Run only
-            # once its observer has started. Do not leak file descriptors when
-            # constructing or starting the attached observer fails.
-            parts.abort()
+            if parts is not None:
+                parts.abort()
+            if owner is not None:
+                owner.release()
             raise
         return attached
