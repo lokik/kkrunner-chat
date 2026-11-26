@@ -5,7 +5,7 @@ from fnmatch import fnmatchcase
 from functools import lru_cache
 import os
 from pathlib import Path
-from uuid import uuid4
+from kkrunner.files.staging import staged_local_file
 
 from kkrunner.files.paths import has_file_magic
 
@@ -50,15 +50,9 @@ def matching_file(manifest, path):
 @contextmanager
 def snapshot_destination(destination):
     """Publish a copy atomically without overwriting the existing file on failure."""
-    path = Path(destination)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        with temp.open("wb") as output:
+    with staged_local_file(destination) as temporary:
+        with temporary.open("wb") as output:
             yield output
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def check_destination(manifest, source, destination):

@@ -78,13 +78,13 @@ def test_reading_state_does_not_write_to_store(tmp_path, monkeypatch):
 def test_finalization_is_once_even_when_wait_is_repeated(tmp_path, monkeypatch):
     run, job, manager, client = _run(tmp_path)
     completed = []
-    original = manager.complete
+    original = manager.publish_completion
 
     def record_completion(*args, **kwargs):
         completed.append(kwargs["state"])
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(manager, "complete", record_completion)
+    monkeypatch.setattr(manager, "publish_completion", record_completion)
     run.start()
     job.finish(RunState.FINISHED)
     result = run.wait()
@@ -98,13 +98,13 @@ def test_finalization_is_once_even_when_wait_is_repeated(tmp_path, monkeypatch):
 def test_unknown_observation_does_not_finalize_execution(tmp_path, monkeypatch):
     run, job, manager, client = _run(tmp_path)
     completed = []
-    original = manager.complete
+    original = manager.publish_completion
 
     def record_completion(*args, **kwargs):
         completed.append(kwargs["state"])
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(manager, "complete", record_completion)
+    monkeypatch.setattr(manager, "publish_completion", record_completion)
     run.start()
     job.finish(RunState.UNKNOWN, "scheduler disconnected")
     run.wait()

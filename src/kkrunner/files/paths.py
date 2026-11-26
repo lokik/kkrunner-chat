@@ -6,12 +6,10 @@ import os
 from kkrunner.files.task_file import TaskFile
 
 
-def file_path(value, directory=None, *, flush=False, required=False):
-    """Resolve a named file or path, returning None for unnamed descriptors."""
+def file_path(value, directory=None, *, required=False):
+    """Resolve a named file or path without performing any file I/O."""
     if value is None:
         return None
-    if flush and hasattr(value, "flush"):
-        value.flush()
     if not isinstance(value, (str, bytes, os.PathLike)):
         value = getattr(value, "name", value)
     if isinstance(value, int):
@@ -29,7 +27,7 @@ def file_path(value, directory=None, *, flush=False, required=False):
     return os.path.abspath(path)
 
 
-def declared_file_paths(values, directory, *, excluded=(), flush=False):
+def declared_file_paths(values, directory, *, excluded=()):
     """Combine identical input declarations; reject contradictory optionality.
 
     The execution layer accepts ordinary filenames, file objects and TaskFile
@@ -38,7 +36,7 @@ def declared_file_paths(values, directory, *, excluded=(), flush=False):
     merged = {}
     excluded = set(excluded)
     for value in values:
-        path = file_path(value, directory, flush=flush)
+        path = file_path(value, directory)
         if path is None or path in excluded:
             continue
         required = not (isinstance(value, TaskFile) and value.optional)

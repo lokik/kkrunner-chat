@@ -23,7 +23,8 @@ from kkrunner.files.queries import (
 )
 from kkrunner.files.snapshots import snapshot_destination
 
-from ...base import Transport, _completed_process, _local_temporary_path
+from kkrunner.files.staging import staged_local_file
+from ...base import Transport, _completed_process
 from ...rpc import operation_payload, operation_result
 from .rpc import operation_command
 
@@ -175,16 +176,15 @@ class SshTransport(Transport):
     async def _finalize_upload(self, temporary, destination, mtime_ns):
         await self.call_function(finalize_upload, temporary, destination, mtime_ns)
 
-    async def get_file(self, source, destination):
+    async def get_file(self, source, destination, *, verify=None, overwrite=True):
         source = os.fspath(source)
         signature = await self.file_signature(source)
         if signature is None:
             raise FileNotFoundError(source)
 
         destination = Path(destination)
-        temporary = _local_temporary_path(destination)
         command = self._command(("cat", "--", source))
-        try:
+        with staged_local_file(destination, verify=verify, overwrite=overwrite) as temporary:
             with temporary.open("wb") as destination_file:
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -196,15 +196,6 @@ class SshTransport(Transport):
                 raise RuntimeError(f"Remote file changed while downloading: {source}")
             stat = temporary.stat()
             os.utime(temporary, ns=(stat.st_atime_ns, signature[1]))
-            os.replace(temporary, destination)
-        except BaseException:
-            # Failure to remove the temporary download must not mask the
-            # primary transfer error, including cancellation.
-            try:
-                temporary.unlink()
-            except OSError:
-                pass
-            raise
 
     async def put_directory(self, source, destination):
         """Stage a complete directory to a previously absent target path."""

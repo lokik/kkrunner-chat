@@ -19,8 +19,8 @@ from kkrunner.files.manifest import (
     FileSyncPolicy,
 )
 from kkrunner.files.paths import file_path, has_file_magic
-from kkrunner.files.queries import directory_digest, expand_local_files
-from kkrunner.files.streams import OutputStreams, open_output_streams
+from kkrunner.files.queries import directory_digest
+from kkrunner.files.streams import OutputStreams
 from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
@@ -41,7 +41,6 @@ class FileSession:
         self._prepared = None
         self._streams = None
         self._closed = False
-        self._staging = {} if files is None else None
         self._stream_positions = {}
         self._retrieve_primary_streams = False
         self.result = ExecutionOutcome(
@@ -56,8 +55,6 @@ class FileSession:
         return [(entry, None) for entry in self._files.outputs]
 
     def _targets(self, kind):
-        if self._staging is not None:
-            return self._staging.get(kind + "_targets", {})
         return {
             entry.local_path: (entry.remote_path, before) if kind == "cache" else entry.remote_path
             for entry, before in self._declarations(kind)
@@ -66,8 +63,6 @@ class FileSession:
         }
 
     def _patterns(self, kind):
-        if self._staging is not None:
-            return self._staging.get(kind + "_patterns", ())
         return tuple(entry.remote_path for entry, _ in self._declarations(kind)
                      if entry.remote_path is not None and entry.source_pattern is None
                      and has_file_magic(entry.remote_path))
@@ -76,44 +71,22 @@ class FileSession:
     def _output_targets(self):
         return self._targets("output")
 
-    @_output_targets.setter
-    def _output_targets(self, value):
-        self._staging["output_targets"] = value
-
     @property
     def _cache_targets(self):
         return self._targets("cache")
-
-    @_cache_targets.setter
-    def _cache_targets(self, value):
-        self._staging["cache_targets"] = value
 
     @property
     def _output_patterns(self):
         return self._patterns("output")
 
-    @_output_patterns.setter
-    def _output_patterns(self, value):
-        self._staging["output_patterns"] = value
-
     @property
     def _cache_patterns(self):
         return self._patterns("cache")
 
-    @_cache_patterns.setter
-    def _cache_patterns(self, value):
-        self._staging["cache_patterns"] = value
-
     @property
     def _cache_before(self):
-        if self._staging is not None:
-            return self._staging.get("cache_before", {})
         return {entry.remote_path: before for entry, before in self._declarations("cache")
                 if entry.local_path is None}
-
-    @_cache_before.setter
-    def _cache_before(self, value):
-        self._staging["cache_before"] = value
 
     def configure_stream_retrieval(self, required):
         """Choose file retrieval when the job does not relay primary streams."""
@@ -139,20 +112,17 @@ class FileSession:
         kind="output",
         source_pattern=None,
     ):
-        if self._files is not None:
-            self._files = self._files.with_file_availability(
-                local,
-                state,
-                message,
-                remote_path=remote,
-                kind=kind,
-                source_pattern=source_pattern,
-            )
+        self._files = self._files.with_file_availability(
+            local,
+            state,
+            message,
+            remote_path=remote,
+            kind=kind,
+            source_pattern=source_pattern,
+        )
 
     def _set_pending_failed(self, message):
         """Record a transfer-wide failure on still-pending output artifacts."""
-        if self._files is None:
-            return
         for entry in self._files.artifacts:
             if entry.availability_state in (None, "pending"):
                 self._set_file_availability(entry.local_path, "failed", message)
@@ -199,15 +169,14 @@ class FileSession:
         if value is None:
             return None
         try:
-            return file_path(value, self.spec.directory, flush=True, required=not self.is_local)
+            return file_path(value, self.spec.directory, required=not self.is_local)
         except ValueError as exc:
             raise ValueError("Remote execution requires named files") from exc
 
-    async def _stage_file(self, value, used, *, uploads=None, required=True):
-        source = self._local_path(value)
-        if source is None:
+    async def _stage_file(self, entry, used, *, required=True):
+        if entry is None:
             return None
-        target = await self.context.map_path(source)
+        source, target = entry.local_path, entry.remote_path
         previous = used.get(target)
         if previous is not None and previous != source:
             raise ValueError(f"Remote input target collision: {target}")
@@ -231,20 +200,14 @@ class FileSession:
                     raise FileNotFoundError(f"Input file exists neither locally nor remotely: {source}")
 
         if policy.should_transfer(local_digest, remote_digest):
-            if uploads is None:
-                await self.context.transport.put_file(source, target)
-            else:
-                uploads.append(source)
+            await self.context.transport.put_file(source, target)
 
         used[target] = source
         return target
 
-    async def _stage_directory(self, value, used, *, required=True):
+    async def _stage_directory(self, entry, used, *, required=True):
         """Stage an exact directory, rather than hashing it as a single file."""
-        source = self._local_path(value)
-        if source is None:
-            return None
-        target = await self.context.map_path(source)
+        source, target = entry.local_path, entry.remote_path
         if os.path.islink(source):
             raise ValueError(f"Directory input is a symbolic link: {source}")
         local_exists = os.path.isdir(source)
@@ -262,54 +225,41 @@ class FileSession:
         used[target] = source
         return target
 
-    async def _stage_input_pattern(self, value, used, *, required=True):
-        source = self._local_path(value)
-        matches = expand_local_files(source, self.context.local_root)
+    async def _stage_input_pattern(self, entry, used, remote_root, *, required=True):
+        matches = self.context.expand_input(entry, remote_root)
         if not matches and required:
-            raise FileNotFoundError(f"Local input pattern did not match any files: {source}")
-        uploads = []
+            raise FileNotFoundError(f"Local input pattern did not match any files: {entry.local_path}")
         for match in matches:
-            await self._stage_file(
-                match,
-                used,
-                uploads=uploads,
-                required=required,
-            )
-        if uploads:
-            await self.context.transport.put_files(
-                uploads,
-                self.context.local_root,
-                await self.context._resolved_remote_root(),
-            )
+            await self._stage_file(match, used, required=required)
 
     async def _prepare_cache_files(self, used, manifest):
         targets = {}
         patterns = []
         pattern_before = {}
         output_policy = self.context.output_files
-        remote_root = await self.context._resolved_remote_root()
+        remote_root = manifest.mapping.remote_root
 
         for cache in manifest.caches:
-            local = cache.file.local_path
+            entry = cache.file
+            local = entry.local_path
             if has_file_magic(local):
-                remote_pattern = await self.context.map_path(local)
-                patterns.append(remote_pattern)
+                patterns.append(entry.remote_path)
                 # Cache patterns use the same transfer logic as inputs,
                 # but an unmatched cache pattern is optional.
-                await self._stage_input_pattern(local, used, required=False)
+                await self._stage_input_pattern(entry, used, remote_root, required=False)
                 continue
 
             # Cache inputs obey precisely the same staging policy as ordinary
             # inputs, except that a missing local cache is allowed.
             remote = (
-                await self._stage_directory(local, used, required=False)
-                if cache.file.kind == "directory"
-                else await self._stage_file(local, used, required=False)
+                await self._stage_directory(entry, used, required=False)
+                if entry.kind == "directory"
+                else await self._stage_file(entry, used, required=False)
             )
             if remote is None:
                 # A missing cache need not be uploaded, but remains declared:
                 # the calculation may create it and it must be collected.
-                remote = await self.context.map_path(local)
+                remote = entry.remote_path
 
             targets[local] = (remote, None)
 
@@ -329,25 +279,7 @@ class FileSession:
             targets = {local: (remote, signatures.get(remote)) for local, (remote, _) in targets.items()}
             pattern_before = {remote: before for remote, before in signatures.items() if remote not in exact}
 
-        self._cache_targets = targets
-        self._cache_patterns = tuple(patterns)
-        self._cache_before = pattern_before
-
-    async def _prepare_output_files(self, manifest):
-        targets = {}
-        patterns = []
-
-        for entry in manifest.outputs:
-            local = entry.local_path
-            remote = await self.context.map_path(local)
-            if has_file_magic(local):
-                patterns.append(remote)
-            else:
-                targets[local] = remote
-        # Only the execution target clears previous outputs before launch.
-        # A download never invalidates existing local copies in advance.
-        self._output_targets = targets
-        self._output_patterns = tuple(patterns)
+        return targets, tuple(patterns), pattern_before
 
     async def _sync_output_entry(self, local, remote, required, *, source_pattern=None, kind="file"):
         """Synchronize one concrete output and record its availability."""
@@ -423,7 +355,7 @@ class FileSession:
             # FOLLOW transfers primary streams even when separate artifact
             # synchronization is disabled.
             primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
-            for entry in () if self._files is None else self._files.artifacts:
+            for entry in self._files.artifacts:
                 if entry.availability_state == "pending":
                     self._set_file_availability(
                         entry.local_path,
@@ -572,46 +504,53 @@ class FileSession:
 
     async def _prepare_request(self, remote_directory, manifest):
         used = {}
-        # The declared manifest merges aliases with required-wins semantics.
-        # Stage the primary input and stdin first: an optional auxiliary alias
-        # must never weaken a mandatory stream.
-        input_entries = {entry.local_path: entry for entry in manifest.inputs}
-        input_target = await self._stage_file(self.spec.input_file, used)
-        stdin_target = await self._stage_file(self.spec.stdin, used)
-        for value in self.spec.input_files:
-            source = self._local_path(value)
-            entry = input_entries[source] if source is not None else None
-            required = entry is None or not entry.optional
-            if source is not None and has_file_magic(source):
-                await self._stage_input_pattern(value, used, required=required)
-            elif entry is not None and entry.kind == "directory":
-                await self._stage_directory(value, used, required=required)
+        primary = next((entry for entry in manifest.inputs
+                        if entry.local_path == self.result.input_file), None)
+        input_target = await self._stage_file(primary, used)
+        stdin_target = await self._stage_file(manifest.stdin, used)
+        for entry in manifest.inputs:
+            if entry is primary:
+                continue
+            required = not entry.optional
+            if has_file_magic(entry.local_path):
+                await self._stage_input_pattern(entry, used, manifest.mapping.remote_root, required=required)
+            elif entry.kind == "directory":
+                await self._stage_directory(entry, used, required=required)
             else:
-                await self._stage_file(value, used, required=required)
+                await self._stage_file(entry, used, required=required)
 
-        self._staging["inputs"] = dict(used)
-        await self._prepare_cache_files(used, manifest)
+        inputs = dict(used)
+        cache_targets, cache_patterns, cache_before = await self._prepare_cache_files(used, manifest)
         staged = {source: target for target, source in used.items()}
-        await self._prepare_output_files(manifest)
+        output_targets = [entry.remote_path for entry in manifest.outputs if not has_file_magic(entry.local_path)]
+        output_patterns = [entry.remote_path for entry in manifest.outputs if has_file_magic(entry.local_path)]
 
-        output_target = await self.context.map_path(self.result.output_file) if self.result.output_file else None
-        error_target = await self.context.map_path(self.result.error_file) if self.result.error_file else None
+        output_target = None if manifest.stdout is None else manifest.stdout.remote_path
+        error_target = None if manifest.stderr is None else manifest.stderr.remote_path
 
-        return {
+        request = {
             "directory": remote_directory,
             **command_request(self.spec, lambda args: self._remote_argv(args, staged)),
             "input_file": input_target,
             "stdin": stdin_target,
             "output_file": output_target,
             "error_file": error_target,
-            "output_files": [*self._output_targets.values(), *self._output_patterns],
-            "output_directories": [
-                await self.context.map_path(x.local_path)
-                for x in manifest.outputs if x.kind == "directory"
-            ],
-            "cache_files": [*(remote for remote, _ in self._cache_targets.values()), *self._cache_patterns],
+            "output_files": [*output_targets, *output_patterns],
+            "output_directories": [entry.remote_path for entry in manifest.outputs if entry.kind == "directory"],
+            "cache_files": [*(remote for remote, _ in cache_targets.values()), *cache_patterns],
             "input_files": list(used.keys()),
         }
+        caches = [
+            replace(cache, before=cache_targets[cache.file.local_path][1])
+            if cache.file.local_path in cache_targets else cache
+            for cache in manifest.caches
+        ]
+        caches.extend(CacheEntry(FileEntry(remote_path=remote), before)
+                      for remote, before in cache_before.items())
+        return request, replace(
+            manifest, caches=tuple(caches),
+            input_versions=await self._target_input_versions(manifest, inputs),
+        )
 
     async def _target_versions(self, paths):
         transport = self.context.transport
@@ -627,11 +566,11 @@ class FileSession:
                 versions.append(FileVersion(local, fingerprint=None, digest=digest, kind=kind))
         return tuple(versions)
 
-    async def _target_input_versions(self, manifest):
+    async def _target_input_versions(self, manifest, inputs):
         directories = {entry.local_path for entry in manifest.input_entries if entry.kind == "directory"}
         return await self._target_versions({
             target: (local, "directory" if local in directories else "file")
-            for target, local in self._staging.get("inputs", {}).items()
+            for target, local in inputs.items()
         })
 
     async def _target_cache_versions(self):
@@ -648,72 +587,49 @@ class FileSession:
                 paths[entry.remote_path] = (entry.local_path, entry.kind)
         return await self._target_versions(paths)
 
-    async def _submitted_manifest(self, request, local):
-        mapped = await self.context.map_manifest(local)
-        caches = []
-        for cache in mapped.caches:
-            previous = self._cache_targets.get(cache.file.local_path)
-            caches.append(replace(cache, before=None if previous is None else previous[1]))
-        for remote, before in self._cache_before.items():
-            caches.append(CacheEntry(FileEntry(remote_path=remote), before))
-
-        return replace(
-            mapped,
-            caches=tuple(caches),
-            input_versions=await self._target_input_versions(local),
-            stdout=None
-            if mapped.stdout is None
-            else replace(
-                mapped.stdout,
-                remote_path=request.get("output_file"),
-            ),
-            stderr=None
-            if mapped.stderr is None
-            else replace(
-                mapped.stderr,
-                remote_path=request.get("error_file"),
-            ),
-        )
+    def _flush_declared_handles(self):
+        """Use live descriptors only after the caller has reserved their paths."""
+        seen = set()
+        for value in (self.spec.input_file, self.spec.stdin, self.spec.output_file,
+                      self.spec.error_file, *self.spec.input_files, *self.spec.output_files,
+                      *self.spec.cache_files):
+            if value is None or isinstance(value, (str, bytes, os.PathLike, int)) or id(value) in seen:
+                continue
+            seen.add(id(value))
+            value.flush()
 
     async def _prepare_async(self):
+        from kkrunner.runs.files import snapshot_file_entries, sync_result_files
+
+        self.spec.require_complete()
         if self.is_local:
+            directory, manifest = await self._resolve_footprint()
             from kkrunner.client.execution_request import execution_request
-            from kkrunner.runs.files import snapshot_file_entries
-            self.spec.require_complete()
-            manifest = FileManifest.from_spec(self.spec)
             declaration = self.spec
+            if self.context.client.backend.execution_mode == "direct":
+                declaration = replace(self.spec, **{
+                    name: file_path(getattr(self.spec, name), self.spec.directory)
+                    for name in ("stdin", "output_file", "error_file")
+                })
+            request = execution_request(declaration)
             try:
-                if self.context.client.backend.execution_mode == "direct":
-                    declaration = replace(self.spec, **{
-                        name: file_path(getattr(self.spec, name), self.spec.directory, flush=name == "stdin")
-                        for name in ("stdin", "output_file", "error_file")
-                    })
-                request = execution_request(declaration)
-                manifest = replace(manifest, input_versions=snapshot_file_entries(manifest.input_entries))
+                self._flush_declared_handles()
+                sync_result_files(manifest.input_files)
+                return request, replace(manifest, input_versions=snapshot_file_entries(manifest.input_entries))
             except OSError as exc:
                 raise SubmissionNotStarted(str(exc)) from exc
-            return request, manifest
+
         try:
-            # Reject invalid file declarations *before* creating target folders
-            # or uploading anything. The same validated manifest then owns
-            # staging requirements and the persisted submission snapshot.
-            local = FileManifest.from_spec(self.spec)
-            if (
-                local.stdout is not None and local.stderr is not None
-                and local.stdout.local_path == local.stderr.local_path
-            ):
-                # The remote FOLLOW protocol carries two independent byte
-                # offsets. They cannot reproduce the order of two writers
-                # sharing one physical stream file without a merged protocol.
+            directory, manifest = await self._resolve_footprint()
+            if (manifest.stdout is not None and manifest.stderr is not None
+                    and manifest.stdout.local_path == manifest.stderr.local_path):
                 raise ValueError("Remote stdout and stderr must have distinct output files")
-            remote_directory = await self.context.map_directory(self.spec.directory)
-            await self.context.transport.run(("mkdir", "-p", "--", remote_directory))
-            request = await self._prepare_request(remote_directory, local)
-            manifest = await self._submitted_manifest(request, local)
-            return request, manifest
+            self._flush_declared_handles()
+            sync_result_files(manifest.input_files)
+            await self.context.transport.run(("mkdir", "-p", "--", directory.target))
+            return await self._prepare_request(directory.target, manifest)
         except Exception as exc:
-            # No calculation has been launched yet. Persisted preflight and
-            # direct submission must classify this known failure identically.
+            # No native calculation has been launched.
             raise SubmissionNotStarted(str(exc)) from exc
 
     @classmethod
@@ -767,13 +683,16 @@ class FileSession:
         from kkrunner.runs.model import WorkingDirectory
         return WorkingDirectory(os.path.abspath(self.spec.directory), None if self.is_local else target)
 
-    def submission_footprint(self, files):
-        """Resolve names for reservation without creating or transferring files."""
-        async def resolve():
-            directory = await self.context.map_directory(self.spec.directory)
-            return self._working_directory(directory), await self.context.map_manifest(files)
+    async def _resolve_footprint(self):
+        if self._remote_directory is None:
+            target = await self.context.map_directory(self.spec.directory)
+            self._files = await self.context.map_manifest(self._files)
+            self._remote_directory = target
+        return self._working_directory(self._remote_directory), self._files
 
-        return _run_sync(resolve())
+    def submission_footprint(self):
+        """Resolve names once, without creating or transferring files."""
+        return _run_sync(self._resolve_footprint())
 
     def execution(self, backend_id):
         if backend_id is None and self._remote_directory is None:
@@ -790,19 +709,23 @@ class FileSession:
     def prepare_submission(self):
         """Stage files before backend submit; persistent Run records the manifest."""
         if self._prepared is None:
+            # Run has acquired its reservation before entering this method.
+            # Borrowed output handles become owned together, before any flush
+            # or other file use. Path targets are opened only when needed.
+            if self._streams is None:
+                self._streams = OutputStreams(self.spec.output_file, self.spec.error_file)
             request, manifest = _run_sync(self._prepare_async())
             self._prepared = request
             self._remote_directory = request["directory"]
             self._files = manifest
-            self._staging = None
 
     def prepare_job(self):
         """Open locally owned output streams and return a backend request."""
         self.prepare_submission()
         request = self._prepared
-        if not self.is_local and self._streams is None:
+        if not self.is_local:
             try:
-                self._streams = open_output_streams(self.spec)
+                self._streams.open(self.spec.directory)
             except Exception as exc:
                 raise SubmissionNotStarted(str(exc)) from exc
         return dict(request)
@@ -814,8 +737,7 @@ class FileSession:
             for value in (self.spec.output_file, self.spec.error_file)
         ):
             raise ValueError("Detached output requires a named file or None")
-        if self._streams is None:
-            self._streams = open_output_streams(self.spec)
+        self._streams.open(self.spec.directory)
         files = {kind: stream for kind, stream in (
             ("out", self._streams.output_file), ("err", self._streams.error_file),
         ) if stream is not None}
@@ -826,8 +748,6 @@ class FileSession:
 
     @property
     def stream_paths(self):
-        if self._files is None:
-            return (None, None)
         return (
             None if self._files.stdout is None else (self._files.stdout.local_path if self.is_local else self._files.stdout.remote_path),
             None if self._files.stderr is None else (self._files.stderr.local_path if self.is_local else self._files.stderr.remote_path),
@@ -862,8 +782,6 @@ class FileSession:
 
     async def _verify_streams(self):
         """Confirm that streamed files exactly match the authoritative target."""
-        if self._files is None:
-            return
         checked = set()
         for kind, entry in (("stdout", self._files.stdout), ("stderr", self._files.stderr)):
             if entry is None or entry.local_path is None or entry.remote_path is None:
@@ -935,10 +853,9 @@ class FileSession:
         except Exception as exc:
             self._set_pending_failed(str(exc))
             raise
-        if self._files is not None:
-            for entry in self._files.artifacts:
-                if entry.availability_state == "pending":
-                    self._set_file_availability(entry.local_path, "available")
+        for entry in self._files.artifacts:
+            if entry.availability_state == "pending":
+                self._set_file_availability(entry.local_path, "available")
 
     def mark_transfer_failed(self, message):
         self._set_pending_failed(message)
@@ -954,7 +871,7 @@ class FileSession:
             self.close()
         from kkrunner.runs.files import capture_result_files
 
-        if self._files is not None and self._files.captured_at is None:
+        if self._files.captured_at is None:
             self._files = capture_result_files(
                 self._files, require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
                 cache_versions=None if self.is_local else await self._target_cache_versions(),
@@ -973,10 +890,4 @@ class FileSession:
         streams, self._streams = self._streams, None
         if streams is not None:
             streams.close()
-        else:
-            # A supplied file object belongs to this session even if staging
-            # failed before the runtime stream acquisition.
-            OutputStreams(
-                self.spec.output_file,
-                self.spec.error_file,
-            ).close()
+

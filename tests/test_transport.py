@@ -490,7 +490,7 @@ def test_ssh_upload_preserves_original_error_when_remote_cleanup_fails(tmp_path)
 
 
 def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, monkeypatch):
-    from kkrunner.transports.implementations.ssh import transport as module
+    from kkrunner.files import staging as module
 
     class UnavailableTransport(SshTransport):
         async def file_signature(self, path):
@@ -504,7 +504,7 @@ def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, 
         def open(self, *args, **kwargs):
             return staged.open(*args, **kwargs)
 
-        def unlink(self):
+        def unlink(self, *, missing_ok=False):
             cleanup_calls.append(True)
             raise PermissionError("cannot remove staged download")
 
@@ -554,3 +554,38 @@ def test_ssh_client_retains_target_python_configuration():
     assert client.transport.python_command == ("python3.12",)
     restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
     assert restored.transport == client.transport
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_local_staging_verifies_before_atomic_publication(tmp_path, existing):
+    from kkrunner.files.staging import staged_local_file
+
+    destination = tmp_path / "artifact"
+    if existing:
+        destination.write_bytes(b"old")
+
+    def verify(path):
+        assert path.parent == destination.parent
+        assert path.read_bytes() == b"new"
+        assert destination.exists() == existing
+        raise OSError("historical digest mismatch")
+
+    with pytest.raises(OSError, match="digest mismatch"):
+        with staged_local_file(destination, verify=verify, overwrite=False) as temporary:
+            temporary.write_bytes(b"new")
+    assert destination.exists() == existing
+    if existing:
+        assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_local_staging_does_not_replace_concurrent_destination(tmp_path):
+    from kkrunner.files.staging import staged_local_file
+
+    destination = tmp_path / "artifact"
+    with pytest.raises(FileExistsError):
+        with staged_local_file(destination, overwrite=False) as temporary:
+            temporary.write_bytes(b"old result")
+            destination.write_bytes(b"new result")
+    assert destination.read_bytes() == b"new result"
+    assert list(tmp_path.iterdir()) == [destination]

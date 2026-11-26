@@ -7,7 +7,6 @@ Neither implementation owns Run persistence or file synchronization.
 
 from __future__ import annotations
 
-import asyncio
 import warnings
 
 from kkrunner.backends.contracts import (
@@ -51,9 +50,6 @@ class _Execution:
             "stdout_path": stream_paths[0], "stderr_path": stream_paths[1],
         }
 
-    async def stop_observation(self):
-        """A session-bound call keeps draining while Job suppresses listeners."""
-
     async def close(self):
         pass
 
@@ -66,8 +62,6 @@ class DirectExecution(_Execution):
         self._local_io = local_io
         self._detached = backend.default_detached
         self._call = None
-        self._observer = None
-        self._stop_requested = False
 
     def configure_detached(self, detached):
         self._detached = detached
@@ -108,25 +102,18 @@ class DirectExecution(_Execution):
             raise ObservationUnavailable("Execution call ended without acceptance confirmation")
         return status
 
+    @property
+    def can_stop_observation(self):
+        # Attached calls must keep draining their pipes. Detached processes
+        # own their output files and survive closing the observation.
+        return self._detached
+
     async def observe(self, on_output):
-        if self._stop_requested:
-            raise asyncio.CancelledError
-        self._observer = asyncio.create_task(self._call.wait())
         try:
-            return self._record(await self._observer)
+            return self._record(await self._call.wait())
         except BaseException as exc:
             self._record({"state": "unknown", "error": str(exc)})
             raise
-        finally:
-            self._observer = None
-
-    async def stop_observation(self):
-        # A detached process owns its output files and survives closing this
-        # invocation. Attached direct calls still need to drain their pipes.
-        if self._detached:
-            self._stop_requested = True
-            if self._observer is not None:
-                self._observer.cancel()
 
     async def status(self):
         # Preserve confirmed live-call facts. Only a lost observer requires
@@ -148,10 +135,7 @@ class DirectExecution(_Execution):
 class ManagedExecution(_Execution):
     """Backend binding for independently observable supervisor/scheduler jobs."""
 
-    def __init__(self, backend, transport, *, ref=None, status=None):
-        super().__init__(backend, transport, ref=ref, status=status)
-        self._observer = None
-        self._stop_requested = False
+    can_stop_observation = True
 
     async def submit(self, request, on_output):
         try:
@@ -169,15 +153,9 @@ class ManagedExecution(_Execution):
         return status
 
     async def observe(self, on_output):
-        if self._stop_requested:
-            raise asyncio.CancelledError
-        self._observer = asyncio.create_task(self.transport.follow(
+        return self._record(await self.transport.follow(
             self._operation("follow"), self.ref.token, on_output, **self._follow_options,
         ))
-        try:
-            return self._record(await self._observer)
-        finally:
-            self._observer = None
 
     async def status(self):
         if self.ref is None:
@@ -186,11 +164,6 @@ class ManagedExecution(_Execution):
 
     async def cancel(self):
         return self._record(await self.transport.call(self._operation("cancel"), self.ref.token))
-
-    async def stop_observation(self):
-        self._stop_requested = True
-        if self._observer is not None:
-            self._observer.cancel()
 
 
 def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):

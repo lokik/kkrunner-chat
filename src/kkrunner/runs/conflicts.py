@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from kkrunner.transports import LocalTransport, SshTransport
 from kkrunner.files.paths import has_file_magic
+from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.runs.records import RunRecord
 
 
@@ -21,9 +22,10 @@ def _manifest_accesses(record, *, remote=None):
         if entry is None:
             return None
         value = entry.remote_path if remote else entry.local_path
-        if remote and value is None and entry.local_path is not None:
-            # Before staging, declarations already determine the target footprint.
-            # Resolve from the mapped working directory without transferring files.
+        if remote and value is None and entry.local_path is not None and files.mapping is None:
+            # Unmapped legacy declarations are relative to the working
+            # directory. A resolved mapping is explicit: a missing side
+            # means that side is not accessed (e.g. historical retrieval).
             local = entry.local_path
             if not os.path.isabs(local):
                 local = os.path.join(directory.local, local)
@@ -31,7 +33,7 @@ def _manifest_accesses(record, *, remote=None):
             return os.path.normpath(os.path.join(directory.remote, relative))
         if value is None:
             return None
-        return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.target, value))
+        return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.remote if remote else directory.local, value))
 
     def accesses(entries):
         result = set()
@@ -41,15 +43,23 @@ def _manifest_accesses(record, *, remote=None):
             target = path(entry)
             if target is None:
                 continue
-            result.add(target)
-            if entry.kind == "directory":
-                # Directory reservations cover descendant files as well.
-                result.add(os.path.join(target, "*"))
+            # Include the spelling and canonical local identity. An alias
+            # may be replaced as a directory entry or opened through its target.
+            identities = (target,) if remote else (target, os.path.realpath(target))
+            for identity in identities:
+                result.add(identity)
+                if entry.kind == "directory":
+                    result.add(os.path.join(identity, "*"))
         return result
 
     reads = accesses((*files.inputs, files.stdin, *(x.file for x in files.caches)))
     writes = accesses((files.stdout, files.stderr, *files.outputs,
                        *(x.file for x in files.caches)))
+    if not remote:
+        writes |= accesses(entry for entry in files.input_entries if entry.write)
+    elif files.mapping is not None and files.mapping.input_sync != FileSyncPolicy.NEVER:
+        # Uploads may replace target inputs even when the local source is read-only.
+        writes |= accesses(files.input_entries)
     return reads - {None}, writes - {None}
 
 

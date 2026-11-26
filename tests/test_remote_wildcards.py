@@ -198,7 +198,8 @@ def test_local_transfer_batches_use_their_directional_file_primitives(tmp_path):
         assert transport.operations == ["put"]
         transport.operations.clear()
         await transport.get_files("nested/*.dat", source, dest)
-        assert transport.operations == ["get", "put"]
+        assert transport.operations == ["get"]
+        assert (dest / "nested" / "result.dat").read_text() == "data"
 
     asyncio.run(check())
     assert (dest / "nested" / "result.dat").read_text() == "data"

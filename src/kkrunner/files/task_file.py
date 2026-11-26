@@ -29,6 +29,7 @@ class TaskFile(os.PathLike):
     optional: bool = False
     kind: str = "file"
     collect: bool = True
+    write: bool = False  # An input may be modified locally by preprocessing.
 
     def __post_init__(self):
         path = self.pathname
@@ -47,6 +48,8 @@ class TaskFile(os.PathLike):
             raise TypeError("TaskFile optional must be a bool")
         if type(self.collect) is not bool:
             raise TypeError("TaskFile collect must be a bool")
+        if type(self.write) is not bool:
+            raise TypeError("TaskFile write must be a bool")
         if self.kind not in ("file", "directory"):
             raise ValueError("TaskFile kind must be 'file' or 'directory'")
 
@@ -60,14 +63,14 @@ class TaskFile(os.PathLike):
 
     def __eq__(self, other):
         if isinstance(other, TaskFile):
-            return (self.pathname, self.type, self.info, self.optional, self.kind, self.collect) == (
-                other.pathname, other.type, other.info, other.optional, other.kind, other.collect,
+            return (self.pathname, self.type, self.info, self.optional, self.kind, self.collect, self.write) == (
+                other.pathname, other.type, other.info, other.optional, other.kind, other.collect, other.write,
             )
         if isinstance(other, str):
-            return self.collect and not self.optional and self.type is None and self.info is None and self.kind == "file" and self.pathname == other
+            return self.collect and not self.write and not self.optional and self.type is None and self.info is None and self.kind == "file" and self.pathname == other
         return NotImplemented
 
     def __hash__(self):
-        if self.collect and not self.optional and self.type is None and self.info is None and self.kind == "file":
+        if self.collect and not self.write and not self.optional and self.type is None and self.info is None and self.kind == "file":
             return hash(self.pathname)
-        return hash((self.pathname, self.type, self.info, self.optional, self.kind, self.collect))
+        return hash((self.pathname, self.type, self.info, self.optional, self.kind, self.collect, self.write))

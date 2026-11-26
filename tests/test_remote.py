@@ -126,7 +126,7 @@ def test_remote_provenance_uses_target_input_and_final_cache_without_sync(tmp_pa
     target_input = _expose_shared_input(remote, "input.txt", b"already on target")
     target_cache = _expose_shared_input(remote, "cache.dat", b"old cache")
     parts = client.create_run_parts(spec)
-    parts.prepare_submission()
+    parts.files.prepare_submission()
     version = parts.files.files.input_version(local / "input.txt")
     assert version.digest == file_digest(target_input)
     assert not version.is_current()
@@ -177,14 +177,9 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
     executor, spec, _, remote_root = _text_run(tmp_path, transport)
     runner = Run.untracked(executor, spec)
 
-    async def prepare():
-        directory = await runner._file_session.context.map_directory(spec.directory)
-        from kkrunner.files.manifest import FileManifest
-
-        return await runner._file_session._prepare_request(directory, FileManifest.from_spec(spec))
-
     try:
-        request = asyncio.run(prepare())
+        runner._file_session.prepare_submission()
+        request = runner._file_session.prepare_job()
         target = remote_root / "calculation" / "input.txt"
         assert request["input_file"] == str(target)
         assert request["stdin"] == str(target)

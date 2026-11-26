@@ -20,7 +20,8 @@ from kkrunner.files.queries import (
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
 
-from ...base import Transport, _completed_process, _local_temporary_path
+from kkrunner.files.staging import staged_local_file
+from ...base import Transport, _completed_process
 from ...rpc import operation_payload
 
 
@@ -90,7 +91,7 @@ class LocalTransport(Transport):
         )
         return await _completed_process(process, argv, input=input, check=check)
 
-    async def put_file(self, source, destination):
+    async def put_file(self, source, destination, *, verify=None, overwrite=True):
         source = os.fspath(source)
         signature = local_file_signature(source)
         if signature is None:
@@ -101,22 +102,15 @@ class LocalTransport(Transport):
                 return
         except FileNotFoundError:
             pass  # A new destination will be published by atomic replacement.
-        temporary = _local_temporary_path(destination)
-        try:
+        with staged_local_file(destination, verify=verify, overwrite=overwrite) as temporary:
             await asyncio.to_thread(shutil.copyfile, source, temporary)
             if local_file_signature(source) != signature:
                 raise RuntimeError(f"Local file changed while copying: {source}")
             stat = temporary.stat()
             os.utime(temporary, ns=(stat.st_atime_ns, signature[1]))
-            os.replace(temporary, destination)
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
 
-    async def get_file(self, source, destination):
-        await self.put_file(source, destination)
+    # On a local filesystem both directions are the same stable copy.
+    get_file = put_file
 
     async def put_directory(self, source, destination):
         source, destination = Path(source), Path(destination)

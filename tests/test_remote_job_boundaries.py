@@ -24,6 +24,7 @@ class _BackendExecution:
         self.ref = None
         self.snapshot = JobStatus(RunState.NEW)
         self.requires_stream_retrieval = False
+        self.can_stop_observation = True
 
     def configure_detached(self, detached):
         pass
@@ -51,9 +52,6 @@ class _BackendExecution:
         return self.snapshot
 
     async def cancel(self):
-        return None
-
-    async def stop_observation(self):
         return None
 
     async def close(self):
@@ -226,24 +224,6 @@ def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
     assert events == ["stage", "close"]
 
 
-def test_run_parts_own_file_cleanup_before_and_after_handoff(tmp_path):
-    from kkrunner.client.run_parts import RunParts
-
-    events = []
-    files = _Files(tmp_path, events)
-    parts = RunParts(_FinishedJob(events), files)
-    parts.abort()
-    assert events == ["close"]
-    events.clear()
-    parts = RunParts(_FinishedJob(events), files)
-    parts.claim()
-    parts.abort()
-    assert events == []
-    parts.close()
-    assert events == ["close"]
-
-
-
 @pytest.mark.parametrize(
     "backend_state, expected_state, expected_phase",
     [
@@ -342,3 +322,43 @@ def test_managed_follow_writer_failure_preserves_native_success(tmp_path):
     assert job.return_code == 0
     assert isinstance(job.output_error, OSError)
     assert str(job.output_error) == "output cannot be written"
+
+
+@pytest.mark.parametrize("when", ["before_start", "observing"])
+def test_managed_stop_observation_does_not_cancel_native_job(tmp_path, when):
+    from threading import Event
+
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.client.backend_execution import ManagedExecution
+    from kkrunner.transports import LocalTransport
+
+    started, stopped = Event(), Event()
+
+    class FollowTransport(LocalTransport):
+        async def follow(self, operation, identity, on_output, **options):
+            started.set()
+            try:
+                await asyncio.sleep(10)
+                pytest.fail("Observation was not interrupted")
+            finally:
+                stopped.set()
+
+        async def call(self, operation, *args, **kwargs):
+            pytest.fail("Stopping observation must not invoke a native operation")
+
+    execution = ManagedExecution(
+        SupervisedBackend(), FollowTransport(),
+        ref=JobRef("kkrunner", "opaque"), status={"state": "running"},
+    )
+    job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))
+    if when == "before_start":
+        job.stop_observation()
+    job.start()
+    if when == "observing":
+        assert started.wait(5)
+        job.stop_observation()
+        job.stop_observation()
+    assert job.wait().return_code is None
+    assert job.state == RunState.UNKNOWN
+    assert job.ref == JobRef("kkrunner", "opaque")
+    assert started.is_set() == stopped.is_set() == (when == "observing")

@@ -312,3 +312,127 @@ def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persist
     assert saved.state == RunState.FAILED
     assert saved.failure_phase == FailurePhase.SUBMISSION
     assert "submission never reached backend" in saved.message
+
+
+@pytest.mark.parametrize("operation", ["download", "processing"])
+def test_historical_retry_uses_the_same_conflict_reservation(tmp_path, operation):
+    from kkrunner import MemoryRunStore
+    from kkrunner.runs import DuplicateSubmissionError, FailurePhase
+
+    disk, memory = RunStore(tmp_path / "runs"), MemoryRunStore()
+    manager = RunManager(disk, conflict_stores=(memory,))
+    other = RunManager(memory, conflict_stores=(disk,))
+    path = tmp_path / "out"
+    path.write_text("answer")
+    manifest = FileManifest(stdout=FileEntry(str(path)))
+    record = manager.new_record(directory=tmp_path, files=manifest,
+                                processing_required=operation == "processing")
+    failed = manager.complete(
+        record, state=RunState.FAILED, return_code=0,
+        failure_phase=FailurePhase.POSTPROCESSING if operation == "processing" else FailurePhase.DOWNLOAD,
+        execution=record.execution.submitted("receipt"), artifacts_available=operation == "processing",
+    )
+    active = other.reserve(other.new_record(directory=tmp_path, files=manifest), preprocessing=True)
+    # A live conflicting reservation must not be recovered away.
+    with memory.observation_lock(active):
+        with pytest.raises(DuplicateSubmissionError):
+            if operation == "processing":
+                manager.retry_postprocessing(failed, lambda outcome: pytest.fail("parser started"))
+            else:
+                manager.resume_download(failed)
+        assert disk.get(failed.id) == failed
+    other.complete(active, state=RunState.FAILED)
+    if operation == "processing":
+        assert manager.retry_postprocessing(failed, lambda outcome: "parsed") == "parsed"
+    else:
+        assert manager.resume_download(failed).state == RunState.DOWNLOADING
+
+
+def test_uncertain_submission_relinquishes_application_resources(tmp_path, monkeypatch):
+    from kkrunner.runs.base import ExecutionResources
+
+    run, manager = _tracked_test_run(tmp_path, monkeypatch)
+    calls = []
+    resources = ExecutionResources(on_detach=lambda: calls.append("detached"))
+    run._owned_resources = resources
+
+    def accepted_but_reply_lost():
+        _accept_job(run._job)
+        raise ConnectionError("lost reply")
+
+    monkeypatch.setattr(run._job, "submit", accepted_but_reply_lost)
+    with pytest.raises(ConnectionError, match="lost reply"):
+        run.submit()
+    assert calls == ["detached"]
+    assert resources.closed
+    assert manager.store.get(run.id).state == RunState.UNKNOWN
+
+
+@pytest.mark.parametrize("failure", ["capture", "persist"])
+def test_completion_failure_relinquishes_handles_without_removing_evidence(tmp_path, monkeypatch, failure):
+    from kkrunner.runs.base import ExecutionResources
+
+    run, manager = _tracked_test_run(tmp_path, monkeypatch)
+    calls = []
+    resources = ExecutionResources(on_detach=lambda: calls.append("detach"))
+    run._owned_resources = resources
+    record = manager.reserve(run.record, preprocessing=True)
+    path = tmp_path / "out"
+    path.write_text("answer")
+    manifest = FileManifest(stdout=FileEntry(str(path)))
+
+    def fail(*args, **kwargs):
+        raise OSError("history unavailable")
+
+    if failure == "capture":
+        monkeypatch.setattr(manager, "completion_fields", fail)
+    else:
+        monkeypatch.setattr(manager, "transition", fail)
+    with pytest.raises(OSError, match="history unavailable"):
+        run._complete_record(record, state=RunState.FINISHED, return_code=0,
+                             files=manifest, artifacts_available=True)
+    assert calls == ["detach"]
+    assert resources.closed
+    assert path.read_text() == "answer"
+
+
+@pytest.mark.parametrize("historical_input", [False, True])
+def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch, historical_input):
+    from kkrunner.runs import DuplicateSubmissionError
+    from kkrunner.files import FileMapping
+    from kkrunner.client import LocalTransport, SshTransport
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    path = local / "data"
+    source = remote / "data"
+    source.write_text("historical")
+    monkeypatch.setattr(SshTransport, "expand_files", LocalTransport.expand_files)
+    monkeypatch.setattr(SshTransport, "get_file", LocalTransport.get_file)
+    client = EndpointClient(transport=SshTransport("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    entry = FileEntry(str(path), str(source))
+    manifest = FileManifest(
+        inputs=(entry,) if historical_input else (),
+        stdout=None if historical_input else entry,
+        mapping=FileMapping(str(local), str(remote)),
+    )
+    historical = manager.new_record(
+        directory=local, remote_directory=remote, transport=client.transport,
+        backend=client.backend_config, files=manifest,
+    )
+    historical = manager.complete(historical, state=RunState.FAILED,
+                                  execution=historical.execution.submitted("historical"),
+                                  artifacts_available=False)
+    active = manager.new_record(directory=local, files=FileManifest(inputs=(FileEntry(str(path)),)))
+    with manager.store.observation_lock(active):
+        manager.reserve(active, preprocessing=True)
+        with pytest.raises(DuplicateSubmissionError):
+            manager.retrieve_result_files(historical)
+        assert not path.exists()
+        assert not tuple(local.iterdir())
+        path.write_text("already available")
+        assert manager.retrieve_result_files(historical) == historical
+    assert path.read_text() == "already available"

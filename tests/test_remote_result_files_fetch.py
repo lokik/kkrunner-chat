@@ -82,9 +82,9 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
         expanded.append(os.fspath(sources))
         return await native_expand(self, sources, root)
 
-    async def observed_get(self, source, destination):
+    async def observed_get(self, source, destination, **kwargs):
         downloaded.append(os.fspath(source))
-        return await native_get(self, source, destination)
+        return await native_get(self, source, destination, **kwargs)
 
     from unittest.mock import patch
     local_root = tmp_path / "local"
@@ -234,7 +234,8 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
 def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path):
     """A vanished optional DOS must not stop restoration of the main SCF output."""
     from dataclasses import replace
-    from kkrunner.runs.files import RunFiles
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
 
     main = tmp_path / "run.out"
     auxiliary = tmp_path / "run_SCFSTART.dos"
@@ -244,9 +245,13 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
     main.unlink()
     auxiliary.unlink()
 
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    (remote / main.name).write_bytes(b"main output")
     manifest = FileManifest(
-        stdout=FileEntry(str(main)),
-        outputs=(FileEntry(str(auxiliary), optional=True),),
+        stdout=FileEntry(str(main), str(remote / main.name)),
+        outputs=(FileEntry(str(auxiliary), str(remote / auxiliary.name), optional=True),),
+        mapping=FileMapping(str(tmp_path), str(remote)),
         output_versions=versions,
         captured_at="2026-10-13T08:00:00+00:00",
     )
@@ -256,39 +261,282 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
             SshTransport("loopback"),
-            WorkingDirectory(str(tmp_path), "/remote"),
+            WorkingDirectory(str(tmp_path), str(remote)),
             "backend-id",
         ),
         files=manifest,
     )
 
-    class Store:
-        current = record
-
-        def get(self, _run):
-            return self.current
-
-        def update(self, _run, updater):
-            self.current = updater(self.current)
-            return self.current
-
-    class Client:
-        supports_result_file_retrieval = True
-
-        def fetch_result_files(self, _record, paths, *, destinations=None):
-            path = str(paths[0])
-            if path == str(main):
-                target = destinations[path] if destinations else path
-                from pathlib import Path
-                Path(target).write_bytes(b"main output")
-            # Missing auxiliary deliberately produces no staged file.
-
-    store = Store()
-    service = RunFiles(store=store, client_pool=None)
-    service._client_for = lambda _record: Client()
-    restored = service.retrieve_result_files(record)
+    store = RunStore(tmp_path / "runs")
+    record = store.save(record)
+    manager = RunManager(store)
+    manager.register_client(EndpointClient(transport=SshTransport("loopback")))
+    restored = manager.retrieve_result_files(record)
     assert main.read_bytes() == b"main output"
     assert not auxiliary.exists()
     assert restored.files.stdout.availability_state == "available"
     assert restored.files.outputs[0].availability_state == "failed"
     assert "not retrieved" in restored.files.outputs[0].availability_message
+
+
+@pytest.mark.parametrize("concurrent", ["unrelated", "active", "mismatch", "directory", "remote_writer", "remote_reader"])
+def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatch, concurrent):
+    """Reserve from another store during transfer; publish only if still safe."""
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from threading import Event
+
+    from kkrunner import MemoryRunStore, RunStore
+    from kkrunner.runs import DuplicateSubmissionError
+    from kkrunner.runs.manager import RunManager
+
+    disk, memory = RunStore(tmp_path / "runs"), MemoryRunStore()
+    manager = RunManager(disk, conflict_stores=(memory,))
+    other = RunManager(memory, conflict_stores=(disk,))
+    work = tmp_path / "work"
+    work.mkdir()
+    path = work / "result.out"
+    path.write_text("historical")
+    version = FileVersion.capture(path, require_digest=True)
+    path.unlink()
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    source = remote / "result.out"
+    source.write_text("wrong version" if concurrent == "mismatch" else "historical")
+    client = EndpointClient(transport=SshTransport("loopback"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=work, remote_directory=remote,
+        transport=client.transport, backend=client.backend_config,
+        files=FileManifest(
+            stdout=FileEntry(str(path), str(source)),
+            mapping=FileMapping(str(work), str(remote)),
+            output_versions=(version,), captured_at="2026-10-13T08:00:00+00:00",
+        ),
+    )
+    record = manager.complete(record, state=RunState.FINISHED, return_code=0,
+                              execution=record.execution.submitted("historical"),
+                              artifacts_available=False)
+    downloading, release = Event(), Event()
+
+    async def download(self, source_path, destination, **kwargs):
+        assert str(source_path) == str(source)
+        assert str(destination) == str(path)
+        downloading.set()
+        assert release.wait(5), "transfer was not released"
+        await LocalTransport.get_file(self, source_path, destination, **kwargs)
+
+    monkeypatch.setattr(SshTransport, "get_file", download)
+
+    def submit():
+        if concurrent in ("remote_writer", "remote_reader"):
+            unrelated = tmp_path / "unrelated" / "result.out"
+            entry = FileEntry(str(unrelated), str(source))
+            files = FileManifest(
+                outputs=(entry,) if concurrent == "remote_writer" else (),
+                inputs=(entry,) if concurrent == "remote_reader" else (),
+                mapping=FileMapping(str(unrelated.parent), str(remote), input_sync="never"),
+            )
+            proposed = other.new_record(directory=unrelated.parent, remote_directory=remote,
+                                        transport=client.transport, files=files)
+            if concurrent == "remote_writer":
+                with pytest.raises(DuplicateSubmissionError):
+                    other.reserve(proposed)
+                return
+            return other.reserve(proposed)
+        if concurrent == "directory":
+            proposed = other.new_record(directory=work, files=FileManifest(
+                inputs=(FileEntry(str(work), kind="directory"),),
+            ))
+            with pytest.raises(DuplicateSubmissionError):
+                other.reserve(proposed)
+            return
+        target = work / "unrelated.out" if concurrent in ("unrelated", "mismatch") else path
+        proposed = other.new_record(directory=work, files=FileManifest(stdout=FileEntry(str(target))))
+        if concurrent == "active":
+            with pytest.raises(DuplicateSubmissionError):
+                other.reserve(proposed)
+            return
+        return other.reserve(proposed)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = pool.submit(manager.retrieve_result_files, record)
+        try:
+            assert downloading.wait(5), "transfer did not start"
+            assert not path.exists()
+            run = pool.submit(submit).result(timeout=3)
+            if concurrent not in ("directory", "active", "remote_writer"):
+                assert run.state == RunState.SUBMITTING
+        finally:
+            release.set()
+        restored = future.result(timeout=5)
+        assert restored.state == RunState.FINISHED
+        if concurrent == "mismatch":
+            assert not path.exists()
+            assert restored.files.stdout.availability_state == "failed"
+            assert "overwritten" in restored.files.stdout.availability_message
+        else:
+            assert path.read_text() == "historical"
+    assert not tuple(work.glob(".*.tmp"))
+    assert [r.id for r in disk.runs()] == [record.id]
+
+
+@pytest.mark.parametrize("project_scoped", [False, True])
+def test_historical_wildcard_download_uses_transport_staging(tmp_path, monkeypatch, project_scoped):
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("part-a.dat", "part-b.dat"):
+        (remote / name).write_text(name)
+    pattern = local / "part-*.dat"
+    remote_pattern = remote / pattern.name
+    client = EndpointClient(transport=SshTransport("loopback"))
+    if project_scoped:
+        from kkrunner.projects.manager import ProjectRunManager
+        from kkrunner.projects.repository import ProjectRepository
+
+        projects = ProjectRepository(tmp_path / "projects")
+        project = projects.create("Historical results")
+        manager = ProjectRunManager(project_repository=projects)
+        creator = manager.for_project(project)
+    else:
+        manager = creator = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    record = creator.new_record(
+        directory=local, transport=client.transport, backend=client.backend_config,
+        remote_directory=remote,
+        files=FileManifest(
+            outputs=(FileEntry(str(pattern), str(remote_pattern)),),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.complete(record, state=RunState.FAILED,
+                              execution=record.execution.submitted("historical"),
+                              artifacts_available=False)
+
+    original = LocalTransport.get_file
+
+    async def download(self, source, destination, **kwargs):
+        from pathlib import Path
+        assert Path(destination).parent == local
+        assert not Path(destination).exists()
+        assert kwargs["overwrite"] is False
+        await original(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTransport, "get_file", download)
+    restored = manager.retrieve_result_files(record)
+    assert restored.state == RunState.FAILED
+    assert sorted(p.name for p in local.iterdir()) == ["part-a.dat", "part-b.dat"]
+    assert (local / "part-a.dat").read_text() == "part-a.dat"
+    assert (local / "part-b.dat").read_text() == "part-b.dat"
+
+
+def test_directory_reservation_prevents_historical_download(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+    from kkrunner.runs import DuplicateSubmissionError
+    from kkrunner.runs.manager import RunManager
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    work = tmp_path / "work"
+    work.mkdir()
+    path = work / "output.dat"
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    (remote / path.name).write_text("historical")
+    client = EndpointClient(transport=SshTransport("loopback"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=work, remote_directory=remote, transport=client.transport, backend=client.backend_config,
+        files=FileManifest(stdout=FileEntry(str(path), str(remote / path.name)),
+                           mapping=FileMapping(str(work), str(remote))),
+    )
+    record = manager.complete(record, state=RunState.FAILED,
+                              execution=record.execution.submitted("historical"))
+    reader = manager.new_record(directory=work, files=FileManifest(
+        inputs=(FileEntry(str(work), kind="directory"),),
+    ))
+
+    with manager.store.observation_lock(reader):
+        active = manager.reserve(reader, preprocessing=True)
+        with pytest.raises(DuplicateSubmissionError):
+            manager.retrieve_result_files(record)
+        assert not tuple(work.iterdir())
+        assert manager.store.get(record.id) == record
+        manager.complete(active, state=RunState.FAILED)
+    assert manager.retrieve_result_files(record).files.stdout.availability_state == "available"
+    assert path.read_text() == "historical"
+    assert tuple(work.iterdir()) == (path,)
+    assert {r.id for r in manager.store.runs()} == {record.id, reader.id}
+
+
+def test_restore_wildcard_alias_conflicts_with_canonical_destination(tmp_path):
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
+    from kkrunner.runs import DuplicateSubmissionError
+
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    (local / "actual").mkdir(parents=True)
+    (local / "changed").mkdir()
+    (remote / "actual").mkdir(parents=True)
+    # The historic mapping refers to actual/, but the alias has moved.
+    (local / "alias").symlink_to(local / "changed", target_is_directory=True)
+    (remote / "actual" / "result.dat").write_text("historical")
+    client = EndpointClient(transport=SshTransport("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, transport=client.transport,
+        backend=client.backend_config, files=FileManifest(
+            outputs=(FileEntry(str(local / "alias" / "*.dat"), str(remote / "actual" / "*.dat")),),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.complete(record, state=RunState.FAILED,
+                              execution=record.execution.submitted("historical"))
+    path = local / "actual" / "result.dat"
+    proposed = manager.new_record(directory=local, files=FileManifest(
+        stdout=FileEntry(str(path)),
+    ))
+    with manager.store.observation_lock(proposed):
+        active = manager.reserve(proposed, preprocessing=True)
+        with pytest.raises(DuplicateSubmissionError):
+            manager.retrieve_result_files(record)
+        assert not path.exists()
+        manager.complete(active, state=RunState.FAILED)
+    manager.retrieve_result_files(record)
+    assert path.read_text() == "historical"
+    assert not (local / "changed" / "result.dat").exists()
+
+
+@pytest.mark.parametrize("existing", ["dangling_link", "file"])
+def test_historical_retrieval_never_replaces_existing_destination(tmp_path, existing):
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    (remote / "result.dat").write_text("historical")
+    destination = local / "result.dat"
+    if existing == "dangling_link":
+        destination.symlink_to(local / "missing")
+    else:
+        destination.write_text("current")
+    client = EndpointClient(transport=SshTransport("loopback"))
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, transport=client.transport,
+        backend=client.backend_config, files=FileManifest(
+            outputs=(FileEntry(str(destination), str(remote / destination.name)),),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    client.fetch_result_files(record, (destination,))
+    if existing == "dangling_link":
+        assert destination.is_symlink()
+        assert not (local / "missing").exists()
+    else:
+        assert destination.read_text() == "current"

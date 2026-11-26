@@ -11,7 +11,6 @@ import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
@@ -205,7 +204,7 @@ class RunFiles:
             return local_snapshot(path, destination=destination)
         return self._client_for(record).snapshot_file(record, path, destination=destination)
 
-    def retrieve_result_files(self, run):
+    def retrieve_result_files(self, run, *, reserve):
         record = resolve_record(run, self.store)
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
@@ -218,58 +217,55 @@ class RunFiles:
         if not client.supports_result_file_retrieval:
             return record
 
-        versions = {
-            os.path.abspath(os.fspath(version.path)): version
-            for version in (() if record.files is None else record.files.all_versions)
-        }
+        versions = {os.path.abspath(os.fspath(version.path)): version
+                    for version in record.files.all_versions}
+
+        def verify(target, temporary):
+            version = versions.get(target)
+            if version is not None and version.digest is not None:
+                if file_digest(temporary) != version.digest:
+                    raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {target}")
+
+        # Resolve all concrete pairs before reserving anything. Expansion is
+        # read-only; the exact same pairs are passed to the transfer below.
+        planned = {}
+        errors = {}
+        by_destination = {}
         for path in missing:
-            path = os.path.abspath(os.fspath(path))
-            version = versions.get(path)
-            staged = (
-                Path(path).with_name(f".{Path(path).name}.{uuid4().hex}.tmp")
-                if version is not None and version.digest is not None
-                else None
-            )
             try:
-                if staged is None:
-                    client.fetch_result_files(record, (path,))
-                else:
-                    client.fetch_result_files(
-                        record,
-                        (path,),
-                        destinations={path: os.fspath(staged)},
-                    )
-                    if not staged.is_file():
-                        raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
-                    if file_digest(staged) != version.digest:
-                        raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {path}")
-                    os.replace(staged, path)
+                entries = client.resolve_result_files(record, (path,))
+                if not entries:
+                    raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
+                for entry in entries:
+                    previous = by_destination.setdefault(entry.local_path, entry)
+                    if previous.remote_path != entry.remote_path:
+                        raise ValueError(f"Different historical sources map to {entry.local_path}")
+                planned[path] = entries
             except OSError as exc:
-                # An unavailable historical artifact does not prevent recovery
-                # of unrelated files. Preserve its individual failure status;
-                # consumers decide which files are necessary for their result.
+                errors[path] = str(exc)
+
+        from contextlib import nullcontext
+        scope = reserve(record, tuple(by_destination.values())) if by_destination else nullcontext()
+        with scope:
+            for path, message in errors.items():
                 record = self.update_artifact_availability(
-                    record,
-                    path,
-                    ArtifactAvailabilityState.FAILED,
-                    str(exc),
+                    record, path, ArtifactAvailabilityState.FAILED, message,
                 )
-                continue
-            finally:
-                if staged is not None:
-                    staged.unlink(missing_ok=True)
-            refreshed = resolve_record(record, self.store)
-            if path in _missing_result_files(refreshed.files):
-                record = self.update_artifact_availability(
-                    refreshed,
-                    path,
-                    ArtifactAvailabilityState.FAILED,
-                    "Historical artifact is still missing",
-                )
-            else:
-                record = self.update_artifact_availability(
-                    refreshed,
-                    path,
-                    ArtifactAvailabilityState.AVAILABLE,
-                )
+            for path, entries in planned.items():
+                try:
+                    # Exact historical entries retain the original captured
+                    # digest even if their local pathname was an alias.
+                    def verify_entry(target, temporary):
+                        verify(target if has_file_magic(path) else path, temporary)
+
+                    client.download_result_files(entries, verify=verify_entry)
+                    if not all(os.path.isfile(entry.local_path) for entry in entries):
+                        raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
+                    record = self.update_artifact_availability(
+                        record, path, ArtifactAvailabilityState.AVAILABLE,
+                    )
+                except (OSError, RuntimeError) as exc:
+                    record = self.update_artifact_availability(
+                        record, path, ArtifactAvailabilityState.FAILED, str(exc),
+                    )
         return record

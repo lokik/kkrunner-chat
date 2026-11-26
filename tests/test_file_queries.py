@@ -206,39 +206,47 @@ def test_remote_discovery_preserves_symlinked_root_namespace(tmp_path):
 
 
 def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
-    from kkrunner.files.manifest import FileManifest
+    from kkrunner import ExecutionSpec
+    from kkrunner.client import EndpointClient, StagingSpec
 
-    from .test_remote import _text_run
-
-    workdir = tmp_path / "local" / "calculation"
-    workdir.mkdir(parents=True)
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
     for name in ("one.pot", "two.pot", "three.cache", "exact"):
-        (workdir / name).write_bytes(b"cache")
+        (remote / name).write_bytes(b"cache")
     calls = []
 
     class Observed(LocalTransport):
+        is_local = False
+
         async def query_files(self, sources, *, root=None, digest=False):
             calls.append((tuple(sources), root))
             return await super().query_files(sources, root=root, digest=digest)
 
-    executor, spec, _, remote_root = _text_run(
-        tmp_path,
-        Observed(),
-        declared_cache_files=tuple(workdir / name for name in ("*.pot", "*.cache", "exact", "missing")),
+    client = EndpointClient(transport=Observed())
+    spec = ExecutionSpec(
+        argv=("unused",), directory=local,
+        cache_files=("*.pot", "*.cache", "exact", "missing"),
+        staging=StagingSpec(local_root=local, remote_root=remote, input_sync="never"),
     )
-    files = executor.create_run_parts(spec).files
+    files = client.create_run_parts(spec).files
     try:
-        asyncio.run(files._prepare_cache_files({}, FileManifest.from_spec(spec)))
-        local = workdir
+        # Patterns need local candidates for input staging even under NEVER.
+        for name in ("one.pot", "two.pot", "three.cache"):
+            (local / name).write_bytes(b"cache")
+        targets, patterns, before = asyncio.run(
+            files._prepare_cache_files({}, files.submission_footprint()[1])
+        )
         assert calls == [
-            (
-                (str(local / "*.pot"), str(local / "*.cache"), str(local / "exact"), str(local / "missing")),
-                str(local.parent),
-            ),
+            ((str(remote / "*.pot"), str(remote / "*.cache"), str(remote / "exact"), str(remote / "missing")),
+             str(remote)),
         ]
-        assert len(files._cache_before) == 3
-        assert files._cache_targets[str(workdir / "exact")][1] == queries.local_file_signature(local / "exact")
-        assert files._cache_targets[str(workdir / "missing")][1] is None
+        assert set(patterns) == {str(remote / "*.pot"), str(remote / "*.cache")}
+        assert before == {
+            str(remote / name): queries.local_file_signature(remote / name)
+            for name in ("one.pot", "two.pot", "three.cache")
+        }
+        assert targets[str(local / "exact")][1] == queries.local_file_signature(remote / "exact")
+        assert targets[str(local / "missing")][1] is None
     finally:
-        spec.input_file.close()
-        spec.output_file.close()
+        files.close()

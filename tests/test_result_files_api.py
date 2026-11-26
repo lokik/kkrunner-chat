@@ -79,7 +79,7 @@ def test_local_staging_versions_inputs_before_launch_and_caches_afterwards(tmp_p
             output_file=output, cache_files=(cache,),
         )
         parts = EndpointClient(DirectBackend).create_run_parts(spec)
-        parts.prepare_submission()
+        parts.files.prepare_submission()
         before = parts.files.files
         assert source.read_text() == "launch input"
         assert before.input_version(source).digest == file_digest(source)

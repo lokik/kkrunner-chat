@@ -58,3 +58,13 @@ def test_execution_resources_can_suppress_close_errors_with_preclosed_resources(
     resources.close(suppress_errors=True)
     assert calls == ["failure", "final"]
     assert resources.closed
+
+
+def test_detach_uses_nondestructive_cleanup_exactly_once():
+    calls = []
+    resource = _Closable("delete files", calls)
+    resources = ExecutionResources(resource, on_detach=lambda: calls.append("close handles"))
+    resources.close(detach=True)
+    resources.close()
+    assert resources.closed
+    assert calls == ["close handles"]

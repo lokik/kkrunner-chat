@@ -5,16 +5,9 @@ from __future__ import annotations
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
-from uuid import uuid4
 
 from kkrunner.transports.contracts import Operation, RunningCommand
 from kkrunner.files.snapshots import snapshot_destination
-
-
-def _local_temporary_path(destination):
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    return destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
 
 
 class Transport:
@@ -71,7 +64,7 @@ class Transport:
         """Retrieve and replace a complete directory tree."""
         raise NotImplementedError
 
-    async def get_file(self, source, destination):
+    async def get_file(self, source, destination, *, verify=None, overwrite=True):
         raise NotImplementedError
 
     async def put_files(self, sources, source_root, destination_root):
