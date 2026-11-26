@@ -97,8 +97,8 @@ class RunManager:
         with RunManager._default_lock:
             if RunManager._fallback is None:
                 from kkrunner.runs.records import RunStore
-                root = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
-                RunManager._fallback = RunManager(RunStore(Path(root) / "kkrunner" / "runs"))
+                from platformdirs import user_state_dir
+                RunManager._fallback = RunManager(RunStore(Path(user_state_dir("kkrunner")) / "projects_runs"))
             return RunManager._fallback
 
     @classmethod
@@ -164,6 +164,7 @@ class RunManager:
         metadata=None,
         processing_required=False,
         submission_key=None,
+        retain_history=True,
     ):
         now = _now()
         local = os.path.abspath(os.fspath(directory))
@@ -182,6 +183,7 @@ class RunManager:
             ),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
+            retain_history=retain_history,
         )
 
     @staticmethod
@@ -312,6 +314,15 @@ class RunManager:
         return (now - _timestamp(record.updated_at)).total_seconds() >= self.submitting_grace
 
     def recover_submitting(self, record):
+        owner = self.store.observation_lock(record)
+        if not owner.acquire(blocking=False):
+            return self.store.get(record.id)
+        try:
+            return self._recover_submitting(record)
+        finally:
+            owner.release()
+
+    def _recover_submitting(self, record):
         record = self.store.get(record.id)
         if not record.execution.available or not self._is_stale_submitting(record):
             return record
@@ -414,11 +425,17 @@ class RunManager:
                     existing = None
                 if existing is not None and (existing != record or existing.state != RunState.NEW):
                     raise ValueError(f"Run id {record.id!r} already exists; use attach()")
-                conflicts = tuple(
-                    active
-                    for active in self.store.runs(active=True)
-                    if active.id != record.id and submission_conflicts(record, active)
-                )
+                conflicts = []
+                for active in self.store.runs(include_reservations=True):
+                    if active.id == record.id:
+                        continue
+                    if active.state.is_terminal:
+                        if active.retain_history or self.store.discard_terminal_reservation(active):
+                            continue
+                        # Terminal metadata can precede the owner's final cleanup.
+                    if submission_conflicts(record, active):
+                        conflicts.append(active)
+                conflicts = tuple(conflicts)
                 if not conflicts:
                     if not preprocessing and record.files is not None:
                         sync_result_files(record.files.input_files)
@@ -440,8 +457,9 @@ class RunManager:
                     conflict for conflict in conflicts
                     if conflict.id not in attempted_refresh
                     and conflict.execution.available
-                    and conflict.execution.backend.name == "direct"
-                    and conflict.execution.backend_id is not None
+                    and (not conflict.retain_history or conflict.execution.backend.name == "direct")
+                    and (conflict.execution.backend_id is not None or conflict.state == RunState.POSTPROCESSING)
+                    and not conflict.state.is_terminal
                 )
 
             if not preparing and not stale and not refreshable:
@@ -459,10 +477,13 @@ class RunManager:
                     progressed = True
             for conflict in refreshable:
                 attempted_refresh.add(conflict.id)
-                client = self.client_for(conflict)
-                if BackendCapability.STATUS not in client.backend.supports:
-                    continue
-                refreshed = self.refresh((conflict,))[0]
+                if not conflict.retain_history:
+                    refreshed = self._refresh_reservation(conflict)
+                else:
+                    client = self.client_for(conflict)
+                    if BackendCapability.STATUS not in client.backend.supports:
+                        continue
+                    refreshed = self.refresh((conflict,))[0]
                 if refreshed.state.is_terminal:
                     progressed = True
             if not progressed:
@@ -825,27 +846,38 @@ class RunManager:
     def create_run(
         self, client, spec, *, process_result=None, metadata=None,
         processing_required=None, callback=None, run_id=None, detached=None,
-        owned_resources=None, preprocess=None,
+        owned_resources=None, preprocess=None, retain_history=True,
     ):
-        """Create one tracked Run through the configured client."""
+        """Create one reserved Run through the configured client."""
         from kkrunner.runs.run import Run
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
-        config = require_persistable_transport(client.transport)
+        if retain_history:
+            config = require_persistable_transport(client.transport)
+        else:
+            try:
+                config = require_persistable_transport(client.transport)
+            except TypeError:
+                # Custom live transports cannot be reconstructed by another process.
+                # Preserve a conservative namespace rather than bypassing reservations.
+                from kkrunner.transports.implementations.unavailable import UnavailableTransport
+                config = UnavailableTransport({"kind": "custom", "host": getattr(client.transport, "host", None)})
         record = self.new_record(
             metadata=metadata,
             processing_required=(process_result is not None if processing_required is None else processing_required),
             directory=spec.directory,
             transport=config,
             backend=client.backend_config,
-            remote_directory=(None if config.is_local else client.submission_directory(spec)),
+            remote_directory=(None if client.transport.is_local else client.submission_directory(spec)),
             files=FileManifest.from_spec(spec),
             run_id=run_id,
             submission_key=uuid4().hex,
+            retain_history=retain_history,
         )
-        self.register_client(client)
+        if config.available:
+            self.register_client(client)
         parts = client.create_run_parts(
             spec, submission_key=record.execution.submission_key,
         )
@@ -858,14 +890,66 @@ class RunManager:
             preprocess=preprocess,
         )
 
+    def _refresh_reservation(self, record):
+        """Observe an orphaned hidden reservation without starting client processing."""
+        owner = self.store.observation_lock(record)
+        if not owner.acquire(blocking=False):
+            return record
+        try:
+            try:
+                current = self.store.get(record.id)
+            except FileNotFoundError:
+                return replace(record, state=RunState.FINISHED)
+            if current.state.is_terminal:
+                return current
+            if current.state == RunState.PREPROCESSING:
+                return self.recover_preprocessing(current)
+            if current.state == RunState.POSTPROCESSING:
+                # The native execution ended; no live client remains to process it.
+                return self.store.update(current, lambda latest: replace(
+                    latest, state=RunState.FAILED, updated_at=_now(), finished_at=_now(),
+                    failure_phase=FailurePhase.POSTPROCESSING, message="Client processing was abandoned",
+                ) if latest.state == RunState.POSTPROCESSING else latest)
+            if not current.execution.available:
+                return current  # Cannot prove that the calculation stopped.
+            if self._is_stale_submitting(current):
+                current = self._recover_submitting(current)
+            if current.state.is_terminal or current.execution.backend_id is None:
+                return current
+            client = self.client_for(current)
+            if BackendCapability.STATUS not in client.backend.supports:
+                return current
+            try:
+                status = client.status(JobAttachment(current.execution, current.files))[0]
+            except (OSError, RuntimeError, ValueError, NotImplementedError):
+                return current
+            if status.state.is_terminal:
+                # No live client can transfer or process files anymore. The native
+                # job is confirmed ended, so the file reservation can be released.
+                return self.complete(current, state=status.state, return_code=status.return_code,
+                                     failure_phase=status.failure_phase, message=status.message)
+            return self.update(current, status)
+        finally:
+            owner.release()
+
     def refresh(self, records=None, *, on_error=None):
         """Refresh records; optionally report and skip unreadable history entries."""
         self.reconcile_acknowledgements(on_error=on_error)
         options = {} if on_error is None else {"on_error": on_error}
-        records = tuple(self.store.runs(active=True, **options) if records is None else records)
+        if records is None:
+            # Maintenance is independent of the history visible to the caller.
+            for reservation in self.store.runs(include_reservations=True, **options):
+                if not reservation.retain_history:
+                    refreshed = self._refresh_reservation(reservation)
+                    self.store.discard_terminal_reservation(refreshed)
+            records = self.store.runs(active=True, **options)
+        records = tuple(records)
         current = {record.id: record for record in records}
         groups = {}
         for record in records:
+            if not record.retain_history:
+                current[record.id] = self._refresh_reservation(record)
+                continue
             if record.state == RunState.PREPROCESSING:
                 current[record.id] = self.recover_preprocessing(record)
                 continue

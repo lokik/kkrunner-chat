@@ -56,6 +56,7 @@ class RunRecord:
     metadata: dict = field(default_factory=dict)
     processing_required: bool = False
     processing_attempt: Optional[str] = None
+    retain_history: bool = True
 
     def __post_init__(self):
         if (
@@ -83,6 +84,10 @@ class RunRecord:
         object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
         if type(self.processing_required) is not bool:
             raise TypeError("processing_required must be a bool")
+        if type(self.retain_history) is not bool:
+            raise TypeError("retain_history must be bool")
+        if not self.retain_history and self.project_id is not None:
+            raise ValueError("A reservation-only run cannot belong to a project")
         if self.project_id is not None:
             object.__setattr__(self, "project_id", str(self.project_id))
         if isinstance(self.execution, dict):
@@ -232,6 +237,8 @@ class RunStore:
             try:
                 latest = self.get(record.id)
             except FileNotFoundError:
+                if not record.retain_history and record.state != RunState.NEW:
+                    raise  # A stale observer cannot recreate a collected reservation.
                 latest = record
             if latest.created_at != record.created_at:
                 raise ValueError("Run id already belongs to a different persistent identity")
@@ -242,6 +249,7 @@ class RunStore:
                 or updated.metadata != latest.metadata
                 or updated.processing_required != latest.processing_required
                 or updated.project_id != latest.project_id
+                or updated.retain_history != latest.retain_history
             ):
                 raise ValueError("Run update cannot change persistent identity or metadata")
             if updated.execution.submission_key != latest.execution.submission_key:
@@ -265,6 +273,8 @@ class RunStore:
         record = self.get(run_id)
         with self._lock, FileLock(self._run_lock_path(record)):
             current = self.get(run_id)
+            if not current.retain_history:
+                raise ValueError("A reservation-only run cannot belong to a project")
             if current.project_id != expected_project_id:
                 raise ValueError(f"Run {run_id!r} belongs to a different project now")
             if current.project_id == project_id:
@@ -323,7 +333,29 @@ class RunStore:
                 on_error(exc)
         return sorted(records, key=lambda record: record.created_at, reverse=newest)
 
-    def runs(self, *, active=None, limit=None, newest=False, on_error=None):
+    def discard_terminal_reservation(self, record):
+        """Collect a hidden terminal record only after its live owner has left."""
+        if record.retain_history or not record.state.is_terminal:
+            return False
+        owner = self.observation_lock(record)
+        if not owner.acquire(blocking=False):
+            return False
+        try:
+            with self._lock, FileLock(self._run_lock_path(record)):
+                try:
+                    current = self.get(record.id)
+                except FileNotFoundError:
+                    return True
+                if current.retain_history or not current.state.is_terminal:
+                    return False
+                path = self._path(current)
+                path.unlink()
+                fsync_directory(path.parent)
+                return True
+        finally:
+            owner.release()
+
+    def runs(self, *, active=None, limit=None, newest=False, on_error=None, include_reservations=False):
         """List run history.
 
         Strict by default: an invalid record raises CorruptRunRecord. History
@@ -340,6 +372,8 @@ class RunStore:
             records = []
             for day in self._day_directories(newest=newest):
                 for record in self._records_in_directory(day, newest=newest, on_error=on_error):
+                    if not record.retain_history and not include_reservations:
+                        continue
                     if active is True and record.state.is_terminal:
                         continue
                     if active is False and not record.state.is_terminal:

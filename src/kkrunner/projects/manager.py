@@ -43,6 +43,8 @@ class ProjectRunManager(RunManager):
         return self._project_id
 
     def new_record(self, **kwargs):
+        if not kwargs.get("retain_history", True):
+            return super().new_record(**kwargs)
         if self._project_id is None:
             raise ValueError("Tracked runs require a project")
         return super().new_record(project_id=self._project_id, **kwargs)
@@ -75,9 +77,11 @@ class ProjectRunManager(RunManager):
         project=None,
         detached=None,
         owned_resources=None,
+        preprocess=None,
+        retain_history=True,
     ):
         manager = self if project is None else self.for_project(project)
-        if manager.project_id is None:
+        if retain_history and manager.project_id is None:
             raise ValueError("A tracked run must belong to an existing project")
         return RunManager.create_run(
             manager,
@@ -90,4 +94,6 @@ class ProjectRunManager(RunManager):
             run_id=run_id,
             detached=detached,
             owned_resources=owned_resources,
+            preprocess=preprocess,
+            retain_history=retain_history,
         )

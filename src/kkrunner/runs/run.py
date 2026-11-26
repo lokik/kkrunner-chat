@@ -25,8 +25,8 @@ from kkrunner.runs.processing import ProcessingPending
 class Run:
     """Client-side execution with one completion and processing state machine.
 
-    An ordinary Run is memory-only. A tracked Run uses RunManager to commit
-    state; it never independently writes a RunRecord.  The supplied job handles
+    A Run uses RunManager to commit its reservation and lifecycle. Only runs
+    explicitly tracked by the application remain in history. The supplied job handles
     raw execution and observation, not client postprocessing or persistence.
 
     preprocess is an optional zero-argument client callback, invoked after the
@@ -62,7 +62,7 @@ class Run:
         self._job = parts.job
         self._file_session = parts.files
         self.client = client
-        self.manager = manager
+        self._manager = manager
         self._record = record
         if preprocess is not None and manager is None:
             raise ValueError("Preprocessing requires a reserved Run")
@@ -119,36 +119,36 @@ class Run:
                 callback=callback, detached=detached, owned_resources=owned_resources, preprocess=preprocess,
                 **record_options,
             )
-        if preprocess is not None or getattr(spec, "preprocessing_files", ()):
-            raise ValueError("Preprocessing requires a reserved Run")
         if record_options:
             raise ValueError("Record metadata requires a persistent RunManager")
         return cls.untracked(client, spec, process_result=process_result,
-                          callback=callback, detached=detached, owned_resources=owned_resources)
+                          callback=callback, detached=detached, owned_resources=owned_resources,
+                          preprocess=preprocess)
 
     @classmethod
     def untracked(
         cls, client, spec, *, process_result=None, callback=None, detached=None, owned_resources=None,
+        preprocess=None,
     ):
-        """Create one untracked Run with the same client lifecycle."""
-        if isinstance(spec, ExecutionSpec):
-            spec.require_complete()
-        if getattr(spec, "preprocessing_files", ()):
-            raise ValueError("Preprocessing requires a reserved Run")
-        parts = client.create_run_parts(spec)
-        parts.configure_detached(
-            client.default_detached if detached is None else detached,
+        """Create a hidden reservation in the shared store, not a history entry."""
+        from kkrunner.runs.manager import RunManager
+        return RunManager.get_default().create_run(
+            client, spec, process_result=process_result, callback=callback, detached=detached,
+            owned_resources=owned_resources, preprocess=preprocess, retain_history=False,
         )
-        return cls(parts.job, client=client, parts=parts,
-                   process_result=process_result, callback=callback, owned_resources=owned_resources)
 
     @property
     def id(self):
-        return None if self._record is None else self._record.id
+        return None if self.record is None else self.record.id
 
     @property
     def record(self):
-        return self._record
+        return self._record if self._record is not None and self._record.retain_history else None
+
+    @property
+    def manager(self):
+        """Public history manager; hidden reservations are an internal concern."""
+        return self._manager if self.record is not None else None
 
     @property
     def spec(self):
@@ -160,6 +160,10 @@ class Run:
 
     @property
     def execution(self):
+        if self._record is not None and not self._record.execution.transport.available:
+            # Custom live transports have no reconstructible execution config.
+            from dataclasses import replace
+            return replace(self._record.execution, backend_id=self.backend_id)
         proposed = self._file_session.execution(self.backend_id)
         if proposed is None or self._record is None:
             return proposed
@@ -220,7 +224,7 @@ class Run:
     def snapshot_file(self, file, *, destination=None):
         if self.manager is None:
             raise RuntimeError("Snapshot of an untracked Run requires a workspace")
-        return self.manager.snapshot_file(self.id, file, destination=destination)
+        return self._manager.snapshot_file(self.id, file, destination=destination)
 
     def _finish(self):
         try:
@@ -287,7 +291,7 @@ class Run:
             self._processing = True
             try:
                 if self._record is not None and self._record.processing_required:
-                    self.result = self.manager._process_outcome(
+                    self.result = self._manager._process_outcome(
                         self._record, outcome, self._process_result,
                         files=self.files,
                         execution=self.execution or self._record.execution,
@@ -342,7 +346,7 @@ class Run:
                     self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
                                            FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
                     self._failure_message = str(exc)
-            if self.manager is not None and self._record.state != RunState.NEW:
+            if self._manager is not None and self._record.state != RunState.NEW:
                 try:
                     self._sync_completion()
                 except BaseException as exc:
@@ -350,12 +354,12 @@ class Run:
                         self._exception = exc
             # The durable record must capture file versions before an owned
             # temporary directory or prepared calculation can be released.
-            if self._state.is_terminal and (self.manager is None or self._completion_persisted):
+            if self._state.is_terminal and (self._manager is None or self._completion_persisted):
                 try:
                     self._owned_resources.close(suppress_errors=self.exception is not None)
                 except BaseException as exc:
                     self._exception = exc
-            if self.manager is not None and self._record.state == RunState.FINISHED:
+            if self._manager is not None and self._record.state == RunState.FINISHED:
                 if self._record.processing_required and self._state != RunState.FINISHED:
                     # An independent observer completed the processing first.
                     self.result = None
@@ -431,7 +435,7 @@ class Run:
                 self._submitting = False
 
     def _submit(self, validate_inputs=None):
-        manager = self.manager
+        manager = self._manager
         submitted = False
         reserved = False
         preprocessing_lock = None
@@ -443,6 +447,11 @@ class Run:
                     self._record, files=files,
                     execution=replace(self._record.execution, directory=directory),
                 )
+                # Acquire owner lock before making the reservation visible. The same
+                # lock protects staging, execution, processing and resource cleanup.
+                if not self._record.retain_history or self.client.backend.name == "direct":
+                    self._direct_observation_lock = manager.store.observation_lock(self._record)
+                    self._direct_observation_lock.acquire()
                 # Reservation and duplicate-submit checks are atomic at the store.
                 if self._preprocess is not None:
                     preprocessing_lock = manager.store.preprocessing_lock(self._record)
@@ -462,12 +471,8 @@ class Run:
                     self._monitor_record_version = self._record.updated_at
                     preprocessing_lock.release()
                     preprocessing_lock = None
-                if self.client.backend.name == "direct":
-                    self._direct_observation_lock = manager.store.observation_lock(self._record)
-                    self._direct_observation_lock.acquire()
 
-            # Stage using the same session operations for tracked/untracked
-            # execution. Only the optional durable snapshot differs.
+            # Stage using the same session operations for all reserved runs.
             if self._job.state == RunState.CANCELLED:
                 raise asyncio.CancelledError("Run was cancelled before submission")
             prepared = self._parts.prepare_submission()
@@ -554,7 +559,8 @@ class Run:
                 preprocessing_lock.release()
 
         if manager is not None:
-            manager.register_client(self.client)
+            if self._record.execution.transport.available:
+                manager.register_client(self.client)
             with self._completion_lock:
                 if not self._completion_persisted:
                     from kkrunner.runs.manager import _UNCHANGED
@@ -593,35 +599,35 @@ class Run:
         # Completion claims the file session only after its observer started.
         # A failed monitor start must leave abort() able to close the streams.
         self._start_completion()
-        if self.manager is None:
+        if self._manager is None:
             return
         with self._completion_lock:
             state = self._observed_submission_state()
             if not self._completion_persisted and self.backend_id is not None and state != RunState.NEW:
-                self._record = self.manager.transition(
+                self._record = self._manager.transition(
                     self._record, state=state, execution=self.execution,
                     failure_phase=self.failure_phase,
                 )
                 self._monitor_record_version = self._record.updated_at
 
     def _sync_completion(self):
-        if self.manager is None:
+        if self._manager is None:
             return
         from kkrunner.runs.manager import _NO_ARTIFACTS_FAILURES
         with self._completion_lock:
             if self._completion_persisted:
                 return
-            latest = self.manager.store.get(self.id)
+            latest = self._manager.store.get(self._record.id)
             if latest.state.is_terminal and not (
                 latest.state == RunState.FINISHED and latest.return_code is None
                 and self.return_code is not None and self._state.is_terminal
             ):
                 self._record = latest
                 self._completion_persisted = True
-                self.manager._acknowledge_result(latest)
+                self._manager._acknowledge_result(latest)
                 return
             if self._state == RunState.UNKNOWN:
-                self._record = self.manager.transition(
+                self._record = self._manager.transition(
                     self._record, state=self._state, execution=self.execution,
                     message=self.failure_message,
                     expected_updated_at=self._monitor_record_version,
@@ -633,7 +639,7 @@ class Run:
             phase = self.failure_phase
             if self._state == RunState.FAILED and phase is None:
                 phase = FailurePhase.EXECUTION
-            self._record = self.manager.complete(
+            self._record = self._manager.complete(
                 self._record, state=self._state, execution=self.execution,
                 return_code=self.return_code, message=self.failure_message,
                 failure_phase=phase,
@@ -651,7 +657,7 @@ class Run:
         try:
             result = wait_for_monitor(self)
         finally:
-            if self.manager is not None and self._record.state != RunState.NEW:
+            if self._manager is not None and self._record.state != RunState.NEW:
                 self._sync_completion()
         if self._pending_exception is not None:
             raise self._pending_exception
@@ -679,7 +685,7 @@ class Run:
         if self.manager is None:
             raise RuntimeError("Untracked Run has no durable status")
         with self._completion_lock:
-            self._record = self.manager.refresh((self._record,))[0]
+            self._record = self._manager.refresh((self._record,))[0]
             return self._record
 
     def stop_observation(self):
@@ -696,7 +702,7 @@ class Run:
             unstarted = not self._started and self._job.state in (RunState.NEW, RunState.CANCELLED)
             completed = (
                 self._settled and self.state.is_terminal
-                and (self.manager is None or self._record.state.is_terminal)
+                and (self._manager is None or self._record.state.is_terminal)
             )
             if not completed and (self._submitting or not unstarted):
                 raise RuntimeError(f"Cannot close resources while Run is {self.state.value}")
@@ -724,10 +730,10 @@ class Run:
             # Cancellation during staging has no accepted execution yet.
             # submit() owns its reservation until it records cancellation or
             # starts the accepted job's completion monitor.
-            if self.manager is not None and self._started and self._record.state != RunState.NEW:
+            if self._manager is not None and self._started and self._record.state != RunState.NEW:
                 with self._completion_lock:
                     if not self._completion_persisted:
-                        self._record = self.manager.transition(
+                        self._record = self._manager.transition(
                             self._record, state=self._observed_submission_state(),
                             execution=self.execution,
                             failure_phase=self.failure_phase,
