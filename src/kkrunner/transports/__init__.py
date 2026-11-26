@@ -39,6 +39,11 @@ def transport_from_dict(value):
         return LocalTransport(**value)
     if kind == "ssh":
         from .implementations.ssh.transport import SshTransport
+        # Historical persisted transport declarations used a boolean.
+        if "zstd" in value:
+            value = dict(value)
+            old = value.pop("zstd")
+            value.setdefault("compression", "zstd" if old else None)
         return SshTransport(**value)
     if isinstance(kind, str) and kind:
         from .implementations.unavailable import UnavailableTransport

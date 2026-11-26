@@ -250,3 +250,54 @@ def test_postprocessing_retry_accepts_unchanged_output_with_stale_input(tmp_path
     current = manager.store.get(failed.id)
     assert current.state is RunState.FINISHED
     assert current.files == failed.files
+
+
+def test_historical_retry_releases_global_locks_before_file_validation(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from kkrunner import MemoryRunStore
+    from kkrunner.files import FileEntry, FileManifest, FileVersion
+    from kkrunner.runs import DuplicateSubmissionError
+
+    disk, memory = RunStore(tmp_path / "runs"), MemoryRunStore()
+    manager = RunManager(disk, conflict_stores=(memory,))
+    other = RunManager(memory, conflict_stores=(disk,))
+    output = tmp_path / "result.out"
+    output.write_text("saved result")
+    manifest = FileManifest(stdout=FileEntry(str(output)))
+    record = manager.new_record(directory=tmp_path, files=manifest, processing_required=True)
+    failed = manager.complete(
+        record, state=RunState.FAILED, return_code=0,
+        failure_phase=FailurePhase.POSTPROCESSING, artifacts_available=True,
+        execution=record.execution.submitted("original"),
+    )
+
+    validating, release = Event(), Event()
+    original_state = FileVersion.state
+
+    def state(version):
+        if str(version.path) == str(output) and not release.is_set():
+            validating.set()
+            assert release.wait(5)
+        return original_state(version)
+
+    monkeypatch.setattr(FileVersion, "state", state)
+
+    def reserve_other():
+        unrelated = other.new_record(directory=tmp_path, files=FileManifest(
+            stdout=FileEntry(str(tmp_path / "unrelated.out")),
+        ))
+        assert other.reserve(unrelated).state == RunState.SUBMITTING
+        competing = other.new_record(directory=tmp_path, files=manifest)
+        with pytest.raises(DuplicateSubmissionError):
+            other.reserve(competing)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = pool.submit(manager.retry_postprocessing, failed, lambda outcome: "parsed")
+        try:
+            assert validating.wait(5)
+            assert disk.get(record.id).state == RunState.POSTPROCESSING
+            pool.submit(reserve_other).result(timeout=3)
+        finally:
+            release.set()
+        assert future.result(timeout=5) == "parsed"
+    assert disk.get(record.id).state == RunState.FINISHED

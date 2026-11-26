@@ -4,9 +4,11 @@ import asyncio
 import glob
 import os
 import posixpath
+from functools import partial
 
 from kkrunner.client.file_context import FileContext, _relative_local_path
 from kkrunner.client.contracts import Operation
+from kkrunner.files.manifest import FileEntry
 from kkrunner.files.queries import remote_file_cleanup
 from kkrunner.client.staging import StagingSpec
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
@@ -46,51 +48,82 @@ class FileAccess:
     def snapshot_file(self, run, file, *, destination=None):
         return _run_sync(self._snapshot_file(run, file, destination=destination))
 
-    async def _fetch_result_files(self, run, files, *, destinations=None):
+    async def _resolve_result_files(self, run, files):
+        """Read-only discovery: freeze the exact source and destination pairs."""
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         remote_root = await context._resolved_remote_root()
-        destinations = (
-            {}
-            if destinations is None
-            else {os.path.abspath(os.fspath(path)): os.fspath(target) for path, target in destinations.items()}
-        )
+        declared = {
+            entry.local_path: entry for entry in (
+                *run.files.input_entries, *run.files.outputs, *(cache.file for cache in run.files.caches),
+                run.files.stdout, run.files.stderr,
+            ) if entry is not None
+        }
+        pairs = {}
         for value in files:
             local = os.path.abspath(os.fspath(value))
-            entry = next(
-                (
-                    item
-                    for item in (
-                        *run.files.inputs,
-                        *run.files.outputs,
-                        *(cache.file for cache in run.files.caches),
-                        run.files.stdout,
-                        run.files.stderr,
-                    )
-                    if item is not None and item.local_path == local
-                ),
-                None,
-            )
+            _relative_local_path(local, context.local_root)
+            entry = declared.get(local)
             remote = entry.remote_path if entry is not None else None
             if remote is None:
                 remote = await context.map_path(local)
-            # Exact paths and wildcards have the same source-side selection
-            # and use the transport's verified single-file download.
             for matched in await self.client.transport.expand_files(remote, remote_root):
-                destination = os.fspath(await context.unmap_path(matched)) if glob.has_magic(remote) else local
+                destination = os.fspath(context._unmap_path(matched, remote_root)) if glob.has_magic(remote) else local
                 _relative_local_path(destination, context.local_root)
-                target = destinations.get(destination, destination)
-                if not os.path.isfile(target):
-                    await self.client.transport.get_file(matched, target)
+                # Retain exact historical file identities. A wildcard is
+                # expanded in the persisted mapped namespace, not today's alias.
+                # Resolve the parent, but never follow or replace a final
+                # symlink at the destination (including a dangling one).
+                target = os.path.join(os.path.realpath(os.path.dirname(destination)),
+                                      os.path.basename(destination))
+                pair = FileEntry(local_path=target, remote_path=matched)
+                previous = pairs.setdefault(target, pair)
+                if previous.remote_path != matched:
+                    raise ValueError(f"Different historical sources map to {target}")
+        return tuple(pairs.values())
 
-    def fetch_result_files(self, run, files, *, destinations=None):
-        return _run_sync(
-            self._fetch_result_files(
-                run,
-                files,
-                destinations=destinations,
-            )
-        )
+    def resolve_result_files(self, run, files):
+        return _run_sync(self._resolve_result_files(run, files))
 
+    async def _download_result_files(self, entries, *, verify=None):
+        """Download exact pairs without re-discovering or re-mapping paths."""
+        downloaded = []
+        for entry in entries:
+            target = entry.local_path
+            if os.path.lexists(target):
+                continue
+            try:
+                await self.client.transport.get_file(
+                    entry.remote_path, target,
+                    verify=None if verify is None else partial(verify, target),
+                    overwrite=False,
+                )
+            except FileExistsError:
+                continue
+            downloaded.append(target)
+        return tuple(downloaded)
+
+    def download_result_files(self, entries, *, verify=None):
+        return _run_sync(self._download_result_files(entries, verify=verify))
+
+    def fetch_result_files(self, run, files, *, destinations=None, verify=None):
+        """Convenience for caller-coordinated retrieval outside a RunManager."""
+        from dataclasses import replace
+
+        entries = self.resolve_result_files(run, files)
+        if destinations is not None:
+            targets = {
+                os.path.join(os.path.realpath(os.path.dirname(os.fspath(path))),
+                             os.path.basename(os.fspath(path))): os.fspath(target)
+                for path, target in destinations.items()
+            }
+            originals = {targets.get(entry.local_path, entry.local_path): entry.local_path for entry in entries}
+            entries = tuple(replace(entry, local_path=targets.get(entry.local_path, entry.local_path))
+                            for entry in entries)
+            if verify is not None:
+                original_verify = verify
+                verify = lambda target, temporary: original_verify(originals[target], temporary)
+            return tuple(originals[path] for path in self.download_result_files(entries, verify=verify))
+        return self.download_result_files(entries, verify=verify)
 
     async def _remote_cleanup(self, run, paths, *, expected=None):
         """Operate on declared remote files, including TAUDIR outside the run directory."""

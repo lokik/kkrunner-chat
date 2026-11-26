@@ -42,7 +42,7 @@ class Job:
         self._cancel_requested = Event()
         self._cancel_future = None
         self._cancel_task = None
-        self._stop_task = None
+        self._observer = None
         self._observation_stopped = Event()
         self._stream_writer = None
         self._output_observers = OutputObservers(output_listener)
@@ -189,10 +189,13 @@ class Job:
                 self._submitted.set()
             if self._cancel_requested.is_set():
                 self._ensure_cancel_task()
-            if self._observation_stopped.is_set():
-                await self.execution.stop_observation()
+            with self._lock:
+                if self._observation_stopped.is_set() and self.execution.can_stop_observation:
+                    self._observation_lost("Observation detached")
+                    return
+                self._observer = asyncio.create_task(self.execution.observe(self._observed_output))
             try:
-                status = await self.execution.observe(self._observed_output)
+                status = await self._observer
             except asyncio.CancelledError:
                 if not self._observation_stopped.is_set():
                     raise
@@ -213,10 +216,11 @@ class Job:
             if not self._state.is_terminal:
                 self._observation_lost("Observation ended without terminal backend status")
         finally:
+            with self._lock:
+                self._observer = None
             try:
-                pending = [task for task in (self._cancel_task, self._stop_task) if task is not None]
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
+                if self._cancel_task is not None:
+                    await asyncio.gather(self._cancel_task, return_exceptions=True)
                 try:
                     await self.execution.close()
                 except BaseException as exc:
@@ -290,14 +294,15 @@ class Job:
             except RuntimeError:
                 pass  # Observation has already closed its loop.
 
-    def _stop_observation(self):
-        if self._stop_task is None:
-            self._stop_task = asyncio.create_task(self.execution.stop_observation())
-
     def stop_observation(self):
-        self._observation_stopped.set()
-        if self._loop is not None:
-            self._schedule(self._stop_observation)
+        """Stop listeners; interrupt observation only if the execution survives."""
+        with self._lock:
+            if self._observation_stopped.is_set():
+                return
+            self._observation_stopped.set()
+            observer = self._observer
+        if observer is not None and self.execution.can_stop_observation:
+            self._schedule(observer.cancel)
 
     def start(self):
         if self._thread is None and self.ref is None:

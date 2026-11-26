@@ -39,31 +39,36 @@ def close_output_files(*files):
 
 
 
-@dataclass(frozen=True)
+@dataclass
 class OutputStreams:
-    """Live output handles acquired by a Job adapter or file session."""
+    """Own output targets from acquisition through final closure.
+
+    Acquiring supplied handles need not create any declared output paths.
+    Streaming backends materialize path declarations only when needed.
+    """
 
     output_file: Any = None
     error_file: Any = None
 
+    def open(self, directory):
+        """Open still-unmaterialized paths once; preserve merged streams."""
+        with ExitStack() as acquired:
+            opened = {}
+            targets = {}
+            for name in ("output_file", "error_file"):
+                value = getattr(self, name)
+                if isinstance(value, (str, bytes, os.PathLike)):
+                    path = file_path(value, directory)
+                    if path not in opened:
+                        Path(os.fsdecode(path)).parent.mkdir(parents=True, exist_ok=True)
+                        opened[path] = acquired.enter_context(open(path, "wb"))
+                    value = opened[path]
+                targets[name] = value
+            self.output_file = targets["output_file"]
+            self.error_file = targets["error_file"]
+            acquired.pop_all()
+
     def close(self):
-        close_output_files(self.output_file, self.error_file)
-
-
-def open_output_streams(spec):
-    """Materialize declared targets while leaving the ExecutionSpec unchanged."""
-    with ExitStack() as acquired:
-        opened = {}
-        targets = {}
-        for name in ("output_file", "error_file"):
-            value = getattr(spec, name)
-            if isinstance(value, (str, os.PathLike)):
-                path = file_path(value, spec.directory)
-                if path not in opened:
-                    Path(path).parent.mkdir(parents=True, exist_ok=True)
-                    opened[path] = acquired.enter_context(open(path, "wb"))
-                value = opened[path]
-            targets[name] = value
-        streams = OutputStreams(**targets)
-        acquired.pop_all()  # The adapter or FileSession now owns the streams.
-        return streams
+        output, error = self.output_file, self.error_file
+        self.output_file = self.error_file = None
+        close_output_files(output, error)

@@ -20,7 +20,9 @@ from kkrunner.files.queries import (
 from kkrunner.files.snapshots import snapshot_destination
 from kkrunner.files.versions import file_digest
 
-from ...base import Transport, _completed_process, _local_temporary_path
+from kkrunner.files.staging import staged_directory, staged_local_file
+from kkrunner.files.transfer import relative_file_pairs, transfer_path
+from ...base import Transport, _completed_process
 from ...rpc import operation_payload
 
 
@@ -90,7 +92,7 @@ class LocalTransport(Transport):
         )
         return await _completed_process(process, argv, input=input, check=check)
 
-    async def put_file(self, source, destination):
+    async def put_file(self, source, destination, *, verify=None, overwrite=True):
         source = os.fspath(source)
         signature = local_file_signature(source)
         if signature is None:
@@ -101,44 +103,32 @@ class LocalTransport(Transport):
                 return
         except FileNotFoundError:
             pass  # A new destination will be published by atomic replacement.
-        temporary = _local_temporary_path(destination)
-        try:
+        with staged_local_file(destination, verify=verify, overwrite=overwrite) as temporary:
             await asyncio.to_thread(shutil.copyfile, source, temporary)
             if local_file_signature(source) != signature:
                 raise RuntimeError(f"Local file changed while copying: {source}")
             stat = temporary.stat()
             os.utime(temporary, ns=(stat.st_atime_ns, signature[1]))
-            os.replace(temporary, destination)
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
 
-    async def get_file(self, source, destination):
-        await self.put_file(source, destination)
+    # On a local filesystem both directions are the same stable copy.
+    get_file = put_file
 
     async def put_directory(self, source, destination):
+        """Copy a whole tree before replacing the destination."""
         source, destination = Path(source), Path(destination)
         if source.is_symlink() or not source.is_dir():
             raise ValueError(f"Directory source is invalid: {source}")
-        if destination.exists() or destination.is_symlink():
-            raise FileExistsError(destination)
-        await asyncio.to_thread(shutil.copytree, source, destination)
-
-    async def get_directory(self, source, destination):
-        source, destination = Path(source), Path(destination)
-        if source.is_symlink() or not source.is_dir():
-            raise ValueError(f"Directory source is invalid: {source}")
-        if source.resolve() == destination.resolve():
-            return
         if destination.is_symlink():
             raise ValueError(f"Cannot replace symbolic link with directory: {destination}")
-        if destination.is_dir():
-            await asyncio.to_thread(shutil.rmtree, destination)
-        elif destination.exists():
-            raise ValueError(f"Directory destination is a file: {destination}")
-        await asyncio.to_thread(shutil.copytree, source, destination)
+        source_path, destination_path = source.resolve(), destination.resolve()
+        if source_path == destination_path:
+            return
+        if source_path in destination_path.parents or destination_path in source_path.parents:
+            raise ValueError("Directory source and destination overlap")
+        with staged_directory(destination) as received:
+            await asyncio.to_thread(shutil.copytree, source, received, dirs_exist_ok=True)
+
+    get_directory = put_directory
 
     async def query_files(self, sources, *, root=None, digest=False):
         return checked_files(await asyncio.to_thread(query_files, sources, root=root, digest=digest))
@@ -146,24 +136,23 @@ class LocalTransport(Transport):
     async def expand_files(self, sources, root):
         return expand_local_files(sources, root)
 
-    async def _transfer_files(self, paths, source_root, destination_root, transfer):
-        """Preserve relative layout when copying selected local files."""
-        source_root = Path(source_root).expanduser().resolve()
-        destination_root = Path(destination_root).expanduser().resolve()
-        transfers = []
-        for source in paths:
-            destination = destination_root / Path(source).relative_to(source_root)
+    async def _transfer_files(self, files, source_directory, destination_directory, transfer):
+        source_root = Path(source_directory).expanduser().resolve()
+        destination_root = Path(destination_directory).expanduser().resolve()
+        pairs = relative_file_pairs(files, source_root, destination_root)
+        result = []
+        for source, destination in pairs:
+            source = transfer_path(source_root, source, source=True)
+            destination = transfer_path(destination_root, destination, source=False)
             await transfer(source, destination)
-            transfers.append((source, os.fspath(destination)))
-        return tuple(transfers)
+            result.append((os.fspath(source), os.fspath(destination)))
+        return tuple(result)
 
-    async def put_files(self, sources, source_root, destination_root):
-        paths = expand_local_files(sources, source_root)
-        return await self._transfer_files(paths, source_root, destination_root, self.put_file)
+    async def put_files(self, files, source_directory, destination_directory):
+        return await self._transfer_files(files, source_directory, destination_directory, self.put_file)
 
-    async def get_files(self, sources, source_root, destination_root):
-        paths = await self.expand_files(sources, source_root)
-        return await self._transfer_files(paths, source_root, destination_root, self.get_file)
+    async def get_files(self, files, source_directory, destination_directory):
+        return await self._transfer_files(files, source_directory, destination_directory, self.get_file)
 
     async def read_file(self, path):
         return await asyncio.to_thread(Path(path).read_bytes)

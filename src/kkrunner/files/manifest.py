@@ -30,6 +30,7 @@ class FileEntry:
     optional: bool = False
     kind: str = "file"
     collect: bool = True
+    write: bool = False
 
     def __post_init__(self):
         import os
@@ -45,6 +46,8 @@ class FileEntry:
             raise TypeError("FileEntry.collect must be a bool")
         if type(self.optional) is not bool:
             raise TypeError("FileEntry.optional must be a bool")
+        if type(self.write) is not bool:
+            raise TypeError("FileEntry.write must be a bool")
         if self.kind not in ("file", "directory"):
             raise ValueError("FileEntry kind must be file or directory")
         if self.local_path is None and self.remote_path is None:
@@ -151,21 +154,25 @@ class FileManifest:
 
         directory = os.path.abspath(os.fspath(spec.directory))
 
-        def declared_entry(value):
-            path = file_path(value, directory)
+        def declared_entry(value, *, required=False):
+            path = file_path(value, directory, required=required)
             if path is None:
                 return None
             if isinstance(value, TaskFile):
                 return FileEntry(local_path=path, optional=value.optional,
-                                 kind=value.kind, collect=value.collect)
-            return FileEntry(local_path=path)
+                                 kind=value.kind, collect=value.collect, write=value.write)
+            from io import IOBase
+            writable = not isinstance(value, (str, bytes, os.PathLike))
+            if isinstance(value, IOBase):
+                writable = value.writable()
+            return FileEntry(local_path=path, write=writable)
 
         primary = declared_entry(spec.input_file)
         if primary is not None and primary.optional:
             raise ValueError(f"Primary input {primary.local_path} cannot be declared optional")
 
         inputs = {}
-        for entry in (primary, *(declared_entry(value) for value in spec.input_files)):
+        for entry in (primary, *(declared_entry(value, required=True) for value in spec.input_files)):
             if entry is None:
                 continue
             if not entry.collect:
@@ -177,6 +184,7 @@ class FileManifest:
                     raise ValueError(f"Conflicting optionality for file {path}: the same input cannot be both required and optional")
                 if previous.kind != entry.kind:
                     raise ValueError(f"Conflicting file kinds for input {path}")
+                entry = replace(entry, write=previous.write or entry.write)
             inputs[path] = entry
 
         for value in (spec.output_file, spec.error_file):
@@ -187,7 +195,7 @@ class FileManifest:
 
         outputs = {}
         for value in spec.output_files:
-            entry = declared_entry(value)
+            entry = declared_entry(value, required=True)
             if entry is None or entry.local_path in {stdout, stderr}:
                 continue
             path = entry.local_path
@@ -203,7 +211,7 @@ class FileManifest:
 
         caches = {}
         for value in spec.cache_files:
-            entry = declared_entry(value)
+            entry = declared_entry(value, required=True)
             if entry is None:
                 continue
             if not entry.collect:
@@ -218,7 +226,7 @@ class FileManifest:
             inputs=tuple(inputs.values()),
             outputs=tuple(outputs.values()),
             caches=tuple(caches.values()),
-            stdin=None if stdin is None else FileEntry(local_path=stdin),
+            stdin=declared_entry(spec.stdin),
             stdout=None if stdout is None else FileEntry(local_path=stdout),
             stderr=None if stderr is None else FileEntry(local_path=stderr),
         ).initialize_availability()

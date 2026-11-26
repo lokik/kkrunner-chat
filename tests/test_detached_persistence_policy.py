@@ -216,3 +216,38 @@ def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
     finally:
         gate.touch()
     assert _eventually_exists(marker)
+
+
+def test_attached_direct_stops_listeners_but_drains_output(tmp_path):
+    from threading import Event
+
+    gate = tmp_path / "continue"
+    spec = ExecutionSpec(
+        (sys.executable, "-u", "-c",
+         "import pathlib,time; print('ready', flush=True); "
+         "gate=pathlib.Path(%r); deadline=time.monotonic()+5; "
+         "exec('while not gate.exists() and time.monotonic()<deadline: time.sleep(.02)'); "
+         "print('finished', flush=True)" % str(gate)),
+        directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
+    )
+    run = Run.create(EndpointClient(DirectBackend), spec, detached=False)
+    ready = Event()
+    received = []
+
+    def listener(data, kind):
+        received.append(data)
+        if "ready" in data:
+            ready.set()
+
+    run.add_output_listener(listener)
+    run.submit()
+    try:
+        assert ready.wait(5)
+        run.stop_observation()
+        run.stop_observation()
+    finally:
+        gate.touch()
+    assert run.wait().return_code == 0
+    assert run.state == RunState.FINISHED
+    assert "finished" not in "".join(received)
+    assert (tmp_path / "out.txt").read_text() == "ready\nfinished\n"

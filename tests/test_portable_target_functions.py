@@ -14,7 +14,7 @@ from kkrunner.client.contracts import Operation
 from kkrunner.transports.implementations.ssh.rpc import operation_command
 from kkrunner.transports.rpc import operation_result
 from kkrunner.files.availability import prepare_target_outputs
-from kkrunner.files.queries import finalize_upload, query_files
+from kkrunner.files.queries import query_files
 
 
 def _operation_script(function):
@@ -63,16 +63,6 @@ def test_portable_file_query_rejects_escaping_symlink(tmp_path):
     assert result.returncode == 0
     with pytest.raises(ValueError, match="outside source root"):
         operation_result(result.stdout)
-
-
-def test_portable_finalize_upload_preserves_mtime(tmp_path):
-    temporary, destination = tmp_path / "temporary", tmp_path / "final"
-    temporary.write_text("payload")
-    timestamp = 1729000000123456789
-    payload = json.dumps({"args": [str(temporary), str(destination), timestamp], "kwargs": {}})
-    assert operation_result(_isolated(_operation_script(finalize_upload), input=payload)) is None
-    assert destination.read_text() == "payload"
-    assert destination.stat().st_mtime_ns == timestamp
 
 
 def test_portable_mpi_options_matches_local_resolver(monkeypatch):

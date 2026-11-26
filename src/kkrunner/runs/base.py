@@ -166,10 +166,17 @@ class ExecutionOutcome:
 
 
 class ExecutionResources:
-    """Resources with idempotent close() whose ownership is transferred to a run."""
+    """Application resources with idempotent close() transferred to a Run.
 
-    def __init__(self, *resources):
+    Ordinary resources can be closed when observation ends. Applications whose
+    cleanup deletes working files must supply a detach callback that closes
+    client handles but leaves the working files intact. Durable runs use this
+    non-destructive release even on completion so historical files survive.
+    """
+
+    def __init__(self, *resources, on_detach=None):
         self._resources = tuple(resources)
+        self._on_detach = on_detach
         self._closed = False
         self._lock = Lock()
 
@@ -178,15 +185,23 @@ class ExecutionResources:
         with self._lock:
             return self._closed
 
-    def close(self, *, suppress_errors=False):
+    def close(self, *, suppress_errors=False, detach=False):
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             resources = self._resources
             self._resources = ()
+            on_detach, self._on_detach = self._on_detach, None
 
-        _close_distinct(resources, suppress_errors=suppress_errors)
+        if detach and on_detach is not None:
+            try:
+                on_detach()
+            except BaseException:
+                if not suppress_errors:
+                    raise
+        else:
+            _close_distinct(resources, suppress_errors=suppress_errors)
 
 
 @dataclass(frozen=True)

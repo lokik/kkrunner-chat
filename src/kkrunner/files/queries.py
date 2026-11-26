@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 
-from kkrunner.support.decorators import portable
+from kkrunner.support.decorators import depends_on, portable
 
 
 def _sources(sources):
@@ -81,6 +81,30 @@ def query_files(sources, *, root=None, digest=False):
 
 
 @portable
+def directory_entries(root):
+    """Walk a complete tree in stable order without following symlinks.
+
+    A read failure is not an empty directory. Both comparison and transfer
+    must reject incomplete traversal.
+    """
+    import os
+    import stat
+
+    def read_error(error):
+        raise error
+
+    for current, dirs, files in os.walk(root, followlinks=False, onerror=read_error):
+        dirs.sort()
+        for name in sorted((*dirs, *files)):
+            path = os.path.join(current, name)
+            info = os.lstat(path)
+            kind = ("directory" if stat.S_ISDIR(info.st_mode) else
+                    "file" if stat.S_ISREG(info.st_mode) else None)
+            yield os.path.relpath(path, root), kind, info
+
+
+@portable
+@depends_on(directory_entries)
 def directory_digest(root):
     """Content digest of a tree, including dotfiles and empty directories.
 
@@ -89,33 +113,23 @@ def directory_digest(root):
     """
     import hashlib
     import os
-    import stat
 
     root = os.fspath(root)
     if not os.path.isdir(root) or os.path.islink(root):
         return None
     digest = hashlib.sha256()
-    for current, dirs, files in os.walk(root, followlinks=False):
-        dirs.sort()
-        files.sort()
-        for name in sorted((*dirs, *files)):
-            path = os.path.join(current, name)
-            info = os.lstat(path)
-            relative = os.fsencode(os.path.relpath(path, root))
-            if stat.S_ISDIR(info.st_mode):
-                kind = b"D"
-            elif stat.S_ISREG(info.st_mode):
-                kind = b"F"
-            else:
-                return None
-            digest.update(kind)
-            digest.update(len(relative).to_bytes(8, "big"))
-            digest.update(relative)
-            if kind == b"F":
-                digest.update(info.st_size.to_bytes(8, "big"))
-                with open(path, "rb") as stream:
-                    for block in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(block)
+    for name, kind, info in directory_entries(root):
+        if kind is None:
+            return None
+        relative = os.fsencode(name)
+        digest.update(b"D" if kind == "directory" else b"F")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        if kind == "file":
+            digest.update(info.st_size.to_bytes(8, "big"))
+            with open(os.path.join(root, name), "rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
     return digest.hexdigest()
 
 
@@ -143,16 +157,6 @@ def local_file_signature(path):
     """Return ``(size, mtime_ns)`` or None for a missing local path."""
     item = checked_files(query_files([path]))[0]
     return None if item["status"] == "missing" else (item["size"], item["mtime_ns"])
-
-
-@portable
-def finalize_upload(temporary, destination, mtime_ns):
-    """Atomically publish a completed upload; standalone on remote Python."""
-    import os
-
-    info = os.stat(temporary)
-    os.utime(temporary, ns=(info.st_atime_ns, int(mtime_ns)))
-    os.replace(temporary, destination)
 
 
 @portable

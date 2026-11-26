@@ -21,11 +21,6 @@ class RunParts:
     job: "JobProtocol"
     files: "FileSession"
     submission_builder: Optional[Callable[[dict], dict]] = field(default=None, repr=False)
-    _claimed: bool = field(default=False, init=False, repr=False)
-
-    def prepare_submission(self):
-        self.files.prepare_submission()
-        return True
 
     def prepare_job(self):
         """Wire a staged client file session into its execution mechanism."""
@@ -46,15 +41,6 @@ class RunParts:
 
     def configure_observation(self):
         self.job.configure_observation(**self.files.observation())
-
-    def claim(self):
-        """The Run completion observer now owns eventual file closure."""
-        self._claimed = True
-
-    def abort(self):
-        """Close a prepared but unclaimed attachment when opening fails."""
-        if not self._claimed:
-            self.files.close()
 
     def close(self):
         self.files.close()

@@ -48,7 +48,7 @@ def test_direct_output_attachment_does_not_submit(tmp_path):
         assert parts.job.spec.argv is None
         assert parts.files.spec.output_file == str(output)
     finally:
-        parts.abort()
+        parts.close()
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process identity")

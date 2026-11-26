@@ -67,7 +67,6 @@ class RunRecord:
     project_id: Optional[str] = None
     metadata: dict = field(default_factory=dict)
     processing_required: bool = False
-    processing_attempt: Optional[str] = None
     # Native execution lifetime, independent of the store and observation.
     detached: bool = False
     # Runtime owner, not part of record identity or serialized data.
@@ -87,9 +86,8 @@ class RunRecord:
                 raise ValueError(f"Invalid {name} timestamp: {value!r}") from exc
         if self.return_code is not None and type(self.return_code) is not int:
             raise TypeError("return_code must be an integer or None")
-        for name in ("message", "processing_attempt"):
-            if getattr(self, name) is not None and not isinstance(getattr(self, name), str):
-                raise TypeError(f"{name} must be a string or None")
+        if self.message is not None and not isinstance(self.message, str):
+            raise TypeError("message must be a string or None")
         object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
         if type(self.detached) is not bool:
             raise TypeError("detached must be a bool")
@@ -152,6 +150,8 @@ def validate_update(latest, updated):
 class RunStore:
     """Run history stored as date-sharded durable JSON files."""
 
+    durable = True
+
     def __init__(self, directory):
         """Store runs in an explicit directory, with optional project membership per record."""
         self.directory = Path(directory).expanduser().resolve()
@@ -194,16 +194,11 @@ class RunStore:
             raise CorruptRunRecord(paths[0], "duplicate run identity across date shards")
         return paths[0]
 
-    def processing_lock(self, record):
-        """Exclusive live processing ownership, released by the OS after death."""
-        return FileLock(self._run_lock_path(record).with_suffix(".processing.lock"))
-
     def observation_lock(self, record):
-        """Protect an active direct observer until files and results are committed.
+        """Own client file access from reservation through final resource cleanup.
 
-        Its owning process holds this lock across the entire live observation,
-        not merely until the calculation child exits. After client death the
-        operating system releases the lock, permitting independent recovery.
+        After client death the operating system releases the lock, permitting
+        independent recovery. This is not a native execution lock.
         """
         return FileLock(self._run_lock_path(record).with_suffix(".observation.lock"))
 
@@ -217,6 +212,9 @@ class RunStore:
             version = data.get("schema_version")
             if version != _RUN_RECORD_SCHEMA_VERSION:
                 raise ValueError(f"unsupported schema version {version!r}; expected {_RUN_RECORD_SCHEMA_VERSION}")
+            # Earlier records stored a redundant client processing token.
+            # It has no bearing on the durable execution or artifact identity.
+            data.pop("processing_attempt", None)
             record = RunRecord(**data)
             if record.id != path.stem or RunStore._bucket(record.created_at) != path.parent.name:
                 raise ValueError("Run identity does not match its persistent location")
@@ -303,6 +301,18 @@ class RunStore:
                 return current
             return self._write_unlocked(replace(current, project_id=project_id))
 
+    def discard(self, record):
+        """Remove an exact, owner-scoped reservation without a tombstone.
+
+        Its observation lock must still be held by the scope's owner.
+        """
+        with self.submission_lock(), FileLock(self._run_lock_path(record)):
+            if self.get(record.id) != record:
+                raise ValueError("Cannot discard a changed scoped reservation")
+            path = self._path(record)
+            path.unlink()
+            fsync_directory(path.parent)
+
     def forget(self, run, *, force=False):
         """Forget persisted metadata, never the running process or result files.
 
@@ -349,6 +359,10 @@ class RunStore:
                 continue
             try:
                 records.append(replace(self._decode(path), store=self))
+            except FileNotFoundError:
+                # A scoped reservation or forgotten record can disappear
+                # between directory enumeration and opening the file.
+                continue
             except CorruptRunRecord as exc:
                 if on_error is None:
                     raise

@@ -9,7 +9,7 @@ from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.client import EndpointClient
 from kkrunner.client.job import Job
 from kkrunner.files.streams import close_output_files
-from kkrunner.runs.base import FailurePhase
+from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
 
 
 class _TrackedOutput:
@@ -29,17 +29,22 @@ class _TrackedOutput:
 
 @pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend))
 @pytest.mark.parametrize("merged", (False, True))
-def test_local_file_session_closes_unique_output_handles(tmp_path, backend, merged):
+@pytest.mark.parametrize("acquire", (False, True))
+def test_local_file_session_closes_only_acquired_output_handles(tmp_path, backend, merged, acquire):
     stdout = _TrackedOutput(str(tmp_path / "stdout.out"))
     stderr = stdout if merged else _TrackedOutput(str(tmp_path / "stderr.err"))
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=stdout, error_file=stderr)
     parts = EndpointClient(backend).create_run_parts(spec)
-    # Creating a backend Job never transfers ownership of application streams.
+    # Creating an unstarted session only borrows application streams.
     assert stdout.close_calls == stderr.close_calls == 0
+    if acquire:
+        parts.files.prepare_submission()
+        parts.files.prepare_job()
+        parts.files.prepare_job()
+        assert stdout.close_calls == stderr.close_calls == 0
     parts.close()
     parts.close()
-    assert stdout.close_calls == 1
-    assert stderr.close_calls == 1
+    assert stdout.close_calls == stderr.close_calls == int(acquire)
 
 
 def test_close_output_files_skips_missing_and_path_declarations():
@@ -73,6 +78,7 @@ def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path,
     output = _TrackedOutput(str(tmp_path / "output.out"))
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output, error_file=output)
     files = EndpointClient().file_session(spec)
+    files.prepare_submission()
     job = _managed_job(spec)
 
     async def disconnected(_on_output):
@@ -154,6 +160,7 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output)
     client = EndpointClient(SupervisedBackend)
     files = client.file_session(spec)
+    files.prepare_submission()
     job = _managed_job(spec)
 
     async def finished():
@@ -170,4 +177,24 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     assert job.failure_phase is None
     assert run.state is RunState.FAILED
     assert run.failure_phase is FailurePhase.ARTIFACTS
+    assert output.close_calls == 1
+
+
+@pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend))
+def test_staging_failure_closes_acquired_outputs_once(tmp_path, backend, monkeypatch):
+    from kkrunner.client.file_session import FileSession
+
+    output = _TrackedOutput(str(tmp_path / "out"))
+    parts = EndpointClient(backend).create_run_parts(ExecutionSpec(
+        ("true",), directory=tmp_path, output_file=output, error_file=output,
+    ))
+
+    def fail(_self):
+        raise OSError("flush failed")
+
+    monkeypatch.setattr(FileSession, "_flush_declared_handles", fail)
+    with pytest.raises(SubmissionNotStarted, match="flush failed"):
+        parts.files.prepare_submission()
+    parts.close()
+    parts.close()
     assert output.close_calls == 1
