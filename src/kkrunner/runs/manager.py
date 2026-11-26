@@ -463,7 +463,7 @@ class RunManager:
         sync_result_files(record.files.input_files)
         return self.transition(record, state=RunState.SUBMITTING, expected_record=record)
 
-    def reserve(self, record, *, preprocessing=False):
+    def reserve(self, record, *, preprocessing=False, submission_started=_UNCHANGED):
         """Reserve the footprint; preprocessing callers must hold their ownership lock."""
         # Ordinary CLI clients may never call refresh(). Collect completed
         # hidden runs opportunistically, outside the global submission lock.
@@ -504,6 +504,7 @@ class RunManager:
                     return self.transition(
                         record,
                         state=RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING,
+                        submission_started=submission_started,
                     )
                 preparing = tuple(
                     conflict for conflict in conflicts
@@ -969,7 +970,6 @@ class RunManager:
             run_id=run_id,
             submission_key=uuid4().hex,
             retain_history=retain_history,
-            submission_started=False,
         )
         if config.available:
             self.register_client(client)

@@ -459,7 +459,9 @@ class Run:
                 if self._preprocess is not None:
                     preprocessing_lock = manager.store.preprocessing_lock(self._record)
                     preprocessing_lock.acquire()
-                self._record = manager.reserve(self._record, preprocessing=self._preprocess is not None)
+                self._record = manager.reserve(
+                    self._record, preprocessing=self._preprocess is not None, submission_started=False,
+                )
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
                 if self._preprocess is not None:
