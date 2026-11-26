@@ -165,6 +165,7 @@ class RunManager:
         processing_required=False,
         submission_key=None,
         retain_history=True,
+        submission_started=None,
     ):
         now = _now()
         local = os.path.abspath(os.fspath(directory))
@@ -184,6 +185,7 @@ class RunManager:
             files=files if files is not None else FileManifest(),
             project_id=project_id,
             retain_history=retain_history,
+            submission_started=submission_started,
         )
 
     @staticmethod
@@ -241,6 +243,7 @@ class RunManager:
         expected_updated_at=_UNCHANGED,
         expected_record=None,
         expected_processing_attempt=None,
+        submission_started=_UNCHANGED,
     ):
         def merge(latest):
             if latest.state == RunState.POSTPROCESSING and expected_processing_attempt is None:
@@ -274,6 +277,10 @@ class RunManager:
                 # and artifact metadata, not merely its proposed state.
                 return latest
             changes = {"state": merged_state, "updated_at": now}
+            if submission_started is not _UNCHANGED:
+                if final_locked or latest.submission_started is True and submission_started is not True:
+                    raise ValueError("Native submission boundary cannot be retracted")
+                changes["submission_started"] = submission_started
             if not latest.state.is_terminal and merged_state.is_terminal:
                 changes["finished_at"] = now
             merged_result_files = self._merged_result_files(latest, files)
@@ -310,6 +317,10 @@ class RunManager:
     def _is_stale_submitting(self, record, *, now=None):
         if record.state != RunState.SUBMITTING or record.execution.backend_id is not None:
             return False
+        if record.submission_started is False:
+            # No backend operation is possible until the owner commits the
+            # irreversible boundary. Its lock, not the clock, protects staging.
+            return True
         now = now or datetime.now(timezone.utc)
         return (now - _timestamp(record.updated_at)).total_seconds() >= self.submitting_grace
 
@@ -324,7 +335,14 @@ class RunManager:
 
     def _recover_submitting(self, record):
         record = self.store.get(record.id)
-        if not record.execution.available or not self._is_stale_submitting(record):
+        if not self._is_stale_submitting(record):
+            return record
+        if record.submission_started is False:
+            return self.complete(
+                record, state=RunState.FAILED, failure_phase=FailurePhase.SUBMISSION,
+                message="Client staging was interrupted before native submission",
+            )
+        if not record.execution.available:
             return record
         client = self.client_for(record)
         if not hasattr(client, "recover_submission"):
@@ -494,7 +512,8 @@ class RunManager:
                 stale = tuple(
                     conflict
                     for conflict in conflicts
-                    if conflict.id not in attempted_recovery and conflict.execution.available
+                    if conflict.id not in attempted_recovery
+                    and (conflict.execution.available or conflict.submission_started is False)
                     and self._is_stale_submitting(conflict)
                 )
                 refreshable = tuple(
@@ -869,7 +888,7 @@ class RunManager:
             return False
         if not record.state.is_terminal or record.execution.backend_id is None:
             return False
-        if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0:
+        if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0 and not collect:
             # Retry will reattach to download preserved output. Retain the
             # terminal backend receipt until that end-to-end attempt settles.
             return False
@@ -950,6 +969,7 @@ class RunManager:
             run_id=run_id,
             submission_key=uuid4().hex,
             retain_history=retain_history,
+            submission_started=False,
         )
         if config.available:
             self.register_client(client)
@@ -985,10 +1005,10 @@ class RunManager:
                     latest, state=RunState.FAILED, updated_at=_now(), finished_at=_now(),
                     failure_phase=FailurePhase.POSTPROCESSING, message="Client processing was abandoned",
                 ) if latest.state == RunState.POSTPROCESSING else latest)
-            if not current.execution.available:
-                return current  # Cannot prove that the calculation stopped.
             if self._is_stale_submitting(current):
                 current = self._recover_submitting(current)
+            if not current.execution.available:
+                return current  # Cannot prove that the calculation stopped.
             if current.state.is_terminal or current.execution.backend_id is None:
                 return current
             client = self.client_for(current)

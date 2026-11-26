@@ -174,3 +174,36 @@ def test_start_fresh_hidden_run_cannot_bypass_preprocessing(tmp_path):
     run.wait()
     assert seen == [RunState.PREPROCESSING]
     assert run.state == RunState.FINISHED
+
+
+def test_abandoned_staging_is_safe_to_collect_without_backend_query(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"), submitting_grace=3600)
+    spec = ExecutionSpec((), directory=tmp_path, output_file="out")
+    record = manager.new_record(directory=tmp_path, files=FileManifest.from_spec(spec),
+                                retain_history=False, submission_started=False)
+    with manager.store.observation_lock(record):
+        reserved = manager.reserve(record)
+        assert manager.recover_submitting(reserved).state == RunState.SUBMITTING
+    # The backend must not be queried: no native submit was attempted.
+    recovered = manager.recover_submitting(reserved)
+    assert recovered.state == RunState.FAILED
+    assert recovered.submission_started is False
+    assert manager.discard_reservation(recovered)
+
+
+def test_native_boundary_is_durable_before_submit(tmp_path, monkeypatch):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    run = manager.create_run(EndpointClient(), ExecutionSpec(
+        (sys.executable, "-c", "pass"), directory=tmp_path,
+    ))
+    submit = run._job.submit
+
+    def observe():
+        current = manager.store.get(run.id)
+        assert current.state == RunState.SUBMITTING
+        assert current.submission_started is True
+        return submit()
+
+    monkeypatch.setattr(run._job, "submit", observe)
+    run.run()
+    assert run.state == RunState.FINISHED

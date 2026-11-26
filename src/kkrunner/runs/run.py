@@ -496,6 +496,11 @@ class Run:
                 if self._job.state == RunState.CANCELLED:
                     raise asyncio.CancelledError("Run was cancelled before submission")
 
+            if manager is not None:
+                # A crash while staging is known not to have launched a job.
+                # From this durable boundary onward, an absent reply is uncertain.
+                self._record = manager.transition(self._record, submission_started=True)
+                self._monitor_record_version = self._record.updated_at
             submitted = True
             self._job.submit()
             if manager is not None:

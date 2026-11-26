@@ -57,6 +57,9 @@ class RunRecord:
     processing_required: bool = False
     processing_attempt: Optional[str] = None
     retain_history: bool = True
+    # None means the irreversible boundary was not recorded by the creator.
+    # False proves that native submission has not yet been attempted.
+    submission_started: Optional[bool] = None
 
     def __post_init__(self):
         if (
@@ -84,6 +87,8 @@ class RunRecord:
         object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
         if type(self.processing_required) is not bool:
             raise TypeError("processing_required must be a bool")
+        if self.submission_started is not None and type(self.submission_started) is not bool:
+            raise TypeError("submission_started must be bool or None")
         if type(self.retain_history) is not bool:
             raise TypeError("retain_history must be bool")
         if not self.retain_history and self.project_id is not None:
