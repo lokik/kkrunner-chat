@@ -34,8 +34,13 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
     record = manager.new_record(
         directory=tmp_path, transport=client.transport, backend=client.backend_config,
     )
-    manager.store.save(record)
-    finished = manager.update(record, RunStatus(terminal_state, backend_id="receipt", return_code=0))
+    record = manager.transition(
+        record, state=RunState.RUNNING, execution=record.execution.submitted("receipt"),
+    )
+    status = RunStatus(terminal_state, backend_id="receipt", return_code=0)
+    monkeypatch.setattr(client, "status", lambda *runs: (status,))
+    monkeypatch.setattr(client, "acknowledge_submission", lambda run: None)
+    (finished,) = manager.refresh((record,))
     assert finished.state == terminal_state
     assert calls == [record.id]
 

@@ -182,3 +182,16 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
     (refreshed,) = manager.refresh((cancelled,))
     assert refreshed.state == RunState.CANCELLED
     assert calls == [record.id]
+
+
+@pytest.mark.parametrize("observe", ["update", "refresh"])
+def test_stale_backend_status_does_not_replace_postprocessing(tmp_path, observe):
+    executor = _Executor(RunState.FAILED)
+    manager, stale = _record(tmp_path, executor)
+    current = manager.transition(stale, state=RunState.POSTPROCESSING, return_code=0)
+    if observe == "update":
+        result = manager.update(stale, RunStatus(RunState.FAILED, return_code=1))
+    else:
+        (result,) = manager.refresh((stale,))
+    assert result == current
+    assert manager.store.get(stale.id) == current

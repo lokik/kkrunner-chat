@@ -396,7 +396,7 @@ class RunManager:
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
             attached = self.transition(record, execution=execution, files=files)
-            return self._update(
+            return self._record_observation(
                 attached,
                 client.status(JobAttachment(attached.execution, attached.files))[0],
             )
@@ -557,25 +557,20 @@ class RunManager:
                                  processing_pending=record.processing_required and status.return_code == 0,
                                  failure_phase=status.failure_phase)
 
-    def update(self, record, status: RunStatus):
+    def _apply_observation(self, record, status, operation, **kwargs):
         # A native exit is not client completion while a Run is observing it.
         if not status.state.is_terminal:
-            return self._update(record, status)
+            return operation(record, status, **kwargs)
         owner = self._store_for(record).observation_lock(record)
         if not owner.acquire(blocking=False):
             return resolve_record(record, self.store)
         try:
-            return self._update(record, status)
+            return operation(record, status, **kwargs)
         finally:
             owner.release()
 
-    def _update(self, record, status: RunStatus):
-        # Backend refresh is observational. It cannot retract local processing
-        # or a terminal result, including when a scheduler returns stale data.
-        latest = resolve_record(record, self.store)
-        if latest.state.is_terminal or latest.state in (RunState.PREPROCESSING, RunState.POSTPROCESSING):
-            return latest
-        record = latest
+    @staticmethod
+    def _normalize_observed_status(record, status):
         if status.return_code is None and record.return_code is not None:
             # Process liveness is weaker evidence than an already known exit
             # status (e.g. while result retrieval is pending after a failure).
@@ -586,6 +581,61 @@ class RunManager:
                 failure_phase=(record.failure_phase or FailurePhase.EXECUTION)
                 if failed else status.failure_phase,
             )
+        return status
+
+    def _observation_changes(self, record, status):
+        phase = _failure_phase(status.failure_phase)
+        return_code = status.return_code
+        state = self._observed_run_state(record, status)
+        execution = status.execution
+        if execution is None and status.backend_id is not None:
+            execution = record.execution.submitted(status.backend_id)
+        elif execution is not None and record.execution.submission_key is not None:
+            # A backend reports execution facts, not the client submission
+            # ticket. Preserve our original ticket, but reject disagreement.
+            if execution.submission_key is None:
+                execution = replace(
+                    execution, submission_key=record.execution.submission_key,
+                )
+            elif execution.submission_key != record.execution.submission_key:
+                raise ValueError("Backend status returned another submission key")
+        return dict(
+            state=state,
+            execution=execution,
+            files=status.files if status.files is not None else _UNCHANGED,
+            return_code=return_code,
+            message=status.message,
+            failure_phase=phase,
+        )
+
+    def _current_observation(self, record, status):
+        """Use current history; ignore backend facts once client processing owns the state."""
+        record = resolve_record(record, self.store)
+        if record.state.is_terminal or record.state in (RunState.PREPROCESSING, RunState.POSTPROCESSING):
+            return record, None
+        return record, self._normalize_observed_status(record, status)
+
+    def update(self, record, status: RunStatus):
+        """Apply supplied execution facts; do not query or retrieve artifacts."""
+        return self._apply_observation(record, status, self._update)
+
+    def _update(self, record, status: RunStatus):
+        record, status = self._current_observation(record, status)
+        if status is None:
+            return record
+        changes = self._observation_changes(record, status)
+        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
+            # Keep the reservation until completion has captured the artifacts.
+            files = status.files if status.files is not None else record.files
+            if files.captured_at is None or files.failed_artifacts:
+                changes["state"] = RunState.DOWNLOADING
+        return self.transition(record, **changes)
+
+    def _record_observation(self, record, status, *, retrieve_ended=False):
+        """Finalize local artifacts; collect ended Direct SSH output only on request."""
+        record, status = self._current_observation(record, status)
+        if status is None:
+            return record
         if (
             isinstance(record.execution.transport, LocalTransport)
             and status.state.is_terminal and status.files is None
@@ -595,7 +645,8 @@ class RunManager:
             from kkrunner.files.availability import local_manifest
             status = replace(status, files=local_manifest(record.files, status))
         if (
-            record.execution.backend.name == "direct"
+            retrieve_ended
+            and record.execution.backend.name == "direct"
             and isinstance(record.execution.transport, SshTransport)
             and (status.state == RunState.CANCELLED or (
                 status.state == RunState.FINISHED and status.return_code is None
@@ -622,50 +673,20 @@ class RunManager:
                 )
                 status = replace(status, message=message)
             status = replace(status, files=files)
-        phase = _failure_phase(status.failure_phase)
-        return_code = status.return_code
-        state = self._observed_run_state(record, status)
-        execution = status.execution
-        if execution is None and status.backend_id is not None:
-            execution = record.execution.submitted(status.backend_id)
-        elif execution is not None and record.execution.submission_key is not None:
-            # A backend reports execution facts, not the client submission
-            # ticket. Preserve our original ticket, but reject disagreement.
-            if execution.submission_key is None:
-                execution = replace(
-                    execution, submission_key=record.execution.submission_key,
-                )
-            elif execution.submission_key != record.execution.submission_key:
-                raise ValueError("Backend status returned another submission key")
-        if state in (RunState.FINISHED, RunState.POSTPROCESSING):
+        changes = self._observation_changes(record, status)
+        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
             result_files = status.files if status.files is not None else record.files
             if record.execution.directory.remote is None and result_files is not None:
                 from kkrunner.files.availability import discover_local_files
                 result_files = discover_local_files(
-                    result_files, require_outputs=return_code == 0,
+                    result_files, require_outputs=status.return_code == 0,
                 )
-            updated = self.complete(
-                record,
-                state=state,
-                execution=execution,
-                files=result_files,
-                return_code=return_code,
-                message=status.message,
-                failure_phase=phase,
-                artifacts_available=True,
-            )
+            changes["files"] = result_files
+            updated = self.complete(record, **changes, artifacts_available=True)
         else:
-            updated = self.transition(
-                record,
-                state=state,
-                execution=execution,
-                files=status.files if status.files is not None else _UNCHANGED,
-                return_code=return_code,
-                message=status.message,
-                failure_phase=phase,
-            )
+            updated = self.transition(record, **changes)
+            self._acknowledge_result(updated)
         self._acknowledge_submission(self.client_for(updated), updated)
-        self._acknowledge_result(updated)
         return updated
 
     def completion_fields(
@@ -969,8 +990,9 @@ class RunManager:
             preprocess=preprocess,
         )
 
-    def refresh(self, records=None, *, on_error=None):
-        """Refresh records; optionally report and skip unreadable history entries."""
+    def refresh(self, records=None, *, on_error=None, retrieve_ended=False):
+        """Refresh statuses; opt in to ended Direct SSH output retrieval."""
+
         if records is None:
             self.reconcile_acknowledgements(on_error=on_error)
         options = {} if on_error is None else {"on_error": on_error}
@@ -1040,8 +1062,11 @@ class RunManager:
                 if len(statuses) != len(guarded):
                     raise RuntimeError("Transport returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):
-                    update = self._update if client.backend.name == "direct" else self.update
-                    current[self._record_key(record)] = update(record, status)
+                    if client.backend.name == "direct":
+                        updated = self._record_observation(record, status, retrieve_ended=retrieve_ended)
+                    else:
+                        updated = self._apply_observation(record, status, self._record_observation)
+                    current[self._record_key(record)] = updated
             finally:
                 for ownership in reversed(locks):
                     ownership.release()
@@ -1095,7 +1120,9 @@ class RunManager:
             # Remote direct execution cannot prove the identity of legacy jobs.
             # Translate the backend-level limitation at the public manager boundary.
             raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
-        return self.update(record, status)
+        return self._apply_observation(
+            record, status, self._record_observation, retrieve_ended=True,
+        )
 
     def attach(
         self, run, *, process_result=None, client=None,

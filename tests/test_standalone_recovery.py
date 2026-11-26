@@ -184,15 +184,28 @@ def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypat
     assert other.store.get(run.id).state == RunState.FINISHED
 
 
-def test_refresh_captures_artifacts_without_result_processor(tmp_path):
+def test_refresh_captures_artifacts_without_result_processor(tmp_path, monkeypatch):
     from kkrunner.runs import RunStatus
+    from kkrunner.backends import DirectBackend
+    from kkrunner.client.pool import ClientPool
 
-    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
+    client = EndpointClient(DirectBackend)
+    manager.register_client(client)
     output = tmp_path / "stdout.txt"
     output.write_text("42")
-    record = manager.new_record(directory=tmp_path, files=FileManifest(stdout=FileEntry(local_path=str(output))))
-    manager.store.save(record)
-    completed = manager.update(record, RunStatus(RunState.FINISHED, return_code=0))
+    record = manager.new_record(
+        directory=tmp_path, backend=client.backend_config,
+        files=FileManifest(stdout=FileEntry(local_path=str(output))),
+    )
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("job-1"))
+    status = RunStatus(RunState.FINISHED, return_code=0)
+    pending = manager.update(record, status)
+    assert pending.state == RunState.DOWNLOADING
+    assert pending.files.captured_at is None
+    monkeypatch.setattr(client, "status", lambda *runs: (status,))
+    (completed,) = manager.refresh((pending,))
     assert completed.state == RunState.FINISHED
     assert completed.files.captured_at is not None
     output.write_text("changed")
