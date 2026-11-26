@@ -148,13 +148,12 @@ def test_store_contract(store, tmp_path):
         store.runs(limit=-1)
     with pytest.raises(ActiveRunDeletionError):
         store.forget(first)
-    for lock_method in (store.processing_lock, store.observation_lock):
-        lock = lock_method(first)
-        assert lock.acquire(blocking=False)
-        try:
-            assert not lock_method(first).acquire(blocking=False)
-        finally:
-            lock.release()
+    lock = store.observation_lock(first)
+    assert lock.acquire(blocking=False)
+    try:
+        assert not store.observation_lock(first).acquire(blocking=False)
+    finally:
+        lock.release()
     store.forget(first, force=True)
     with pytest.raises(FileNotFoundError):
         store.get(first.id)
@@ -232,7 +231,7 @@ def test_foreign_attach_observes_and_completes_in_own_store(tmp_path):
         attached = a.attach(record)
         lock = memory.observation_lock(record)
         assert not lock.acquire(blocking=False)
-        with pytest.raises(RuntimeError, match="already has a direct observer"):
+        with pytest.raises(RuntimeError, match="A live client owns this run"):
             b.attach(record)
         assert b.refresh((record,))[0] == memory.get(record.id)
         gate.touch()
@@ -282,19 +281,19 @@ def test_failed_direct_observer_start_closes_streams_before_releasing_claim(tmp_
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))
     parts = client.create_run_parts(ExecutionSpec(("unused",), directory=tmp_path))
-    original_abort = parts.abort
+    original_close = parts.files.close
     closed = []
 
     def fail():
         raise OSError("observer configuration failed")
 
-    def abort():
+    def close():
         assert not store.observation_lock(record).acquire(blocking=False)
-        original_abort()
+        original_close()
         closed.append(True)
 
     monkeypatch.setattr(parts, "configure_observation", fail)
-    monkeypatch.setattr(parts, "abort", abort)
+    monkeypatch.setattr(parts.files, "close", close)
     monkeypatch.setattr(client, "open_run_parts", lambda *args, **kwargs: parts)
     with pytest.raises(OSError, match="observer configuration failed"):
         manager.attach(record, client=client)

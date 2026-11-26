@@ -97,3 +97,34 @@ Transport operations are asynchronous and transfer exact files. Wildcards are
 expanded on the source side and paths remain relative to the selected root.
 Durable run completion, synchronization and receipt acknowledgements remain
 client responsibilities. See :doc:`persistent-runs` for recovery requirements.
+
+Exact batch transfers
+---------------------
+
+Low-level transport batch methods take exact relative paths, or explicit
+source/destination pairs, with one directory per filesystem. For example::
+
+    await transport.put_files(
+        ["TAU/a.dat", "TAU/b.dat", ("input.pot", "start.pot")],
+        source_directory="/home/user/project",
+        destination_directory="/scratch/project",
+    )
+
+The same contract applies to ``get_files()``. The file context expands patterns;
+transports never expand them a second time. SSH streams the compact file list
+through standard input, not command-line arguments, and sends one archive per
+batch. Each received file is staged on its destination filesystem and published
+only after the archive is complete. Publication is atomic per file, not a
+filesystem-wide transaction.
+
+SSH archive compression
+-----------------------
+
+``SshTransport(compression="auto")`` selects Zstandard if the actual local and
+configured remote Python both support tarfile's streaming Zstandard codec
+(Python 3.14 or newer), otherwise gzip. The remote capability probe is cached
+for the life of the transport. Explicit options are ``"gz"``, ``"bz2"``,
+``"xz"`` and ``"zstd"``; an unsupported explicit codec is an error. Pass
+``None`` for uncompressed archives. Batch and directory transfers use the
+same Python standard-library streaming implementation; external tar or zstd
+programs are not required.

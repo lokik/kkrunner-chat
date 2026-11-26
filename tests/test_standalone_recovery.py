@@ -109,11 +109,9 @@ manager.retry_postprocessing(sys.argv[2], lambda outcome: os._exit(17))
     assert child.returncode == 17
     interrupted = manager.store.get(record.id)
     assert interrupted.state == RunState.POSTPROCESSING
-    attempt = interrupted.processing_attempt
     assert manager.retry_postprocessing(record.id, lambda outcome: Path(outcome.output_file).read_text()) == "answer"
     completed = manager.store.get(record.id)
     assert completed.state == RunState.FINISHED
-    assert completed.processing_attempt != attempt
 
 
 def test_modified_artifacts_are_not_reprocessed(tmp_path):
@@ -210,7 +208,6 @@ def test_refresh_captures_artifacts_without_result_processor(tmp_path):
         ("id", "../another-record"),
         ("return_code", "0"),
         ("message", {}),
-        ("processing_attempt", 17),
     ],
 )
 def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):

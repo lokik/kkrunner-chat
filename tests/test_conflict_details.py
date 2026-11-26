@@ -49,3 +49,27 @@ def test_unrelated_output_files_have_no_conflict_details(tmp_path):
 ))
 def test_cleanup_reference_overlap(path, reference, directory, expected):
     assert file_reference_overlaps(path, reference, directory=directory) == expected
+
+
+@pytest.mark.parametrize("pattern,relative,expected", [
+    ("nested/**/*.dat", "nested/one.dat", True),
+    ("nested/*.dat", "nested/deep/one.dat", False),
+    ("nested/**/*.dat", "nested/deep/one.dat", True),
+])
+def test_recursive_glob_reservations(tmp_path, pattern, relative, expected):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    first = manager.new_record(directory=tmp_path, files=FileManifest(
+        outputs=(FileEntry(str(tmp_path / pattern)),)))
+    second = manager.new_record(directory=tmp_path, files=FileManifest(
+        stdout=FileEntry(str(tmp_path / relative))))
+    assert submission_conflicts(first, second) == expected
+    assert bool(conflicting_files(first, second)) == expected
+
+
+def test_directory_reservation_covers_hidden_descendants(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    first = manager.new_record(directory=tmp_path, files=FileManifest(
+        outputs=(FileEntry(str(tmp_path / "tree"), kind="directory"),)))
+    second = manager.new_record(directory=tmp_path, files=FileManifest(
+        stdout=FileEntry(str(tmp_path / "tree/.hidden/deep.dat"))))
+    assert submission_conflicts(first, second)

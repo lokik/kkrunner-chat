@@ -163,8 +163,8 @@ def test_strict_transfer_refuses_wildcard_symlink_outside_source_root(tmp_path):
 class _LoopbackSshTransport(SshTransport):
     """Exercise the real SSH transfer implementation without an SSH server."""
 
-    def __init__(self, *, zstd=False):
-        super().__init__("local-test", zstd=zstd, python_command=(sys.executable,))
+    def __init__(self, *, compression="auto"):
+        super().__init__("local-test", compression=compression, python_command=(sys.executable,))
 
     def _command(self, argv, cwd=None):
         assert cwd is None
@@ -172,10 +172,6 @@ class _LoopbackSshTransport(SshTransport):
 
 
 def test_ssh_batch_tar_upload_and_download_share_pipeline(tmp_path):
-    import shutil
-
-    if shutil.which("tar") is None:
-        pytest.skip("tar executable unavailable")
     source = tmp_path / "upload source"
     (source / "nested").mkdir(parents=True)
     (source / "nested" / "one.dat").write_text("one")
@@ -185,10 +181,10 @@ def test_ssh_batch_tar_upload_and_download_share_pipeline(tmp_path):
     transport = _LoopbackSshTransport()
 
     async def check():
-        sent = await transport.put_files("nested/*.dat", source, remote)
+        sent = await transport.put_files(("nested/one.dat", "nested/two.dat"), source, remote)
         assert len(sent) == 2
         assert all((os.path.isfile(destination) for _, destination in sent))
-        received = await transport.get_files("nested/*.dat", remote, downloaded)
+        received = await transport.get_files(("nested/one.dat", "nested/two.dat"), remote, downloaded)
         assert len(received) == 2
         assert all((os.path.isfile(destination) for _, destination in received))
 
@@ -219,6 +215,25 @@ def test_ssh_batch_tar_pipeline_reports_subprocess_failures(failing_side):
         expected = 7 if failing_side == "producer" else 9
         assert exc.value.returncode == expected
         assert (failing_side + " failed").encode() in exc.value.stderr
+
+    asyncio.run(check())
+
+
+def test_ssh_batch_tar_pipeline_reaps_producer_after_early_receiver_failure():
+    producer = (
+        sys.executable, "-c",
+        "import os; chunk = b'x' * 1048576\nwhile True: os.write(1, chunk)",
+    )
+    consumer = (
+        sys.executable, "-c",
+        "import sys; sys.stdin.buffer.read(1); sys.stderr.write('destination full'); sys.exit(9)",
+    )
+
+    async def check():
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            await asyncio.wait_for(_LoopbackSshTransport()._transfer_tar(producer, consumer), timeout=5)
+        assert error.value.returncode == 9
+        assert b"destination full" in error.value.stderr
 
     asyncio.run(check())
 
@@ -273,6 +288,42 @@ def test_transport_run_cancellation_reaps_subprocess(tmp_path, factory):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             if pid is not None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    asyncio.run(check())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="PID cleanup assertion is POSIX-only")
+def test_ssh_batch_tar_cancellation_reaps_both_processes(tmp_path):
+    producer_pid, consumer_pid = tmp_path / "producer.pid", tmp_path / "consumer.pid"
+    producer = (
+        sys.executable, "-c",
+        f"import os; open({str(producer_pid)!r}, 'w').write(str(os.getpid())); "
+        "chunk = b'x' * 1048576\nwhile True: os.write(1, chunk)",
+    )
+    consumer = (
+        sys.executable, "-c",
+        f"import os, sys, time; open({str(consumer_pid)!r}, 'w').write(str(os.getpid())); "
+        "sys.stdin.buffer.read(1); time.sleep(0.3); sys.stdin.buffer.read()",
+    )
+
+    async def check():
+        task = asyncio.create_task(_LoopbackSshTransport()._transfer_tar(producer, consumer))
+        pids = []
+        try:
+            for path in (producer_pid, consumer_pid):
+                pids.append(await _wait_for_command_pid(path))
+            await _cancel_and_check_reaped(task, pids[0])
+            with pytest.raises(ProcessLookupError):
+                os.kill(pids[1], 0)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            for pid in pids:
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -387,42 +438,55 @@ def test_ssh_file_query_preserves_command_errors():
     assert error.value.stderr == b"connection failed"
 
 
-@pytest.mark.parametrize("zstd", (False, True))
-def test_ssh_batch_tar_uses_explicit_compression_without_probing(tmp_path, zstd):
+@pytest.mark.parametrize("compression", (None, "auto", "gz", "bz2", "xz", "zstd"))
+def test_ssh_batch_exact_pairs_and_compression(tmp_path, compression):
+    from kkrunner.files.transfer import archive_compressions
+    if compression not in (None, "auto") and compression not in archive_compressions():
+        pytest.skip(f"{compression} unavailable in this Python")
+
     source = tmp_path / "source"
     source.mkdir()
-    (source / "one.dat").write_bytes(b"content")
-    destination = tmp_path / "remote"
-    returned = tmp_path / "returned"
-    transport = _LoopbackSshTransport(zstd=zstd)
-    commands = []
-
-    async def record(producer, consumer):
-        commands.append((producer, consumer))
-
-    transport._transfer_tar = record
+    original = source / "one.dat"
+    original.write_bytes(b"content")
+    timestamp = 1729000000123456789
+    os.utime(original, ns=(timestamp, timestamp))
+    remote, returned = tmp_path / "remote", tmp_path / "returned"
+    transport = _LoopbackSshTransport(compression=compression)
 
     async def check():
-        await transport.put_files("one.dat", source, destination)
-        await transport.get_files("one.dat", source, returned)
+        await transport.put_files([("one.dat", "nested/renamed.dat")], source, remote)
+        await transport.get_files([("nested/renamed.dat", "back.dat")], remote, returned)
 
     asyncio.run(check())
-    assert len(commands) == 2
-    for producer, consumer in commands:
-        assert ("--zstd" in producer) is zstd
-        assert ("--zstd" in consumer) is zstd
+    assert (remote / "nested/renamed.dat").read_bytes() == b"content"
+    assert (returned / "back.dat").read_bytes() == b"content"
+    assert (returned / "back.dat").stat().st_mtime_ns == timestamp
+
+
+def test_ssh_batch_incomplete_archive_does_not_publish(tmp_path):
+    source, remote = tmp_path / "source", tmp_path / "remote"
+    source.mkdir()
+    remote.mkdir()
+    (source / "first").write_text("new")
+    (remote / "first").write_text("old")
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(_LoopbackSshTransport().put_files(
+            ["first", "missing"], source, remote,
+        ))
+    assert (remote / "first").read_text() == "old"
+    assert list(remote.iterdir()) == [remote / "first"]
 
 
 def test_ssh_client_compression_roundtrips_from_transport():
     from kkrunner.client import EndpointClient
     from kkrunner.backends import DirectBackend
 
-    for compressed in (False, True):
-        client = EndpointClient(DirectBackend, transport=SshTransport("cluster", zstd=compressed))
-        assert client.transport.zstd is compressed
+    for compression in (None, "auto", "gz", "bz2", "xz", "zstd"):
+        client = EndpointClient(DirectBackend, transport=SshTransport("cluster", compression=compression))
+        assert client.transport.compression == compression
         restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
         assert restored.transport == client.transport
-        assert restored.transport.zstd is compressed
+        assert restored.transport.compression == compression
 
 @pytest.mark.parametrize("factory", (LocalTransport, _LoopbackSshTransport))
 @pytest.mark.parametrize("check", (False, True))
@@ -466,31 +530,17 @@ def test_transport_run_uses_start_and_preserves_completion(factory, check, send_
     assert transport.started[0][2] == (asyncio.subprocess.PIPE if send_input else None)
 
 
-def test_ssh_upload_preserves_original_error_when_remote_cleanup_fails(tmp_path):
+def test_ssh_upload_reports_connection_failure(tmp_path):
     source = tmp_path / "source.txt"
     source.write_bytes(b"payload")
-    commands = []
+    transport = SshTransport("unused", ssh="/missing-kkrunner-ssh-executable")
 
-    class FailingUpload(SshTransport):
-        async def run(self, argv, *, cwd=None, input=None, check=True):
-            commands.append(tuple(argv))
-            if argv[0] == "rm":
-                raise OSError("cleanup connection unavailable")
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
-
-    transport = FailingUpload("unused", ssh="/missing-kkrunner-ssh-executable")
-
-    async def check():
-        with pytest.raises(FileNotFoundError) as original:
-            await transport.put_file(source, "/remote/destination.txt")
-        assert "missing-kkrunner-ssh-executable" in str(original.value)
-
-    asyncio.run(check())
-    assert [command[0] for command in commands] == ["mkdir", "rm"]
+    with pytest.raises(FileNotFoundError, match="missing-kkrunner-ssh-executable"):
+        asyncio.run(transport.put_file(source, "/remote/destination.txt"))
 
 
 def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, monkeypatch):
-    from kkrunner.transports.implementations.ssh import transport as module
+    from kkrunner.files import staging as module
 
     class UnavailableTransport(SshTransport):
         async def file_signature(self, path):
@@ -504,7 +554,7 @@ def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, 
         def open(self, *args, **kwargs):
             return staged.open(*args, **kwargs)
 
-        def unlink(self):
+        def unlink(self, *, missing_ok=False):
             cleanup_calls.append(True)
             raise PermissionError("cannot remove staged download")
 
@@ -529,18 +579,17 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
     transport.command = ("__must_not_invoke_agent__",)
     source = tmp_path / "sample"
     source.write_text("abc")
-    temporary = tmp_path / "stage"
     destination = tmp_path / "published"
-    temporary.write_text("stored")
     mtime_ns = 1729000000123456789
+    os.utime(source, ns=(mtime_ns, mtime_ns))
 
     async def verify():
         entries = await transport.query_files([str(source)], digest=True)
         assert entries[0]["digest"] == file_digest(source)
-        await transport._finalize_upload(str(temporary), str(destination), mtime_ns)
+        await transport.put_file(source, destination)
 
     asyncio.run(verify())
-    assert destination.read_text() == "stored"
+    assert destination.read_text() == "abc"
     assert destination.stat().st_mtime_ns == mtime_ns
 
 
@@ -554,3 +603,310 @@ def test_ssh_client_retains_target_python_configuration():
     assert client.transport.python_command == ("python3.12",)
     restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
     assert restored.transport == client.transport
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_local_staging_verifies_before_atomic_publication(tmp_path, existing):
+    from kkrunner.files.staging import staged_local_file
+
+    destination = tmp_path / "artifact"
+    if existing:
+        destination.write_bytes(b"old")
+
+    def verify(path):
+        assert path.parent == destination.parent
+        assert path.read_bytes() == b"new"
+        assert destination.exists() == existing
+        raise OSError("historical digest mismatch")
+
+    with pytest.raises(OSError, match="digest mismatch"):
+        with staged_local_file(destination, verify=verify, overwrite=False) as temporary:
+            temporary.write_bytes(b"new")
+    assert destination.exists() == existing
+    if existing:
+        assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_local_staging_does_not_replace_concurrent_destination(tmp_path):
+    from kkrunner.files.staging import staged_local_file
+
+    destination = tmp_path / "artifact"
+    with pytest.raises(FileExistsError):
+        with staged_local_file(destination, overwrite=False) as temporary:
+            temporary.write_bytes(b"old result")
+            destination.write_bytes(b"new result")
+    assert destination.read_bytes() == b"new result"
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+def test_directory_upload_replaces_whole_tree(tmp_path, factory):
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / "new").write_text("new")
+    (target / "old").write_text("old")
+
+    async def transfer():
+        await factory().put_directory(source, target)
+
+    asyncio.run(transfer())
+    assert sorted(p.name for p in target.iterdir()) == ["new"]
+    assert (target / "new").read_text() == "new"
+
+
+def test_large_batch_manifest_is_not_passed_in_argv(tmp_path):
+    source, remote = tmp_path / "source", tmp_path / "remote"
+    transport = _LoopbackSshTransport()
+    names = ["TAU/" + str(i).zfill(8) + "x" * 100 for i in range(3000)]
+    calls = []
+
+    async def transfer(producer, consumer, *, producer_input):
+        calls.append((producer, consumer))
+        assert json.load(producer_input) == names
+        assert all(names[0] not in argument for argument in (*producer, *consumer))
+
+    transport._transfer_tar = transfer
+    result = asyncio.run(transport.put_files(
+        names, source_directory=source, destination_directory=remote,
+    ))
+    assert len(calls) == 1
+    assert len(result) == len(names)
+
+
+@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+def test_exact_batch_does_not_expand_wildcards_and_allows_rename(tmp_path, factory):
+    source, remote = tmp_path / "source", tmp_path / "remote"
+    source.mkdir()
+    (source / "literal[1].dat").write_text("literal")
+    (source / "literal1.dat").write_text("other")
+    asyncio.run(factory().put_files(
+        ["literal[1].dat", ("literal[1].dat", "renamed")], source, remote,
+    ))
+    assert (remote / "literal[1].dat").read_text() == "literal"
+    assert (remote / "renamed").read_text() == "literal"
+    assert not (remote / "literal1.dat").exists()
+
+
+def test_single_ssh_upload_accepts_explicit_symlink_source(tmp_path):
+    actual = tmp_path / "source" / "data"
+    actual.parent.mkdir()
+    actual.write_text("data")
+    alias = tmp_path / "alias" / "data"
+    alias.parent.mkdir()
+    alias.symlink_to(actual)
+    target = tmp_path / "remote" / "data"
+    asyncio.run(_LoopbackSshTransport().put_file(alias, target))
+    assert target.read_text() == "data"
+
+
+@pytest.mark.parametrize("local,remote,expected", [
+    (["gz", "zstd"], ["gz", "zstd"], "zst"),
+    (["gz"], ["gz", "zstd"], "gz"),
+    (["gz", "zstd"], ["gz"], "gz"),
+])
+def test_auto_compression_negotiates_and_caches(monkeypatch, local, remote, expected):
+    from kkrunner.transports.implementations.ssh import transport as module
+
+    probes = []
+    queries = []
+
+    def local_probe():
+        probes.append(True)
+        return local
+
+    monkeypatch.setattr(module, "archive_compressions", local_probe)
+
+    class Target(_LoopbackSshTransport):
+        async def call_function(self, function, *args, **kwargs):
+            queries.append(function)
+            return remote
+
+    target = Target()
+    assert asyncio.run(target._archive_compression()) == expected
+    assert asyncio.run(target._archive_compression()) == expected
+    assert len(probes) == len(queries) == 1
+    target.close()
+    assert asyncio.run(target._archive_compression()) == expected
+    assert len(probes) == len(queries) == 2
+
+
+def test_explicit_unsupported_compression_does_not_fall_back(monkeypatch):
+    from kkrunner.transports.implementations.ssh import transport as module
+
+    monkeypatch.setattr(module, "archive_compressions", lambda: ["gz", "zstd"])
+
+    class Target(_LoopbackSshTransport):
+        async def call_function(self, function, *args, **kwargs):
+            return ["gz"]
+
+    with pytest.raises(ValueError, match="zstd.*not supported"):
+        asyncio.run(Target(compression="zstd")._archive_compression())
+
+
+@pytest.mark.parametrize("compression", (None, "auto", "gz", "bz2", "xz", "zstd"))
+def test_ssh_directory_roundtrip_uses_native_compression(tmp_path, compression):
+    from kkrunner.files.transfer import archive_compressions
+    if compression not in (None, "auto") and compression not in archive_compressions():
+        pytest.skip(f"{compression} unavailable in this Python")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "empty").mkdir()
+    (source / "nested").mkdir()
+    (source / "nested" / ".file").write_bytes(b"payload")
+    target, returned = tmp_path / "target", tmp_path / "returned"
+    transport = _LoopbackSshTransport(compression=compression)
+
+    async def transfer():
+        await transport.put_directory(source, target)
+        await transport.get_directory(target, returned)
+
+    asyncio.run(transfer())
+    assert (returned / "empty").is_dir()
+    assert (returned / "nested" / ".file").read_bytes() == b"payload"
+
+
+def test_legacy_persisted_compression_is_readable():
+    from kkrunner.transports import transport_from_dict
+
+    for old, compression in ((False, None), (True, "zstd")):
+        transport = transport_from_dict({"kind": "ssh", "host": "cluster", "zstd": old})
+        assert transport.compression == compression
+        assert "zstd" not in transport.to_dict()
+
+
+
+@pytest.mark.parametrize("compression", ["", "gz", "bz2", "xz", "zst"])
+@pytest.mark.parametrize("damage", ["truncated", "extra_member", "extra_data"])
+def test_archive_receiver_rejects_invalid_end_before_publication(tmp_path, compression, damage):
+    import io
+    import tarfile
+    from kkrunner.files.transfer import archive_compressions, receive_archive
+
+    if compression and ("zstd" if compression == "zst" else compression) not in archive_compressions():
+        pytest.skip(f"{compression} unavailable in this Python")
+
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w|", format=tarfile.PAX_FORMAT) as archive:
+        content = b"new"
+        item = tarfile.TarInfo("result")
+        item.size = len(content)
+        item.pax_headers["kkrunner.mtime_ns"] = "1700000000000000000"
+        archive.addfile(item, io.BytesIO(content))
+        marker = tarfile.TarInfo(".kkrunner-complete")
+        marker.pax_headers["kkrunner.complete"] = "1"
+        archive.addfile(marker)
+        if damage == "extra_member":
+            archive.addfile(tarfile.TarInfo("unexpected"))
+    data = archive_bytes.getvalue()
+    if damage == "extra_data":
+        # A second TAR archive after the original zero-block trailer must
+        # not disappear in tarfile's read-ahead buffer.
+        data += b"not TAR padding"
+
+    if compression == "gz":
+        import gzip
+        data = gzip.compress(data)
+    elif compression == "bz2":
+        import bz2
+        data = bz2.compress(data)
+    elif compression == "xz":
+        import lzma
+        data = lzma.compress(data)
+    elif compression == "zst":
+        from compression.zstd import compress
+        data = compress(data)
+    if damage == "truncated":
+        data = data[:-1]
+
+    destination = tmp_path / "target"
+    destination.mkdir()
+    (destination / "result").write_text("old")
+    transport = _LoopbackSshTransport(compression=None)
+    command = transport._archive_command(receive_archive, destination, compression, remote=False)
+    process = subprocess.run(command, input=data, capture_output=True)
+    assert process.returncode != 0
+    assert (destination / "result").read_text() == "old"
+    assert list(destination.iterdir()) == [destination / "result"]
+
+
+def test_gzip_archive_crc_failure_does_not_publish(tmp_path):
+    import gzip
+    from kkrunner.files.transfer import send_archive, receive_archive
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / "file").write_bytes(b"new")
+    (target / "file").write_bytes(b"old")
+    transport = _LoopbackSshTransport(compression="gz")
+    command = transport._archive_command(send_archive, source, "gz", remote=False)
+    data = bytearray(subprocess.run(command, input=b'["file"]', capture_output=True, check=True).stdout)
+    data[-8] ^= 1  # gzip CRC, not TAR payload
+    with pytest.raises(gzip.BadGzipFile):
+        gzip.decompress(data)
+    command = transport._archive_command(receive_archive, target, "gz", remote=False)
+    result = subprocess.run(command, input=data, capture_output=True)
+    assert result.returncode != 0
+    assert (target / "file").read_bytes() == b"old"
+    assert list(target.iterdir()) == [target / "file"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_ssh_directory_transfer_preserves_permissions(tmp_path):
+    import stat
+
+    source, target, returned = (tmp_path / name for name in ("source", "target", "returned"))
+    nested = source / "read-only"
+    nested.mkdir(parents=True)
+    script = nested / "script"
+    script.write_text("echo hello")
+    script.chmod(0o751)
+    nested.chmod(0o555)
+    source.chmod(0o750)
+    transport = _LoopbackSshTransport()
+
+    async def transfer():
+        await transport.put_directory(source, target)
+        # Replacing a tree with read-only subdirectories must also work.
+        await transport.put_directory(source, target)
+        await transport.get_directory(target, returned)
+        await transport.get_directory(target, returned)
+
+    try:
+        asyncio.run(transfer())
+        for root in (target, returned):
+            assert stat.S_IMODE(root.stat().st_mode) == 0o750
+            assert stat.S_IMODE((root / "read-only").stat().st_mode) == 0o555
+            assert stat.S_IMODE((root / "read-only" / "script").stat().st_mode) == 0o751
+            assert (root / "read-only" / "script").read_text() == "echo hello"
+    finally:
+        for root in (source, target, returned):
+            if (root / "read-only").is_dir():
+                (root / "read-only").chmod(0o755)
+
+
+def test_archive_sender_propagates_directory_read_error(tmp_path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from kkrunner.files.transfer import send_archive
+
+    source = tmp_path / "source"
+    source.mkdir()
+
+    nested = source / "nested"
+    nested.mkdir()
+    (nested / "data").write_bytes(b"content")
+    scandir = os.scandir
+
+    def failing_scandir(path):
+        if os.fspath(path) == str(nested):
+            raise PermissionError("cannot read nested directory")
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", failing_scandir)
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=io.BytesIO()))
+    # Inject a real traversal error even when the tests run as root.
+    with pytest.raises(PermissionError, match="cannot read nested directory"):
+        send_archive(source, tree=True)

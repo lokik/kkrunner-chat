@@ -60,6 +60,7 @@ def test_current_schema_round_trips_with_one_execution_identity(tmp_path, backen
         "endpoint",
         "directory",
         "result_files",
+        "processing_attempt",
     ):
         assert not hasattr(loaded, obsolete)
 
@@ -107,3 +108,17 @@ def test_run_store_rejects_duplicate_id_across_date_shards(tmp_path):
 def test_run_store_lookup_preserves_missing_directory_error(tmp_path):
     with pytest.raises(FileNotFoundError, match="missing-run"):
         RunStore(tmp_path / "absent").get("missing-run")
+
+
+def test_processing_token_is_not_part_of_persisted_history(tmp_path):
+    from kkrunner.runs.manager import RunManager
+
+    store = RunStore(tmp_path / "runs")
+    record = RunManager(store).new_record(directory=tmp_path)
+    record = store.save(record)
+    path = store._path(record)
+    data = json.loads(path.read_text())
+    assert "processing_attempt" not in data
+    data["processing_attempt"] = "old-client-token"
+    path.write_text(json.dumps(data))
+    assert store.get(record.id) == record

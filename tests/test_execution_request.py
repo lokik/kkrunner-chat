@@ -10,7 +10,7 @@ from kkrunner.client.execution_request import execution_request
 from kkrunner.runs.base import ExecutionSpec
 
 
-def test_named_file_is_mapped_after_flush_without_modifying_spec(tmp_path):
+def test_named_file_is_mapped_without_flushing_or_modifying_spec(tmp_path):
     source = tmp_path / "stdout.log"
     with source.open("wb") as stream:
         stream.write(b"before submission")
@@ -23,8 +23,10 @@ def test_named_file_is_mapped_after_flush_without_modifying_spec(tmp_path):
         assert result["output_file"] == "/remote/job/stdout.log"
         assert result["directory"] == "/remote/job"
         assert spec.output_file is stream
-        assert source.read_bytes() == b"before submission"
+        assert source.read_bytes() == b""
         assert json.loads(json.dumps(result)) == result
+        stream.flush()
+        assert source.read_bytes() == b"before submission"
 
 
 @pytest.mark.parametrize("stream", [io.StringIO(), io.BytesIO(), 3])

@@ -1,6 +1,7 @@
 """Execution status projection and observable client postprocessing."""
 
 import sys
+from subprocess import CalledProcessError
 from threading import Event
 
 import pytest
@@ -15,9 +16,9 @@ from kkrunner.runs.manager import RunManager
 
 
 class _Executor(EndpointClient):
-    def __init__(self, status, *, remote=False, failure_phase=FailurePhase.EXECUTION):
+    def __init__(self, status, *, remote=False, backend=SupervisedBackend, failure_phase=FailurePhase.EXECUTION):
         super().__init__(
-            SupervisedBackend,
+            backend,
             transport=SshTransport("cluster") if remote else None,
         )
         self.status_value = status
@@ -132,6 +133,7 @@ def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
 
 @pytest.mark.parametrize("phase,expected_state", (
     (FailurePhase.EXECUTION, RunState.DOWNLOADING),
+    (FailurePhase.PREPROCESSING, RunState.FAILED),
     (FailurePhase.SUBMISSION, RunState.FAILED),
     (FailurePhase.LAUNCH, RunState.FAILED),
 ))
@@ -141,3 +143,42 @@ def test_remote_failure_only_downloads_after_execution_started(tmp_path, phase, 
     (refreshed,) = manager.refresh((record,))
     assert refreshed.state == expected_state
     assert refreshed in manager.store.runs(active=not expected_state.is_terminal)
+
+
+def test_cancelled_remote_job_keeps_transfer_reservation(tmp_path):
+    executor = _Executor(RunState.CANCELLED, remote=True)
+    manager, record = _record(tmp_path, executor)
+    (refreshed,) = manager.refresh((record,))
+    assert refreshed.state == RunState.DOWNLOADING
+    assert refreshed in manager.store.runs(active=True)
+
+
+@pytest.mark.parametrize("transfer_error", [None, OSError("remote stream unavailable"),
+                                            CalledProcessError(255, ("ssh", "cluster"))])
+def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkeypatch, transfer_error):
+    executor = _Executor(RunState.FINISHED, remote=True, backend=DirectBackend)
+    manager, record = _record(tmp_path, executor)
+    calls = []
+
+    monkeypatch.setattr(executor, "cancel", lambda attachment: RunStatus(
+        RunState.CANCELLED, backend_id=attachment.execution.backend_id,
+    ))
+
+    def collect(current, status):
+        assert current.id == record.id
+        assert status.state == RunState.CANCELLED
+        assert manager.store.get(record.id).state == RunState.RUNNING
+        calls.append(current.id)
+        if transfer_error is not None:
+            raise transfer_error
+        return current.files
+
+    monkeypatch.setattr(executor, "collect_ended_direct_files", collect)
+    cancelled = manager.cancel(record.id)
+    assert calls == [record.id]
+    assert cancelled.state == RunState.CANCELLED
+    if transfer_error is not None:
+        assert str(transfer_error) in cancelled.message
+    (refreshed,) = manager.refresh((cancelled,))
+    assert refreshed.state == RunState.CANCELLED
+    assert calls == [record.id]

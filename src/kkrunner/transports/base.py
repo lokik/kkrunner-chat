@@ -5,16 +5,9 @@ from __future__ import annotations
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
-from uuid import uuid4
 
 from kkrunner.transports.contracts import Operation, RunningCommand
 from kkrunner.files.snapshots import snapshot_destination
-
-
-def _local_temporary_path(destination):
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    return destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
 
 
 class Transport:
@@ -22,9 +15,9 @@ class Transport:
 
     Transport operations are asynchronous because remote execution is mostly
     I/O. ``put_file()`` and ``get_file()`` are exact one-file primitives.
-    ``put_files()`` and ``get_files()`` accept one path/pattern or an iterable
-    and preserve each matched file's path relative to the supplied source root.
-    Wildcards are always expanded on the source side of the transfer.
+    ``put_files()`` and ``get_files()`` accept exact relative paths or explicit
+    source/destination pairs, with separate roots for the two filesystems.
+    Pattern expansion belongs to the caller.
     """
 
     is_local = False
@@ -71,13 +64,13 @@ class Transport:
         """Retrieve and replace a complete directory tree."""
         raise NotImplementedError
 
-    async def get_file(self, source, destination):
+    async def get_file(self, source, destination, *, verify=None, overwrite=True):
         raise NotImplementedError
 
-    async def put_files(self, sources, source_root, destination_root):
+    async def put_files(self, files, source_directory, destination_directory):
         raise NotImplementedError
 
-    async def get_files(self, sources, source_root, destination_root):
+    async def get_files(self, files, source_directory, destination_directory):
         raise NotImplementedError
 
     async def expand_files(self, sources, root):

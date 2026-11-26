@@ -9,14 +9,16 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client import LocalTransport, EndpointClient, SshTransport, StagingSpec
-from kkrunner.files.queries import finalize_upload, query_files
+from kkrunner.files.queries import query_files
+from kkrunner.files.transfer import send_archive, receive_archive
+from kkrunner.transports.implementations.ssh.source import function_definition
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.client.contracts import Operation
 from kkrunner.transports.implementations.ssh.rpc import operation_command
 from kkrunner.transports.rpc import operation_result
 
-_FINALIZE_SOURCE = operation_command(Operation.standalone(finalize_upload), python=(sys.executable,))[-1]
+_ARCHIVE_SOURCES = tuple(function_definition(function) for function in (send_archive, receive_archive))
 _QUERY_SOURCE = operation_command(Operation.standalone(query_files), python=(sys.executable,))[-1]
 WORKER_SOURCE = operation_command(
     Operation.for_backend(DirectBackend, "stream"), python=(sys.executable,), streaming=True,
@@ -33,7 +35,7 @@ class LoopbackSshTransport(SshTransport):
 
 
 def test_remote_helper_sources_are_valid_python():
-    for source in (WORKER_SOURCE, _FINALIZE_SOURCE, _QUERY_SOURCE):
+    for source in (WORKER_SOURCE, *_ARCHIVE_SOURCES, _QUERY_SOURCE):
         compile(source, "<ssh direct target>", "exec")
 
 

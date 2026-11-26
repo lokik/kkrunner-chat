@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from kkrunner.files.manifest import FileMapping, FileSyncPolicy
+from kkrunner.files.queries import checked_files, query_files
 from kkrunner.client.staging import StagingSpec
 
 
@@ -101,29 +102,30 @@ class FileContext:
         if self.transport.is_local:
             return manifest
 
-        async def mapped(entry):
+        remote_root = await self._resolved_remote_root()
+
+        def mapped(entry):
             if entry is None or entry.local_path is None:
                 return entry
-            return replace(entry, remote_path=await self.map_path(entry.local_path))
+            return replace(entry, remote_path=self._map_path(entry.local_path, remote_root))
 
         mapping = FileMapping(
-            local_root=os.fspath(self.local_root), remote_root=await self._resolved_remote_root(),
+            local_root=os.fspath(self.local_root), remote_root=remote_root,
             input_sync=self.input_files.value, output_sync=self.output_files.value,
             filesystem_id=self.filesystem_id,
         )
         return replace(
             manifest,
-            inputs=tuple([await mapped(entry) for entry in manifest.inputs]),
-            outputs=tuple([await mapped(entry) for entry in manifest.outputs]),
-            caches=tuple([replace(cache, file=await mapped(cache.file)) for cache in manifest.caches]),
-            stdin=await mapped(manifest.stdin), stdout=await mapped(manifest.stdout),
-            stderr=await mapped(manifest.stderr), mapping=mapping,
+            inputs=tuple(mapped(entry) for entry in manifest.inputs),
+            outputs=tuple(mapped(entry) for entry in manifest.outputs),
+            caches=tuple(replace(cache, file=mapped(cache.file)) for cache in manifest.caches),
+            stdin=mapped(manifest.stdin), stdout=mapped(manifest.stdout),
+            stderr=mapped(manifest.stderr), mapping=mapping,
         )
 
-    async def unmap_path(self, path):
+    def _unmap_path(self, path, remote_root):
         if self.transport.is_local:
             return Path(os.path.abspath(path))
-        remote_root = await self._resolved_remote_root()
         path = posixpath.normpath(os.fspath(path))
         if not posixpath.isabs(path):
             raise ValueError(f"Remote path must be absolute: {path}")
@@ -139,6 +141,26 @@ class FileContext:
         local = self.local_root.joinpath(*PurePosixPath(relative).parts)
         _relative_local_path(local, self.local_root)
         return local
+
+    async def unmap_path(self, path):
+        return self._unmap_path(path, await self._resolved_remote_root())
+
+    def expand_input(self, entry, remote_root):
+        """Expand a reserved target pattern into exact local/target pairs.
+
+        Never follow a wildcard match into a different reserved namespace.
+        """
+        source = self._unmap_path(entry.remote_path, remote_root)
+        matches = []
+        for item in checked_files(query_files((source,), root=self.local_root)):
+            if item["status"] != "ok" or item["type"] != "file":
+                continue
+            path = item["path"]
+            if os.path.realpath(path) != path:
+                raise ValueError(f"Wildcard input contains a symbolic-link alias: {path}")
+            matches.append(replace(entry, local_path=path,
+                                   remote_path=self._map_path(path, remote_root)))
+        return tuple(matches)
 
     async def map_directory(self, directory):
         return await self.map_path(directory)
