@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -28,6 +28,7 @@ from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current,
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
+from kkrunner.runs.stores import resolve_record, store_for
 
 _STATE_RANK = {
     RunState.NEW: 0,
@@ -73,7 +74,7 @@ class DuplicateSubmissionError(RuntimeError):
     def __init__(self, record, conflicts):
         self.record = record
         self.conflicts = tuple(conflicts)
-        self.file_conflicts = {other.id: conflicting_files(record, other) for other in self.conflicts}
+        self.file_conflicts = {other.key: conflicting_files(record, other) for other in self.conflicts}
         super().__init__(
             "Run conflicts with {} active run{}".format(len(self.conflicts), "" if len(self.conflicts) == 1 else "s")
         )
@@ -111,15 +112,30 @@ class RunManager:
         finally:
             RunManager._default_override.reset(token)
 
-    def __init__(self, store=None, *, client_pool=None, submitting_grace=60.0):
+    def __init__(self, store=None, *, client_pool=None, submitting_grace=60.0, conflict_stores=()):
         if submitting_grace < 0:
             raise ValueError("submitting_grace must be non-negative")
         self.store = store
+        self.conflict_stores = tuple(conflict_stores)
         self.client_pool = client_pool if client_pool is not None else default_client_pool()
         self._files = RunFiles(store=self.store, client_pool=self.client_pool)
         self._ack_lock = Lock()
         self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
+
+    def _store_for(self, record):
+        return store_for(record, self.store)
+
+    def _record_key(self, record):
+        return record.key if record.store is not None else (self.store.lock_key, record.id)
+
+    def _reservation_stores(self):
+        # Deduplicate disk stores opened through separate objects. The primary
+        # store wins, and all managers take locks in the same order.
+        stores = {self.store.lock_key: self.store}
+        for store in self.conflict_stores:
+            stores.setdefault(store.lock_key, store)
+        return tuple(stores[key] for key in sorted(stores))
 
     def register_client(self, client):
         key = (require_persistable_transport(client.transport), client.backend_config)
@@ -162,6 +178,7 @@ class RunManager:
         metadata=None,
         processing_required=False,
         submission_key=None,
+        detached=False,
     ):
         now = _now()
         local = os.path.abspath(os.fspath(directory))
@@ -180,6 +197,8 @@ class RunManager:
             ),
             files=files if files is not None else FileManifest(),
             project_id=project_id,
+            detached=detached,
+            store=self.store,
         )
 
     @staticmethod
@@ -301,7 +320,7 @@ class RunManager:
                 return latest
             return replace(latest, **changes)
 
-        return self.store.update(record, merge)
+        return self._store_for(record).update(record, merge)
 
     def _is_stale_submitting(self, record, *, now=None):
         if record.state != RunState.SUBMITTING or record.execution.backend_id is not None:
@@ -310,27 +329,17 @@ class RunManager:
         return (now - _timestamp(record.updated_at)).total_seconds() >= self.submitting_grace
 
     def recover_submitting(self, record):
-        record = self.store.get(record.id)
+        record = resolve_record(record, self.store)
         if not record.execution.available or not self._is_stale_submitting(record):
             return record
         client = self.client_for(record)
-        if not hasattr(client, "recover_submission"):
-            # A tracked direct process has no durable backend identity. Keep
-            # uncertainty rather than claiming that no process was launched.
-            return self.transition(
-                record, state=RunState.UNKNOWN,
-                message="Submission recovery is not supported by this client",
-            )
         from kkrunner.runs.model import WorkingDirectory
-        try:
-            from kkrunner.client.contracts import SubmissionContext
-            recovery = client.recover_submission(
-                record.execution.submission_key or record.id,
-                SubmissionContext(record.execution),
-                submitted_at=record.updated_at,
-            )
-        except NotImplementedError:
-            return record
+        from kkrunner.client.contracts import SubmissionContext
+        recovery = client.recover_submission(
+            record.execution.submission_key or record.id,
+            SubmissionContext(record.execution),
+            submitted_at=record.updated_at,
+        )
         if recovery.disposition is RecoveryDisposition.FOUND:
             config = record.execution.transport
             if recovery.ref.backend != record.execution.backend.name:
@@ -374,24 +383,43 @@ class RunManager:
                 failure_phase=FailurePhase.SUBMISSION,
             )
 
-        return self.store.update(record, mark_absent)
+        return self._store_for(record).update(record, mark_absent)
+
+    def _conflicts(self, record, stores):
+        return tuple(
+            active
+            for store in stores
+            for active in store.runs(active=True)
+            if self._record_key(active) != self._record_key(record)
+            and submission_conflicts(record, active)
+        )
+
+    def conflicts(self, record):
+        """Inspect the same reservation domain as reserve(), without reserving."""
+        stores = self._reservation_stores()
+        with ExitStack() as locks:
+            for store in stores:
+                locks.enter_context(store.submission_lock())
+            return self._conflicts(record, stores)
 
     def reserve(self, record):
+        if self._store_for(record).lock_key != self.store.lock_key:
+            raise ValueError("Cannot reserve a record owned by another store")
+        record = replace(record, store=self.store)
         attempted_recovery = set()
         attempted_refresh = set()
+        stores = self._reservation_stores()
         while True:
-            with self.store.submission_lock():
+            with ExitStack() as locks:
+                for store in stores:
+                    locks.enter_context(store.submission_lock())
                 try:
                     existing = self.store.get(record.id)
                 except FileNotFoundError:
                     existing = None
                 if existing is not None and (existing != record or existing.state != RunState.NEW):
                     raise ValueError(f"Run id {record.id!r} already exists; use attach()")
-                conflicts = tuple(
-                    active
-                    for active in self.store.runs(active=True)
-                    if active.id != record.id and submission_conflicts(record, active)
-                )
+                conflicts = self._conflicts(record, stores)
                 if not conflicts:
                     if record.files is not None:
                         sync_result_files(record.files.input_files)
@@ -402,12 +430,12 @@ class RunManager:
                 stale = tuple(
                     conflict
                     for conflict in conflicts
-                    if conflict.id not in attempted_recovery and conflict.execution.available
+                    if self._record_key(conflict) not in attempted_recovery and conflict.execution.available
                     and self._is_stale_submitting(conflict)
                 )
                 refreshable = tuple(
                     conflict for conflict in conflicts
-                    if conflict.id not in attempted_refresh
+                    if self._record_key(conflict) not in attempted_refresh
                     and conflict.execution.available
                     and conflict.execution.backend.name == "direct"
                     and conflict.execution.backend_id is not None
@@ -417,12 +445,12 @@ class RunManager:
                 raise DuplicateSubmissionError(record, conflicts)
             progressed = False
             for conflict in stale:
-                attempted_recovery.add(conflict.id)
+                attempted_recovery.add(self._record_key(conflict))
                 recovered = self.recover_submitting(conflict)
                 if recovered.state != RunState.SUBMITTING or recovered.execution.backend_id is not None:
                     progressed = True
             for conflict in refreshable:
-                attempted_refresh.add(conflict.id)
+                attempted_refresh.add(self._record_key(conflict))
                 client = self.client_for(conflict)
                 if BackendCapability.STATUS not in client.backend.supports:
                     continue
@@ -443,7 +471,7 @@ class RunManager:
     def update(self, record, status: RunStatus):
         # Backend refresh is observational. It cannot retract local processing
         # or a terminal result, including when a scheduler returns stale data.
-        latest = self.store.get(record.id)
+        latest = resolve_record(record, self.store)
         if latest.state.is_terminal or latest.state == RunState.POSTPROCESSING:
             return latest
         record = latest
@@ -607,7 +635,7 @@ class RunManager:
         authoritative and the attached raw runner replays/synchronizes files
         before task postprocessing can finish.
         """
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
 
         def reopen(latest):
             if (
@@ -642,7 +670,7 @@ class RunManager:
                 updated_at=_now(),
             )
 
-        return self.store.update(record, reopen)
+        return self._store_for(record).update(record, reopen)
 
     def _process_outcome(self, record, outcome, process_result, *, files=None, execution=None, retry=False):
         """Claim processing until its durable completion, including across clients.
@@ -651,11 +679,12 @@ class RunManager:
         releases this lock when a client dies; POSTPROCESSING then remains
         attachable/retryable. A live owner is never displaced by a timeout.
         """
-        lock = self.store.processing_lock(record)
+        store = self._store_for(record)
+        lock = store.processing_lock(record)
         if not lock.acquire(blocking=False):
             raise ProcessingPending("Another client owns postprocessing")
         try:
-            latest = self.store.get(record.id)
+            latest = store.get(record.id)
             if latest.state == RunState.FINISHED and latest.return_code is not None:
                 # A different observer already completed it; no second callback.
                 raise ProcessingPending("Result already processed by another observer; load its historical result")
@@ -692,7 +721,7 @@ class RunManager:
                     execution=current.execution if execution is None else execution,
                 )
 
-            claimed = self.store.update(latest, claim)
+            claimed = store.update(latest, claim)
             if process_result is None:
                 raise ProcessingPending("Postprocessing requires a client callback")
             try:
@@ -724,7 +753,7 @@ class RunManager:
         """Retry a failed or interrupted processing attempt without rerunning a job."""
         from kkrunner.runs.base import ExecutionOutcome
 
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         if (
             not record.processing_required
             or record.return_code != 0
@@ -755,7 +784,7 @@ class RunManager:
             # Retry will reattach to download preserved output. Retain the
             # terminal backend receipt until that end-to-end attempt settles.
             return False
-        key = (record.id, record.execution.backend_id)
+        key = (self._record_key(record), record.execution.backend_id)
         with self._ack_lock:
             if key in self._acknowledged_results:
                 return True
@@ -798,6 +827,7 @@ class RunManager:
         if processing_required is False and process_result is not None:
             raise ValueError("A result callback requires processing_required=True")
         config = require_persistable_transport(client.transport)
+        detached = client.default_detached if detached is None else detached
         record = self.new_record(
             metadata=metadata,
             processing_required=(process_result is not None if processing_required is None else processing_required),
@@ -808,14 +838,13 @@ class RunManager:
             files=FileManifest.from_spec(spec),
             run_id=run_id,
             submission_key=uuid4().hex,
+            detached=detached,
         )
         self.register_client(client)
         parts = client.create_run_parts(
             spec, submission_key=record.execution.submission_key,
         )
-        parts.configure_detached(
-            client.default_detached if detached is None else detached,
-        )
+        parts.configure_detached(detached)
         return Run(
             parts.job, client=client, manager=self, record=record,
             process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
@@ -823,17 +852,18 @@ class RunManager:
 
     def refresh(self, records=None, *, on_error=None):
         """Refresh records; optionally report and skip unreadable history entries."""
-        self.reconcile_acknowledgements(on_error=on_error)
+        if records is None:
+            self.reconcile_acknowledgements(on_error=on_error)
         options = {} if on_error is None else {"on_error": on_error}
         records = tuple(self.store.runs(active=True, **options) if records is None else records)
-        current = {record.id: record for record in records}
+        current = {self._record_key(record): record for record in records}
         groups = {}
         for record in records:
             if not record.execution.available:
                 continue  # Browsable history; no supported target implementation.
             if record.execution.backend_id is None and self._is_stale_submitting(record):
                 record = self.recover_submitting(record)
-                current[record.id] = record
+                current[self._record_key(record)] = record
             if record.execution.backend_id is None or record.state.is_terminal:
                 # Recovery may have completed this record and acknowledged
                 # its backend receipt. Do not immediately observe it again.
@@ -849,7 +879,7 @@ class RunManager:
         for client, group in groups.items():
             if BackendCapability.STATUS not in client.backend.supports:
                 for record in group:
-                    current[record.id] = self.transition(
+                    current[self._record_key(record)] = self.transition(
                         record, state=RunState.UNKNOWN,
                         message="This execution backend has no independent status query",
                     )
@@ -859,12 +889,12 @@ class RunManager:
             try:
                 for record in group:
                     if client.backend.name == "direct":
-                        ownership = self.store.observation_lock(record)
+                        ownership = self._store_for(record).observation_lock(record)
                         if not ownership.acquire(blocking=False):
                             # The original observer is alive, possibly already
                             # downloading or processing after the child exited.
                             # It owns completion; do not release its reservation.
-                            current[record.id] = self.store.get(record.id)
+                            current[self._record_key(record)] = resolve_record(record, self.store)
                             continue
                         locks.append(ownership)
                     guarded.append(record)
@@ -879,7 +909,7 @@ class RunManager:
                         raise
                     # A lost connection is uncertainty, not proof of exit.
                     for record in guarded:
-                        current[record.id] = self.transition(
+                        current[self._record_key(record)] = self.transition(
                             record, state=RunState.UNKNOWN,
                             message=f"Cannot query direct process status: {exc}",
                         )
@@ -887,21 +917,22 @@ class RunManager:
                 if len(statuses) != len(guarded):
                     raise RuntimeError("Transport returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):
-                    current[record.id] = self.update(record, status)
+                    current[self._record_key(record)] = self.update(record, status)
             finally:
                 for ownership in reversed(locks):
                     ownership.release()
-        return tuple(current[record.id] for record in records)
+        return tuple(current[self._record_key(record)] for record in records)
 
     def forget(self, run, *, force=False):
         """Remove stored history without touching native processes or result files."""
-        if self.store is None:
-            raise RuntimeError("No persistent run store is configured")
-        return self.store.forget(run, force=force)
+        store = store_for(run, self.store)
+        if store is None:
+            raise RuntimeError("No run store is configured")
+        return store.forget(run, force=force)
 
     def cancel(self, run):
         """Ask a persisted backend to cancel a job, without assuming completion."""
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         if record.state.is_terminal:
             return record
         if record.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
@@ -919,13 +950,22 @@ class RunManager:
             raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
         return self.update(record, status)
 
+    def _claim_observation(self, record):
+        """Exclusive owner of direct observation and client file finalization."""
+        if record.execution.backend.name != "direct":
+            return None
+        lock = self._store_for(record).observation_lock(record)
+        if not lock.acquire(blocking=False):
+            raise RuntimeError(f"Run {record.id} already has a direct observer")
+        return lock
+
     def attach(
         self, run, *, process_result=None, client=None,
         callback=None, output_listener=None, owned_resources=None,
     ):
         """Open a tracked Run without resubmitting its backend job."""
         from kkrunner.runs.run import Run
-        record = self.store.get(run) if isinstance(run, str) else self.store.get(run.id)
+        record = resolve_record(run, self.store)
         if record.state.is_terminal:
             raise RuntimeError("Run is already terminal; use explicit retry")
         if process_result is not None and not record.processing_required:
@@ -937,20 +977,31 @@ class RunManager:
         if BackendCapability.REATTACH not in client.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("This backend does not support reattachment")
-        parts = client.open_run_parts(
-            JobAttachment(record.execution, record.files),
-            output_listener=output_listener,
-        )
+        # Claim before opening streams or querying native status. Refresh
+        # and another attach must not finalize the same direct files.
+        ownership = self._claim_observation(record)
+        parts = None
         try:
+            record = resolve_record(record, self.store)
+            if record.state.is_terminal:
+                raise RuntimeError("Run is already terminal; use explicit retry")
+            parts = client.open_run_parts(
+                JobAttachment(record.execution, record.files),
+                output_listener=output_listener,
+            )
             attached = Run(
                 parts.job, client=client, manager=self, record=record,
-                process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
+                process_result=process_result, callback=callback, parts=parts,
+                owned_resources=owned_resources, observation_lock=ownership,
             )
-            attached.start()
         except BaseException:
-            # Opening an attachment transfers stream ownership to Run only
-            # once its observer has started. Do not leak file descriptors when
-            # constructing or starting the attached observer fails.
-            parts.abort()
+            try:
+                if parts is not None:
+                    parts.abort()
+            finally:
+                if ownership is not None:
+                    ownership.release()
             raise
+        # Run now owns the streams and lock, including failed observer startup.
+        attached.start()
         return attached

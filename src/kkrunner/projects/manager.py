@@ -21,6 +21,7 @@ class ProjectRunManager(RunManager):
         *,
         client_pool=None,
         submitting_grace=60.0,
+        conflict_stores=(),
         project_repository=None,
         project=None,
     ):
@@ -36,6 +37,7 @@ class ProjectRunManager(RunManager):
             store,
             client_pool=client_pool,
             submitting_grace=submitting_grace,
+            conflict_stores=conflict_stores,
         )
 
     @property
@@ -58,6 +60,7 @@ class ProjectRunManager(RunManager):
             store=self.store,
             client_pool=self.client_pool,
             submitting_grace=self.submitting_grace,
+            conflict_stores=self.conflict_stores,
             project_repository=self.projects,
             project=current,
         )

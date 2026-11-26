@@ -64,8 +64,11 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         state = RunState.NEW
         backend_id = None
         exception = None
+        failure_phase = None
+        failure_message = None
         return_code = 0
         result = ExecutionOutcome(return_code=0)
+        output_error = None
 
         def submit(self):
             self.backend_id = "instant-job"
@@ -209,6 +212,8 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
         state = RunState.NEW
         backend_id = None
         exception = None
+        failure_phase = None
+        failure_message = None
         return_code = 0
         result = ExecutionOutcome(return_code=0)
         output_error = None

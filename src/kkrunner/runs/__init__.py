@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
     from kkrunner.runs.processing import ProcessingPending
     from kkrunner.runs.records import ActiveRunDeletionError, CorruptRunRecord, ForgottenRunError, RunRecord, RunStore
+    from kkrunner.runs.memory_store import MemoryRunStore
+    from kkrunner.runs.stores import RunStoreProtocol
     from kkrunner.runs.run import Run
 
 __all__ = [
@@ -38,6 +40,8 @@ __all__ = [
     "RunState",
     "RunStatus",
     "RunStore",
+    "MemoryRunStore",
+    "RunStoreProtocol",
     "WorkingDirectory",
 ]
 
@@ -67,6 +71,10 @@ def __getattr__(name):
     ):
         from . import model
         value = getattr(model, name)
+    elif name == "MemoryRunStore":
+        from .memory_store import MemoryRunStore as value
+    elif name == "RunStoreProtocol":
+        from .stores import RunStoreProtocol as value
     elif name == "Run":
         from .run import Run as value
     elif name == "ProcessingPending":

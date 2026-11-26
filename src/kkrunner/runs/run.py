@@ -37,6 +37,7 @@ class Run:
     def __init__(
         self, job, *, client=None, manager=None, record=None,
         process_result=None, callback=None, file_session=None, parts=None, owned_resources=None,
+        detached=False, observation_lock=None,
     ):
         if (manager is None) != (record is None):
             raise ValueError("RunManager and RunRecord must be supplied together")
@@ -58,6 +59,7 @@ class Run:
         self._job = parts.job
         self._file_session = parts.files
         self.client = client
+        self.detached = detached if record is None else record.detached
         self.manager = manager
         self._record = record
         self._process_result = process_result
@@ -77,7 +79,7 @@ class Run:
         self._lock = Lock()
         self._completion_lock = Lock()
         self._completion_persisted = False
-        self._direct_observation_lock = None
+        self._direct_observation_lock = observation_lock
         self._monitor_record_version = None if record is None else record.updated_at
 
     @classmethod
@@ -122,11 +124,11 @@ class Run:
         if isinstance(spec, ExecutionSpec):
             spec.require_complete()
         parts = client.create_run_parts(spec)
-        parts.configure_detached(
-            client.default_detached if detached is None else detached,
-        )
+        detached = client.default_detached if detached is None else detached
+        parts.configure_detached(detached)
         return cls(parts.job, client=client, parts=parts,
-                   process_result=process_result, callback=callback, owned_resources=owned_resources)
+                   process_result=process_result, callback=callback, owned_resources=owned_resources,
+                   detached=detached)
 
     @property
     def id(self):
@@ -163,15 +165,15 @@ class Run:
     @property
     def failure_phase(self):
         from kkrunner.runs.manager import _failure_phase
-        return _failure_phase(self._failure_phase or getattr(self._job, "failure_phase", None))
+        return _failure_phase(self._failure_phase or self._job.failure_phase)
 
     @property
     def failure_message(self):
-        return self._failure_message or getattr(self._job, "failure_message", None)
+        return self._failure_message or self._job.failure_message
 
     @property
     def return_code(self):
-        return getattr(self._job, "return_code", None)
+        return self._job.return_code
 
     @property
     def state(self):
@@ -204,7 +206,7 @@ class Run:
     def snapshot_file(self, file, *, destination=None):
         if self.manager is None:
             raise RuntimeError("Snapshot of an untracked Run requires a workspace")
-        return self.manager.snapshot_file(self.id, file, destination=destination)
+        return self.manager.snapshot_file(self._record, file, destination=destination)
 
     def _finish(self):
         try:
@@ -218,7 +220,7 @@ class Run:
                 try:
                     if (
                         raw_state == RunState.FINISHED and self._job.return_code == 0
-                        and getattr(self._job, "output_error", None) is not None
+                        and self._job.output_error is not None
                     ):
                         raise self._job.output_error
                     if raw_state == RunState.FINISHED and self._job.return_code is None:
@@ -246,15 +248,15 @@ class Run:
             self.result = outcome
             if raw_state == RunState.UNKNOWN:
                 self._state = RunState.UNKNOWN
-                self._failure_message = getattr(self._job, "failure_message", None)
+                self._failure_message = self._job.failure_message
                 return
             if raw_state == RunState.CANCELLED:
                 self._state = RunState.CANCELLED
                 return
             if raw_state == RunState.FAILED:
                 self._state = RunState.FAILED
-                self._failure_phase = getattr(self._job, "failure_phase", None) or FailurePhase.EXECUTION
-                self._failure_message = getattr(self._job, "failure_message", None)
+                self._failure_phase = self._job.failure_phase or FailurePhase.EXECUTION
+                self._failure_message = self._job.failure_message
                 return
             if raw_state != RunState.FINISHED:
                 raise RuntimeError(f"Backend observer completed in unexpected state {raw_state.value}")
@@ -264,7 +266,7 @@ class Run:
             if self._job.return_code is None:
                 self._state = RunState.FINISHED
                 self._failure_message = (
-                    getattr(self._job, "failure_message", None)
+                    self._job.failure_message
                     or "Process ended; exit code unavailable"
                 )
                 return
@@ -303,7 +305,7 @@ class Run:
                 self._failure_phase = None
             elif raw_state == RunState.FAILED:
                 self._state = RunState.FAILED
-                self._failure_phase = getattr(self._job, "failure_phase", None) or FailurePhase.EXECUTION
+                self._failure_phase = self._job.failure_phase or FailurePhase.EXECUTION
             else:
                 # wait() may have failed because observation, output delivery,
                 # or a local observer failed. Neither RUNNING nor even a
@@ -311,7 +313,7 @@ class Run:
                 # can safely complete after that exception.
                 self._state = RunState.UNKNOWN
                 self._failure_phase = None
-            self._failure_message = getattr(self._job, "failure_message", None) or str(exc)
+            self._failure_message = self._job.failure_message or str(exc)
         finally:
             try:
                 self._parts.close()
@@ -344,12 +346,20 @@ class Run:
                     # An independent observer completed the processing first.
                     self.result = None
             try:
-                if self._direct_observation_lock is not None:
-                    self._direct_observation_lock.release()
-                    self._direct_observation_lock = None
+                self._release_observation()
             finally:
                 self._settled = True
                 finish_monitor(self)
+
+    def _claim_observation(self):
+        if self.manager is not None and self._direct_observation_lock is None:
+            self._direct_observation_lock = self.manager._claim_observation(self._record)
+
+    def _release_observation(self):
+        lock = self._direct_observation_lock
+        self._direct_observation_lock = None
+        if lock is not None:
+            lock.release()
 
     def _start_completion(self):
         self._started = True
@@ -430,9 +440,7 @@ class Run:
                 self._record = manager.reserve(self._record)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
-                if self.client.backend.name == "direct":
-                    self._direct_observation_lock = manager.store.observation_lock(self._record)
-                    self._direct_observation_lock.acquire()
+                self._claim_observation()
 
             # Stage using the same session operations for tracked/untracked
             # execution. Only the optional durable snapshot differs.
@@ -508,9 +516,8 @@ class Run:
             finally:
                 if definitely_absent:
                     self._owned_resources.close(suppress_errors=True)
-                if self._direct_observation_lock is not None and not self._started:
-                    self._direct_observation_lock.release()
-                    self._direct_observation_lock = None
+                if not self._started:
+                    self._release_observation()
                 self._settled = True
             if cancelled:
                 raise self._exception from exc
@@ -536,26 +543,28 @@ class Run:
             raise RuntimeError("Run is closed")
         if self._started:
             return
-        if self._settled:
-            raise RuntimeError("A failed or uncertain Run cannot be restarted")
-        if self._record is not None:
-            if self._record.state.is_terminal:
-                raise RuntimeError("A completed Run cannot be started again")
-            if self._record.execution.backend_id is None:
-                # Only recoverable records may be restarted through attach.
-                # A direct Job without an ID is observable only by its owner.
-                raise RuntimeError(
-                    "Run has no persisted backend identity; recover the submission before attaching"
-                )
-        self._parts.configure_observation()
-        start = getattr(self._job, "start", None)
-        if start is not None:
-            start()
-        elif self._job.state == RunState.NEW:
-            self._job.submit()
-        # Completion claims the file session only after its observer started.
-        # A failed monitor start must leave abort() able to close the streams.
-        self._start_completion()
+        try:
+            if self._settled:
+                raise RuntimeError("A failed or uncertain Run cannot be restarted")
+            if self._record is not None:
+                if self._record.state.is_terminal:
+                    raise RuntimeError("A completed Run cannot be started again")
+                if self._record.execution.backend_id is None:
+                    raise RuntimeError(
+                        "Run has no persisted backend identity; recover the submission before attaching"
+                    )
+            self._claim_observation()
+            self._parts.configure_observation()
+            self._job.start()
+            # Completion owns the file session and observation lock.
+            self._start_completion()
+        except BaseException:
+            if not self._started:
+                try:
+                    self._parts.abort()
+                finally:
+                    self._release_observation()
+            raise
         if self.manager is None:
             return
         with self._completion_lock:
@@ -574,7 +583,8 @@ class Run:
         with self._completion_lock:
             if self._completion_persisted:
                 return
-            latest = self.manager.store.get(self.id)
+            from kkrunner.runs.stores import resolve_record
+            latest = resolve_record(self._record, self.manager.store)
             if latest.state.is_terminal and not (
                 latest.state == RunState.FINISHED and latest.return_code is None
                 and self.return_code is not None and self._state.is_terminal
@@ -646,10 +656,7 @@ class Run:
             return self._record
 
     def stop_observation(self):
-        stop = getattr(self._job, "stop_observation", None)
-        if stop is None:
-            raise NotImplementedError("Selected backend cannot detach observation")
-        return stop()
+        return self._job.stop_observation()
 
     def close(self):
         """Release an unstarted or terminal Run's resources; active work must settle first."""

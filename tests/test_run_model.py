@@ -197,9 +197,10 @@ def test_submitted_uses_execution_backend_id_validation():
 
 
 def test_manifest_from_spec_normalizes_stream_overlaps(tmp_path):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file="input.inp",
         input_files=("input.inp", "other.inp", "other.inp", None, object(), 1),
@@ -300,9 +301,10 @@ def test_staging_rejects_unknown_sync_policies(name):
     ),
 )
 def test_manifest_rejects_duplicate_non_stream_file_roles(tmp_path, input_files, output_files, cache_files):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=None,
         input_files=input_files,
@@ -316,9 +318,10 @@ def test_manifest_rejects_duplicate_non_stream_file_roles(tmp_path, input_files,
 
 
 def test_manifest_rejects_cache_aliasing_stdout(tmp_path):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=None,
         input_files=(),
@@ -332,11 +335,12 @@ def test_manifest_rejects_cache_aliasing_stdout(tmp_path):
 
 
 def test_manifest_preserves_cache_optionality_and_roundtrips(tmp_path):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
     from kkrunner import TaskFile
 
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=None,
         input_files=(),
@@ -356,9 +360,10 @@ def test_manifest_preserves_cache_optionality_and_roundtrips(tmp_path):
 
 @pytest.mark.parametrize("colliding_role", ["stdout", "output", "cache"])
 def test_manifest_rejects_named_stdin_write_collisions(tmp_path, colliding_role):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=None,
         input_files=(),
@@ -374,12 +379,13 @@ def test_manifest_rejects_named_stdin_write_collisions(tmp_path, colliding_role)
 
 @pytest.mark.parametrize("primary_is_taskfile", [True, False])
 def test_primary_input_rejects_optional_taskfile_declaration(tmp_path, primary_is_taskfile):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
     from kkrunner import TaskFile
 
     primary = tmp_path / "main.inp"
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=TaskFile(primary, optional=True) if primary_is_taskfile else primary,
         input_files=() if primary_is_taskfile else (TaskFile(primary, optional=True),),
@@ -395,13 +401,14 @@ def test_primary_input_rejects_optional_taskfile_declaration(tmp_path, primary_i
 
 @pytest.mark.parametrize("optional_first", [True, False])
 def test_duplicate_input_declarations_with_conflicting_optionality_fail(tmp_path, optional_first):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
     from kkrunner import TaskFile
 
     optional = TaskFile(tmp_path / "auxiliary.dat", optional=True)
     required = tmp_path / "./auxiliary.dat"
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=None,
         input_files=(optional, required) if optional_first else (required, optional),
@@ -416,13 +423,14 @@ def test_duplicate_input_declarations_with_conflicting_optionality_fail(tmp_path
 
 
 def test_consistent_input_optionality_survives_duplicate_references(tmp_path):
-    from types import SimpleNamespace
+    from kkrunner import ExecutionSpec
 
     from kkrunner import TaskFile
 
     primary = tmp_path / "main.inp"
     auxiliary = tmp_path / "auxiliary.dat"
-    spec = SimpleNamespace(
+    spec = ExecutionSpec(
+        argv=("unused",),
         directory=str(tmp_path),
         input_file=primary,
         input_files=(primary, TaskFile(auxiliary, optional=True), TaskFile(auxiliary, optional=True)),

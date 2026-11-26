@@ -190,3 +190,29 @@ def test_detached_local_uses_shared_file_tail_for_live_observation(tmp_path):
     assert ("err", "second\n") in received
     assert (tmp_path / "out.txt").read_text() == "first\n"
     assert (tmp_path / "err.txt").read_text() == "second\n"
+
+
+def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
+    from kkrunner import MemoryRunStore
+    marker = tmp_path / "completed"
+    gate = tmp_path / "continue"
+    spec = ExecutionSpec(
+        (sys.executable, "-c",
+         "import pathlib,time; gate=pathlib.Path(%r); "
+         "deadline=time.monotonic()+5; "
+         "exec('while not gate.exists() and time.monotonic()<deadline: time.sleep(.02)'); "
+         "pathlib.Path(%r).write_text('done')" % (str(gate), str(marker))),
+        directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
+    )
+    manager = RunManager(MemoryRunStore())
+    run = Run.create(EndpointClient(DirectBackend), spec, persistent=manager, detached=True)
+    run.submit()
+    try:
+        run.stop_observation()
+        assert run.wait().return_code is None
+        assert run.state == RunState.UNKNOWN
+        assert manager.store.get(run.id).execution.backend_id
+        assert not marker.exists()
+    finally:
+        gate.touch()
+    assert _eventually_exists(marker)

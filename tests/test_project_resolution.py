@@ -31,3 +31,9 @@ def test_project_manager_cannot_be_rebound(tmp_path):
     second = manager.projects.create("Second")
     with pytest.raises(ValueError, match="Cannot replace"):
         manager.for_project(first).for_project(second)
+
+
+def test_explicit_run_manager_does_not_require_a_project():
+    from kkrunner import MemoryRunStore, RunManager
+    manager = RunManager(MemoryRunStore())
+    assert resolve_project_manager(manager) is manager
