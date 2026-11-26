@@ -319,29 +319,37 @@ class RunStore:
         Active or unknown jobs require force=True. A durable tombstone prevents
         a stale observer from recreating the removed record on completion.
         """
+        with self.submission_lock():
+            return self.forget_under_submission_lock(run, force=force)
+
+    def forget_under_submission_lock(self, run, *, force=False):
+        """Forget a run while the caller holds this store's submission lock.
+
+        Project deletion already holds the lock for the entire project/history
+        operation. Reuse normal record deletion without reacquiring that lock.
+        """
         if type(force) is not bool:
             raise TypeError("force must be a bool")
         run_id = run if isinstance(run, str) else run.id
-        with self.submission_lock():
+        record = self.get(run_id)
+        with self._lock, FileLock(self._run_lock_path(record)):
             record = self.get(run_id)
-            with self._lock, FileLock(self._run_lock_path(record)):
-                record = self.get(run_id)
-                if not record.state.is_terminal and not force:
-                    raise ActiveRunDeletionError(
-                        f"Run {run_id!r} is {record.state.value}; its process may "
-                        "still be active. Use force=True to forget it without "
-                        "stopping the execution."
-                    )
-                tombstone = self._forgotten_path(run_id)
-                durable_mkdir(tombstone.parent, parents=True, exist_ok=True, mode=0o700)
-                durable_write_json(
-                    tombstone, {"run_id": run_id, "created_at": record.created_at},
-                    mode=0o600, sort_keys=True,
+            if not record.state.is_terminal and not force:
+                raise ActiveRunDeletionError(
+                    f"Run {run_id!r} is {record.state.value}; its process may "
+                    "still be active. Use force=True to forget it without "
+                    "stopping the execution."
                 )
-                path = self._path(record)
-                path.unlink()
-                fsync_directory(path.parent)
-                return record
+            tombstone = self._forgotten_path(run_id)
+            durable_mkdir(tombstone.parent, parents=True, exist_ok=True, mode=0o700)
+            durable_write_json(
+                tombstone, {"run_id": run_id, "created_at": record.created_at},
+                mode=0o600, sort_keys=True,
+            )
+            path = self._path(record)
+            path.unlink()
+            fsync_directory(path.parent)
+            return record
 
     def get(self, run_id):
         return replace(self._decode(self._path_for_id(run_id)), store=self)

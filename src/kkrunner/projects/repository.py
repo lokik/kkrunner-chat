@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
@@ -366,20 +366,28 @@ class ProjectRepository:
             projects = self._read_projects()
             if any(item.parent_id == canonical for item in projects):
                 raise ProjectDeleteError("Projects with child projects cannot be deleted")
-            from kkrunner.runs.records import RunStore
+            from kkrunner.runs.records import ActiveRunDeletionError, RunStore
 
             run_store = RunStore(self.directory.parent / "projects_runs")
-            with run_store.submission_lock():
+            with run_store.submission_lock(), ExitStack() as owners:
                 histories = tuple(record for record in run_store.runs() if record.project_id == canonical)
                 if any(not record.state.is_terminal for record in histories):
                     raise ProjectDeleteError("Cannot delete a project with active runs")
+                # Match RunManager.forget(): a live client still owns its
+                # history even after publishing a terminal state. Never wait
+                # for observation ownership while holding the submission lock.
+                for record in histories:
+                    owner = run_store.observation_lock(record)
+                    if not owner.acquire(blocking=False):
+                        raise ProjectDeleteError("Cannot delete a project while a client owns its runs")
+                    owners.callback(owner.release)
                 try:
+                    for record in histories:
+                        run_store.forget_under_submission_lock(record)
                     self._json_path(canonical).unlink()
                     fsync_directory(self.directory)
-                    for record in histories:
-                        record_path = run_store._path(record)
-                        record_path.unlink(missing_ok=True)
-                        fsync_directory(record_path.parent)
+                except ActiveRunDeletionError as exc:
+                    raise ProjectDeleteError("Cannot delete a project with active runs") from exc
                 except OSError as exc:
                     raise ProjectRepositoryError(f"Cannot delete project {canonical!r}: {exc}") from exc
 

@@ -10,7 +10,7 @@ from kkrunner.projects.repository import ProjectDeleteError, ProjectRepository
 from kkrunner.projects.resolution import resolve_project_manager
 from kkrunner.runs.base import RunState
 from kkrunner.runs.manager import DuplicateSubmissionError
-from kkrunner.runs.records import RunStore
+from kkrunner.runs.records import ForgottenRunError, RunStore
 
 
 def test_different_projects_share_one_store_and_keep_project_identity(tmp_path):
@@ -61,6 +61,8 @@ def test_cross_project_active_conflict_and_project_deletion(tmp_path):
     a.complete(first_record, state=RunState.FAILED)
     projects.delete(first.id, expected_generation=first.generation)
     assert all((r.project_id != first.id for r in b.store.runs()))
+    with pytest.raises(ForgottenRunError):
+        a.store.update(first_record, lambda latest: latest)
 
 
 def test_for_project_preserves_explicit_run_store(tmp_path):
@@ -106,5 +108,37 @@ def test_unknown_run_prevents_project_deletion_until_terminal(tmp_path):
         projects.delete(project.id, expected_generation=project.generation)
     assert manager.store.get(record.id).state == RunState.UNKNOWN
     manager.store.update(record, lambda latest: replace(latest, state=RunState.FINISHED))
+    projects.delete(project.id, expected_generation=project.generation)
+    assert manager.store.runs() == ()
+
+def test_failed_history_deletion_keeps_project(tmp_path):
+    from kkrunner.projects.repository import ProjectRepositoryError
+
+    projects = ProjectRepository(tmp_path / "projects")
+    root = projects.create("Root")
+    project = projects.create("Child", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects, project=project)
+    record = manager.new_record(directory=tmp_path / "work")
+    manager.complete(record, state=RunState.FAILED)
+    # A filesystem error during history removal must not remove its owner.
+    (manager.store.directory / ".forgotten").write_text("not a directory")
+    with pytest.raises(ProjectRepositoryError):
+        projects.delete(project.id, expected_generation=project.generation)
+    assert projects.project(project.id) == project
+    assert manager.store.get(record.id).state == RunState.FAILED
+
+
+def test_project_deletion_respects_live_client_ownership(tmp_path):
+    projects = ProjectRepository(tmp_path / "projects")
+    root = projects.create("Root")
+    project = projects.create("Child", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects, project=project)
+    record = manager.complete(manager.new_record(directory=tmp_path / "work"),
+                              state=RunState.FAILED)
+    with manager.store.observation_lock(record):
+        with pytest.raises(ProjectDeleteError, match="client owns"):
+            projects.delete(project.id, expected_generation=project.generation)
+        assert projects.project(project.id) == project
+        assert manager.store.get(record.id) == record
     projects.delete(project.id, expected_generation=project.generation)
     assert manager.store.runs() == ()
