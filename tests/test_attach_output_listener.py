@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from kkrunner import RunState, RunStore
-from kkrunner.backends import PsijBackend, SupervisedBackend
+from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client import EndpointClient
@@ -99,5 +99,24 @@ def test_attach_can_defer_monitor_start(tmp_path, monkeypatch, replay_observer, 
         parts.job.start()
         assert parts.job.wait().return_code == 0
         assert events == [("replayed output\n", "out")]
+    finally:
+        parts.close()
+
+
+def test_direct_attachment_without_stream_files_observes_completion(tmp_path, monkeypatch):
+    client, attachment = _client_and_attachment(tmp_path, monkeypatch, DirectBackend)
+    attachment = JobAttachment(attachment.execution, FileManifest())
+
+    async def observe(self, on_output):
+        assert self._follow_options["stdout_path"] is None
+        assert self._follow_options["stderr_path"] is None
+        return JobStatus(RunState.FINISHED, return_code=0)
+
+    monkeypatch.setattr(ManagedExecution, "observe", observe)
+    parts = client.open_run_parts(attachment)
+    try:
+        parts.configure_observation()
+        parts.job.start()
+        assert parts.job.wait().return_code == 0
     finally:
         parts.close()

@@ -118,6 +118,29 @@ class RunRecord:
         """Process-local identity, including the owning storage namespace."""
         return (None if self.store is None else self.store.lock_key, self.id)
 
+    def reattachment_unavailable_reason(self):
+        """Return the reason a saved run cannot be followed, without backend I/O."""
+        if self.state.is_terminal:
+            return "The calculation has finished."
+        if not self.execution.available:
+            return "The saved backend or connection is unavailable; local result files can still be viewed."
+        if self.execution.backend_id is None:
+            return ("No backend identity has been saved for this calculation yet. "
+                    "Refresh statuses to attempt submission recovery.")
+        return self.execution.backend.create().reattachment_unavailable_reason(self.execution, self.files)
+
+    def cancellation_unavailable_reason(self):
+        """Return the reason native cancellation is unavailable, without backend I/O."""
+        if self.state.is_terminal:
+            return "The calculation has finished."
+        if self.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
+            return "Execution has finished; result finalization cannot be cancelled as a native job."
+        if not self.execution.available:
+            return "The saved backend or connection is unavailable."
+        if self.execution.backend_id is None:
+            return "This calculation has no saved process reference to cancel."
+        return self.execution.backend.create().cancellation_unavailable_reason(self.execution, self.files)
+
     def to_dict(self):
         """Serialize the record without its runtime store reference."""
         data = asdict(
@@ -250,7 +273,9 @@ class RunStore:
     @contextmanager
     def submission_lock(self):
         durable_mkdir(self.directory, parents=True, exist_ok=True, mode=0o700)
-        with self._lock, FileLock(self.directory / ".submit.lock"):
+        # Reservations serialize with one another across processes, but a
+        # long-running guarded file operation must not hold the record I/O lock.
+        with FileLock(self.directory / ".submit.lock"):
             yield
 
     def save(self, record: RunRecord):

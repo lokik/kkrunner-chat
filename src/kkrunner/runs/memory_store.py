@@ -16,6 +16,7 @@ class MemoryRunStore:
         self._records = {}
         self._forgotten = set()
         self._lock = RLock()
+        self._submission_lock = Lock()
         self._processing = {}
         self._observation = {}
 
@@ -24,7 +25,7 @@ class MemoryRunStore:
         return (1, id(self))
 
     def submission_lock(self):
-        return self._lock
+        return self._submission_lock
 
     def processing_lock(self, record):
         with self._lock:
@@ -86,7 +87,7 @@ class MemoryRunStore:
         if type(force) is not bool:
             raise TypeError("force must be a bool")
         run_id = run if isinstance(run, str) else run.id
-        with self._lock:
+        with self.submission_lock(), self._lock:
             record = self.get(run_id)
             if not record.state.is_terminal and not force:
                 raise ActiveRunDeletionError(f"Run {run_id!r} is {record.state.value}; its process may still be active")

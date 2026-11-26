@@ -369,6 +369,15 @@ class FileManifest:
         return (*self.inputs, *((self.stdin,) if self.stdin is not None else ()))
 
     @property
+    def output_entries(self):
+        return (*self.outputs, *(entry for entry in (self.stdout, self.stderr) if entry is not None))
+
+    @property
+    def entries(self):
+        """All exact declarations, including uncollected outputs and caches."""
+        return (*self.input_entries, *self.output_entries, *(cache.file for cache in self.caches))
+
+    @property
     def input_files(self):
         return tuple(dict.fromkeys(entry.local_path for entry in self.input_entries if entry.local_path is not None))
 

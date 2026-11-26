@@ -9,7 +9,7 @@ from kkrunner.backends.support.process import prepare_mpi
 from kkrunner.files.availability import prepare_target_outputs
 from kkrunner.support.decorators import depends_on, portable
 
-from .process import observe_process
+from .process import observe_process, parse_direct_process_identity
 
 if TYPE_CHECKING:
     from typing import Awaitable, BinaryIO, Callable, Mapping, Optional, Union
@@ -27,6 +27,16 @@ class DirectBackend(Backend, DirectOperations):
     def __init__(self, **options):
         super().__init__(**options)
         self.supports = frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
+
+    def cancellation_unavailable_reason(self, execution, files):
+        try:
+            parse_direct_process_identity(execution.backend_id)
+        except NotImplementedError:
+            return ("The backend cannot cancel this older direct run: "
+                    "it has no verified PID/start-time identity.")
+        except ValueError as exc:
+            return str(exc)
+        return super().cancellation_unavailable_reason(execution, files)
 
     @staticmethod
     @portable
@@ -104,7 +114,7 @@ class DirectBackend(Backend, DirectOperations):
 
     @staticmethod
     @portable
-    @depends_on(observe_process)
+    @depends_on(observe_process, parse_direct_process_identity)
     def cancel(remote_id: str, *, timeout: float = 1.0):
         """Signal the original direct process group using a verified Linux identity.
 
@@ -115,22 +125,7 @@ class DirectBackend(Backend, DirectOperations):
         import os
         import signal
         import time
-        from uuid import UUID
-
-        parts = remote_id.split(":") if isinstance(remote_id, str) else ()
-        if len(parts) != 4 or parts[0] != "direct":
-            raise NotImplementedError(
-                "This direct run has no persistent PID/start-time identity; "
-                "cancellation after restart is not safe for older runs."
-            )
-        try:
-            pid = int(parts[1])
-            started = int(parts[2])
-            boot = str(UUID(parts[3]))
-            if pid <= 0 or started < 0 or boot != parts[3]:
-                raise ValueError("Invalid direct process reference")
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Invalid direct process reference") from exc
+        pid, _, _ = parse_direct_process_identity(remote_id)
         if type(timeout) not in (int, float) or not 0 <= timeout <= 30:
             raise ValueError("Cancellation timeout must be between 0 and 30 seconds")
 

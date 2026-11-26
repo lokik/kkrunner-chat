@@ -29,6 +29,9 @@ class BackendCapability(str, Enum):
     """Native backend guarantees, independent of client transport."""
 
     REATTACH = "reattach"
+    # A running job can relay stdout/stderr without caller-declared
+    # stream files. This is live output, not a guarantee of replay.
+    REATTACH_LIVE_OUTPUT = "reattach_live_output"
     RECOVER = "recover"
     STATUS = "status"
     CANCEL = "cancel"
@@ -302,6 +305,16 @@ class Backend:
         json.dumps(defaults, allow_nan=False)
         self.options = MappingProxyType(defaults)
         self.supports = frozenset()
+
+    def reattachment_unavailable_reason(self, execution, files):
+        if BackendCapability.REATTACH not in self.supports:
+            return f"The {self.name} backend does not support reattachment."
+        return None
+
+    def cancellation_unavailable_reason(self, execution, files):
+        if BackendCapability.CANCEL not in self.supports:
+            return f"The {self.name} backend cannot cancel persisted processes."
+        return None
 
 
 
