@@ -197,6 +197,10 @@ class Run:
             return self._record.state
         if self._settled:
             current = self._state
+            if self._record is not None and not self._record.retain_history:
+                # The hidden submission ticket may deliberately remain SUBMITTING
+                # for recovery even when the live client's outcome is unknown.
+                return current
         elif self._state == RunState.PREPROCESSING:
             current = RunState.PREPROCESSING
         elif self._processing:
@@ -580,6 +584,9 @@ class Run:
             return
         if self._settled:
             raise RuntimeError("A failed or uncertain Run cannot be restarted")
+        if self._record is not None and self._record.state == RunState.NEW:
+            # Starting a fresh run must not bypass reservation or preprocessing.
+            return self.submit()
         if self._record is not None:
             if self._record.state.is_terminal:
                 raise RuntimeError("A completed Run cannot be started again")

@@ -447,6 +447,11 @@ class RunManager:
 
     def reserve(self, record, *, preprocessing=False):
         """Reserve the footprint; preprocessing callers must hold their ownership lock."""
+        # Ordinary CLI clients may never call refresh(). Collect completed
+        # hidden runs opportunistically, outside the global submission lock.
+        for terminal in self.store.runs(active=False, include_reservations=True):
+            if not terminal.retain_history:
+                self.discard_reservation(terminal)
         attempted_recovery = set()
         attempted_preprocessing = set()
         attempted_refresh = set()
@@ -855,8 +860,13 @@ class RunManager:
         )
         return self._process_outcome(record, outcome, process_result, retry=True)
 
-    def _acknowledge_result(self, record):
+    def _acknowledge_result(self, record, *, collect=False):
         """Best-effort ACK after durable completion; failed ACKs remain retryable."""
+        if not record.retain_history and not collect:
+            # A hidden record owns its receipt until reservation collection, not
+            # until any particular observer finishes. Low-level reattachment
+            # remains possible while this record still exists.
+            return False
         if not record.state.is_terminal or record.execution.backend_id is None:
             return False
         if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0:
@@ -879,8 +889,13 @@ class RunManager:
         """Collect hidden history only after any recoverable backend receipt is acknowledged."""
         if record.retain_history or not record.state.is_terminal:
             return False
+        owner = self.store.observation_lock(record)
+        if not owner.acquire(blocking=False):
+            return False
+        owner.release()
         if (record.execution.available and record.execution.backend_id is not None
-                and record.execution.backend.name != "direct" and not self._acknowledge_result(record)):
+                and record.execution.backend.name != "direct"
+                and not self._acknowledge_result(record, collect=True)):
             return False
         return self.store.discard_terminal_reservation(record)
 

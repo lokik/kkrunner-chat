@@ -161,3 +161,16 @@ def test_persistent_terminal_record_keeps_live_cleanup_reservation(tmp_path):
     with manager.preprocessing_reservation(spec):
         pass
     assert len(manager.store.runs()) == 1
+
+
+def test_start_fresh_hidden_run_cannot_bypass_preprocessing(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    spec = ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path)
+    seen = []
+    with RunManager.as_default(manager):
+        run = Run.create(EndpointClient(), spec, persistent=False,
+                         preprocess=lambda: seen.append(run.state))
+    run.start()
+    run.wait()
+    assert seen == [RunState.PREPROCESSING]
+    assert run.state == RunState.FINISHED

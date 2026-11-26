@@ -142,10 +142,8 @@ def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(tmp
     def rejected():
         raise failure
 
-    if method == "submit":
-        monkeypatch.setattr(run._parts, "prepare_submission", rejected)
-    else:
-        monkeypatch.setattr(run._job, "start", rejected)
+    # Both public entry points for a fresh Run must use the same preflight.
+    monkeypatch.setattr(run._parts, "prepare_submission", rejected)
     with pytest.raises(SubmissionNotStarted, match="preflight refused") as caught:
         getattr(run, method)()
     assert caught.value is failure
