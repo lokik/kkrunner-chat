@@ -15,12 +15,13 @@ from kkrunner.runs.manager import RunManager
 
 
 class _Executor(EndpointClient):
-    def __init__(self, status, *, remote=False):
+    def __init__(self, status, *, remote=False, failure_phase=FailurePhase.EXECUTION):
         super().__init__(
             SupervisedBackend,
             transport=SshTransport("cluster") if remote else None,
         )
         self.status_value = status
+        self.failure_phase = failure_phase
 
     def acknowledge(self, record):
         # This suite verifies state projection, not remote receipt transport.
@@ -35,7 +36,7 @@ class _Executor(EndpointClient):
                 backend_id=run.execution.backend_id,
                 state=self.status_value,
                 return_code=0 if self.status_value == RunState.FINISHED else 1,
-                failure_phase=FailurePhase.EXECUTION if self.status_value == RunState.FAILED else None,
+                failure_phase=self.failure_phase if self.status_value == RunState.FAILED else None,
             )
             for run in runs
         )
@@ -129,9 +130,14 @@ def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
     assert refreshed in manager.store.runs(active=True)
 
 
-def test_backend_failure_on_remote_job_still_preserves_transfer_stage(tmp_path):
-    executor = _Executor(RunState.FAILED, remote=True)
+@pytest.mark.parametrize("phase,expected_state", (
+    (FailurePhase.EXECUTION, RunState.DOWNLOADING),
+    (FailurePhase.SUBMISSION, RunState.FAILED),
+    (FailurePhase.LAUNCH, RunState.FAILED),
+))
+def test_remote_failure_only_downloads_after_execution_started(tmp_path, phase, expected_state):
+    executor = _Executor(RunState.FAILED, remote=True, failure_phase=phase)
     manager, record = _record(tmp_path, executor)
     (refreshed,) = manager.refresh((record,))
-    assert refreshed.state == RunState.DOWNLOADING
-    assert refreshed in manager.store.runs(active=True)
+    assert refreshed.state == expected_state
+    assert refreshed in manager.store.runs(active=not expected_state.is_terminal)
