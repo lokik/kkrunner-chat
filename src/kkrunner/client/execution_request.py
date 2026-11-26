@@ -21,7 +21,7 @@ def _named_path(value, directory, mapping):
         return None
     # A file object with .name is supported, but an anonymous pipe, fd or
     # in-memory stream cannot silently become a missing target path.
-    path = file_path(value, directory, flush=True, required=True)
+    path = file_path(value, directory, required=True)
     if not isinstance(path, str):
         path = os.fsdecode(path)
     if mapping is not None:

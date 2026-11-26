@@ -109,26 +109,29 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
             input_sync="never", output_sync="never",
         ),
     )
-    client = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    class NoTransferTransport(SshTransport):
+        async def run(self, *args, **kwargs):
+            pass
+
+        async def query_files(self, sources, **kwargs):
+            return ()
+
+    client = EndpointClient("kkrunner", transport=NoTransferTransport("cluster"))
     session = client.create_run_parts(spec).files
-    manifest = FileManifest.from_spec(spec)
-
-    async def prepare():
-        used = {}
-        await session._prepare_cache_files(used, manifest)
-        await session._prepare_output_files(manifest)
-        return used
-
-    used = asyncio.run(prepare())
-    assert session._output_targets == {
-        str(directory / "one.dat"): str(remote / "work" / "one.dat"),
-    }
-    assert session._output_patterns == (str(remote / "work" / "cut-*.dat"),)
-    assert session._cache_targets == {
-        str(directory / "restart.dat"): (str(remote / "work" / "restart.dat"), None),
-    }
-    assert session._cache_patterns == (str(remote / "work" / "checkpoint-*.dat"),)
-    assert used == {str(remote / "work" / "restart.dat"): str(directory / "restart.dat")}
+    session.prepare_submission()
+    request = session.prepare_job()
+    try:
+        assert request["output_files"] == [
+            str(remote / "work" / "one.dat"), str(remote / "work" / "cut-*.dat"),
+        ]
+        assert request["cache_files"] == [
+            str(remote / "work" / "restart.dat"), str(remote / "work" / "checkpoint-*.dat"),
+        ]
+        assert request["input_files"] == [str(remote / "work" / "restart.dat")]
+        assert [entry.remote_path for entry in session.files.outputs] == request["output_files"]
+        assert [cache.file.remote_path for cache in session.files.caches] == request["cache_files"]
+    finally:
+        session.close()
 
 
 @pytest.mark.parametrize("method", ("submit", "start"))
@@ -143,7 +146,7 @@ def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(tmp
         raise failure
 
     if method == "submit":
-        monkeypatch.setattr(run._parts, "prepare_submission", rejected)
+        monkeypatch.setattr(run._file_session, "prepare_submission", rejected)
     else:
         monkeypatch.setattr(run._job, "start", rejected)
     with pytest.raises(SubmissionNotStarted, match="preflight refused") as caught:
@@ -190,3 +193,46 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
     client = EndpointClient("kkrunner", transport=NoSideEffectTransport("cluster"))
     with pytest.raises(ValueError, match="Conflicting optionality|Duplicate file declaration"):
         client.create_run_parts(spec)
+
+
+def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkeypatch):
+    from kkrunner.client import LocalTransport
+
+    local = tmp_path / "local"
+    target = tmp_path / "target"
+    local.mkdir()
+    (local / "input").write_text("data")
+    async def local_run(self, argv, **kwargs):
+        return await LocalTransport().run(argv, **kwargs)
+
+    monkeypatch.setattr(SshTransport, "run", local_run)
+    monkeypatch.setattr(SshTransport, "file_digest", LocalTransport.file_digest)
+    monkeypatch.setattr(SshTransport, "put_file", LocalTransport.put_file)
+    monkeypatch.setattr(SshTransport, "query_files", LocalTransport.query_files)
+    client = EndpointClient(transport=SshTransport("loopback"))
+    spec = ExecutionSpec(
+        argv=("unused",), directory=local, input_file="input", output_file="out",
+        staging=StagingSpec(local_root=local, remote_root=target),
+    )
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    run = manager.create_run(client, spec)
+    calls = []
+    original = FileContext.map_manifest
+
+    async def mapped(self, manifest):
+        result = await original(self, manifest)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(FileContext, "map_manifest", mapped)
+    def stop():
+        record = manager.store.get(run.id)
+        assert record.files.inputs == calls[0].inputs == run.files.inputs
+        assert record.files.stdout == calls[0].stdout == run.files.stdout
+        assert len(calls) == 1
+        assert (target / "input").read_text() == "data"
+        raise SubmissionNotStarted("stop before native execution")
+
+    monkeypatch.setattr(run._job, "submit", stop)
+    with pytest.raises(SubmissionNotStarted, match="stop before native"):
+        run.submit()

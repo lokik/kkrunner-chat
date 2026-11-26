@@ -30,7 +30,7 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
         staging=StagingSpec(local_root=tmp_path),
     )
     first = manager.create_run(client, spec)
-    directory, files = first._file_session.submission_footprint(first.record.files)
+    directory, files = first._file_session.submission_footprint()
     resolved = replace(first.record, execution=replace(first.record.execution, directory=directory), files=files)
     manager.reserve(resolved)
 
@@ -91,3 +91,37 @@ def test_harmless_observation_does_not_steal_processing_claim(tmp_path):
 
     assert manager.retry_postprocessing(record.id, process) == 42
     assert manager.store.get(record.id).state == RunState.FINISHED
+
+
+@pytest.mark.parametrize("policy", ["always", "changed", "missing", "never"])
+def test_distinct_local_inputs_mapped_to_same_target_conflict_if_uploaded(tmp_path, policy):
+    from kkrunner.runs.conflicts import conflicting_files
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    def record(name):
+        root = tmp_path / name
+        return manager.new_record(
+            directory=root, remote_directory="/shared", transport=SshTransport("cluster"),
+            files=FileManifest(
+                inputs=(FileEntry(str(root / "Fe.pot"), "/shared/Fe.pot"),),
+                stdout=FileEntry(str(root / f"{name}.out"), f"/shared/{name}.out"),
+                mapping=FileMapping(str(root), "/shared", input_sync=policy),
+            ),
+        )
+    first, second = record("one"), record("two")
+    assert submission_conflicts(first, second) == (policy != "never")
+    assert bool(conflicting_files(first, second)) == (policy != "never")
+
+
+def test_local_alias_and_canonical_wildcard_conflict(tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    def record(path, *, output):
+        return manager.new_record(directory=tmp_path, files=FileManifest.from_spec(
+            ExecutionSpec(argv=(), directory=tmp_path,
+                          **({"output_files": (path,)} if output else {"input_files": (path,)}))))
+    assert submission_conflicts(record(alias / "*.dat", output=True),
+                                record(actual / "result.dat", output=False))

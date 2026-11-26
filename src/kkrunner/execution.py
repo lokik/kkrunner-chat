@@ -16,6 +16,7 @@ class RunState(str, Enum):
     """Single authoritative lifecycle state of one calculation run."""
 
     NEW = "new"
+    PREPROCESSING = "preprocessing"
     SUBMITTING = "submitting"
     QUEUED = "queued"
     RUNNING = "running"
@@ -35,6 +36,7 @@ class RunState(str, Enum):
 class FailurePhase(str, Enum):
     """Phase in which a run entered :attr:`RunState.FAILED`."""
 
+    PREPROCESSING = "preprocessing"
     SUBMISSION = "submission"
     LAUNCH = "launch"
     EXECUTION = "execution"

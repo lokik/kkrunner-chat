@@ -9,7 +9,7 @@ from kkrunner.runs.base import SubmissionNotStarted
 from .test_remote import _processed_run, _text_run
 
 
-def test_local_transport_put_files_expands_patterns_and_preserves_paths(tmp_path):
+def test_local_transport_put_files_preserves_exact_relative_paths(tmp_path):
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     (source / "a").mkdir(parents=True)
@@ -17,21 +17,21 @@ def test_local_transport_put_files_expands_patterns_and_preserves_paths(tmp_path
     (source / "a" / "one.dat").write_text("one")
     (source / "b" / "two.dat").write_text("two")
     (source / "a" / "ignored.txt").write_text("ignored")
-    asyncio.run(LocalTransport().put_files((source / "a" / "*.dat", source / "b" / "*.dat"), source, destination))
+    asyncio.run(LocalTransport().put_files(("a/one.dat", "b/two.dat"), source, destination))
     assert (destination / "a" / "one.dat").read_text() == "one"
     assert (destination / "b" / "two.dat").read_text() == "two"
     assert not (destination / "a" / "ignored.txt").exists()
 
 
-def test_local_transport_get_files_expands_source_patterns(tmp_path):
+def test_local_transport_get_files_accepts_exact_relative_pairs(tmp_path):
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     (source / "nested").mkdir(parents=True)
     (source / "nested" / "one.out").write_text("one")
     (source / "nested" / "two.out").write_text("two")
-    asyncio.run(LocalTransport().get_files(source / "nested" / "*.out", source, destination))
+    asyncio.run(LocalTransport().get_files(("nested/one.out", ("nested/two.out", "renamed.out")), source, destination))
     assert (destination / "nested" / "one.out").read_text() == "one"
-    assert (destination / "nested" / "two.out").read_text() == "two"
+    assert (destination / "renamed.out").read_text() == "two"
 
 
 def test_remote_executor_expands_input_wildcards(tmp_path):
@@ -194,11 +194,12 @@ def test_local_transfer_batches_use_their_directional_file_primitives(tmp_path):
     transport = TracedTransport()
 
     async def check():
-        await transport.put_files("nested/*.dat", source, dest)
+        await transport.put_files("nested/result.dat", source, dest)
         assert transport.operations == ["put"]
         transport.operations.clear()
-        await transport.get_files("nested/*.dat", source, dest)
-        assert transport.operations == ["get", "put"]
+        await transport.get_files("nested/result.dat", source, dest)
+        assert transport.operations == ["get"]
+        assert (dest / "nested" / "result.dat").read_text() == "data"
 
     asyncio.run(check())
     assert (dest / "nested" / "result.dat").read_text() == "data"
@@ -337,3 +338,35 @@ def test_remote_collects_exact_cache_created_during_run(tmp_path):
     assert sum((source == remote_cache for source, _ in transport.downloads)) == 1
     entries = {entry.file.local_path: entry.file for entry in runner.files.caches}
     assert entries[str(cache_file)].availability_state == "available"
+
+
+def test_wildcard_sync_uses_one_exact_batch_in_each_direction(tmp_path):
+    from pathlib import Path
+    from .test_remote import _OperationLoopbackTransport
+
+    batches = []
+
+    class Observed(_OperationLoopbackTransport):
+        async def put_files(self, files, source_directory, destination_directory):
+            batches.append(("put", tuple(files)))
+            return await super().put_files(files, source_directory, destination_directory)
+
+        async def get_files(self, files, source_directory, destination_directory):
+            batches.append(("get", tuple(files)))
+            return await super().get_files(files, source_directory, destination_directory)
+
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    for name in ("tau-one.dat", "tau-two.dat"):
+        (workdir / name).write_text(name)
+    executor, spec, _, remote_root = _text_run(
+        tmp_path, Observed(), declared_cache_files=(workdir / "tau-*.dat",),
+        code="from pathlib import Path; [p.write_text('updated') for p in Path('.').glob('tau-*.dat')]",
+    )
+    _processed_run(executor, spec).run()
+    names = ("tau-one.dat", "tau-two.dat")
+    expected = {(workdir / name, remote_root / "calculation" / name) for name in names}
+    assert [kind for kind, _ in batches] == ["put", "get"]
+    assert {tuple(map(Path, pair)) for pair in batches[0][1]} == expected
+    assert {tuple(map(Path, pair)) for pair in batches[1][1]} == {(remote, local) for local, remote in expected}
+    assert all((workdir / name).read_text() == "updated" for name in names)

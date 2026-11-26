@@ -34,7 +34,7 @@ def test_direct_failed_launch_retains_launch_failure(tmp_path):
     from kkrunner.runs.base import SubmissionNotStarted, FailurePhase
     spec = ExecutionSpec(("this-command-does-not-exist-kkrunner",), directory=str(tmp_path))
     parts = EndpointClient(DirectBackend).create_run_parts(spec)
-    parts.prepare_submission()
+    parts.files.prepare_submission()
     parts.prepare_job()
     job = parts.job
     with pytest.raises(SubmissionNotStarted):

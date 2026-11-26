@@ -154,3 +154,15 @@ def test_snapshot_runner_convenience(tmp_path):
     )
     run.run()
     assert run.snapshot_file("stdout.txt") == b"done\n"
+
+
+def test_snapshot_destination_cannot_overwrite_declared_directory_contents(tmp_path):
+    from kkrunner.files.snapshots import check_destination
+    source = tmp_path / "output.dat"
+    tree = tmp_path / "TAUDIR"
+    manifest = FileManifest(stdout=FileEntry(str(source)), inputs=(
+        FileEntry(str(tree), kind="directory"),))
+    for destination in (tree / "file.dat", tree / ".hidden" / "file.dat"):
+        with pytest.raises(ValueError, match="overlaps"):
+            check_destination(manifest, source, destination)
+    assert check_destination(manifest, source, tmp_path / "other") == tmp_path / "other"

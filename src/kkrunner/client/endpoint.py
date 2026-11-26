@@ -188,10 +188,27 @@ class EndpointClient:
         self._validate_run(run)
         return FileAccess(self).snapshot_file(run, file, destination=destination)
 
-    def fetch_result_files(self, run, files, *, destinations=None):
+    def resolve_result_files(self, run, files):
+        """Resolve concrete transfer pairs without writing any files."""
         from kkrunner.client.file_access import FileAccess
         self._validate_run(run)
-        return FileAccess(self).fetch_result_files(run, files, destinations=destinations)
+        return FileAccess(self).resolve_result_files(run, files)
+
+    def download_result_files(self, entries, *, verify=None):
+        """Download exact, already coordinated source/destination pairs."""
+        from kkrunner.client.file_access import FileAccess
+        return FileAccess(self).download_result_files(entries, verify=verify)
+
+    def fetch_result_files(self, run, files, *, destinations=None, verify=None):
+        """Fetch declared files, optionally mapping each concrete local path.
+
+        destinations may be a path-to-path mapping.
+        verify(destination, temporary) checks each staged file before publishing
+        it without replacement. Returns the concrete destinations retrieved.
+        """
+        from kkrunner.client.file_access import FileAccess
+        self._validate_run(run)
+        return FileAccess(self).fetch_result_files(run, files, destinations=destinations, verify=verify)
 
     def inspect_remote_files(self, run, paths):
         """Inspect declared target files for an optional cleanup preview."""

@@ -29,7 +29,7 @@ def test_endpoint_transport_host_and_cleanup(monkeypatch):
 def test_run_store_roundtrips_transport_and_backend_independently(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store, client_pool=ClientPool())
-    transport = SshTransport("cluster", options=("-v",), zstd=True)
+    transport = SshTransport("cluster", options=("-v",), compression="zstd")
     backend = BackendConfig("psij", {"executor_name": "slurm"})
     record = manager.new_record(
         directory=tmp_path, transport=transport, backend=backend,
@@ -118,7 +118,7 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
 
 
 def test_pool_reconstructs_and_reuses_same_ssh_client():
-    transport = SshTransport("cluster", options=("-p", "2222"), zstd=True)
+    transport = SshTransport("cluster", options=("-p", "2222"), compression="zstd")
     backend = BackendConfig("psij", {"executor_name": "slurm", "url": "local://slurm"})
     pool = ClientPool()
     first = pool.for_config(transport, backend)
@@ -129,7 +129,7 @@ def test_pool_reconstructs_and_reuses_same_ssh_client():
     assert isinstance(first, EndpointClient)
     assert first.transport == transport
     assert first.transport.options == ("-p", "2222")
-    assert first.transport.zstd is True
+    assert first.transport.compression == "zstd"
     assert isinstance(first.backend, PsijBackend)
     assert dict(first.backend.options) == {"executor_name": "slurm", "url": "local://slurm"}
     pool.close()

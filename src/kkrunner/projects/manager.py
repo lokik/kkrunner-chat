@@ -78,6 +78,7 @@ class ProjectRunManager(RunManager):
         project=None,
         detached=None,
         owned_resources=None,
+        preprocess=None,
     ):
         manager = self if project is None else self.for_project(project)
         if manager.project_id is None:
@@ -93,4 +94,5 @@ class ProjectRunManager(RunManager):
             run_id=run_id,
             detached=detached,
             owned_resources=owned_resources,
+            preprocess=preprocess,
         )

@@ -65,7 +65,7 @@ def _managed_parts(spec, *, submission_key=RUN_ID, backend=SupervisedBackend, ba
     """Prepare one client session without introducing an alternate Job implementation."""
     client = EndpointClient(backend, backend_options=backend_options)
     parts = client.create_run_parts(spec, submission_key=submission_key)
-    parts.prepare_submission()
+    parts.files.prepare_submission()
     parts.prepare_job()
     return parts
 

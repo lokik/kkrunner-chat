@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import fnmatch
 import os
 from dataclasses import dataclass
 
 from kkrunner.transports import LocalTransport, SshTransport
-from kkrunner.files.paths import has_file_magic
+from kkrunner.files.paths import declaration_paths, paths_overlap
+from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.runs.records import RunRecord
 
 
@@ -21,9 +21,10 @@ def _manifest_accesses(record, *, remote=None):
         if entry is None:
             return None
         value = entry.remote_path if remote else entry.local_path
-        if remote and value is None and entry.local_path is not None:
-            # Before staging, declarations already determine the target footprint.
-            # Resolve from the mapped working directory without transferring files.
+        if remote and value is None and entry.local_path is not None and files.mapping is None:
+            # Unmapped legacy declarations are relative to the working
+            # directory. A resolved mapping is explicit: a missing side
+            # means that side is not accessed (e.g. historical retrieval).
             local = entry.local_path
             if not os.path.isabs(local):
                 local = os.path.join(directory.local, local)
@@ -31,7 +32,7 @@ def _manifest_accesses(record, *, remote=None):
             return os.path.normpath(os.path.join(directory.remote, relative))
         if value is None:
             return None
-        return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.target, value))
+        return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.remote if remote else directory.local, value))
 
     def accesses(entries):
         result = set()
@@ -41,39 +42,26 @@ def _manifest_accesses(record, *, remote=None):
             target = path(entry)
             if target is None:
                 continue
-            result.add(target)
-            if entry.kind == "directory":
-                # Directory reservations cover descendant files as well.
-                result.add(os.path.join(target, "*"))
+            # Include the spelling and canonical local identity. An alias
+            # may be replaced as a directory entry or opened through its target.
+            identities = (target,) if remote else (target, os.path.realpath(target))
+            for identity in identities:
+                result.update(declaration_paths(identity, directory=entry.kind == "directory"))
         return result
 
     reads = accesses((*files.inputs, files.stdin, *(x.file for x in files.caches)))
     writes = accesses((files.stdout, files.stderr, *files.outputs,
                        *(x.file for x in files.caches)))
+    if not remote:
+        writes |= accesses(entry for entry in files.input_entries if entry.write)
+    elif files.mapping is not None and files.mapping.input_sync != FileSyncPolicy.NEVER:
+        # Uploads may replace target inputs even when the local source is read-only.
+        writes |= accesses(files.input_entries)
     return reads - {None}, writes - {None}
 
 
-def _path_overlap(a, b):
-    """Conservatively compare literal paths and glob declarations."""
-    a_magic, b_magic = has_file_magic(a), has_file_magic(b)
-    if not a_magic:
-        return fnmatch.fnmatchcase(a, b) if b_magic else a == b
-    if not b_magic:
-        return fnmatch.fnmatchcase(b, a)
-    if a == b:
-        return True
-
-    # Glob/glob intersection is not generally decidable by fnmatch.
-    # Only disjoint literal prefixes can prove that no collision is possible.
-    def prefix(pattern):
-        return pattern[: min((pattern.find(c) for c in "*?[" if c in pattern), default=len(pattern))]
-
-    pa, pb = prefix(a), prefix(b)
-    return pa.startswith(pb) or pb.startswith(pa)
-
-
 def _paths_overlap(first, second):
-    return any(_path_overlap(a, b) for a in first for b in second)
+    return any(paths_overlap(a, b) for a in first for b in second)
 
 
 def filesystem_namespace(record):
@@ -104,14 +92,14 @@ def _possibly_same_filesystem(left, right):
 def file_reference_overlaps(path, reference, *, directory=False):
     """Whether removing a file/directory would affect a declared reference."""
     path, reference = os.path.normpath(path), os.path.normpath(reference)
-    if _path_overlap(path, reference):
+    if paths_overlap(path, reference):
         return True
-    if directory and _path_overlap(os.path.join(path, "*"), reference):
+    if directory and paths_overlap(os.path.join(path, "**"), reference):
         return True
     # A declaration can also reference a containing directory (or its glob).
     parent = os.path.dirname(path)
     while parent and parent != path:
-        if _path_overlap(parent, reference):
+        if paths_overlap(parent, reference):
             return True
         path, parent = parent, os.path.dirname(parent)
     return False
@@ -144,7 +132,7 @@ def conflicting_files(left: RunRecord, right: RunRecord) -> tuple[FileConflict, 
                     continue
                 for path1 in sorted(paths1):
                     for path2 in sorted(paths2):
-                        if _path_overlap(path1, path2):
+                        if paths_overlap(path1, path2):
                             result.append(FileConflict(
                                 namespace, path1, access1, path2, access2,
                             ))

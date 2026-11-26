@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
+import tempfile
 import os
 import posixpath
 import shlex
@@ -10,22 +13,21 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, Tuple
-from uuid import uuid4
 
 from kkrunner.transports.contracts import Operation
 from kkrunner.files.queries import (
     _sources,
     checked_files,
-    expand_local_files,
-    finalize_upload,
-    local_file_signature,
     query_files,
 )
 from kkrunner.files.snapshots import snapshot_destination
 
-from ...base import Transport, _completed_process, _local_temporary_path
+from kkrunner.files.staging import staged_local_file
+from kkrunner.files.transfer import archive_compressions, relative_file_pairs, send_archive, receive_archive
+from ...base import Transport, _completed_process
 from ...rpc import operation_payload, operation_result
 from .rpc import operation_command
+from .source import function_definition
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ class SshTransport(Transport):
     host: str
     ssh: str = "ssh"
     options: Tuple[str, ...] = ()
-    zstd: bool = False
+    compression: Literal['auto', 'gz', 'bz2', 'xz', 'zstd'] | None = 'auto'
     python_command: Tuple[str, ...] = ("python3",)
     pool_size: int = 4
     pool_idle_seconds: float = 120.0
@@ -92,8 +94,10 @@ class SshTransport(Transport):
             object.__setattr__(self, name, value)
         if not self.python_command:
             raise ValueError("SSH python_command must not be empty")
-        if type(self.zstd) is not bool:
-            raise TypeError("SSH zstd must be bool")
+        if self.compression not in (None, "auto", "gz", "bz2", "xz", "zstd"):
+            raise ValueError("Invalid SSH compression")
+        # Runtime cache, deliberately excluded from dataclass persistence/identity.
+        object.__setattr__(self, "_compression_mode", None)
         if type(self.pool_size) is not int or self.pool_size < 0 or self.pool_size > 64:
             raise ValueError("SSH pool_size must be between 0 and 64")
         if (type(self.pool_idle_seconds) not in (float, int)
@@ -104,10 +108,26 @@ class SshTransport(Transport):
         """Close the shared persistent Python sessions for this SSH profile."""
         from .sessions import close_pool
         close_pool(self)
+        object.__setattr__(self, "_compression_mode", None)
 
-    @property
-    def _tar_command(self):
-        return ("tar", "--zstd") if self.zstd else ("tar",)
+    async def _archive_compression(self):
+        """Negotiate with the configured target Python, once per transport."""
+        if self.compression is None:
+            return ""
+        if self._compression_mode is None:
+            common = set(archive_compressions()).intersection(
+                await self.call_function(archive_compressions),
+            )
+            requested = ("zstd", "gz") if self.compression == "auto" else (self.compression,)
+            for name in requested:
+                if name in common:
+                    object.__setattr__(self, "_compression_mode", "zst" if name == "zstd" else name)
+                    break
+            else:
+                raise ValueError(
+                    f"Archive compression {self.compression!r} is not supported on both hosts"
+                )
+        return self._compression_mode
 
     def _command(self, argv, cwd=None):
         command = shlex.join([os.fspath(arg) for arg in argv])
@@ -133,58 +153,29 @@ class SshTransport(Transport):
         return await _completed_process(process, command, input=input, check=check)
 
     async def put_file(self, source, destination):
-        source = os.fspath(source)
-        signature = local_file_signature(source)
-        if signature is None:
+        """Use the same archive receiver and staging as a multi-file upload."""
+        source = Path(source).resolve()
+        if not source.is_file():
             raise FileNotFoundError(source)
-
-        destination = os.fspath(destination)
-        parent = posixpath.dirname(destination)
-        if parent:
-            await self.run(("mkdir", "-p", "--", parent))
-        temporary = posixpath.join(
-            parent or ".",
-            f".{posixpath.basename(destination)}.{uuid4().hex}.tmp",
+        destination = PurePosixPath(destination)
+        await self.put_files(
+            [(source.name, destination.name)],
+            source_directory=source.parent, destination_directory=destination.parent,
         )
-
-        command = self._command(("sh", "-c", 'cat > "$1"', "sh", temporary))
-        try:
-            with open(source, "rb") as source_file:
-                process = await asyncio.create_subprocess_exec(
-                    *command,
-                    stdin=source_file,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await _completed_process(process, command)
-            if local_file_signature(source) != signature:
-                raise RuntimeError(f"Local file changed while uploading: {source}")
-            await self._finalize_upload(temporary, destination, signature[1])
-        except BaseException:
-            # Remote cleanup is best-effort and must not mask the upload error.
-            try:
-                await self.run(("rm", "-f", "--", temporary), check=False)
-            except Exception:
-                pass
-            raise
 
     async def call_function(self, function, *args, **kwargs):
         """Invoke a portable shared function through the common operation path."""
         return await self.call(Operation.standalone(function), *args, **kwargs)
 
-    async def _finalize_upload(self, temporary, destination, mtime_ns):
-        await self.call_function(finalize_upload, temporary, destination, mtime_ns)
-
-    async def get_file(self, source, destination):
+    async def get_file(self, source, destination, *, verify=None, overwrite=True):
         source = os.fspath(source)
         signature = await self.file_signature(source)
         if signature is None:
             raise FileNotFoundError(source)
 
         destination = Path(destination)
-        temporary = _local_temporary_path(destination)
         command = self._command(("cat", "--", source))
-        try:
+        with staged_local_file(destination, verify=verify, overwrite=overwrite) as temporary:
             with temporary.open("wb") as destination_file:
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -196,56 +187,21 @@ class SshTransport(Transport):
                 raise RuntimeError(f"Remote file changed while downloading: {source}")
             stat = temporary.stat()
             os.utime(temporary, ns=(stat.st_atime_ns, signature[1]))
-            os.replace(temporary, destination)
-        except BaseException:
-            # Failure to remove the temporary download must not mask the
-            # primary transfer error, including cancellation.
-            try:
-                temporary.unlink()
-            except OSError:
-                pass
-            raise
 
     async def put_directory(self, source, destination):
-        """Stage a complete directory to a previously absent target path."""
         source = Path(source)
         if source.is_symlink() or not source.is_dir():
             raise ValueError(f"Directory source is invalid: {source}")
-        destination = os.fspath(destination)
-        parent = posixpath.dirname(destination)
-        temporary = posixpath.join(parent, f".kkrunner-upload-{uuid4().hex}")
-        await self.run(("mkdir", "-p", "--", temporary))
-        try:
-            producer = (*self._tar_command, "-C", os.fspath(source.parent),
-                        "-cf", "-", "--", source.name)
-            consumer = self._command((*self._tar_command, "-C", temporary, "-xf", "-"))
-            await self._transfer_tar(producer, consumer)
-            await self.run(("mv", "--", posixpath.join(temporary, source.name), destination))
-        finally:
-            await self.run(("rm", "-rf", "--", temporary), check=False)
+        await self._transfer_directory(source, destination, upload=True)
 
     async def get_directory(self, source, destination):
-        """Retrieve a complete directory via tar and replace the local tree."""
-        import shutil
-        import tempfile
-        source = posixpath.normpath(os.fspath(source))
-        destination = Path(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".kkrunner-download-", dir=destination.parent) as stage:
-            producer = self._command((*self._tar_command, "-C", posixpath.dirname(source),
-                                      "-cf", "-", "--", posixpath.basename(source)))
-            consumer = (*self._tar_command, "-C", stage, "-xf", "-")
-            await self._transfer_tar(producer, consumer)
-            received = Path(stage) / posixpath.basename(source)
-            if not received.is_dir() or received.is_symlink():
-                raise ValueError(f"Remote directory archive is invalid: {source}")
-            if destination.is_symlink():
-                raise ValueError(f"Cannot replace symbolic link with directory: {destination}")
-            if destination.is_dir():
-                shutil.rmtree(destination)
-            elif destination.exists():
-                raise ValueError(f"Directory destination is a file: {destination}")
-            os.replace(received, destination)
+        await self._transfer_directory(source, destination, upload=False)
+
+    async def _transfer_directory(self, source, destination, *, upload):
+        compression = await self._archive_compression()
+        producer = self._archive_command(send_archive, source, compression, remote=not upload, tree=True)
+        consumer = self._archive_command(receive_archive, destination, compression, remote=upload, tree=True)
+        await self._transfer_tar(producer, consumer)
 
     async def snapshot_file(self, source, *, destination=None):
         if destination is None:
@@ -289,8 +245,8 @@ class SshTransport(Transport):
         finally:
             destination.close()
 
-    async def _transfer_tar(self, producer_command, consumer_command):
-        """Stream an archive between two subprocesses and check both results."""
+    async def _transfer_tar(self, producer_command, consumer_command, *, producer_input=None):
+        """Stream an archive and reap both subprocesses, even on pipe failure."""
         consumer = await asyncio.create_subprocess_exec(
             *consumer_command,
             stdin=asyncio.subprocess.PIPE,
@@ -298,10 +254,19 @@ class SshTransport(Transport):
             stderr=asyncio.subprocess.PIPE,
         )
         producer = None
+        tasks = ()
+
+        def kill(process):
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
         try:
             producer = await asyncio.create_subprocess_exec(
                 *producer_command,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL if producer_input is None else producer_input,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -309,70 +274,88 @@ class SshTransport(Transport):
             async def pipe():
                 try:
                     await self._pipe(producer.stdout, consumer.stdin)
+                    return False
                 except (BrokenPipeError, ConnectionResetError):
-                    # If the extractor fails early, the archive producer can
-                    # otherwise remain blocked on a full stdout pipe.
-                    if producer.returncode is None:
-                        producer.kill()
+                    # An extractor that fails early can leave the producer
+                    # blocked on stdout. Kill it and drain the pipe: wait()
+                    # alone need not complete while unread bytes remain.
+                    kill(producer)
+                    while await producer.stdout.read(1024 * 1024):
+                        pass
+                    return True
 
-            _, producer_error, consumer_error, _, _ = await asyncio.gather(
-                pipe(),
-                producer.stderr.read(),
-                consumer.stderr.read(),
-                producer.wait(),
-                consumer.wait(),
-            )
-            for process, command, stderr in (
-                (producer, producer_command, producer_error),
-                (consumer, consumer_command, consumer_error),
-            ):
-                if process.returncode:
-                    raise subprocess.CalledProcessError(
-                        process.returncode,
-                        command,
-                        stderr=stderr,
-                    )
-        finally:
-            for process in (producer, consumer):
-                if process is not None and process.returncode is None:
-                    process.kill()
-            await asyncio.gather(
-                *(process.wait() for process in (producer, consumer) if process is not None),
-            )
+            tasks = tuple(asyncio.create_task(operation) for operation in (
+                pipe(), producer.stderr.read(), consumer.stderr.read(),
+            ))
+            broken_pipe, producer_error, consumer_error = await asyncio.gather(*tasks)
+            await asyncio.gather(producer.wait(), consumer.wait())
+        except BaseException:
+            # Stop the active readers before communicate() takes over their
+            # pipes. On EOF the receiver can discard its staged files itself.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if producer is not None:
+                kill(producer)
+                await producer.communicate()
+            consumer.stdin.close()
+            try:
+                await asyncio.wait_for(consumer.communicate(), timeout=5)
+            except asyncio.TimeoutError:
+                kill(consumer)
+                await consumer.communicate()
+            raise
 
-    async def put_files(self, sources, source_root, destination_root):
-        source_root = Path(source_root).expanduser().resolve()
-        destination_root = posixpath.normpath(os.fspath(destination_root))
-        files = expand_local_files(sources, source_root)
-        if not files:
-            return ()
-
-        relatives = [os.fspath(Path(source).relative_to(source_root)) for source in files]
-        await self.run(("mkdir", "-p", "--", destination_root))
-        producer = (*self._tar_command, "-C", os.fspath(source_root), "-cf", "-", "--", *relatives)
-        consumer = self._command((*self._tar_command, "-C", destination_root, "-xf", "-"))
-        await self._transfer_tar(producer, consumer)
-        return tuple(
-            (source, posixpath.join(destination_root, *Path(relative).parts))
-            for source, relative in zip(files, relatives)
+        failures = (
+            (producer, producer_command, producer_error),
+            (consumer, consumer_command, consumer_error),
         )
+        # Prefer the receiver's actual failure to the consequence of killing
+        # its producer. Otherwise preserve the producer's original failure.
+        if broken_pipe:
+            failures = failures[::-1]
+        for process, command, stderr in failures:
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, command, stderr=stderr)
 
-    async def get_files(self, sources, source_root, destination_root):
-        source_root = posixpath.normpath(os.fspath(source_root))
-        destination_root = Path(destination_root).expanduser().resolve()
-        files = await self.expand_files(sources, source_root)
-        if not files:
-            return ()
-
-        relatives = [posixpath.relpath(source, source_root) for source in files]
-        destination_root.mkdir(parents=True, exist_ok=True)
-        producer = self._command((*self._tar_command, "-C", source_root, "-cf", "-", "--", *relatives))
-        consumer = (*self._tar_command, "-C", os.fspath(destination_root), "-xf", "-")
-        await self._transfer_tar(producer, consumer)
-        return tuple(
-            (source, os.fspath(destination_root.joinpath(*PurePosixPath(relative).parts)))
-            for source, relative in zip(files, relatives)
+    def _archive_command(self, function, directory, compression, *, remote, tree=False):
+        script = function_definition(function) + (
+            f"\nimport sys\n{function.__name__}(sys.argv[1], sys.argv[2], sys.argv[3] == '1')\n"
         )
+        python = self.python_command if remote else (sys.executable,)
+        argv = (*python, "-c", script, os.fspath(directory), compression, str(int(tree)))
+        return self._command(argv) if remote else argv
+
+    async def _transfer_files(self, files, source_directory, destination_directory, *, upload):
+        local = Path(source_directory if upload else destination_directory).expanduser().resolve()
+        remote = posixpath.normpath(os.fspath(destination_directory if upload else source_directory))
+        source_root, destination_root = (local, remote) if upload else (remote, local)
+        source_path, destination_path = (Path, PurePosixPath) if upload else (PurePosixPath, Path)
+        pairs = relative_file_pairs(
+            files, source_root, destination_root,
+            source_path=source_path, destination_path=destination_path,
+        )
+        if not pairs:
+            return ()
+        compression = await self._archive_compression()
+        producer = self._archive_command(send_archive, source_root, compression, remote=not upload)
+        consumer = self._archive_command(receive_archive, destination_root, compression, remote=upload)
+        # A file descriptor supplies even very large manifests without ARG_MAX
+        # or buffering the actual archive. Identical relative paths occur once.
+        with tempfile.TemporaryFile() as manifest:
+            manifest.write(json.dumps([source if source == target else (source, target)
+                                       for source, target in pairs]).encode("utf-8"))
+            manifest.seek(0)
+            await self._transfer_tar(producer, consumer, producer_input=manifest)
+        return tuple((os.fspath(source_path(source_root).joinpath(*PurePosixPath(source).parts)),
+                      os.fspath(destination_path(destination_root).joinpath(*PurePosixPath(target).parts)))
+                     for source, target in pairs)
+
+    async def put_files(self, files, source_directory, destination_directory):
+        return await self._transfer_files(files, source_directory, destination_directory, upload=True)
+
+    async def get_files(self, files, source_directory, destination_directory):
+        return await self._transfer_files(files, source_directory, destination_directory, upload=False)
 
     async def read_file(self, path):
         return (await self.run(("cat", "--", os.fspath(path)))).stdout

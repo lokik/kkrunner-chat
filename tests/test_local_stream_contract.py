@@ -105,7 +105,7 @@ def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
     )
     client = EndpointClient(DirectBackend)
     parts = client.create_run_parts(spec)
-    parts.prepare_submission()
+    parts.files.prepare_submission()
     parts.prepare_job()
     try:
         parts.job.submit()

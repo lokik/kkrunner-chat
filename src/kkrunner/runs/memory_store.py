@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from threading import Lock, RLock
+from weakref import WeakValueDictionary
 
+from kkrunner.execution import RunState
 from kkrunner.runs.records import (
     ActiveRunDeletionError, ForgottenRunError, RunRecord, validate_update, validate_run_id,
 )
@@ -12,12 +14,13 @@ from kkrunner.runs.records import (
 class MemoryRunStore:
     """Track runs without writing history or coordinating with other processes."""
 
+    durable = False
+
     def __init__(self):
         self._records = {}
         self._forgotten = set()
         self._lock = RLock()
-        self._processing = {}
-        self._observation = {}
+        self._observation = WeakValueDictionary()
 
     @property
     def lock_key(self):
@@ -25,10 +28,6 @@ class MemoryRunStore:
 
     def submission_lock(self):
         return self._lock
-
-    def processing_lock(self, record):
-        with self._lock:
-            return self._processing.setdefault(record.id, Lock())
 
     def observation_lock(self, record):
         with self._lock:
@@ -64,7 +63,11 @@ class MemoryRunStore:
     def update(self, record: RunRecord, updater):
         with self._lock:
             self._assert_not_forgotten(record.id)
-            latest = self._records.get(record.id, replace(record, store=self))
+            latest = self._records.get(record.id)
+            if latest is None:
+                if record.state != RunState.NEW:
+                    raise FileNotFoundError(record.id)
+                latest = replace(record, store=self)
             if latest.created_at != record.created_at:
                 raise ValueError("Run id already belongs to a different persistent identity")
             updated = updater(latest)
@@ -81,6 +84,13 @@ class MemoryRunStore:
             elif active is False:
                 records = [record for record in records if record.state.is_terminal]
             return tuple(records[:limit])
+
+    def discard(self, record):
+        """Remove an exact scoped reservation once its owner leaves the scope."""
+        with self._lock:
+            if self.get(record.id) != record:
+                raise ValueError("Cannot discard a changed scoped reservation")
+            del self._records[record.id]
 
     def forget(self, run, *, force=False):
         if type(force) is not bool:
