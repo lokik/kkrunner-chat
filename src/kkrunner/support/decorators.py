@@ -5,6 +5,8 @@ def portable(function):
     verify portability without adding import-time or transport overhead.
     """
     function.__kkrunner_portable__ = True
+    # @depends_on may be applied before or after @portable.
+    function.__dict__.setdefault("__source_dependencies__", ())
     return function
 
 
