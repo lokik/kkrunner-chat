@@ -8,7 +8,7 @@ import pytest
 from kkrunner.client.contracts import Operation
 from kkrunner.transports.implementations.ssh.rpc import operation_command
 from kkrunner.transports.rpc import operation_payload, operation_result
-from kkrunner.transports.implementations.ssh.source import function_definition
+from kkrunner.transports.implementations.ssh.source import function_definition, portable_bundle
 from kkrunner.support.decorators import depends_on, portable
 
 
@@ -29,6 +29,12 @@ def dependent_operation(value):
     return increment(twice_increment(value))
 
 
+@depends_on(increment)
+@portable
+def reversed_decorators(value):
+    return increment(value)
+
+
 @portable
 def undeclared_operation(value):
     return increment(value)
@@ -45,6 +51,22 @@ def test_transitive_dependencies_execute_in_isolated_stdlib_python(tmp_path):
     assert not reply.stderr
 
 
+@pytest.mark.parametrize("function,expected", [
+    (increment, 40), (twice_increment, 41), (reversed_decorators, 40),
+])
+def test_portable_functions_support_both_decorator_orders_and_no_dependencies(function, expected):
+    # Both source delivery formats must execute the same declared dependency graph.
+    namespace = {}
+    exec(function_definition(function), namespace)
+    assert namespace[function.__name__](39) == expected
+
+    entrypoint, definitions = portable_bundle(function)
+    namespace = {}
+    for _name, source in definitions:
+        exec(source, namespace)
+    assert namespace[entrypoint](39) == expected
+
+
 def test_source_extraction_does_not_validate_undeclared_globals():
     # The marker is a declaration; direct-backend portability is tested separately.
     definition = function_definition(undeclared_operation)
@@ -53,7 +75,7 @@ def test_source_extraction_does_not_validate_undeclared_globals():
 
 
 def test_dependency_cycles_are_rejected(monkeypatch):
-    monkeypatch.setattr(increment, "__source_dependencies__", (twice_increment,), raising=False)
+    monkeypatch.setattr(increment, "__source_dependencies__", (twice_increment,))
     with pytest.raises(TypeError, match="Cyclic"):
         function_definition(dependent_operation)
 
