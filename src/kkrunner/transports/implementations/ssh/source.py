@@ -35,7 +35,7 @@ def function_definition(fn, *, static=False, name=None):
             return
         emitted[binding] = function
         visiting.add(function)
-        for dependency in getattr(function, "__source_dependencies__", ()):
+        for dependency in function.__source_dependencies__:
             visit(dependency)
         definitions.append((function, name))
         visiting.remove(function)
@@ -88,7 +88,7 @@ def portable_bundle(function):
             return
         visiting.add(fn)
         bindings = set()
-        for dependency in getattr(fn, "__source_dependencies__", ()):
+        for dependency in fn.__source_dependencies__:
             if dependency.__name__ in bindings:
                 raise TypeError(f"Duplicate remote dependency name: {dependency.__name__}")
             bindings.add(dependency.__name__)
@@ -107,7 +107,7 @@ def portable_bundle(function):
                 targets=[ast.Name(id=dep.__name__, ctx=ast.Store())],
                 value=ast.Name(id=symbol(dep), ctx=ast.Load()),
             )
-            for dep in getattr(fn, "__source_dependencies__", ())
+            for dep in fn.__source_dependencies__
         ]
         # Preserve the function docstring at the beginning of its body.
         index = int(bool(node.body and isinstance(node.body[0], ast.Expr)
