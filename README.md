@@ -104,6 +104,20 @@ job = submit(
 Scheduler execution requires KKRunner with the PSI/J extra and a configured
 scheduler on the execution host.
 
+## Choose how jobs are executed
+
+Choose the backend independently of the execution location. All three
+backends use the same Python API, locally or over SSH.
+
+| Backend | When to use it |
+| --- | --- |
+| `direct` (default) | Run a command directly, without a scheduler or supervisor. |
+| `kkrunner` | Run independent jobs that you can reconnect to, with a retained exit status. |
+| `psij` | Submit jobs to Slurm (the default) or another configured PSI/J executor. |
+
+For scheduler configuration, MPI launchers and recovery capabilities, see
+[execution backends](docs/backends.rst).
+
 ## Keep a history of calculations
 
 Supervised and scheduler jobs are saved automatically. Add
@@ -142,6 +156,58 @@ kkrunner --store /path/to/runs cancel RUN_ID
 
 The same commands work for saved local, SSH and scheduler jobs.
 
+## Synchronize files over SSH
+
+Only the files you declare are transferred, rather than the entire working
+directory. Use filename patterns for sets of files and `cache_files` for
+files a program can reuse and update between runs.
+
+For example, run a calculation in a remote scratch directory and bring
+its results back to your local working directory:
+
+```python
+from kkrunner import StagingSpec, run
+
+run(
+    "my_program",
+    target="user@cluster",
+    staging=StagingSpec(local_root=".", remote_root="/scratch/user/work"),
+    input_files=["input.dat", "parameters/*.txt"],
+    output_files="results/*.dat",
+    cache_files="cache.bin",
+)
+```
+
+By default, file synchronization avoids unnecessary transfers. You can
+also transfer every file, fill only missing files or disable transfers,
+independently for uploads and downloads. SSH transfers use compressed
+archives, and connections are reused across commands.
+
+See [file declarations and synchronization](docs/files.rst) and
+[remote execution](docs/remote.rst) for mapping directories, transfer
+policies, compression and SSH configuration.
+
+## Build your own calculation workflows
+
+Beyond starting commands, KKRunner can help your application:
+
+- **Run jobs safely in parallel:** prevent conflicting reads and writes of
+  declared files by tracked jobs sharing a run store.
+- **Display progress:** receive live stdout and stderr through an
+  `output_listener`, or read an intermediate result using
+  `job.snapshot_file("progress.dat")` on a tracked run.
+- **Recover interrupted workflows:** reconnect to an existing job, resume
+  recoverable downloads or retry result processing without rerunning the
+  calculation.
+- **Process results automatically:** pass a Python `process_result` function
+  that turns the execution outcome into an application-specific result.
+- **Manage results:** keep file versions and checksums, detect replaced
+  historical results and organize runs into a project hierarchy.
+
+See [persistent runs and recovery](docs/persistent-runs.rst),
+[working with files](docs/files.rst), [projects](docs/projects.rst) and
+the [Python quickstart](docs/quickstart.rst).
+
 ## Installation
 
 Python 3.9 or newer. Install from the KKRunner checkout in a virtual environment:
@@ -155,9 +221,8 @@ python -m pip install '.[psij]'
 ## Learn more
 
 The [documentation](https://ase2sprkkr.github.io/kkrunner/) and
-[source guide](docs/index.rst) cover custom SSH and scheduler configurations,
-MPI launchers, live output callbacks, file staging and caching, project
-management, recovery and application-specific result processing.
+[source guide](docs/index.rst) provide more examples and the complete
+[API reference](docs/api.rst).
 
 For repeated commands, configure an `ExecutionClient` once and use its
 `run()` and `submit()` methods. For advanced lifecycle control, use
