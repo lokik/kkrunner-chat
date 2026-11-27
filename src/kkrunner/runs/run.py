@@ -673,7 +673,6 @@ class Run:
             ):
                 self._record = latest
                 self._completion_persisted = True
-                self.manager._acknowledge_result(latest)
                 return
             if self._state == RunState.UNKNOWN:
                 self._record = self.manager.transition(

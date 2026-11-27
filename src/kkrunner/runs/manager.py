@@ -115,8 +115,6 @@ class RunManager:
         self.conflict_stores = tuple(conflict_stores)
         self.client_pool = client_pool if client_pool is not None else default_client_pool()
         self._files = RunFiles(store=self.store, client_pool=self.client_pool)
-        self._ack_lock = Lock()
-        self._acknowledged_results = set()
         self.submitting_grace = float(submitting_grace)
 
     def _store_for(self, record):
@@ -928,17 +926,14 @@ class RunManager:
             # Retry will reattach to download preserved output. Retain the
             # terminal backend receipt until that end-to-end attempt settles.
             return False
-        key = (self._record_key(record), record.execution.backend_id)
-        with self._ack_lock:
-            if key in self._acknowledged_results:
-                return True
-            try:
-                client = self.client_for(record)
-                client.acknowledge(record)
-            except (OSError, SubprocessError, RuntimeError, ValueError):
-                return False
-            self._acknowledged_results.add(key)
-            return True
+        # The backend ACK is idempotent. Do not serialize unrelated remote
+        # operations or retain a second, process-local history of completions.
+        try:
+            client = self.client_for(record)
+            client.acknowledge(record)
+        except (OSError, SubprocessError, RuntimeError, ValueError):
+            return False
+        return True
 
     def reconcile_acknowledgements(self, *, on_error=None):
         """Explicitly retry receipt ACKs; return IDs with acknowledged outcomes."""
