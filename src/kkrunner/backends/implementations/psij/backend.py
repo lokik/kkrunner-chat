@@ -54,12 +54,14 @@ class PsijBackend(Backend, ManagedOperations):
             raise ValueError("PSI/J url must be a nonempty string or None")
         return options
 
-    def __init__(self, **options):
-        super().__init__(**options)
-        supports = {BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL}
-        if supports_recovery(self.options):
-            supports.add(BackendCapability.RECOVER)
-        self.supports = frozenset(supports)
+    _supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
+
+    @classmethod
+    def supports_options(cls, options):
+        supports = super().supports_options(options)
+        if supports_recovery(options):
+            return supports | {BackendCapability.RECOVER}
+        return supports
 
     @staticmethod
     def submit(request: ExecutionRequest) -> SubmissionReply:

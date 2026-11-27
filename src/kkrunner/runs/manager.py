@@ -682,7 +682,7 @@ class RunManager:
         else:
             updated = self.transition(record, **changes)
             self._acknowledge_result(updated)
-        self._acknowledge_submission(self.client_for(updated), updated)
+        self._acknowledge_submission(updated)
         return updated
 
     def completion_fields(
@@ -914,7 +914,8 @@ class RunManager:
 
     def _acknowledge_result(self, record):
         """Best-effort ACK after durable completion; failed ACKs remain retryable."""
-        if not record.state.is_terminal or record.execution.backend_id is None:
+        if (not record.state.is_terminal or record.execution.backend_id is None
+                or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return False
         if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0:
             # Retry will reattach to download preserved output. Retain the
@@ -940,12 +941,14 @@ class RunManager:
             if self._acknowledge_result(record)
         )
 
-    @staticmethod
-    def _acknowledge_submission(client, record):
+    def _acknowledge_submission(self, record, *, client=None):
         """Discard the submission receipt only after RunStore is durable."""
-        if record.execution.backend_id is None:
+        if (record.execution.backend_id is None
+                or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return
         try:
+            if client is None:
+                client = self.client_for(record)
             client.acknowledge_submission(record)
         except (OSError, RuntimeError):
             # The receipt remains recoverable until a subsequent refresh.
@@ -1016,6 +1019,7 @@ class RunManager:
                         current[self._record_key(record)] = self.transition(
                             record, state=RunState.UNKNOWN,
                             message=f"Cannot query execution status: {exc}",
+                            expected_updated_at=record.updated_at,
                         )
                     continue
                 if len(statuses) != len(guarded):

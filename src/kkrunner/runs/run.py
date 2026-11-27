@@ -604,7 +604,7 @@ class Run:
                         files=self.files,
                     )
                     self._monitor_record_version = self._record.updated_at
-            manager._acknowledge_submission(self.client, self._record)
+            manager._acknowledge_submission(self._record, client=self.client)
 
     def _claim_observation(self):
         if self.manager is not None and self._observation_lock is None:

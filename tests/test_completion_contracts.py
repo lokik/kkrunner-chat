@@ -439,3 +439,22 @@ def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch
         path.write_text("already available")
         assert manager.retrieve_result_files(historical) == historical
     assert path.read_text() == "already available"
+
+
+@pytest.mark.parametrize("backend", ("direct", "psij"))
+def test_receipt_reconciliation_does_not_create_client_for_backend_without_receipts(tmp_path, monkeypatch, backend):
+    from kkrunner.backends.config import BackendConfig
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("No backend receipt exists to acknowledge")
+
+    monkeypatch.setattr(manager, "client_for", unexpected)
+    record = manager.new_record(directory=tmp_path, backend=BackendConfig(backend))
+    record = manager.complete(
+        record, state=RunState.FINISHED, return_code=0,
+        execution=record.execution.submitted("native-job"),
+    )
+    assert manager.reconcile_acknowledgements() == ()
+    assert manager.store.get(record.id) == record

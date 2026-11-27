@@ -286,6 +286,7 @@ class Backend:
     default_options: ClassVar[Tuple[Tuple[str, Optional[str]], ...]] = ()
     resolves_mpi_launcher = False
     execution_mode = "direct"
+    _supports: ClassVar[frozenset[BackendCapability]] = frozenset()
     supports: frozenset[BackendCapability]
     options: Mapping[str, object]
     default_detached = False
@@ -304,10 +305,15 @@ class Backend:
         json.dumps(defaults, allow_nan=False)
         return defaults
 
+    @classmethod
+    def supports_options(cls, options):
+        """Capabilities for validated options, without creating an execution backend."""
+        return cls._supports
+
     def __init__(self, **options):
         """Keep backend configuration in one immutable, instance-owned place."""
         self.options = MappingProxyType(self.validate_options(**options))
-        self.supports = frozenset()
+        self.supports = self.supports_options(self.options)
 
 
 

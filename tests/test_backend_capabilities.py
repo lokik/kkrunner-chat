@@ -77,6 +77,7 @@ def test_configuration_roundtrip_preserves_capabilities(location, executor_name,
     assert restored.backend_config == backend_config
     assert (BackendCapability.RECOVER in restored.backend.supports) is recover
     assert backend_config == BackendConfig(backend_config.name, backend_config.options)
+    assert backend_config.supports == backend.supports
 
 
 @pytest.mark.parametrize("location", ("local", "ssh"))
@@ -125,9 +126,11 @@ def test_backend_configuration_does_not_construct_backend(backend, monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("configuration must not construct a backend")
 
+    expected = backend().supports
     monkeypatch.setattr(backend, "__init__", unexpected)
     config = BackendConfig(backend.name)
     assert dict(config.options) == backend.validate_options()
+    assert config.supports == expected
 
 
 @pytest.mark.parametrize("backend", (DirectBackend, PsijBackend))

@@ -24,9 +24,7 @@ class DirectBackend(Backend, DirectOperations):
     prepare_mpi = staticmethod(prepare_mpi)
     prepare_target_outputs = staticmethod(prepare_target_outputs)
 
-    def __init__(self, **options):
-        super().__init__(**options)
-        self.supports = frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
+    _supports = frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
 
     @staticmethod
     @portable

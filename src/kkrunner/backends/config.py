@@ -25,6 +25,14 @@ class BackendConfig:
         return self.name in available_backend_names()
 
     @property
+    def supports(self):
+        """Capabilities of this configuration without constructing a backend."""
+        from kkrunner.backends import backend_class
+        if not self.available:
+            return frozenset()
+        return backend_class(self.name).supports_options(dict(self.options))
+
+    @property
     def execution_mode(self):
         """Execution semantics of the configured implementation, without an instance."""
         from kkrunner.backends import backend_class
