@@ -156,7 +156,8 @@ def test_supervised_job_never_owns_client_manifest(tmp_path):
 
 
 @pytest.mark.parametrize("tracked", [False, True])
-def test_single_submission_path_with_and_without_store(tmp_path, tracked):
+@pytest.mark.parametrize("entrypoint", ["run", "start"])
+def test_single_submission_path_with_and_without_store(tmp_path, tracked, entrypoint):
     manager = RunManager(RunStore(tmp_path / "stored"))
     spec = ExecutionSpec(
         (sys.executable, "-c", "print('finished')"),
@@ -164,8 +165,13 @@ def test_single_submission_path_with_and_without_store(tmp_path, tracked):
         directory=str(tmp_path),
     )
     run = ExecutionClient(DirectBackend).create_run(spec, tracked=manager if tracked else False)
-    result = run.run()
+    if entrypoint == "start":
+        run.start()
+        result = run.wait()
+    else:
+        result = run.run()
     assert result.return_code == 0
+    assert run.backend_id is not None
     assert run.state == RunState.FINISHED
     assert (tmp_path / "out.txt").read_text() == "finished\n"
     if tracked:

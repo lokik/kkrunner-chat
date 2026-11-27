@@ -77,7 +77,7 @@ class BackendExecution(Protocol):
 
 
 class JobProtocol(Protocol):
-    """Live, per-execution handle.  Only reopenable jobs need a stable ref."""
+    """Live execution handle; successful submission assigns an opaque reference."""
 
     @property
     def ref(self) -> Optional[JobRef]: ...
