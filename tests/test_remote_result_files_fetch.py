@@ -938,7 +938,7 @@ def test_restore_captured_inputs_without_captured_outputs(tmp_path, changed):
     assert restored.files.outputs[0].availability_state == "available"
 
 
-def test_overlapping_historical_aliases_share_captured_digest(tmp_path):
+def test_overlapping_historical_aliases_share_captured_digest(tmp_path, monkeypatch):
     from kkrunner import RunStore
     from kkrunner.runs import RunManager
 
@@ -951,6 +951,14 @@ def test_overlapping_historical_aliases_share_captured_digest(tmp_path):
     version = FileVersion.capture(alias, require_digest=True)
     alias.unlink()
     (remote / "actual" / "result.dat").write_text("changed")
+    (remote / "actual" / "second.dat").write_text("second result")
+    attempts = []
+
+    async def download(self, source, destination, **kwargs):
+        attempts.append(str(destination))
+        await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTarget, "get_file", download)
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
         directory=local, remote_directory=remote, target=SshTarget("loopback"),
@@ -967,5 +975,47 @@ def test_overlapping_historical_aliases_share_captured_digest(tmp_path):
                                 execution=record.execution.submitted("historical"))
     restored = manager.retrieve_result_files(record)
     assert not alias.exists()
+    assert (local / "actual" / "second.dat").read_text() == "second result"
+    assert attempts.count(str(local / "actual" / "result.dat")) == 1
+    assert len(attempts) == 2
     assert all(entry.availability_state == "failed" for entry in restored.files.outputs)
     assert all("overwritten" in entry.availability_message for entry in restored.files.outputs)
+
+
+def test_history_does_not_claim_file_created_during_retrieval(tmp_path, monkeypatch):
+    from pathlib import Path
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    output = local / "result.dat"
+    output.write_text("original")
+    version = FileVersion.capture(output, require_digest=True)
+    output.unlink()
+    source = remote / output.name
+    source.write_text("original")
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        files=FileManifest(
+            stdout=FileEntry(str(output), str(source)),
+            output_versions=(version,),
+            captured_at="2026-10-13T08:00:00+00:00",
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+                                execution=record.execution.submitted("historical"))
+
+    async def concurrent_writer(self, source, destination, **kwargs):
+        Path(destination).write_text("another producer")
+        await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTarget, "get_file", concurrent_writer)
+    restored = manager.retrieve_result_files(record)
+    assert output.read_text() == "another producer"
+    assert restored.files.stdout.availability_state == "failed"
+    assert "already exists" in restored.files.stdout.availability_message
+    assert restored.files.output_versions == (version,)

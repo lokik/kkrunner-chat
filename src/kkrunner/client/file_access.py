@@ -106,22 +106,27 @@ class FileAccess:
         self._validate_target(run)
         return _run_sync(self._resolve_result_files(run, files))
 
+    async def download_result_file(self, entry, *, verify=None):
+        """Publish one exact pair without replacing an existing destination."""
+        target = entry.local_path
+        if os.path.lexists(target):
+            return False
+        try:
+            await self.target.get_file(
+                entry.remote_path, target,
+                verify=None if verify is None else partial(verify, target),
+                overwrite=False,
+            )
+        except FileExistsError:
+            return False
+        return True
+
     async def _download_result_files(self, entries, *, verify=None):
         """Download exact pairs without re-discovering or re-mapping paths."""
         downloaded = []
         for entry in entries:
-            target = entry.local_path
-            if os.path.lexists(target):
-                continue
-            try:
-                await self.target.get_file(
-                    entry.remote_path, target,
-                    verify=None if verify is None else partial(verify, target),
-                    overwrite=False,
-                )
-            except FileExistsError:
-                continue
-            downloaded.append(target)
+            if await self.download_result_file(entry, verify=verify):
+                downloaded.append(entry.local_path)
         return tuple(downloaded)
 
     def download_result_files(self, entries, *, verify=None):

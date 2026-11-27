@@ -17,6 +17,7 @@ from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import file_digest
 from kkrunner.runs.stores import resolve_record, store_for
 from kkrunner.runs.states import NO_EXECUTION_FAILURES
+from kkrunner.support.async_utils import run_coro_sync
 
 
 class HistoricalFileMismatchError(OSError):
@@ -167,23 +168,33 @@ class RunFiles:
             except OSError as exc:
                 errors[path] = str(exc)
 
+        async def restore():
+            # Transfer each reserved destination once, regardless of how
+            # many declarations refer to it. One failed member must not
+            # prevent the remaining members of a wildcard from being restored.
+            failures = {}
+            for entry in by_destination.values():
+                path = entry.local_path
+                try:
+                    if not await access.download_result_file(entry, verify=verify):
+                        raise FileExistsError(f"Historical artifact was not retrieved: {path} already exists")
+                except (OSError, RuntimeError) as exc:
+                    failures[path] = str(exc)
+            return failures
+
         from contextlib import nullcontext
         scope = reserve(record, tuple(by_destination.values())) if by_destination else nullcontext()
         with scope:
-            for path, message in errors.items():
-                if path in artifact_paths:
-                    record = self.update_artifact_availability(
-                        record, path, ArtifactAvailabilityState.FAILED, message,
-                    )
+            failures = run_coro_sync(restore()) if by_destination else {}
             for path, entries in planned.items():
-                try:
-                    access.download_result_files(entries, verify=verify)
-                    if not all(os.path.isfile(entry.local_path) for entry in entries):
-                        raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
-                except (OSError, RuntimeError) as exc:
-                    state, message = ArtifactAvailabilityState.FAILED, str(exc)
-                else:
-                    state, message = ArtifactAvailabilityState.AVAILABLE, None
+                message = next((failures[entry.local_path] for entry in entries
+                                if entry.local_path in failures), None)
+                if message is not None:
+                    errors[path] = message
+            for path in (*errors, *(path for path in planned if path not in errors)):
                 if path in artifact_paths:
+                    message = errors.get(path)
+                    state = (ArtifactAvailabilityState.AVAILABLE if message is None
+                             else ArtifactAvailabilityState.FAILED)
                     record = self.update_artifact_availability(record, path, state, message)
         return record
