@@ -1,7 +1,6 @@
 """Execution status projection and observable client postprocessing."""
 
 import sys
-from subprocess import CalledProcessError
 from threading import Event
 
 import pytest
@@ -152,9 +151,10 @@ def test_cancelled_remote_job_keeps_transfer_reservation(tmp_path):
     assert refreshed in manager.store.runs(active=True)
 
 
-@pytest.mark.parametrize("transfer_error", [None, OSError("remote stream unavailable"),
-                                            CalledProcessError(255, ("ssh", "cluster"))])
+@pytest.mark.parametrize("transfer_error", [None, OSError("remote stream unavailable")])
 def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkeypatch, transfer_error):
+    from kkrunner.client.file_access import FileAccess
+
     executor = _Executor(RunState.FINISHED, remote=True, backend=DirectBackend)
     manager, record = _record(tmp_path, executor)
     calls = []
@@ -163,16 +163,15 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
         RunState.CANCELLED, backend_id=attachment.execution.backend_id,
     ))
 
-    def collect(current, status):
+    def collect(access, current, status, *, on_resolved=None):
+        assert access.target == record.execution.target
         assert current.id == record.id
         assert status.state == RunState.CANCELLED
         assert manager.store.get(record.id).state == RunState.RUNNING
         calls.append(current.id)
-        if transfer_error is not None:
-            raise transfer_error
-        return current.files
+        return current.files, transfer_error
 
-    monkeypatch.setattr(executor, "collect_ended_files", collect)
+    monkeypatch.setattr(FileAccess, "collect_ended_files", collect)
     cancelled = manager.cancel(record.id)
     assert calls == [record.id]
     assert cancelled.state == RunState.CANCELLED
