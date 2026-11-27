@@ -49,9 +49,8 @@ class FileAccess:
         async def collect():
             session = None
             try:
-                context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
-                session = await FileSession.from_attachment(
-                    context, replace(run, files=run.files.retry_failed_artifacts()),
+                session = FileSession.from_attachment(
+                    self.target, replace(run, files=run.files.retry_failed_artifacts()),
                 )
                 return await session.finalize_async(status, on_resolved=on_resolved), None
             except (OSError, RuntimeError, ValueError) as exc:

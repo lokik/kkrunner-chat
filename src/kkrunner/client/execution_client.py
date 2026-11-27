@@ -300,8 +300,7 @@ class ExecutionClient:
         if execution.backend_id is None:
             raise ValueError("Run lacks a backend identity")
         status = await self._invoke("status", execution.backend_id)
-        context = FileContext(self.target, StagingSpec.from_mapping(attachment.files.mapping))
-        files = await FileSession.from_attachment(context, attachment)
+        files = FileSession.from_attachment(self.target, attachment)
         try:
             binding = bind_execution(
                 self.backend, self.target, ref=JobRef(self.backend.name, execution.backend_id), status=status,

@@ -1173,12 +1173,9 @@ def test_ended_collection_retry_rechecks_failed_pattern_members(tmp_path, monkey
 
 @pytest.mark.parametrize("via_client", [False, True])
 def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatch, via_client):
-    import asyncio
     from kkrunner import RunStore
     from kkrunner.runs import RunManager, RunStatus
-    from kkrunner.client.file_context import FileContext
     from kkrunner.client.file_session import FileSession
-    from kkrunner.client.staging import StagingSpec
     from kkrunner.files.availability import capture_result_files
 
     local, remote = tmp_path / "local", tmp_path / "remote"
@@ -1217,8 +1214,7 @@ def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatc
         finalized, error = client.collect_ended_files(record, status)
         assert error is None
     else:
-        context = FileContext(target, StagingSpec.from_mapping(files.mapping))
-        session = asyncio.run(FileSession.from_attachment(context, record))
+        session = FileSession.from_attachment(target, record)
         finalized = session.finalize(status)
 
     assert finalized == files
