@@ -301,3 +301,14 @@ def test_failed_direct_observer_start_closes_streams_before_releasing_claim(tmp_
     lock = store.observation_lock(record)
     assert lock.acquire(blocking=False)
     lock.release()
+
+
+def test_discarded_reservation_cannot_be_recreated_by_update(store, tmp_path):
+    manager = RunManager(store)
+    record = manager.new_record(directory=tmp_path)
+    with store.observation_lock(record):
+        reserved = manager.reserve(record, preprocessing=True)
+        store.discard(reserved)
+    with pytest.raises(FileNotFoundError):
+        manager.transition(reserved, state=RunState.FAILED)
+    assert store.runs() == ()
