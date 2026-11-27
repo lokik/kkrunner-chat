@@ -99,8 +99,7 @@ class RunManager:
         with RunManager._default_lock:
             if RunManager._fallback is None:
                 from kkrunner.runs.records import RunStore
-                root = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
-                RunManager._fallback = RunManager(RunStore(Path(root) / "kkrunner" / "runs"))
+                RunManager._fallback = RunManager(RunStore())
             return RunManager._fallback
 
     @classmethod

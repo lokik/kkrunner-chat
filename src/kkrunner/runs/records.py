@@ -152,8 +152,11 @@ class RunStore:
 
     durable = True
 
-    def __init__(self, directory):
-        """Store runs in an explicit directory, with optional project membership per record."""
+    def __init__(self, directory=None):
+        """Store runs in an explicit directory or the default user state directory."""
+        if directory is None:
+            root = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+            directory = Path(root) / "kkrunner" / "runs"
         self.directory = Path(directory).expanduser().resolve()
         self._lock = RLock()
 

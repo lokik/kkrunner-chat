@@ -242,9 +242,18 @@ def _pathlike(value):
     return value
 
 
+def _sequence(value):
+    """Treat a single path or argument as one item, not an iterable of characters."""
+    return (value,) if isinstance(value, (str, os.PathLike)) else tuple(value)
+
+
 @dataclass(frozen=True)
 class ExecutionSpec:
     """Client declaration of a command, files, MPI and staging policy.
+
+    A single string or path is one command argument or file declaration;
+    it is never split into shell words. MPI accepts the shortcuts understood
+    by MpiSpec.from_value().
 
     Path-valued file fields are resolved relative to ``directory``. For
     example, ``output_file="stdout.txt"`` saves stdout in that working directory.
@@ -258,30 +267,29 @@ class ExecutionSpec:
     also be incomplete; they describe only facts available to the observer.
     """
 
-    argv: Optional[Sequence[str]]
+    argv: str | os.PathLike | Sequence[str | os.PathLike] | None
     input_file: Any = None
     output_file: Any = None
     directory: str = "."
     stdin: Any = None
     error_file: Any = None
-    input_files: Sequence[Any] = ()
-    output_files: Sequence[Any] = ()
-    cache_files: Sequence[Any] = ()
-    mpi_argv: Optional[Sequence[str]] = None
-    mpi: MpiSpec = MpiSpec()
+    input_files: str | os.PathLike | Sequence[Any] = ()
+    output_files: str | os.PathLike | Sequence[Any] = ()
+    cache_files: str | os.PathLike | Sequence[Any] = ()
+    mpi_argv: str | os.PathLike | Sequence[str | os.PathLike] | None = None
+    mpi: MpiSpec | bool | int | str | Sequence[str] | None = MpiSpec()
     staging: StagingSpec = StagingSpec()
     # The MPI command may have a different stdin contract from serial argv.
     # Generic executors preserve stdin unless the caller explicitly opts out.
     mpi_uses_stdin: bool = True
 
     def __post_init__(self):
-        for name, expected in (("mpi", MpiSpec), ("staging", StagingSpec)):
-            value = getattr(self, name)
-            if isinstance(value, dict):
-                value = expected(**value)
-            elif not isinstance(value, expected):
-                raise TypeError(f"ExecutionSpec.{name} must be a {expected.__name__}")
-            object.__setattr__(self, name, value)
+        mpi = MpiSpec(**self.mpi) if isinstance(self.mpi, dict) else MpiSpec.from_value(self.mpi)
+        object.__setattr__(self, "mpi", mpi)
+        staging = StagingSpec(**self.staging) if isinstance(self.staging, dict) else self.staging
+        if not isinstance(staging, StagingSpec):
+            raise TypeError("ExecutionSpec.staging must be a StagingSpec")
+        object.__setattr__(self, "staging", staging)
         if type(self.mpi_uses_stdin) is not bool:
             raise TypeError("mpi_uses_stdin must be bool")
         object.__setattr__(self, "directory", os.fspath(self.directory))
@@ -291,15 +299,15 @@ class ExecutionSpec:
             object.__setattr__(
                 self,
                 name,
-                tuple(_pathlike(value) for value in getattr(self, name)),
+                tuple(_pathlike(value) for value in _sequence(getattr(self, name))),
             )
         if self.argv is not None:
-            object.__setattr__(self, "argv", tuple(os.fspath(value) for value in self.argv))
+            object.__setattr__(self, "argv", tuple(os.fspath(value) for value in _sequence(self.argv)))
         if self.mpi_argv is not None:
             object.__setattr__(
                 self,
                 "mpi_argv",
-                tuple(os.fspath(value) for value in self.mpi_argv),
+                tuple(os.fspath(value) for value in _sequence(self.mpi_argv)),
             )
 
     @property
