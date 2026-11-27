@@ -815,6 +815,18 @@ class RunManager:
         """
         store = self._store_for(record)
         latest = store.get(record.id)
+        if retry:
+            if (
+                not latest.processing_required
+                or latest.return_code != 0
+                or not (
+                    latest.state == RunState.POSTPROCESSING
+                    or (latest.state == RunState.FAILED and latest.failure_phase == FailurePhase.POSTPROCESSING)
+                )
+            ):
+                raise ValueError("Only postprocessing failures or interrupted processing can be retried")
+            if latest.files.captured_at is None:
+                raise ValueError("Postprocessing retry requires captured artifacts")
         if latest.state == RunState.FINISHED and latest.return_code is not None:
             raise ProcessingPending("Result already processed by another observer; load its historical result")
         if latest.state.is_terminal and not (
@@ -880,20 +892,7 @@ class RunManager:
         if not lock.acquire(blocking=False):
             raise ProcessingPending("Another client owns postprocessing")
         try:
-            record = resolve_record(record, self.store)
-            if (
-                not record.processing_required
-                or record.return_code != 0
-                or not (
-                    record.state == RunState.POSTPROCESSING
-                    or (record.state == RunState.FAILED and record.failure_phase == FailurePhase.POSTPROCESSING)
-                )
-            ):
-                raise ValueError("Only postprocessing failures or interrupted processing can be retried")
-            files = record.files
-            if files.captured_at is None:
-                raise ValueError("Postprocessing retry requires captured artifacts")
-            claimed = self.begin_processing(record, return_code=record.return_code, retry=True)
+            claimed = self.begin_processing(record, return_code=0, retry=True)
             files = claimed.files
             outcome = ExecutionOutcome(
                 input_file=(
