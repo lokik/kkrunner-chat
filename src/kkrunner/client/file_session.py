@@ -303,7 +303,9 @@ class FileSession:
                         continue
                     selected.add(remote)
                     local = os.fspath(self.context._unmap_path(remote, remote_root))
-                    if local in excluded_local:
+                    if local in excluded_local or (
+                        kind == "output" and self._files.output_excluded(remote, remote=True)
+                    ):
                         continue
                     self._set_file_availability(
                         local, "pending", remote=remote, kind=kind, source_pattern=local_pattern,

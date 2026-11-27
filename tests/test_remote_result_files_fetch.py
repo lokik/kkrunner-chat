@@ -701,3 +701,41 @@ def test_staged_result_destinations_must_be_distinct(tmp_path, collision):
     assert verified == [(str(first), "first"), (str(second), "second")]
     assert target.read_text() == "first"
     assert staged.read_text() == "second"
+
+
+@pytest.mark.parametrize("existing", (False, True))
+def test_declared_historical_output_glob_excludes_uncollected_files(tmp_path, existing):
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("scratch.dat", "result.dat"):
+        (remote / name).write_text(name)
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    if existing:
+        (local / "scratch.dat").write_text("local scratch")
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    pattern = str(local / "*.dat")
+    run = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=client.backend_config,
+        files=FileManifest(
+            mapping=FileMapping(str(local), str(remote)),
+            outputs=(
+                FileEntry(pattern, str(remote / "*.dat")),
+                FileEntry(str(local / "scratch.dat"), str(remote / "scratch.dat"), collect=False),
+            ),
+        ),
+    )
+    run = manager.complete(run, state=RunState.FAILED,
+                           execution=run.execution.submitted("historical"))
+    manager.retrieve_result_files(run)
+    assert (local / "result.dat").read_text() == "result.dat"
+    if existing:
+        assert (local / "scratch.dat").read_text() == "local scratch"
+    else:
+        assert not (local / "scratch.dat").exists()

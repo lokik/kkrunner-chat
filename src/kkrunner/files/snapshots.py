@@ -20,6 +20,8 @@ def matching_file(manifest, path):
             return entry
 
     for entry in entries:
+        if entry in manifest.outputs and manifest.output_excluded(path):
+            continue
         if path_matches(path, os.path.abspath(entry.local_path)):
             return entry
     return None

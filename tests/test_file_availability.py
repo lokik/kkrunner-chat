@@ -236,3 +236,20 @@ def test_directory_output_cannot_remove_declared_input_symlink(tmp_path):
         })
     assert alias.is_symlink()
     assert alias.read_text() == "source"
+
+
+def test_output_glob_does_not_republish_failed_stdout(tmp_path):
+    output = tmp_path / "failed.dat"
+    output.write_text("stale")
+    result = tmp_path / "result.dat"
+    result.write_text("result")
+    files = FileManifest(
+        stdout=FileEntry(str(output), availability_state="failed",
+                         availability_message="not published"),
+        outputs=(FileEntry(str(tmp_path / "*.dat"), availability_state="pending"),),
+    )
+    found = discover_local_files(files, include_streams=False)
+    assert found.stdout == files.stdout
+    assert found.outputs[0].availability_state == "available"
+    assert any(entry.local_path == str(result) and entry.availability_state == "available"
+               for entry in found.outputs)

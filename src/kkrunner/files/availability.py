@@ -140,14 +140,29 @@ def discover_local_files(files, *, include_streams=True, require_outputs=True):
         path = entry.local_path
         if has_file_magic(path):
             matches = tuple(candidate for candidate in expand_local_candidates(path) if os.path.isfile(candidate))
-            for concrete in matches:
+            collected = tuple(
+                concrete for concrete in matches
+                if kind != "output" or not files.output_excluded(concrete)
+            )
+            for concrete in collected:
+                # A wildcard must not overwrite an exact artifact's own
+                # availability, e.g. a failed or unpublished stdout.
+                if any(item.local_path == concrete for item in files.artifacts):
+                    continue
                 files = files.with_file_availability(
                     concrete,
                     "available",
                     kind=kind,
                     source_pattern=path,
                 )
-            state = "available" if matches else "skipped"
+            state = "available" if any(
+                item.local_path in collected and item.availability_state not in ("failed", "skipped")
+                for item in files.artifacts
+            ) else "skipped"
+            if matches and not collected:
+                # There were output files, but all were explicitly excluded.
+                files = files.with_file_availability(path, state)
+                continue
         else:
             exists = os.path.isdir(path) if entry.kind == "directory" else os.path.isfile(path)
             state = "available" if exists else "skipped"

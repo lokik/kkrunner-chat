@@ -268,6 +268,15 @@ class FileManifest:
     def shared_filesystem(self):
         return self.mapping is not None and self.mapping.shared_filesystem
 
+    def output_excluded(self, path, *, remote=False):
+        """Whether a concrete path is excluded from wildcard output collection."""
+        from kkrunner.files.paths import path_matches
+        return any(
+            not entry.collect and declared is not None and path_matches(path, declared)
+            for entry in self.outputs
+            for declared in (entry.remote_path if remote else entry.local_path,)
+        )
+
     @property
     def artifacts(self):
         """Output streams, declared outputs and caches (one status per local file)."""
