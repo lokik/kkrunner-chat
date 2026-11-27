@@ -35,6 +35,38 @@ def test_reusable_client_and_named_streams(tmp_path, capsys):
     assert run.run().return_code == 0
 
 
+@pytest.mark.parametrize("submit", [kkrunner.submit, ExecutionClient().submit])
+def test_submit_returns_started_run_without_waiting(tmp_path, submit):
+    manager = RunManager(MemoryRunStore())
+    received = []
+    command = """
+import time
+from pathlib import Path
+deadline = time.monotonic() + 10
+while not Path("resume").exists():
+    if time.monotonic() > deadline:
+        raise SystemExit(99)
+    time.sleep(0.01)
+print(42)
+"""
+    job = submit(
+        [sys.executable, "-c", command], directory=tmp_path,
+        output_file="out", persistent=manager,
+        output_listener=lambda text, kind: received.append((text, kind)),
+    )
+    try:
+        assert isinstance(job, Run)
+        assert not job.state.is_terminal
+        assert manager.store.get(job.id).id == job.id
+    finally:
+        (tmp_path / "resume").touch()
+        outcome = job.wait()
+    assert outcome.return_code == 0
+    assert (tmp_path / "out").read_text() == "42\n"
+    assert "".join(text for text, kind in received if kind == "out") == "42\n"
+    assert manager.store.get(job.id).state == kkrunner.RunState.FINISHED
+
+
 def test_create_without_explicit_client():
     run = Run.create(sys.executable)
     assert run.spec.argv == (sys.executable,)

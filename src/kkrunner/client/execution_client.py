@@ -60,6 +60,22 @@ class ExecutionClient:
         persistent=None, detached=None, process_result=None, output_listener=None,
     ):
         """Run a command and wait, displaying available unredirected output."""
+        return self.submit(
+            argv, directory=directory, input_file=input_file, output_file=output_file,
+            stdin=stdin, error_file=error_file, input_files=input_files,
+            output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
+            mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
+            persistent=persistent, detached=detached, process_result=process_result,
+            output_listener=output_listener,
+        ).wait()
+
+    def submit(
+        self, argv, *, directory=".", input_file=None, output_file=None,
+        stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
+        mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
+        persistent=None, detached=None, process_result=None, output_listener=None,
+    ):
+        """Submit a command and return its Run, displaying available unredirected output."""
         import sys
 
         from kkrunner.runs.base import ExecutionSpec
@@ -79,10 +95,12 @@ class ExecutionClient:
                     sys.stderr.write(text)
                     sys.stderr.flush()
 
-        return self.create_run(
+        runner = self.create_run(
             spec, persistent=persistent, detached=detached,
             process_result=process_result, output_listener=output_listener,
-        ).run()
+        )
+        runner.submit()
+        return runner
 
     def close(self):
         """Release transport resources owned by the configured client."""

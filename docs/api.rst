@@ -15,6 +15,7 @@ Common entry points
    :toctree: _generated
 
    run
+   submit
    ExecutionSpec
    ExecutionOutcome
    Run

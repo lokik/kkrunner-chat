@@ -32,26 +32,23 @@ To save stdout and stderr instead of displaying them, pass
 
 ## 2. Start a command and reconnect from another shell
 
-Use the built-in supervisor (`backend="kkrunner"`) when a calculation must
-outlive the Python client. It runs independently and retains completion status.
+Use `submit()` to start a command without waiting. Choose the built-in
+supervisor (`backend="kkrunner"`) when a calculation must outlive the Python
+client. It runs independently and retains completion status.
 
 In the first shell, start Python and execute:
 
 ```python
 import sys
-from kkrunner import ExecutionSpec, Run
+from kkrunner import submit
 
-job = Run.create(
-    ExecutionSpec(
-        [sys.executable, "-u", "-c",
-         "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
-        output_file="supervised.out",
-        error_file="supervised.err",
-    ),
+job = submit(
+    [sys.executable, "-u", "-c",
+     "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
     backend="kkrunner",
-    persistent=True,
-)
-job.submit()  # start without waiting for completion
+    output_file="supervised.out",
+    error_file="supervised.err",
+)  # start without waiting for completion
 print(job.id)
 ```
 
@@ -152,8 +149,8 @@ The backend submits to the scheduler and waits for the job and its output.
 `backend="psij"` is shorthand for the default Slurm configuration.
 Add `target="user@cluster"` to submit via SSH; KKRunner, PSI/J and access to
 the scheduler must then be available on the target. For MPI programs, pass
-`mpi=8` (or the required process count). Use `Run.create(...)` and
-`submit()` instead of the blocking convenience to monitor the job separately.
+`mpi=8` (or the required process count). Use `submit()` instead of `run()` to return immediately after submission and
+monitor the job separately.
 
 ## 5. Persist runs and group them in projects
 
@@ -180,25 +177,22 @@ Python session:
 
 ```python
 import sys
-from kkrunner import ExecutionSpec, ProjectRepository, ProjectRunManager, Run
+from kkrunner import ProjectRepository, ProjectRunManager, submit
 
 projects = ProjectRepository()
 project_id = "PROJECT_ID"  # replace with the ID printed above
 project = projects.project(project_id)
 manager = ProjectRunManager(project_repository=projects, project=project_id)
 
-job = Run.create(
-    ExecutionSpec(
-        [sys.executable, "-u", "-c",
-         "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
-        directory=project.directory,
-        output_file="project.out",
-        error_file="project.err",
-    ),
+job = submit(
+    [sys.executable, "-u", "-c",
+     "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
+    directory=project.directory,
+    output_file="project.out",
+    error_file="project.err",
     backend="kkrunner",
     persistent=manager,
 )
-job.submit()
 print("Run ID:", job.id)
 print("Run store:", manager.store.directory)
 ```
@@ -227,9 +221,10 @@ no need to pass the hostname again.
 ## Further usage
 
 Reuse an `ExecutionClient(target="user@cluster")` for repeated commands:
-`client.run(command)` waits for completion, while
-`client.create_run(ExecutionSpec(...))` prepares a run for separate
-submission and monitoring.
+`client.run(command)` waits for completion, while `client.submit(command)`
+returns a started `Run`. Both accept the same execution arguments. Use
+`Run.create(ExecutionSpec(...))` or `client.create_run(...)` only when you
+need an unstarted run, for example to configure observers before submission.
 
 See the [user guide](docs/index.rst) for
 [execution backends](docs/backends.rst), [remote execution](docs/remote.rst),

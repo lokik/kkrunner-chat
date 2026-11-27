@@ -377,9 +377,7 @@ def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(
     submit = """
 import os, sys
 from pathlib import Path
-from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.backends import SupervisedBackend
-from kkrunner.client import ExecutionClient
+from kkrunner import submit, RunManager, RunStore
 root = Path(sys.argv[1])
 manager = RunManager(RunStore(root / 'runs'))
 command = '''
@@ -392,9 +390,10 @@ while not Path('resume').exists():
     time.sleep(0.01)
 print(42)
 '''
-run = ExecutionClient(SupervisedBackend).create_run(ExecutionSpec(
-    [sys.executable, '-c', command], directory=root, output_file='run.out'), persistent=manager)
-run.submit()
+run = submit(
+    [sys.executable, '-c', command], directory=root, output_file='run.out',
+    backend='kkrunner', persistent=manager,
+)
 print(run.id, flush=True)
 # Simulate abrupt client termination without running monitor cleanup.
 os._exit(0)

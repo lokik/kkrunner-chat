@@ -35,6 +35,29 @@ independently. The default is direct execution, local or over SSH.
    run("program", target="user@cluster", backend="psij",
        output_file="stdout.txt")
 
+Submit without waiting
+----------------------
+
+:func:`kkrunner.submit` takes the same arguments as :func:`kkrunner.run`,
+but returns the started Run instead of waiting for its result. Both display
+available unredirected output, unless an explicit output listener is supplied.
+
+.. testcode::
+
+   from kkrunner import submit
+
+   job = submit([sys.executable, "-c", "print(42)"])
+   print(job.wait().return_code)
+
+.. testoutput::
+
+   42
+   0
+
+Submission is separate from detachment: select ``backend="kkrunner"`` for
+a supervised run that survives client exit. With named output files and
+the default persistence enabled, use the returned ``job.id`` to reconnect.
+
 Prepare a Run
 --------------
 
@@ -76,8 +99,7 @@ For repeated commands, construct an :class:`~kkrunner.ExecutionClient` once:
    from kkrunner import ExecutionClient
 
    client = ExecutionClient(target="user@cluster")
-   runner = client.create_run("program")
-   runner.submit()
+   runner = client.submit("program")
    result = runner.wait()
 
 File paths in the specification are relative to ``directory``; absolute paths
