@@ -367,6 +367,11 @@ class RunManager:
         record = resolve_record(record, self.store)
         if not record.execution.available or not self._is_stale_submitting(record):
             return record
+        if BackendCapability.RECOVER not in record.execution.backend.supports:
+            return self.transition(
+                record, state=RunState.UNKNOWN,
+                message="The selected backend has no submission recovery",
+            )
         client = self.client_for(record)
         from kkrunner.runs.model import WorkingDirectory
         from kkrunner.client.contracts import SubmissionContext

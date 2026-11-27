@@ -71,6 +71,28 @@ def test_active_status_refresh_does_not_repeat_submission_ack(tmp_path, monkeypa
     assert acknowledged == [record.id]
 
 
+
+@pytest.mark.parametrize("backend", ["direct", "psij"])
+def test_unsupported_submission_recovery_does_not_construct_client(tmp_path, monkeypatch, backend):
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.targets import SshTarget
+
+    config = BackendConfig(backend, {"executor_name": "pbs"} if backend == "psij" else {})
+    manager = RunManager(RunStore(tmp_path / "runs"), submitting_grace=0)
+    record = manager.new_record(
+        directory=tmp_path, target=SshTarget("unreachable"),
+        backend=config,
+    )
+    record = manager.transition(record, state=RunState.SUBMITTING)
+    monkeypatch.setattr(manager, "client_for",
+                        lambda _: pytest.fail("Unsupported recovery needs no execution client"))
+    recovered = manager.recover_submitting(record)
+    assert recovered.state == RunState.UNKNOWN
+    assert recovered.execution.backend_id is None
+    assert "no submission recovery" in recovered.message
+    assert manager.store.get(record.id) == recovered
+
+
 def test_recovery_acknowledges_durable_identity_before_status_query(tmp_path, monkeypatch):
     manager = RunManager(
         RunStore(tmp_path / "runs"), client_pool=ClientPool(), submitting_grace=0,
