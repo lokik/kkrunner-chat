@@ -111,6 +111,7 @@ class FileAccess:
                 run.files.stdout, run.files.stderr,
             ) if entry is not None
         }
+        captured_paths = {os.path.abspath(os.fspath(version.path)) for version in run.files.all_versions}
         pairs = {}
         for value in files:
             local = os.path.abspath(os.fspath(value))
@@ -119,8 +120,10 @@ class FileAccess:
             remote = entry.remote_path if entry is not None else None
             if remote is None:
                 remote = context._map_path(local, remote_root)
-            wildcard = glob.has_magic(remote)
-            for matched in await self.target.expand_files(remote, remote_root):
+            concrete = local in captured_paths or (entry is not None and entry.source_pattern is not None)
+            wildcard = not concrete and glob.has_magic(remote)
+            source = glob.escape(remote) if concrete else remote
+            for matched in await self.target.expand_files(source, remote_root):
                 destination = os.fspath(context._unmap_path(matched, remote_root)) if wildcard else local
                 if (entry is not None and entry in run.files.outputs and wildcard
                         and run.files.output_excluded(matched, remote=True)):

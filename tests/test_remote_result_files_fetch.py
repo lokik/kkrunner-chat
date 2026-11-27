@@ -1572,3 +1572,47 @@ def test_never_sync_compares_only_existing_local_pattern_members(tmp_path, monke
         str(local / "absent.dat"): "skipped",
     }
     assert not (local / "absent.dat").exists()
+
+
+
+@pytest.mark.parametrize("role", ["input", "output", "frozen_output"])
+def test_historical_retrieval_uses_literal_discovered_paths(tmp_path, role):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    original = local / "result[1].dat"
+    original.write_text("original")
+    version = FileVersion.capture(original, require_digest=True)
+    original.unlink()
+    # These are not the historical file, even though its unescaped name
+    # would match them as a shell pattern.
+    (local / "result1.dat").write_text("keep local")
+    (remote / "result1.dat").write_text("original")
+    (remote / original.name).write_text("original")
+    declaration = FileEntry(local / "result*.dat", remote / "result*.dat",
+                            availability_state="available")
+    member = FileEntry(original, remote / original.name,
+                       source_pattern=declaration.local_path,
+                       availability_state="available")
+    manifest = FileManifest(
+        inputs=(declaration,) if role == "input" else (),
+        outputs=() if role == "input" else (declaration, member),
+        input_versions=(version,) if role == "input" else (),
+        output_versions=(version,) if role == "output" else (),
+        captured_at="2026-10-13T08:00:00+00:00" if role == "output" else None,
+        remote_patterns_resolved=True if role != "input" else None,
+        mapping=FileMapping(local, remote),
+    )
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(directory=local, remote_directory=remote,
+                                target=SshTarget("loopback"), files=manifest)
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert original.read_text() == "original"
+    assert (local / "result1.dat").read_text() == "keep local"
+    assert restored.files.input_versions == manifest.input_versions
+    assert restored.files.output_versions == manifest.output_versions
