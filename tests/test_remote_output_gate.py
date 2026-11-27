@@ -16,9 +16,7 @@ from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
 from kkrunner.targets import LocalTarget
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
-from kkrunner.files.streams import OutputStreams
 from kkrunner.runs.base import FailurePhase
-from kkrunner.support.file_locks import FileLock
 
 
 class _Transport(LocalTarget):
@@ -66,7 +64,7 @@ def _session(tmp_path, transport, spec, *, files=None):
     client = ExecutionClient(SupervisedBackend, target=transport)
     context = FileContext(
         client, StagingSpec(local_root=tmp_path, remote_root=tmp_path,
-                            output_sync=FileSyncPolicy.NEVER),
+                            output_sync=FileSyncPolicy.CHANGED),
     )
     return client, FileSession(
         context, spec, files=files, remote_directory=str(tmp_path),
@@ -77,34 +75,31 @@ def _run(tmp_path, state=RunState.FINISHED):
     destination = tmp_path / "calculation.out"
     remote = tmp_path / "authoritative.out"
     remote.write_bytes(b"streamed\n")
-    output = destination.open("wb")
-    spec = ExecutionSpec(argv=(), output_file=output, directory=tmp_path)
+    destination.write_bytes(b"old local output")
+    spec = ExecutionSpec(argv=(), output_file=destination, directory=tmp_path)
     files = FileManifest(stdout=FileEntry(str(destination), str(remote))).initialize_availability()
     transport = _Transport(state)
     client, session = _session(tmp_path, transport, spec, files=files)
-    session._streams = OutputStreams(output, None)
-    session._stream_positions = {"out": 0, "err": None}
     execution = ManagedExecution(
         client.backend, transport, ref=JobRef("kkrunner", "opaque-handle"),
         status={"state": "running", "remote_id": "opaque-handle"},
     )
     job = Job(execution, spec)
-    return Run(RunParts(job, session), client=client), transport, destination, output
+    return Run(RunParts(job, session), client=client), transport, destination
 
 
 def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
-    run, transport, destination, output = _run(tmp_path)
+    run, transport, destination = _run(tmp_path)
     run.start()
     assert run.wait().return_code == 0
     assert run.state == RunState.FINISHED
     assert destination.read_bytes() == b"streamed\n"
-    assert output.closed
     assert run.files.availability_state == "available"
     assert transport.follow_calls == 1
 
 
-def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_path):
-    run, _, destination, output = _run(tmp_path, RunState.UNKNOWN)
+def test_unknown_backend_state_preserves_existing_output_without_downloading(tmp_path):
+    run, _, destination = _run(tmp_path, RunState.UNKNOWN)
 
     async def fail_sync(*, required):
         raise AssertionError("Unknown execution must not download results")
@@ -114,8 +109,7 @@ def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_
     outcome = run.wait()
     assert outcome.output_file == str(destination)
     assert run.state == RunState.UNKNOWN
-    assert destination.read_bytes() == b"streamed\n"
-    assert output.closed
+    assert destination.read_bytes() == b"old local output"
 
 
 @pytest.mark.parametrize(
@@ -127,7 +121,7 @@ def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_
     ],
 )
 def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, expected_phase):
-    run, _, _, output = _run(tmp_path, state)
+    run, _, _ = _run(tmp_path, state)
 
     async def unavailable(*, required):
         raise OSError("download unavailable")
@@ -142,43 +136,11 @@ def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, ex
         run.wait()
         assert run.state == state
     assert run.failure_phase == expected_phase
-    assert output.closed
-
-
-def test_follow_write_is_idempotent_across_attached_clients(tmp_path):
-    destination = tmp_path / "output"
-    destination.write_bytes(b"abc")
-    transport = _Transport(RunState.RUNNING)
-    a_stream = destination.open("ab")
-    b_stream = destination.open("ab")
-    try:
-        spec_a = ExecutionSpec(argv=(), output_file=a_stream, directory=tmp_path)
-        spec_b = ExecutionSpec(argv=(), output_file=b_stream, directory=tmp_path)
-        _, a = _session(tmp_path, transport, spec_a)
-        _, b = _session(tmp_path, transport, spec_b)
-        a._streams = OutputStreams(a_stream, None)
-        b._streams = OutputStreams(b_stream, None)
-        a._stream_positions = {"out": 3}
-        b._stream_positions = {"out": 3}
-        a._write_output(b"def", "out")
-        b._write_output(b"def", "out")
-        assert destination.read_bytes() == b"abcdef"
-        assert a._stream_positions["out"] == b._stream_positions["out"] == 6
-        b._stream_positions["out"] = 3
-        with pytest.raises(RuntimeError, match="Conflicting FOLLOW bytes"):
-            b._write_output(b"wrong", "out")
-        assert destination.read_bytes() == b"abcdef"
-        lock_path = destination.with_name(f".{destination.name}.follow.lock")
-        with FileLock(lock_path) as lock:
-            assert lock.acquired
-    finally:
-        a_stream.close()
-        b_stream.close()
 
 
 @pytest.mark.parametrize("kind", ("follow", "status"))
 def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
-    run, transport, _, output = _run(tmp_path, RunState.RUNNING)
+    run, transport, _ = _run(tmp_path, RunState.RUNNING)
     if kind == "follow":
         object.__setattr__(transport, "follow_error", ConnectionError("SSH disconnected"))
     else:
@@ -188,20 +150,41 @@ def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
     assert result.return_code is None
     assert run.state == RunState.UNKNOWN
     assert run.failure_phase is None
-    assert output.closed
 
 
-def test_unframed_backend_follow_failure_does_not_invent_terminal_state(tmp_path):
-    run, transport, _, output = _run(tmp_path, RunState.FINISHED)
+def test_lost_follow_with_confirmed_terminal_status_still_downloads_files(tmp_path):
+    run, transport, destination = _run(tmp_path, RunState.FINISHED)
     object.__setattr__(
         transport, "follow_error", subprocess.CalledProcessError(17, ("ssh",)),
     )
     run.start()
-    with pytest.raises(subprocess.CalledProcessError):
-        run.wait()
+    assert run.wait().return_code == 0
     assert run._job.state == RunState.FINISHED
-    assert run.result.return_code == 0
     assert isinstance(run._job.output_error, subprocess.CalledProcessError)
-    assert run.state == RunState.FAILED
-    assert run.failure_phase is FailurePhase.OUTPUT
-    assert output.closed
+    assert destination.read_bytes() == b"streamed\n"
+    assert run.state == RunState.FINISHED
+    assert run.failure_phase is None
+
+
+@pytest.mark.parametrize("terminal", (RunState.FINISHED, RunState.FAILED, RunState.CANCELLED))
+def test_untracked_refresh_after_observation_loss_reports_pending_download(tmp_path, terminal):
+    run, transport, destination = _run(tmp_path, RunState.RUNNING)
+    object.__setattr__(transport, "follow_error", ConnectionError("SSH disconnected"))
+    run.start()
+    run.wait()
+    assert run.state == RunState.UNKNOWN
+
+    for native, expected in (
+        (RunState.RUNNING, RunState.RUNNING),
+        (RunState.FINISHING, RunState.FINISHING),
+        (RunState.UNKNOWN, RunState.UNKNOWN),
+        (terminal, RunState.DOWNLOADING),
+    ):
+        object.__setattr__(transport, "backend_state", native)
+        assert run.refresh() == expected
+        assert run.state == expected
+        assert destination.read_bytes() == b"old local output"
+        assert run.files.stdout.availability_state == "pending"
+    assert run.return_code == (0 if terminal == RunState.FINISHED else 17 if terminal == RunState.FAILED else None)
+    assert run.refresh() == RunState.DOWNLOADING
+    assert transport.follow_calls == 1

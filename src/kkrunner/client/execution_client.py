@@ -335,7 +335,6 @@ class ExecutionClient:
                 context, JobAttachment(record.execution, record.files),
             )
             try:
-                session.configure_stream_retrieval(True)
                 return await session.finalize_async(status)
             finally:
                 session.close()

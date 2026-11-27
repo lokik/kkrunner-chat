@@ -87,11 +87,14 @@ class SupervisorStreams:
         self.detached = detached
         self.disconnected = asyncio.Event()
         self.cancelled = asyncio.Event()
+        self._release_backpressure = asyncio.Event()
         self._session_follower = None
         self._initial_task = None
         self._spools = {}
+        self._live_spools = {}
         self._sizes = {kind: 0 for kind in self.paths}
         self._followers = set()
+        self._connections = set()
         self._server = None
         self._terminal = None
         self._socket_dir = socket_dir
@@ -102,9 +105,7 @@ class SupervisorStreams:
             for kind, path in self.paths.items():
                 if path is not None:
                     Path(path).parent.mkdir(parents=True, exist_ok=True)
-                    # Truncate the declared stream at launch. Keep the actual file
-                    # available during execution and after failure or cancellation.
-                    self._spools[kind] = open(path, "wb", buffering=0)
+                    self._spools[kind] = open(path, "w+b", buffering=0)
             if self._socket_dir is None:
                 self._socket_dir = tempfile.mkdtemp(prefix="kkrunner-follow-")
             self.socket_path = os.path.join(self._socket_dir, "socket")
@@ -120,7 +121,11 @@ class SupervisorStreams:
                 raise startup_error from cleanup_error
             raise
 
-    def publish(self, kind, data):
+    def release_backpressure(self):
+        """Execution no longer depends on the speed of its attached observer."""
+        self._release_backpressure.set()
+
+    async def publish(self, kind, data):
         if self._terminal is not None:
             raise RuntimeError("Output published after termination")
         if self.merged and kind == "err":
@@ -131,15 +136,58 @@ class SupervisorStreams:
         offset = self._sizes[kind]
         spool = self._spools.get(kind)
         if spool is not None:
-            spool.write(data)
+            if spool.write(data) != len(data):
+                raise OSError("Incomplete process output write")
             spool.flush()
         self._sizes[kind] += len(data)
         wire = frame(kind, offset, data)
         for follower in tuple(self._followers):
+            if follower.writer.is_closing():
+                continue
             # A spooled channel can catch up from disk. A live-only channel
             # cannot: forward it even while another channel is replaying.
             if follower.replay and self.paths[kind] is not None:
                 follower.wake.set()
+                continue
+            if not self.detached and self.paths[kind] is None:
+                # Once execution is ending, retain pending live-only bytes
+                # independently of the observer's reading speed.
+                writer = follower.writer
+                if kind in self._live_spools or (
+                    self._release_backpressure.is_set() and writer.transport.get_write_buffer_size() >= _HIGH
+                ):
+                    try:
+                        if kind not in self._live_spools:
+                            self._live_spools[kind] = (tempfile.TemporaryFile(buffering=0), offset)
+                        if self._live_spools[kind][0].write(data) != len(data):
+                            raise OSError("Incomplete observation spool write")
+                    except OSError:
+                        # Failure to retain optional observation data cannot
+                        # change the native execution result.
+                        writer.transport.abort()
+                        continue
+                    follower.replay = True
+                    follower.wake.set()
+                    continue
+                try:
+                    writer.write(wire)
+                    follower.offsets[kind] += len(data)
+                    if writer.transport.get_write_buffer_size() >= _HIGH and not self._release_backpressure.is_set():
+                        draining = asyncio.create_task(writer.drain())
+                        released = asyncio.create_task(self._release_backpressure.wait())
+                        try:
+                            done, _ = await asyncio.wait(
+                                (draining, released), return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if draining in done:
+                                draining.result()
+                        finally:
+                            for task in (draining, released):
+                                task.cancel()
+                            await asyncio.gather(draining, released, return_exceptions=True)
+                except (ConnectionError, OSError):
+                    self.disconnected.set()
+                    writer.transport.abort()
                 continue
             # A full buffer skips the write; a write that fills the buffer
             # triggers exactly the same backpressure handling below.
@@ -164,11 +212,6 @@ class SupervisorStreams:
     def terminal(self, outcome):
         self._terminal = dict(outcome)
         for follower in tuple(self._followers):
-            # A client that stopped reading must not prevent the detached
-            # supervisor from exiting. Already published bytes remain in the
-            # named spool and can be recovered on a later attach.
-            if follower.writer.transport.get_write_buffer_size() >= _HIGH:
-                follower.writer.transport.abort()
             follower.wake.set()
 
     def _register_follower(self, writer, offsets):
@@ -208,9 +251,12 @@ class SupervisorStreams:
         self._initial_task = asyncio.create_task(self._connect(reader, writer, follower=follower))
 
     async def _connect(self, reader, writer, *, follower=None):
+        self._connections.add(writer)
         disconnect_watch = None
         try:
             if follower is None:
+                if not self._server.is_serving():
+                    return
                 raw = await reader.readline()
                 if not raw or len(raw) > _MAX_REQUEST:
                     raise ValueError("Malformed supervisor request")
@@ -233,6 +279,8 @@ class SupervisorStreams:
                     return
                 if not self.detached:
                     self.disconnected.set()
+                # EOF also releases a writer blocked in drain().
+                writer.transport.abort()
                 follower.wake.set()
 
             disconnect_watch.add_done_callback(on_disconnect)
@@ -241,23 +289,20 @@ class SupervisorStreams:
                     return
                 if follower.replay:
                     await writer.drain()
-                    for kind, path in self.paths.items():
-                        if path is None:
-                            if follower.offsets[kind] != self._sizes[kind]:
-                                raise ConnectionError("Live-only follower missed output")
-                            continue
+                    for kind in self.paths:
                         offset = follower.offsets[kind]
                         if offset < self._sizes[kind]:
-                            with open(path, "rb", buffering=0) as spool:
-                                spool.seek(offset)
-                                data = spool.read(min(_CHUNK, self._sizes[kind] - offset))
+                            if kind in self._live_spools:
+                                spool, first = self._live_spools[kind]
+                            elif kind in self._spools:
+                                spool, first = self._spools[kind], 0
+                            else:
+                                raise ConnectionError("Follower output is no longer available")
+                            data = os.pread(spool.fileno(), min(_CHUNK, self._sizes[kind] - offset), offset - first)
                             if not data:
                                 raise RuntimeError("Supervisor spool truncated")
                             writer.write(frame(kind, offset, data))
                             follower.offsets[kind] += len(data)
-                            if self._terminal is not None and writer.transport.get_write_buffer_size() >= _HIGH:
-                                writer.transport.abort()
-                                return
                             await writer.drain()
                             break
                     else:
@@ -287,35 +332,35 @@ class SupervisorStreams:
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
             finally:
+                self._connections.discard(writer)
                 if follower is not None:
                     self._followers.discard(follower)
                     follower.done.set()
 
-    async def finish(self):
-        """Let active clients drain the replay before removing the socket."""
+    def stop_accepting(self):
+        """Retire the execution endpoint without closing existing followers."""
         if self._server is not None:
             self._server.close()
-            await self._server.wait_closed()
+            Path(self.socket_path).unlink(missing_ok=True)
+
+    async def finish(self):
+        """Let active clients drain their replay and close their connections."""
+        self.stop_accepting()
+        # Unregistered connections have no output to drain.
+        draining = {f.writer for f in self._followers} if self._terminal is not None else set()
+        for writer in self._connections - draining:
+            writer.transport.abort()
         if self._followers:
-            # Terminal publication must not be held hostage indefinitely by a
-            # connected client which reads too slowly to complete its replay.
-            pending = tuple(self._followers)
-            finished, stalled = await asyncio.wait(
-                [asyncio.create_task(f.done.wait()) for f in pending],
-                timeout=2.0,
-            )
-            if stalled:
-                for follower in pending:
-                    if not follower.done.is_set():
-                        follower.writer.transport.abort()
-                await asyncio.wait(stalled, timeout=1.0)
-            for task in stalled:
-                task.cancel()
+            await asyncio.gather(*(f.done.wait() for f in tuple(self._followers)))
+        if self._server is not None:
+            await self._server.wait_closed()
         if self._initial_task is not None:
             if not self._initial_task.done():
                 self._initial_task.cancel()
             await asyncio.gather(self._initial_task, return_exceptions=True)
         for spool in self._spools.values():
+            spool.close()
+        for spool, _ in self._live_spools.values():
             spool.close()
         if self._socket_dir is not None:
             shutil.rmtree(self._socket_dir, ignore_errors=True)

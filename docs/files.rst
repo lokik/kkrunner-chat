@@ -91,7 +91,7 @@ not coordinate these reservations.
 
 Two active runs may read the same file. A write conflicts with another run's
 read or write. Cache declarations participate in both roles. Local uploads,
-download destinations and streamed output paths are checked independently of
+download destinations and backend output paths are checked independently of
 the backend. Remote paths are also checked in their target filesystem namespace.
 A :class:`~kkrunner.runs.DuplicateSubmissionError` reports an active conflict.
 
@@ -106,7 +106,11 @@ Transfers and captured contents
 :class:`~kkrunner.client.StagingSpec` provides the local/remote roots and transfer
 policies. ``changed`` transfers differing contents; ``always`` transfers every
 existing source; ``missing`` fills only missing destinations; ``never`` disables
-that transfer direction. Missing required inputs remain errors.
+that transfer direction. Missing required inputs remain errors. STDOUT and STDERR
+are synchronized as ordinary result files after completion; live observation
+never creates or updates local copies. Under ``never``, matching existing
+local outputs remain available without copying; missing or different copies
+are skipped.
 
 Successful durable completion captures file versions and SHA-256 digests.
 Historical applications should verify captured files before interpreting them.

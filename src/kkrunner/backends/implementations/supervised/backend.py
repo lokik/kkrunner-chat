@@ -59,6 +59,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER,
         BackendCapability.INDEPENDENT_OUTCOME,
         BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE,
+        BackendCapability.FLEXIBLE_DETACHMENT,
     })
 
     @staticmethod
@@ -100,13 +101,19 @@ class SupervisedBackend(Backend, ManagedOperations):
         if handle["kind"] != "kkrunner":
             raise ValueError("Not a KKRunner supervisor job reference")
         outcome = _process_outcome(handle["receipt_id"])
-        if outcome is not None:
-            state, return_code, failure_phase, error = outcome
-        else:
-            state = RunState.RUNNING if ProcessIdentity.from_dict(handle["identity"]).is_running() else RunState.UNKNOWN
-            return_code = None
-            failure_phase = None
-            error = None
+        if outcome is None:
+            active = Path(handle["socket_path"]).with_name("active")
+            try:
+                state = RunState(active.read_text())
+            except FileNotFoundError:
+                state = None
+            if state is not None and ProcessIdentity.from_dict(handle["identity"]).is_running():
+                return status_reply(state)
+            # Completion may have been published while checking liveness.
+            outcome = _process_outcome(handle["receipt_id"])
+            if outcome is None:
+                return status_reply(RunState.UNKNOWN)
+        state, return_code, failure_phase, error = outcome
         return status_reply(state, return_code, failure_phase=failure_phase, error=error)
 
     @staticmethod
@@ -134,6 +141,10 @@ class SupervisedBackend(Backend, ManagedOperations):
         handle = decode_handle(remote_id)
         if handle["kind"] != "kkrunner":
             raise ValueError("Not a KKRunner supervisor job reference")
+        # Acknowledgement can race with the worker's retirement after publication.
+        if _process_outcome(handle["receipt_id"]) is None:
+            return {"acknowledged": False}
+        Path(handle["socket_path"]).with_name("active").unlink(missing_ok=True)
         return {"acknowledged": mailbox.acknowledge_outcome(handle["receipt_id"])}
 
     @staticmethod
@@ -183,23 +194,26 @@ class SupervisedBackend(Backend, ManagedOperations):
             requested.pop("err")
         try:
             return await follow_socket(path, requested, on_chunk)
-        except SupervisorClosedBeforeFollow:
-            # A failed launch can finish after connect() but before the server
-            # handles FOLLOW. No protocol bytes or process output were received.
-            # Only its durable launch-failure receipt proves this harmless race;
-            # partial magic, truncated frames and other states remain errors.
-            if any(offset is not None and (type(offset) is not int or offset != 0) for offset in offsets.values()):
-                raise
-            facts = SupervisedBackend.status(remote_id)
-            if facts["state"] != RunState.FAILED.value or facts.get("failure_phase") != FailurePhase.LAUNCH.value:
-                raise
-            return facts
-        except SupervisorConnectionError:
+        except (SupervisorClosedBeforeFollow, SupervisorConnectionError) as exc:
             # A completed supervisor has removed its transient socket. Replay
             # declared spools once, without the historical polling lifecycle.
             facts = SupervisedBackend.status(remote_id)
             if not RunState(facts["state"]).is_terminal:
                 raise
+            # A launch failure has no calculation output to recover.
+            if (facts["state"] == RunState.FAILED.value
+                    and facts.get("failure_phase") == FailurePhase.LAUNCH.value
+                    and all(offset is None or (type(offset) is int and offset == 0)
+                            for offset in offsets.values())):
+                return facts
+            # An empty greeting can also mean the server rejected the request.
+            # Only recover a valid saved-stream cursor in that case.
+            if isinstance(exc, SupervisorClosedBeforeFollow):
+                if not any(path is not None for path in paths.values()):
+                    raise
+                if any(offset is not None and (type(offset) is not int or offset < 0)
+                       for offset in offsets.values()):
+                    raise
             # A numeric cursor requests exact delivery. A disconnected live-only
             # stream cannot be reconstructed, even if the other channel has a spool.
             if any(paths[kind] is None and offset is not None for kind, offset in requested.items()):
@@ -216,6 +230,8 @@ class SupervisedBackend(Backend, ManagedOperations):
                     if offsets[kind] is None:
                         source.seek(0, os.SEEK_END)
                     else:
+                        if offsets[kind] > os.fstat(source.fileno()).st_size:
+                            raise ValueError("Offset is beyond the spool")
                         source.seek(offsets[kind])
                     while True:
                         data = source.read(65536)

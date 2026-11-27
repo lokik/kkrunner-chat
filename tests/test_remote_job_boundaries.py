@@ -23,7 +23,6 @@ class _BackendExecution:
         self.status_calls = 0
         self.ref = None
         self.snapshot = JobStatus(RunState.NEW)
-        self.requires_stream_retrieval = False
         self.can_stop_observation = True
 
     def configure_detached(self, detached):
@@ -66,7 +65,6 @@ def _configure(job, tmp_path):
     job.configure_submission(
         {"directory": str(tmp_path)},
         stream_offsets={"out": None, "err": None},
-        stream_writer=lambda data, kind: None,
         stream_paths=(None, None),
     )
 
@@ -111,7 +109,6 @@ def test_pre_submit_configuration_failure_leaves_no_publishable_request(tmp_path
         job.configure_submission(
             {"directory": str(tmp_path)},
             stream_offsets=None,
-            stream_writer=lambda data, kind: None,
             stream_paths=(None, None),
         )
     assert job._request is None
@@ -168,7 +165,7 @@ class _Files:
         return {"directory": "."}
 
     def observation(self):
-        return {"stream_offsets": {}, "stream_writer": lambda data, kind: None,
+        return {"stream_offsets": {},
                 "stream_paths": (None, None)}
 
     def finalize(self, status):
@@ -242,15 +239,15 @@ def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
 @pytest.mark.parametrize(
     "backend_state, expected_state, expected_phase",
     [
-        (RunState.FINISHED, RunState.FAILED, FailurePhase.OUTPUT),
+        (RunState.FINISHED, RunState.FINISHED, None),
         (RunState.FAILED, RunState.FAILED, FailurePhase.EXECUTION),
         (RunState.CANCELLED, RunState.CANCELLED, None),
     ],
 )
-def test_local_run_keeps_backend_outcome_but_accounts_for_observation_failure(
+def test_local_run_keeps_backend_outcome_despite_observation_failure(
     backend_state, expected_state, expected_phase,
 ):
-    """A lost FOLLOW cannot produce a successful client Run or falsify Job facts."""
+    """The authoritative backend result is independent of lost live output."""
     observed = []
     job = _FinishedJob(observed)
     job.state = backend_state
@@ -263,80 +260,44 @@ def test_local_run_keeps_backend_outcome_but_accounts_for_observation_failure(
     assert run.state is expected_state
     assert run.failure_phase is expected_phase
     if backend_state is RunState.FINISHED:
-        assert run.exception is delivery_error
-        assert run.failure_message == str(delivery_error)
+        assert run.exception is None
+        assert job.output_error is delivery_error
         assert run.result.return_code == 0
 
 
-def test_untracked_run_does_not_postprocess_after_failed_local_follow():
+def test_untracked_run_postprocesses_confirmed_success_after_failed_local_follow():
     observed = []
     job = _FinishedJob(observed)
     job.state = RunState.FINISHED
     job.output_error = RuntimeError("FOLLOW decoder failed")
     run = _run_with_job(job, process_result=lambda outcome: observed.append("processed"))
     run._finish()
-    assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.OUTPUT
-    assert observed == ["wait"]
+    assert run.state is RunState.FINISHED
+    assert run.failure_phase is None
+    assert observed == ["wait", "processed"]
 
 
-def test_incomplete_local_follow_marks_pending_declared_files_failed(tmp_path):
+def test_incomplete_local_follow_still_collects_backend_files(tmp_path):
     from kkrunner.backends import DirectBackend
     from kkrunner.client import ExecutionClient
-    from kkrunner.files.manifest import FileManifest
 
     spec = ExecutionSpec(
         argv=("true",), directory=str(tmp_path),
         output_file="stdout.txt", error_file="stderr.txt",
         output_files=("other-result.dat",),
     )
+    for name in ("stdout.txt", "stderr.txt", "other-result.dat"):
+        (tmp_path / name).write_text("authoritative output")
     job = _FinishedJob([])
     job.spec = spec
     job.state = RunState.FINISHED
     job.output_error = OSError("FOLLOW stream truncated")
     files = ExecutionClient(DirectBackend).file_session(spec)
-    files._files = FileManifest.from_spec(spec).initialize_availability()
     run = _run_with_job(job, files)
     run._finish()
-
-    assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.OUTPUT
-    for entry in run.files.artifacts:
-        assert entry.availability_state == "failed"
-        assert entry.availability_message == "FOLLOW stream truncated"
-
-
-def test_managed_follow_writer_failure_preserves_native_success(tmp_path):
-    """Delivery failure is a client error, not a false backend failure."""
-    from kkrunner.backends import SupervisedBackend
-    from kkrunner.client.backend_execution import ManagedExecution
-    from kkrunner.targets import LocalTarget
-
-    class FollowTransport(LocalTarget):
-        async def follow(self, operation, identity, on_output, **options):
-            assert identity == "opaque"
-            on_output(b"data", "out")
-            return {"state": "finished", "return_code": 0}
-
-    execution = ManagedExecution(
-        SupervisedBackend(), FollowTransport(),
-        ref=JobRef("kkrunner", "opaque"), status={"state": "running"},
-    )
-    job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))
-
-    def fail_writer(data, kind):
-        raise OSError("output cannot be written")
-
-    job.configure_observation(
-        stream_offsets={"out": 0, "err": 0},
-        stream_writer=fail_writer, stream_paths=(None, None),
-    )
-    job.start()
-    job.wait()
-    assert job.state is RunState.FINISHED
-    assert job.return_code == 0
-    assert isinstance(job.output_error, OSError)
-    assert str(job.output_error) == "output cannot be written"
+    assert run.state is RunState.FINISHED
+    assert job.output_error is not None
+    assert all(entry.availability_state == "available" for entry in run.files.artifacts)
 
 
 @pytest.mark.parametrize("when", ["before_start", "observing"])
@@ -377,3 +338,41 @@ def test_managed_stop_observation_does_not_cancel_native_job(tmp_path, when):
     assert job.state == RunState.UNKNOWN
     assert job.ref == JobRef("kkrunner", "opaque")
     assert started.is_set() == stopped.is_set() == (when == "observing")
+
+
+def test_late_status_query_does_not_replace_stream_completion(tmp_path):
+    from threading import Event, Thread
+
+    execution = _BackendExecution()
+    job = _job(execution, tmp_path)
+    entered = Event()
+    release_query = Event()
+    finish = Event()
+    refreshed = []
+
+    async def status():
+        entered.set()
+        assert await asyncio.to_thread(release_query.wait, 5)
+        return JobStatus(RunState.RUNNING)
+
+    async def observe(on_output):
+        assert await asyncio.to_thread(finish.wait, 5)
+        return JobStatus(RunState.FAILED, return_code=7)
+
+    execution.status = status
+    execution.observe = observe
+    _configure(job, tmp_path)
+    job.submit()
+    query = Thread(target=lambda: refreshed.append(job.refresh_status()), daemon=True)
+    query.start()
+    try:
+        assert entered.wait(5)
+        finish.set()
+        assert job.wait().return_code == 7
+    finally:
+        finish.set()
+        release_query.set()
+        query.join(5)
+    assert not query.is_alive()
+    assert refreshed == [JobStatus(RunState.FAILED, return_code=7)]
+    assert job.state == RunState.FAILED

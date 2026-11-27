@@ -253,7 +253,7 @@ def test_ssh_observer_eof_closes_helper_without_cancelling_detached_job(tmp_path
         }
         command = operation_command(
             Operation.for_backend(SupervisedBackend, "submit_and_follow"),
-            python=(sys.executable,), framed=True, observe_only=True,
+            python=(sys.executable,), framed="submit",
         )
         process = await asyncio.create_subprocess_exec(
             *command, operation_payload((request,), {}),

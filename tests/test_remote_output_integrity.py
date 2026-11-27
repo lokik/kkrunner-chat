@@ -1,7 +1,6 @@
-"""Authoritative stdout/stderr verification belongs to the client file session."""
+"""Primary output files use ordinary terminal synchronization policies."""
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -35,30 +34,31 @@ def _session(tmp_path, *, stdout=b"same", stderr=b"error"):
 
 
 @pytest.mark.parametrize("channel", ("stdout", "stderr"))
-def test_equal_size_corruption_is_rejected(tmp_path, channel):
+def test_equal_size_stale_output_is_replaced(tmp_path, channel):
     session, local_out, local_err, _, _ = _session(
         tmp_path,
         stdout=b"bad!" if channel == "stdout" else b"same",
         stderr=b"wrong" if channel == "stderr" else b"error",
     )
-    with pytest.raises(RuntimeError, match=f"{channel} differs from remote"):
-        asyncio.run(session._verify_streams())
-    assert getattr(session.files, channel).availability_state == "failed"
-    assert (local_out if channel == "stdout" else local_err).exists()
+    asyncio.run(session._sync_output_files(required=True))
+    assert getattr(session.files, channel).availability_state == "available"
+    assert local_out.read_bytes() == b"same"
+    assert local_err.read_bytes() == b"error"
 
 
 @pytest.mark.parametrize("channel", ("stdout", "stderr"))
 def test_missing_authoritative_stream_is_not_accepted(tmp_path, channel):
     session, _, _, remote_out, remote_err = _session(tmp_path)
     (remote_out if channel == "stdout" else remote_err).unlink()
-    with pytest.raises(FileNotFoundError, match=f"Remote {channel} output is missing"):
-        asyncio.run(session._verify_streams())
+    with pytest.raises(FileNotFoundError, match="was not created"):
+        asyncio.run(session._sync_output_files(required=True))
     assert getattr(session.files, channel).availability_state == "failed"
 
 
-def test_successful_stream_integrity_verification_restores_timestamps(tmp_path):
-    session, local_out, local_err, remote_out, remote_err = _session(tmp_path)
-    asyncio.run(session._verify_streams())
-    assert local_out.stat().st_mtime_ns == remote_out.stat().st_mtime_ns
-    assert local_err.stat().st_mtime_ns == remote_err.stat().st_mtime_ns
+def test_matching_output_is_not_rewritten(tmp_path):
+    session, local_out, local_err, _, _ = _session(tmp_path)
+    before = (local_out.stat(), local_err.stat())
+    asyncio.run(session._sync_output_files(required=True))
+    assert local_out.stat().st_mtime_ns == before[0].st_mtime_ns
+    assert local_err.stat().st_mtime_ns == before[1].st_mtime_ns
     assert session.files.failed_artifacts == ()

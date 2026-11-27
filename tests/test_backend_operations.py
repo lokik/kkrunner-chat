@@ -71,7 +71,7 @@ def test_backend_operation_reference_is_well_formed(kind):
 
 def test_portable_direct_stream_is_self_contained():
     backend = backend_class("direct")
-    command = operation_command(Operation.for_backend(backend, "stream"), streaming=True)
+    command = operation_command(Operation.for_backend(backend, "stream"), framed="execute")
     code = command[-1]
     compile(code, "<portable direct stream>", "exec")
     assert "async def stream(request" in code

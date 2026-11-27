@@ -37,7 +37,6 @@ class RunParts:
 
     def configure_detached(self, detached):
         self.job.configure_detached(detached)
-        self.files.configure_stream_retrieval(self.job.requires_stream_retrieval)
 
     def configure_observation(self):
         self.job.configure_observation(**self.files.observation())

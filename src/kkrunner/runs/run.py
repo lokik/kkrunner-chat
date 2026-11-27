@@ -224,31 +224,30 @@ class Run:
 
     @property
     def state(self):
-        if self._record is not None and self._record.state.is_terminal:
-            return self._record.state
+        record = self._record
+        if record is not None and record.state.is_terminal:
+            return record.state
         if self._settled:
-            current = self._state
-        elif self._state == RunState.PREPROCESSING:
-            current = RunState.PREPROCESSING
-        elif self._submitting and not self._started:
-            current = self._record.state if self._record is not None else RunState.SUBMITTING
-        elif self._state == RunState.POSTPROCESSING:
-            current = RunState.POSTPROCESSING
-        elif self._started and self._job.state.is_terminal:
-            # The native job has ended, but client finalization is not published.
-            current = RunState.DOWNLOADING
-        else:
-            current = project_run_state(
-                self._job.state, files_pending=self._started,
-                processing_pending=self._process_result is not None,
-                failure_phase=self._job.failure_phase,
-            )
-        if self._record is not None:
-            if current == RunState.NEW and self._record.state != RunState.NEW:
-                return self._record.state
-            if current == RunState.UNKNOWN and self._record.state not in (RunState.NEW, RunState.UNKNOWN):
-                return self._record.state
-        return current
+            if record is not None and record.state != RunState.NEW and not self._state.is_terminal:
+                return record.state
+            return self._state
+        if self._state in (RunState.PREPROCESSING, RunState.DOWNLOADING, RunState.POSTPROCESSING):
+            return self._state
+        if self._submitting and not self._started:
+            return record.state if record is not None else RunState.SUBMITTING
+        if self._started and self._job.state.is_terminal:
+            # Native execution ended; the observer may still be delivering bytes.
+            # Only _finish() enters DOWNLOADING once observation has ended.
+            return RunState.FINISHING
+        # A tracked Run publishes backend progress into its record. Job's
+        # last streaming observation can be older than a separate refresh.
+        if record is not None and record.state != RunState.NEW:
+            return record.state
+        return project_run_state(
+            self._job.state, files_pending=self._started,
+            processing_pending=self._process_result is not None,
+            failure_phase=self._job.failure_phase,
+        )
 
     def add_output_listener(self, callback):
         return self._job.add_output_listener(callback)
@@ -262,8 +261,6 @@ class Run:
         return self.manager.snapshot_file(self._record, file, destination=destination)
 
     def _file_failure_phase(self):
-        if self._job.output_error is not None:
-            return FailurePhase.OUTPUT
         return FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD
 
     def _finish(self):
@@ -281,16 +278,6 @@ class Run:
                             self._record, state=self._state, return_code=self.return_code,
                         )
                 try:
-                    if (
-                        raw_state == RunState.FINISHED and self._job.return_code == 0
-                        and self._job.output_error is not None
-                    ):
-                        raise self._job.output_error
-                    if raw_state == RunState.FINISHED and self._job.return_code is None:
-                        # The original SSH observer cannot guarantee that it
-                        # delivered every byte. Re-read target-owned streams.
-                        if not self._file_session.is_local:
-                            self._file_session.configure_stream_retrieval(True)
                     # FileSession finalizes and closes its streams before processing.
                     self._file_session.finalize(self._job.status())
                 except Exception as exc:
@@ -438,7 +425,7 @@ class Run:
         """
         state = self._job.state
         if state.is_terminal:
-            return RunState.DOWNLOADING
+            return RunState.FINISHING
         return state
 
     def _close_files_after_failed_submission(self):
@@ -746,11 +733,26 @@ class Run:
         return await asyncio.to_thread(self.run)
 
     def refresh(self):
-        if self.manager is None:
-            raise RuntimeError("Untracked Run has no durable status")
+        """Explicitly refresh the lifecycle state, with or without tracking.
+
+        A live observer retains ownership of finalization. For an untracked
+        Run whose observation ended unsuccessfully, the backend may still
+        report execution facts, but querying does not recover its results.
+        """
         with self._completion_lock:
-            self._record = self.manager.refresh((self._record,))[0]
-            return self._record
+            if self.manager is not None:
+                self._record = self.manager.refresh((self._record,))[0]
+            elif not self._state.is_terminal:
+                status = self._job.refresh_status()
+                if self._settled and self._state != RunState.POSTPROCESSING:
+                    # Observation ended without finalization. Refresh execution
+                    # facts, but do not claim that result files were collected.
+                    self._state = project_run_state(
+                        status.state, files_pending=True,
+                        failure_phase=status.failure_phase,
+                    )
+                    self._failure_message = status.message
+            return self.state
 
     def stop_observation(self):
         return self._job.stop_observation()

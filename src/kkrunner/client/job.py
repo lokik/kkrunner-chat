@@ -44,7 +44,6 @@ class Job:
         self._cancel_task = None
         self._observer = None
         self._observation_stopped = Event()
-        self._stream_writer = None
         self._output_observers = OutputObservers(output_listener)
         self._output_error = None
         self._return_code = None
@@ -100,15 +99,21 @@ class Job:
         )
 
     def refresh_status(self):
-        self._apply_status(_run_sync(self.execution.status()))
+        self._apply_status(_run_sync(self.execution.status()), refresh=True)
         return self.status()
 
-    def _apply_status(self, status):
-        self._state = status.state
-        self._return_code = status.return_code
-        phase = status.failure_phase
-        self._failure_phase = None if phase is None else FailurePhase(phase.value)
-        self._failure_message = status.message
+    def _apply_status(self, status, *, refresh=False):
+        with self._lock:
+            # A status query may return after the stream has delivered the
+            # authoritative terminal outcome. Only the observer can refine
+            # such an outcome, e.g. supply the Direct process's exit code.
+            if refresh and self._state.is_terminal:
+                return
+            self._state = status.state
+            self._return_code = status.return_code
+            phase = status.failure_phase
+            self._failure_phase = None if phase is None else FailurePhase(phase.value)
+            self._failure_message = status.message
 
     def _observation_lost(self, message):
         self._state = RunState.UNKNOWN
@@ -121,10 +126,6 @@ class Job:
     def add_output_error_listener(self, callback):
         self._output_observers.add_error_listener(callback)
 
-    @property
-    def requires_stream_retrieval(self):
-        return self.execution.requires_stream_retrieval
-
     def configure_detached(self, detached):
         if type(detached) is not bool:
             raise TypeError("detached must be bool")
@@ -132,11 +133,10 @@ class Job:
             raise RuntimeError("Cannot change execution policy after submission")
         self.execution.configure_detached(detached)
 
-    def configure_observation(self, *, stream_offsets, stream_writer, stream_paths):
+    def configure_observation(self, *, stream_offsets, stream_paths):
         if self._thread is not None:
             raise RuntimeError("Cannot reconfigure a running observer")
         self.execution.configure_observation(stream_offsets=stream_offsets, stream_paths=stream_paths)
-        self._stream_writer = stream_writer
 
     def configure_submission(self, request, **observation):
         if self._state != RunState.NEW or self._request is not None or self.ref is not None:
@@ -145,11 +145,6 @@ class Job:
         self._request = request
 
     def _observed_output(self, data, kind):
-        if self._stream_writer is not None and self._output_error is None:
-            try:
-                self._stream_writer(data, kind)
-            except Exception as exc:
-                self._output_error = exc
         if not self._observation_stopped.is_set():
             self._output_observers.emit_bytes(data, kind)
 

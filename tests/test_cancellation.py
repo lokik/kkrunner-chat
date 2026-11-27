@@ -25,8 +25,6 @@ class _Resource:
 class _ControlledExecution:
     """Minimal backend binding with a controlled asynchronous submit boundary."""
 
-    requires_stream_retrieval = False
-
     def __init__(self, *, fail_submit=False, already_running=False):
         self.ref = JobRef("process", "job-1") if already_running else None
         self.snapshot = JobStatus(RunState.RUNNING if already_running else RunState.NEW)
@@ -78,7 +76,7 @@ def _controlled_job(*, fail_submit=False, already_running=False):
     job = Job(execution, spec)
     if not already_running:
         job.configure_submission(
-            {"argv": ["program"]}, stream_offsets={}, stream_paths={}, stream_writer=None,
+            {"argv": ["program"]}, stream_offsets={}, stream_paths={},
         )
     return job, execution
 

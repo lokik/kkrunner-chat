@@ -15,7 +15,7 @@ from kkrunner.backends import SupervisedBackend
 from kkrunner.backends import DirectBackend
 from kkrunner.client.contracts import Operation
 from kkrunner.targets.implementations.ssh.rpc import operation_command
-WORKER_SOURCE = operation_command(Operation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
+WORKER_SOURCE = operation_command(Operation.for_backend(DirectBackend, "stream"), framed="execute")[-1]
 
 
 def test_explicit_and_contextual_persistence(tmp_path):
@@ -218,7 +218,8 @@ def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
     assert _eventually_exists(marker)
 
 
-def test_attached_direct_stops_listeners_but_drains_output(tmp_path):
+@pytest.mark.parametrize("backend", [DirectBackend, SupervisedBackend])
+def test_attached_stops_listeners_but_drains_output(tmp_path, backend, monkeypatch):
     from threading import Event
 
     gate = tmp_path / "continue"
@@ -230,7 +231,8 @@ def test_attached_direct_stops_listeners_but_drains_output(tmp_path):
          "print('finished', flush=True)" % str(gate)),
         directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
     )
-    run = ExecutionClient(DirectBackend).create_run(spec, detached=False)
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+    run = ExecutionClient(backend).create_run(spec, detached=False, tracked=False)
     ready = Event()
     received = []
 

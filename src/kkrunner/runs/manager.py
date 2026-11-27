@@ -38,11 +38,12 @@ _STATE_RANK = {
     RunState.SUBMITTING: 2,
     RunState.QUEUED: 3,
     RunState.RUNNING: 4,
-    RunState.DOWNLOADING: 5,
-    RunState.POSTPROCESSING: 6,
-    RunState.FINISHED: 7,
-    RunState.FAILED: 7,
-    RunState.CANCELLED: 7,
+    RunState.FINISHING: 5,
+    RunState.DOWNLOADING: 6,
+    RunState.POSTPROCESSING: 7,
+    RunState.FINISHED: 8,
+    RunState.FAILED: 8,
+    RunState.CANCELLED: 8,
 }
 _UNCHANGED = object()
 
@@ -243,7 +244,7 @@ class RunManager:
             return latest.state
         if requested == RunState.UNKNOWN:
             # Uncertainty cannot retract confirmed execution completion.
-            if latest.state in (RunState.POSTPROCESSING, RunState.DOWNLOADING):
+            if latest.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
                 return latest.state
             return requested
         if latest.state == RunState.UNKNOWN:
@@ -556,7 +557,11 @@ class RunManager:
             return operation(record, status, **kwargs)
         owner = self._store_for(record).observation_lock(record)
         if not owner.acquire(blocking=False):
-            return resolve_record(record, self.store)
+            # A terminal backend receipt proves the producer is done even
+            # when the existing observer still owns client finalization.
+            return self.transition(
+                record, state=RunState.FINISHING, expected_updated_at=record.updated_at,
+            )
         try:
             return operation(record, status, **kwargs)
         finally:
@@ -995,37 +1000,16 @@ class RunManager:
                         message="This execution backend has no independent status query",
                     )
                 continue
-            needs_exclusive_status = BackendCapability.INDEPENDENT_OUTCOME not in client.backend.supports
-            locks = []
-            guarded = []
-            try:
-                for record in group:
-                    if needs_exclusive_status:
-                        ownership = self._store_for(record).observation_lock(record)
-                        if not ownership.acquire(blocking=False):
-                            # The original observer is alive, possibly already
-                            # downloading or processing after the child exited.
-                            # It owns completion; do not release its reservation.
-                            current[self._record_key(record)] = resolve_record(record, self.store)
-                            continue
-                        locks.append(ownership)
-                    guarded.append(record)
-                if not guarded:
-                    continue
-                statuses = client.status(
-                    *(JobAttachment(record.execution, record.files) for record in guarded)
+            # Query native execution independently of result-file ownership.
+            statuses = client.status(
+                *(JobAttachment(record.execution, record.files) for record in group)
+            )
+            if len(statuses) != len(group):
+                raise RuntimeError("Target returned wrong number of run statuses")
+            for record, status in zip(group, statuses):
+                current[self._record_key(record)] = self._apply_observation(
+                    record, status, self._record_observation, retrieve_ended=retrieve_ended,
                 )
-                if len(statuses) != len(guarded):
-                    raise RuntimeError("Target returned wrong number of run statuses")
-                for record, status in zip(guarded, statuses):
-                    if needs_exclusive_status:
-                        updated = self._record_observation(record, status, retrieve_ended=retrieve_ended)
-                    else:
-                        updated = self._apply_observation(record, status, self._record_observation)
-                    current[self._record_key(record)] = updated
-            finally:
-                for ownership in reversed(locks):
-                    ownership.release()
         return tuple(current[self._record_key(record)] for record in records
                      if self._record_key(record) in current)
 

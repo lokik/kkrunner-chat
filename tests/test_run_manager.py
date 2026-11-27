@@ -30,10 +30,6 @@ class _RawRunner:
     def return_code(self):
         return self.result.return_code
 
-    @property
-    def requires_stream_retrieval(self):
-        return False
-
     def configure_detached(self, detached):
         pass
 

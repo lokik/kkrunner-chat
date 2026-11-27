@@ -255,7 +255,7 @@ def test_unexpected_child_spawn_failure_is_classified_as_launch(tmp_path, monkey
     async def broken_spawn(*_args, **_kwargs):
         raise RuntimeError("failed to prepare child subprocess")
 
-    monkeypatch.setattr(remote_process_worker.asyncio, "create_subprocess_exec", broken_spawn)
+    monkeypatch.setattr(remote_process_worker, "_start_process", broken_spawn)
     monkeypatch.setattr(
         remote_process_worker, "publish_outcome", lambda *args, **kwargs: reported.append((args, kwargs))
     )
@@ -325,6 +325,304 @@ def test_preconnected_supervisor_delivers_initial_bytes_even_before_client_reads
             assert await asyncio.wait_for(task, 5) == 0
         finally:
             connection.close()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())
+
+
+def test_cancel_attached_job_with_backpressured_live_output(tmp_path, monkeypatch):
+    from kkrunner.backends.implementations.supervised import mailbox
+    from kkrunner.backends.implementations.supervised.streams import receive
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+
+    async def check():
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=False, argv=[
+            sys.executable, "-c",
+            "from pathlib import Path; import os, time; Path('started').touch(); "
+            "os.write(1, b'x' * (8 * 1024 * 1024)); time.sleep(20)",
+        ])
+        spec.update(output_file=None, error_file=None)
+        client, supervisor = socket.socketpair()
+        supervisor.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        spec["initial_follower_fd"] = supervisor.detach()
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
+
+            async def started():
+                while not (tmp_path / "started").exists():
+                    await asyncio.sleep(.01)
+
+            await asyncio.wait_for(started(), 5)
+            await asyncio.sleep(.1)
+            assert not task.done()
+            reader, writer = await asyncio.open_unix_connection(path)
+            try:
+                writer.write(b'{"command":"cancel"}\n')
+                await writer.drain()
+                assert b'"accepted":true' in await asyncio.wait_for(reader.readline(), 5)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+            async def completed():
+                while mailbox.read_outcome(spec["receipt_id"]) is None:
+                    await asyncio.sleep(.01)
+                return mailbox.read_outcome(spec["receipt_id"])
+
+            # The durable outcome must exist even though no output was read.
+            outcome = await asyncio.wait_for(completed(), 5)
+            assert outcome["state"] == "cancelled"
+            assert not task.done()
+
+            reader, writer = await asyncio.open_unix_connection(sock=client)
+            try:
+                async def drain():
+                    count = 0
+                    async for kind, offset, data in receive(reader):
+                        if kind == "terminal":
+                            assert data == outcome
+                            assert count > 0
+                            return
+                        assert kind == "out" and offset == count
+                        assert data == b"x" * len(data)
+                        count += len(data)
+
+                await asyncio.wait_for(drain(), 5)
+                await asyncio.wait_for(task, 5)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            client.close()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())
+
+
+def test_natural_exit_releases_attached_backpressure(tmp_path, monkeypatch):
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.backends.implementations.supervised import mailbox
+    from kkrunner.backends.implementations.supervised.streams import receive
+    from kkrunner.remote.handles import encode_handle
+    from kkrunner.support.process_identity import ProcessIdentity
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+
+    async def check():
+        # Write enough to cross the follower watermark, but let the process
+        # exit with the final chunk still blocked in the socket writer.
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=False, argv=[
+            sys.executable, "-c",
+            "import os; os.write(1, b'x' * (540 * 1024))",
+        ])
+        spec.update(output_file=None, error_file=None)
+        client, supervisor = socket.socketpair()
+        supervisor.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        spec["initial_follower_fd"] = supervisor.detach()
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
+            remote_id = encode_handle({
+                "kind": "kkrunner", "socket_path": path,
+                "receipt_id": spec["receipt_id"],
+                "identity": ProcessIdentity.read(os.getpid()).to_dict(),
+            })
+
+            async def completed():
+                while mailbox.read_outcome(spec["receipt_id"]) is None:
+                    await asyncio.sleep(.01)
+                return mailbox.read_outcome(spec["receipt_id"])
+
+            assert (await asyncio.wait_for(completed(), 5))["state"] == "finished"
+            assert SupervisedBackend.status(remote_id)["state"] == "finished"
+            assert not task.done()
+            reader, writer = await asyncio.open_unix_connection(sock=client)
+            try:
+                async def drain():
+                    count = 0
+                    async for kind, offset, data in receive(reader):
+                        if kind == "terminal":
+                            assert data["return_code"] == 0
+                            return count
+                        assert kind == "out" and offset == count
+                        assert data == b"x" * len(data)
+                        count += len(data)
+
+                assert await asyncio.wait_for(drain(), 5) == 540 * 1024
+                assert await asyncio.wait_for(task, 5) == 0
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            client.close()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())
+
+
+def test_spool_failure_releases_other_backpressured_channel(tmp_path, monkeypatch):
+    from kkrunner.backends.implementations.supervised import mailbox
+    from kkrunner.backends.implementations.supervised.streams import SupervisorStreams
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+    publish = SupervisorStreams.publish
+
+    async def fail_stdout(self, kind, data):
+        if kind == "out":
+            raise OSError("disk full")
+        await publish(self, kind, data)
+
+    monkeypatch.setattr(SupervisorStreams, "publish", fail_stdout)
+
+    async def check():
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=False, argv=[
+            sys.executable, "-c",
+            "import os, threading, time; "
+            "threading.Thread(target=lambda: os.write(2, b'x' * (8 * 1024 * 1024)), daemon=True).start(); "
+            "time.sleep(.2); os.write(1, b'fail'); time.sleep(20)",
+        ])
+        spec["error_file"] = None
+        client, supervisor = socket.socketpair()
+        supervisor.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        spec["initial_follower_fd"] = supervisor.detach()
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                assert await asyncio.to_thread(pipe.readline)
+
+            async def completed():
+                while mailbox.read_outcome(spec["receipt_id"]) is None:
+                    await asyncio.sleep(.01)
+                return mailbox.read_outcome(spec["receipt_id"])
+
+            outcome = await asyncio.wait_for(completed(), 5)
+            assert outcome["state"] == "failed"
+            assert "disk full" in outcome["error"]
+        finally:
+            client.close()
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(check())
+
+
+def test_exited_process_with_open_output_pipe_reports_finishing(tmp_path, monkeypatch):
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.backends.implementations.supervised import mailbox
+    from kkrunner.remote.handles import encode_handle
+    from kkrunner.support.process_identity import ProcessIdentity
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+
+    async def check():
+        # A descendant temporarily keeps the stdout pipe open after its
+        # parent exits. No slow reader or mocked lifecycle is necessary.
+        release = tmp_path / "release"
+        child = (
+            "from pathlib import Path; import time; "
+            "deadline = time.monotonic() + 8\n"
+            "while not Path('release').exists() and time.monotonic() < deadline: "
+            "time.sleep(.01)"
+        )
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=True, argv=[
+            sys.executable, "-c",
+            "import subprocess, sys; subprocess.Popen([sys.executable, '-c', " + repr(child) + "])",
+        ])
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
+            remote_id = encode_handle({
+                "kind": "kkrunner", "socket_path": path,
+                "receipt_id": spec["receipt_id"],
+                "identity": ProcessIdentity.read(os.getpid()).to_dict(),
+            })
+
+            async def finishing():
+                while SupervisedBackend.status(remote_id)["state"] != "finishing":
+                    await asyncio.sleep(.01)
+
+            await asyncio.wait_for(finishing(), 5)
+            assert not task.done()
+            assert mailbox.read_outcome(spec["receipt_id"]) is None
+            release.touch()
+            assert await asyncio.wait_for(task, 5) == 0
+            assert SupervisedBackend.status(remote_id)["state"] == "finished"
+        finally:
+            release.touch()
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(check())
+
+
+def test_draining_supervisor_serves_output_after_acknowledgement(tmp_path, monkeypatch):
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.backends.implementations.supervised import mailbox
+    from kkrunner.backends.implementations.supervised.streams import receive
+    from kkrunner.remote.handles import encode_handle
+    from kkrunner.support.process_identity import ProcessIdentity
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+
+    async def check():
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=True, argv=[
+            sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * (4 * 1024 * 1024))",
+        ])
+        client, supervisor = socket.socketpair()
+        supervisor.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        spec["initial_follower_fd"] = supervisor.detach()
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
+            remote_id = encode_handle({
+                "kind": "kkrunner", "socket_path": path,
+                "receipt_id": spec["receipt_id"],
+                "identity": ProcessIdentity.read(os.getpid()).to_dict(),
+            })
+
+            async def completed():
+                while mailbox.read_outcome(spec["receipt_id"]) is None:
+                    await asyncio.sleep(.01)
+
+            await asyncio.wait_for(completed(), 5)
+            assert not task.done(), "The supervisor must still be serving the slow observer"
+            assert SupervisedBackend.status(remote_id)["state"] == "finished"
+            assert SupervisedBackend.acknowledge(remote_id)["acknowledged"]
+            assert SupervisedBackend.status(remote_id)["state"] == "unknown"
+            reader, writer = await asyncio.open_unix_connection(sock=client)
+            try:
+                async def drain():
+                    count = 0
+                    async for kind, offset, data in receive(reader):
+                        if kind == "terminal":
+                            assert data["return_code"] == 0
+                            return count
+                        assert kind == "out" and offset == count
+                        assert data == b"x" * len(data)
+                        count += len(data)
+
+                assert await asyncio.wait_for(drain(), 5) == 4 * 1024 * 1024
+                assert await asyncio.wait_for(task, 5) == 0
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            client.close()
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

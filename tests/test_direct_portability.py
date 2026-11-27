@@ -123,7 +123,7 @@ def test_direct_source_is_portable(name):
     _validate_portable_graph(fn, method=fn.__qualname__ != fn.__name__)
     # Delivered code must compile without local decorations or annotations.
     argv = operation_command(
-        Operation.for_backend(DirectBackend, name), framed=name == "stream"
+        Operation.for_backend(DirectBackend, name), framed="execute" if name == "stream" else None
     )
     compile(argv[-1], f"<remote DirectBackend.{name}>", "exec")
 

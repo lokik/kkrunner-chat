@@ -87,7 +87,7 @@ def test_cancel_stops_calculation_while_remote_output_is_blocked(tmp_path, descr
     )
     command = operation_command(
         Operation.for_backend(DirectBackend, "stream"),
-        python=(sys.executable, "-I"), streaming=True,
+        python=(sys.executable, "-I"), framed="execute",
     )
     payload = operation_payload(({
         "argv": [sys.executable, "-u", "-c", code], "directory": str(tmp_path),

@@ -154,3 +154,17 @@ def test_local_direct_mpi_resolution_does_not_replace_declaration(tmp_path):
     assert run.spec is spec
     assert run.spec.argv == ("unused-serial",)
     assert (tmp_path / "output.txt").read_text() == "from MPI\n"
+
+
+def test_named_direct_output_preserves_hardlink(tmp_path):
+    path = tmp_path / "out"
+    alias = tmp_path / "alias"
+    path.write_bytes(b"old output")
+    os.link(path, alias)
+    run = _run(ExecutionSpec(
+        (sys.executable, "-c", "print('new output')"),
+        directory=tmp_path, output_file=path,
+    ))
+    assert run.run().return_code == 0
+    assert path.read_bytes() == alias.read_bytes() == b"new output\n"
+    assert os.path.samefile(path, alias)

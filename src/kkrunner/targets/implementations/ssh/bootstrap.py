@@ -47,7 +47,7 @@ def _stream_call(function):
 
 
 @portable
-def _framed_call(function, protocol_factory, observe_only=False, submission=True):
+def _framed_call(function, protocol_factory, mode):
     """Portable invocation carrying accepted identity, output and backend status."""
     import asyncio
     import json
@@ -100,43 +100,50 @@ def _framed_call(function, protocol_factory, observe_only=False, submission=True
         async def started(facts):
             await write(protocol.encode("started", facts))
 
+        # The transport owns stdin in both modes. The direct operation
+        # consumes control messages; a passive observer only watches EOF.
+        control = asyncio.StreamReader()
+        pipe = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
+        try:
+            transport, _ = await loop.connect_read_pipe(
+                lambda: asyncio.StreamReaderProtocol(control), pipe,
+            )
+        except BaseException:
+            pipe.close()
+            os.set_blocking(descriptor, blocking)
+            raise
+
         async def invoke():
-            sinks = {"stdout": Sink("out"), "stderr": Sink("err")}
-            if submission:
-                sinks["started"] = started
-            return await function(*payload["args"], **payload["kwargs"], **sinks)
+            options = dict(payload["kwargs"], stdout=Sink("out"), stderr=Sink("err"))
+            if mode != "follow":
+                options["started"] = started
+            if mode == "execute":
+                options["control"] = control
+            return await function(*payload["args"], **options)
 
         try:
             await write(protocol.magic)
-            if observe_only:
-                # A passive call receives no input. Readability therefore
-                # signals EOF (or invalid input), even if the job is silent.
-                disconnected = loop.create_future()
-                fd = sys.stdin.fileno()
-
-                def readable():
-                    loop.remove_reader(fd)
-                    disconnected.set_result(None)
-
-                loop.add_reader(fd, readable)
+            if mode != "execute":
                 running = asyncio.create_task(invoke())
+                disconnected = asyncio.create_task(control.read(1))
                 try:
                     done, _ = await asyncio.wait(
                         (running, disconnected), return_when=asyncio.FIRST_COMPLETED,
                     )
                     if running not in done:
-                        if os.read(fd, 1):
+                        if disconnected.result():
                             raise ValueError("Observation-only call received unexpected input")
                         return
                     facts = running.result()
                 finally:
-                    loop.remove_reader(fd)
-                    running.cancel()
-                    await asyncio.gather(running, return_exceptions=True)
+                    for task in (running, disconnected):
+                        task.cancel()
+                    await asyncio.gather(running, disconnected, return_exceptions=True)
             else:
                 facts = await invoke()
             await write(protocol.encode("terminal", facts))
         finally:
+            transport.close()
             os.set_blocking(descriptor, blocking)
 
     asyncio.run(run())

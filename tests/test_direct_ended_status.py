@@ -56,7 +56,7 @@ def process():
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux procfs identity")
 def test_direct_status_is_independent_of_live_session(process):
     ref = _linux_ref(process.pid)
-    assert DirectBackend().supports == frozenset({BackendCapability.STATUS, BackendCapability.CANCEL, BackendCapability.REATTACH})
+    assert BackendCapability.STATUS in DirectBackend().supports
     running = DirectBackend.status(ref)
     assert running["state"] == "running"
     assert running["return_code"] is None
@@ -244,7 +244,9 @@ def test_live_observer_keeps_reservation_during_postprocess(process, tmp_path):
     with manager.store.observation_lock(original):
         process.terminate()
         process.wait(timeout=5)
-        assert manager.refresh((original,))[0].state == RunState.RUNNING
+        pending = manager.refresh((original,))[0]
+        assert pending.state == RunState.FINISHING
+        assert pending.return_code is None
         with pytest.raises(DuplicateSubmissionError):
             manager.reserve(replacement)
     assert manager.reserve(replacement, recover_conflicts=True).state == RunState.SUBMITTING

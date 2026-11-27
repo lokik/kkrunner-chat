@@ -121,7 +121,7 @@ def test_remote_bootstraps_are_source_only_and_compile(mode):
         Operation.standalone(query_files),
         python=(sys.executable,),
         streaming=mode == "stream",
-        framed=mode == "framed",
+        framed="execute" if mode == "framed" else None,
     )
     script = command[-1]
     assert "def _kkrunner_invoke(" in script
