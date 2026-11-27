@@ -2,6 +2,8 @@
 
 from threading import Event
 
+import pytest
+
 from kkrunner import ExecutionSpec, Run, RunState, RunStore
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobRef, JobStatus
@@ -135,3 +137,34 @@ def test_new_observer_can_complete_after_unknown_observation(tmp_path):
     assert len(delivered) == 2
     assert manager.store.get(first.id).state == RunState.FINISHED
     assert client._test_acknowledgements == [first.id]
+
+
+@pytest.mark.parametrize("terminal", [RunState.FINISHED, RunState.CANCELLED])
+def test_tracked_run_publishes_finalization_after_native_exit(tmp_path, monkeypatch, terminal):
+    run, job, manager, _ = _run(tmp_path)
+    entered, release = Event(), Event()
+    finalize = run._file_session.finalize
+
+    def blocked_finalize(status):
+        entered.set()
+        assert release.wait(5), "Finalization was never released"
+        return finalize(status)
+
+    monkeypatch.setattr(run._file_session, "finalize", blocked_finalize)
+    run.start()
+    try:
+        if terminal == RunState.CANCELLED:
+            monkeypatch.setattr(job, "cancel", lambda: job.finish(terminal))
+            run.cancel()
+        else:
+            job.finish(terminal)
+        assert entered.wait(5), "Native completion was not observed"
+        assert run.state == RunState.DOWNLOADING
+        stored = manager.store.get(run.id)
+        assert stored.state == RunState.DOWNLOADING
+        assert stored.return_code == (0 if terminal == RunState.FINISHED else None)
+        assert stored.finished_at is None
+    finally:
+        release.set()
+    run.wait()
+    assert manager.store.get(run.id).state == terminal

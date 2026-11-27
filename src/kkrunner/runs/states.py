@@ -3,6 +3,16 @@
 from kkrunner.execution import FailurePhase, RunState
 
 
+NO_ARTIFACTS_FAILURES = {
+    FailurePhase.PREPROCESSING,
+    FailurePhase.SUBMISSION,
+    FailurePhase.LAUNCH,
+    FailurePhase.OUTPUT,
+    FailurePhase.ARTIFACTS,
+    FailurePhase.DOWNLOAD,
+}
+
+
 def project_run_state(state, *, files_pending=False, processing_pending=False, failure_phase=None):
     """Project native facts into a client phase without changing any state."""
     state = RunState(state)

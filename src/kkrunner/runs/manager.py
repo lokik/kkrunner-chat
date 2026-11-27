@@ -29,6 +29,7 @@ from kkrunner.runs.files import RunFiles
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
+from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, project_run_state
 from kkrunner.runs.stores import resolve_record, store_for
 
 _STATE_RANK = {
@@ -44,14 +45,6 @@ _STATE_RANK = {
     RunState.CANCELLED: 7,
 }
 _UNCHANGED = object()
-_NO_ARTIFACTS_FAILURES = {
-    FailurePhase.PREPROCESSING,
-    FailurePhase.SUBMISSION,
-    FailurePhase.LAUNCH,
-    FailurePhase.OUTPUT,
-    FailurePhase.ARTIFACTS,
-    FailurePhase.DOWNLOAD,
-}
 
 
 def _now():
@@ -303,6 +296,9 @@ class RunManager:
                 # An independent refresh has superseded this observation.
                 return latest
             final_locked = latest.state.is_terminal
+            if final_locked and state is not None and not RunState(state).is_terminal:
+                # A stale progress update cannot refine a published outcome.
+                return latest
             now = _now()
             merged_state = self._merged_state(
                 latest, state, return_code=return_code if type(return_code) is int else None,
@@ -580,8 +576,6 @@ class RunManager:
         return status
 
     def _observation_changes(self, record, status, *, files_pending):
-        from kkrunner.runs.states import project_run_state
-
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
         state = project_run_state(
@@ -689,7 +683,7 @@ class RunManager:
         if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING) or (
             status.state.is_terminal and changes["state"].is_terminal
             and status.files is not None
-            and changes["failure_phase"] not in _NO_ARTIFACTS_FAILURES
+            and changes["failure_phase"] not in NO_ARTIFACTS_FAILURES
         ):
             changes["files"] = status.files if status.files is not None else record.files
             updated = self.complete(record, **changes, artifacts_available=True)
