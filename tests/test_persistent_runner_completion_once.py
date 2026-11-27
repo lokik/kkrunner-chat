@@ -117,6 +117,33 @@ def test_unknown_observation_does_not_finalize_execution(tmp_path, monkeypatch):
     assert client._test_acknowledgements == []
 
 
+
+@pytest.mark.parametrize("return_code", [0, 7])
+def test_refresh_of_settled_run_exposes_current_terminal_facts(tmp_path, monkeypatch, return_code):
+    from kkrunner.runs import FailurePhase, RunStatus
+
+    run, job, manager, client = _run(tmp_path)
+    run.start()
+    job.finish(RunState.UNKNOWN, "connection lost")
+    run.wait()
+    assert run.failure_message == "connection lost"
+    assert run.return_code is None
+
+    state = RunState.FINISHED if return_code == 0 else RunState.FAILED
+    phase = None if return_code == 0 else FailurePhase.EXECUTION
+    message = None if return_code == 0 else "program failed"
+    monkeypatch.setattr(client, "status", lambda *records: tuple(
+        RunStatus(state, backend_id=record.execution.backend_id,
+                  return_code=return_code, failure_phase=phase, message=message)
+        for record in records
+    ))
+    assert run.refresh() == state
+    assert run.record == manager.store.get(run.id)
+    assert run.return_code == return_code
+    assert run.failure_phase == phase
+    assert run.failure_message == message
+
+
 def test_new_observer_can_complete_after_unknown_observation(tmp_path):
     delivered = []
     first, job, manager, client = _run(tmp_path, callback=delivered.append)

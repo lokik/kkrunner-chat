@@ -216,10 +216,14 @@ class Run:
 
     @property
     def failure_message(self):
+        if self._record is not None and self._record.state.is_terminal:
+            return self._record.message
         return self._failure_message or self._job.failure_message
 
     @property
     def return_code(self):
+        if self._record is not None and self._record.state.is_terminal:
+            return self._record.return_code
         return self._job.return_code
 
     @property
@@ -676,7 +680,7 @@ class Run:
             latest = resolve_record(self._record, self.manager.store)
             if latest.state.is_terminal and not (
                 latest.state == RunState.FINISHED and latest.return_code is None
-                and self.return_code is not None and self._state.is_terminal
+                and self._job.return_code is not None and self._state.is_terminal
             ):
                 self._record = latest
                 self._completion_persisted = True
@@ -691,13 +695,14 @@ class Run:
                 return
             if not self._state.is_terminal:
                 return
-            phase = self.failure_phase
+            phase = self._failure_phase or self._job.failure_phase
             if self._state == RunState.FAILED and phase is None:
                 phase = FailurePhase.EXECUTION
             try:
                 self._complete_record(
                     latest, state=self._state, execution=self.execution,
-                    return_code=self.return_code, message=self.failure_message,
+                    return_code=self._job.return_code,
+                    message=self._failure_message or self._job.failure_message,
                     failure_phase=phase,
                     artifacts_available=phase not in NO_ARTIFACTS_FAILURES,
                     files=self.files,
