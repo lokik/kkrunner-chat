@@ -310,6 +310,13 @@ class FileManifest:
             lambda item: replace(item, availability_state="pending") if item.availability_state is None else item
         )
 
+    def fail_pending_artifacts(self, message):
+        """Mark unresolved artifacts failed without retracting published files."""
+        return self._map_artifacts(
+            lambda item: replace(item, availability_state="failed", availability_message=message)
+            if item.availability_state in (None, "pending") else item
+        )
+
     def _map_artifacts(self, transform):
         return replace(
             self,

@@ -64,12 +64,12 @@ def test_start_monitor_is_idempotent():
         entered.set()
         assert release.wait(2)
 
-    runner = SimpleNamespace(_lock=Lock(), _thread=None, _backend_id="job-1", _thread_main=monitor)
+    runner = SimpleNamespace(_lock=Lock(), _thread=None, _thread_main=monitor)
     try:
-        start_monitor(runner, missing_backend="No job ID")
+        start_monitor(runner)
         assert entered.wait(2)
         thread = runner._thread
-        start_monitor(runner, missing_backend="No job ID")
+        start_monitor(runner)
         assert runner._thread is thread
     finally:
         release.set()
@@ -78,9 +78,3 @@ def test_start_monitor_is_idempotent():
     assert calls == [1]
     assert not runner._thread.is_alive()
 
-
-def test_start_monitor_requires_backend_identity():
-    runner = SimpleNamespace(_lock=Lock(), _thread=None, _backend_id=None, _thread_main=lambda: None)
-    with pytest.raises(RuntimeError, match="No backend identity"):
-        start_monitor(runner, missing_backend="No backend identity")
-    assert runner._thread is None

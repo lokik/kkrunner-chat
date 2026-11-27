@@ -43,7 +43,7 @@ are not migrated. Earlier record formats are unsupported; copying their JSON
 into the current store raises CorruptRunRecord. User configuration
 and Project generation/versioning are separate contracts.
 
-Lifecycle: new -> submitting -> queued/running -> downloading (if required) ->
+Lifecycle: new -> preprocessing (if required) -> submitting -> queued/running -> downloading (if required) ->
 postprocessing (if required) -> finished. Any phase can fail or be cancelled as
 supported by the backend. UNKNOWN is recoverable uncertainty, never completion.
 Download and processing failures can be explicitly reopened without resubmission.
@@ -327,10 +327,9 @@ record storage and process lifetime independently. `tracked=True` uses
 manager) controls where the record is stored. `RunManager.as_default(manager)`
 selects a scoped default without changing other contexts.
 
-Direct local and direct SSH default to memory-only, attached execution.
-Supervised local, agent-backed SSH and PSI/J default to a persisted RunRecord
-and backend-independent execution. An explicit false persistence policy does
-not disable supervisors, scheduler submission or their backend identities.
+All backends default to untracked execution. Direct local and direct SSH
+default to attached execution; supervisor and PSI/J jobs are detached.
+Tracking is independent of backend identity, process lifetime and recovery.
 
 A detached direct process outlives the client's connection, but it need not
 have a durable backend identity. The target never silently creates stdout or
@@ -372,9 +371,11 @@ Backends do not manufacture client Jobs.
 checks this capability rather than inferring support from the presence of a
 method. Recovery returns `RecoveryResult` with found/absent/indeterminate/
 unsupported semantics; having an identity does not imply recovery support.
-Direct execution cannot reconnect. Supervisor recovery needs retained receipts;
-PSI/J recovery depends on the configured scheduler. Unsupported or uncertain
-recovery never authorizes a duplicate submission.
+Direct execution can reattach to named output files and observe process
+liveness, but cannot recover the original exit code or an uncertain
+submission. Supervisor recovery needs retained receipts; PSI/J recovery
+depends on the configured scheduler. Unsupported or uncertain recovery never
+authorizes a duplicate submission.
 
 | Role | Implementations |
 | --- | --- |

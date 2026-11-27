@@ -37,13 +37,11 @@ def dispatch_cancellation(action):
     return future
 
 
-def start_monitor(runner, *, missing_backend=None):
+def start_monitor(runner):
     """Start a runner's monitor once, under its lifecycle lock."""
     with runner._lock:
         if runner._thread is not None:
             return
-        if missing_backend is not None and runner._backend_id is None:
-            raise RuntimeError(missing_backend)
         runner._thread = Thread(target=runner._thread_main, daemon=True)
         runner._thread.start()
 

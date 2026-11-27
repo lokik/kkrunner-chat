@@ -553,14 +553,6 @@ class RunManager:
             attempted_refresh.update(self._record_key(conflict) for conflict in refreshable)
             self.refresh(refreshable)
 
-    @staticmethod
-    def _observed_run_state(record, status):
-        from kkrunner.runs.states import project_run_state
-        return project_run_state(status.state,
-                                 files_pending=not record.execution.target.is_local and status.files is None,
-                                 processing_pending=record.processing_required and status.return_code == 0,
-                                 failure_phase=status.failure_phase)
-
     def _apply_observation(self, record, status, operation, **kwargs):
         # A native exit is not client completion while a Run is observing it.
         if not status.state.is_terminal:
@@ -587,10 +579,16 @@ class RunManager:
             )
         return status
 
-    def _observation_changes(self, record, status):
+    def _observation_changes(self, record, status, *, files_pending):
+        from kkrunner.runs.states import project_run_state
+
         phase = _failure_phase(status.failure_phase)
         return_code = status.return_code
-        state = self._observed_run_state(record, status)
+        state = project_run_state(
+            status.state, files_pending=files_pending,
+            processing_pending=record.processing_required and return_code == 0,
+            failure_phase=phase,
+        )
         execution = status.execution
         if execution is None and status.backend_id is not None:
             execution = record.execution.submitted(status.backend_id)
@@ -627,12 +625,17 @@ class RunManager:
         record, status = self._current_observation(record, status)
         if status is None:
             return record
-        changes = self._observation_changes(record, status)
-        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
-            # Keep the reservation until completion has captured the artifacts.
-            files = status.files if status.files is not None else record.files
-            if files.captured_at is None or files.failed_artifacts:
-                changes["state"] = RunState.DOWNLOADING
+        # Supplied execution facts alone cannot publish uncaptured diagnostic
+        # or successful output. Keep the reservation until finalization.
+        files = status.files if status.files is not None else record.files
+        changes = self._observation_changes(
+            record, status,
+            files_pending=(
+                (not record.execution.target.is_local and status.files is None)
+                or files.captured_at is None
+                or (status.state == RunState.FINISHED and bool(files.failed_artifacts))
+            ),
+        )
         return self.transition(record, **changes)
 
     def _record_observation(self, record, status, *, retrieve_ended=False):
@@ -672,13 +675,13 @@ class RunManager:
                 # As in Run._finish(), diagnostic transfer failure cannot
                 # change a confirmed cancelled execution into another outcome.
                 message = f"Execution cancelled; output retrieval failed: {exc}"
-                files = record.files._map_artifacts(
-                    lambda item: replace(item, availability_state="failed", availability_message=message)
-                    if item.availability_state in (None, "pending") else item
-                )
+                files = record.files.fail_pending_artifacts(message)
                 status = replace(status, message=message)
             status = replace(status, files=files)
-        changes = self._observation_changes(record, status)
+        changes = self._observation_changes(
+            record, status,
+            files_pending=not record.execution.target.is_local and status.files is None,
+        )
         if changes["state"] == RunState.UNKNOWN:
             # Uncertainty must not replace a more recent observation or cause
             # further receipt requests over a possibly unavailable transport.
@@ -735,17 +738,7 @@ class RunManager:
                     state = RunState.FAILED
                     phase = FailurePhase.ARTIFACTS
                     message = capture_error
-                result_files = result_files._map_artifacts(
-                    lambda item: (
-                        replace(
-                            item,
-                            availability_state="failed",
-                            availability_message=capture_error,
-                        )
-                        if item.availability_state in (None, "pending")
-                        else item
-                    )
-                )
+                result_files = result_files.fail_pending_artifacts(capture_error)
 
         if (
             result_files is not None

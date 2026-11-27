@@ -83,12 +83,6 @@ class FileSession:
             source_pattern=source_pattern,
         )
 
-    def _set_pending_failed(self, message):
-        """Record a transfer-wide failure on still-pending output artifacts."""
-        for entry in self._files.artifacts:
-            if entry.availability_state in (None, "pending"):
-                self._set_file_availability(entry.local_path, "failed", message)
-
     def _write_output(self, data, kind):
         """Persist FOLLOW bytes at their logical offset, not blindly append.
 
@@ -179,6 +173,10 @@ class FileSession:
             if previous != source:
                 raise ValueError(f"Remote input target collision: {target}")
             return target
+        policy = self.context.input_files
+        if policy == FileSyncPolicy.NEVER:
+            used[target] = source
+            return target
         if os.path.lexists(source) and (os.path.islink(source) or not os.path.isdir(source)):
             raise ValueError(f"Directory input is not a regular directory: {source}")
         local_exists = os.path.isdir(source)
@@ -187,20 +185,18 @@ class FileSession:
         remote_exists = observed["status"] == "ok" and observed["type"] == "directory"
         if observed["status"] == "ok" and not remote_exists:
             raise ValueError(f"Target directory input is not a directory: {target}")
-        policy = self.context.input_files
         if required and policy == FileSyncPolicy.ALWAYS and not local_exists:
             raise FileNotFoundError(f"Local input directory does not exist: {source}")
-        if local_exists and policy != FileSyncPolicy.NEVER:
-            # Existence alone decides ALWAYS/MISSING. Only CHANGED needs to
-            # read an existing destination tree.
-            transfer = policy == FileSyncPolicy.ALWAYS or not remote_exists
+        if local_exists:
+            # ALWAYS/MISSING depend only on existence; CHANGED also needs
+            # content identity when both trees exist.
+            local_digest, remote_digest = True, True if remote_exists else None
             if policy == FileSyncPolicy.CHANGED and remote_exists:
                 local_digest = directory_digest(source)
                 remote_digest = await transport.call(Operation.standalone(directory_digest), target)
                 if local_digest is None or remote_digest is None:
                     raise ValueError(f"Cannot compare directory input contents: {source} -> {target}")
-                transfer = policy.should_transfer(local_digest, remote_digest)
-            if transfer:
+            if policy.should_transfer(local_digest, remote_digest):
                 await transport.put_directory(source, target)
                 remote_exists = True
         if required and not remote_exists:
@@ -425,26 +421,32 @@ class FileSession:
                 return False
             if entry["status"] != "ok" or entry["type"] != "directory":
                 raise ValueError(f"Declared directory output is not a directory: {remote}")
-            if os.path.lexists(local):
-                if os.path.islink(local) or not os.path.isdir(local):
-                    raise ValueError(f"Local directory output is not a directory: {local}")
-                if policy in (FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING):
-                    remote_digest = await self.context.target.call(
-                        Operation.standalone(directory_digest), remote,
-                    )
-                    local_digest = directory_digest(local)
-                    if remote_digest is not None and remote_digest == local_digest:
-                        return True
-                if policy == FileSyncPolicy.MISSING:
-                    # An existing but different local tree is not this run's result.
-                    return False
-            await self.context.target.get_directory(remote, local)
-            return True
+            return await self._sync_directory_output(local, remote)
         remote_digest = await self.context.target.file_digest(remote)
         available, transfer = self._output_file_action(local, remote, required, remote_digest)
         if transfer:
             await self.context.target.get_file(remote, local)
         return available
+
+    async def _sync_directory_output(self, local, remote, *, remote_digest=None):
+        """Synchronize an existing target directory; reuse an observed digest."""
+        policy = self.context.output_files
+        if os.path.lexists(local):
+            if os.path.islink(local) or not os.path.isdir(local):
+                raise ValueError(f"Local directory output is not a directory: {local}")
+            if policy in (FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING):
+                if remote_digest is None:
+                    remote_digest = await self.context.target.call(
+                        Operation.standalone(directory_digest), remote,
+                    )
+                local_digest = directory_digest(local)
+                if remote_digest is not None and remote_digest == local_digest:
+                    return True
+            if policy == FileSyncPolicy.MISSING:
+                # An existing but different local tree is not this run's result.
+                return False
+        await self.context.target.get_directory(remote, local)
+        return True
 
     def _output_file_action(self, local, remote, required, remote_digest):
         """Decide availability and transfer using the same exact/pattern policy."""
@@ -483,7 +485,7 @@ class FileSession:
                     ):
                         state = "skipped"
                     else:
-                        available = await self._sync_one_output(local, remote, False, kind=kind)
+                        available = await self._sync_directory_output(local, remote, remote_digest=digest)
                         state = "available" if available else "skipped"
                 else:
                     raise ValueError(f"Declared directory cache is not a directory: {remote}")
@@ -862,14 +864,14 @@ class FileSession:
             if required:
                 await self._verify_streams()
         except Exception as exc:
-            self._set_pending_failed(str(exc))
+            self.mark_transfer_failed(str(exc))
             raise
         for entry in self._files.artifacts:
             if entry.availability_state == "pending":
                 self._set_file_availability(entry.local_path, "available")
 
     def mark_transfer_failed(self, message):
-        self._set_pending_failed(message)
+        self._files = self._files.fail_pending_artifacts(message)
 
     async def finalize_async(self, status):
         """Finalize owned files on the existing event loop, if any."""

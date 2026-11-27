@@ -288,8 +288,8 @@ class Run:
                     # FileSession finalizes and closes its streams before processing.
                     self._file_session.finalize(self._job.status())
                 except Exception as exc:
+                    self._file_session.mark_transfer_failed(str(exc))
                     if raw_state == RunState.FINISHED:
-                        self._file_session.mark_transfer_failed(str(exc))
                         self._exception = exc
                         self._state = RunState.FAILED
                         self._failure_phase = self._file_failure_phase()

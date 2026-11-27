@@ -193,3 +193,28 @@ def test_stale_backend_status_does_not_replace_postprocessing(tmp_path, observe)
         (result,) = manager.refresh((stale,))
     assert result == current
     assert manager.store.get(stale.id) == current
+
+
+@pytest.mark.parametrize("state", [RunState.FAILED, RunState.CANCELLED])
+def test_update_reserves_local_diagnostics_until_refresh(tmp_path, state):
+    from kkrunner.files import FileEntry, FileManifest
+
+    executor = _Executor(state)
+    manager, record = _record(tmp_path, executor)
+    output = tmp_path / "run.out"
+    output.write_text("diagnostic output")
+    record = manager.transition(
+        record, files=FileManifest(stdout=FileEntry(local_path=str(output))),
+    )
+    status, = executor.status(record)
+
+    updated = manager.update(record, status)
+    assert updated.state == RunState.DOWNLOADING
+    assert updated.files.captured_at is None
+    assert updated in manager.store.runs(active=True)
+
+    refreshed, = manager.refresh((updated,))
+    assert refreshed.state == state
+    assert refreshed.files.captured_at is not None
+    assert len(refreshed.files.output_versions) == 1
+    assert refreshed in manager.store.runs(active=False)
