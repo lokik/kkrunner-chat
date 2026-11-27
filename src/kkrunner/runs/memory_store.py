@@ -64,6 +64,7 @@ class MemoryRunStore:
         with self._lock:
             self._assert_not_forgotten(record.id)
             latest = self._records.get(record.id)
+            exists = latest is not None
             if latest is None:
                 if record.state != RunState.NEW:
                     raise FileNotFoundError(record.id)
@@ -72,6 +73,8 @@ class MemoryRunStore:
                 raise ValueError("Run id already belongs to a different persistent identity")
             updated = updater(latest)
             validate_update(latest, updated)
+            if exists and updated is latest:
+                return latest
             return self._write(updated)
 
     def runs(self, *, active=None, limit=None, newest=False, on_error=None):
