@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from kkrunner.files.availability import file_is_current
-from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry
+from kkrunner.files.manifest import ArtifactAvailabilityState
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import FileState, file_digest
 from kkrunner.runs.stores import resolve_record, store_for
@@ -58,21 +58,13 @@ class RunFiles:
 
     def input_file_is_current(self, run):
         record = resolve_record(run, self.store)
-        result_files = record.files
-        return file_is_current(
-            result_files,
-            None if result_files is None else result_files.input_file,
-            () if result_files is None else result_files.input_versions,
-        )
+        files = record.files
+        return file_is_current(files, files.input_file, files.input_versions)
 
     def output_file_is_current(self, run):
         record = resolve_record(run, self.store)
-        result_files = record.files
-        return file_is_current(
-            result_files,
-            None if result_files is None else result_files.output_file,
-            () if result_files is None else result_files.output_versions,
-        )
+        files = record.files
+        return file_is_current(files, files.output_file, files.output_versions)
 
     def update_artifact_availability(self, record, path, state, message=None):
         """Persist availability of one artifact without changing the run outcome."""
@@ -94,25 +86,17 @@ class RunFiles:
         copy, not a consistent version. Destination copies never replace run
         files or affect persistent artifact metadata.
         """
-        from kkrunner.files.paths import file_path, has_file_magic
-        from kkrunner.files.snapshots import matching_file, check_destination
-
         record = resolve_record(run, self.store)
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has not been submitted")
-        selected = file.local_path if isinstance(file, FileEntry) else file
-        path = file_path(selected, record.execution.directory.local, required=True)
-        if has_file_magic(path):
-            raise ValueError("Snapshot requires one concrete file, not a wildcard")
-        entry = matching_file(record.files, path)
-        if entry is None:
-            raise ValueError(f"File is not a declared output or cache: {path}")
-        if destination is not None:
-            destination = check_destination(record.files, path, destination)
-        if record.execution.directory.remote is None:
-            from kkrunner.files.snapshots import local_snapshot
-            return local_snapshot(path, destination=destination)
-        return self._client_for(record).snapshot_file(record, path, destination=destination)
+        if record.execution.directory.remote is not None:
+            return self._client_for(record).snapshot_file(record, file, destination=destination)
+
+        from kkrunner.files.snapshots import local_snapshot, snapshot_request
+        path, _, destination = snapshot_request(
+            record.files, record.execution.directory.local, file, destination,
+        )
+        return local_snapshot(path, destination=destination)
 
     def retrieve_result_files(self, run, *, reserve):
         record = resolve_record(run, self.store)

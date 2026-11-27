@@ -165,3 +165,28 @@ def test_snapshot_destination_cannot_overwrite_declared_directory_contents(tmp_p
         with pytest.raises(ValueError, match="overlaps"):
             check_destination(manifest, source, destination)
     assert check_destination(manifest, source, tmp_path / "other") == tmp_path / "other"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_client_snapshot_respects_manifest_and_preserves_run_files(tmp_path, remote):
+    _, run, local, source_root = running_run(tmp_path, remote)
+    client = ExecutionClient(SupervisedBackend, target=run.execution.target)
+    (source_root / "result.dat").write_bytes(b"result")
+    (source_root / "input.dat").write_bytes(b"input")
+    (source_root / "unknown.dat").write_bytes(b"undeclared")
+    assert client.snapshot_file(run, "result.dat") == b"result"
+    assert client.snapshot_file(run, run.files.outputs[0]) == b"result"
+
+    for forbidden in ("input.dat", "unknown.dat"):
+        with pytest.raises(ValueError, match="declared output"):
+            client.snapshot_file(run, forbidden)
+    with pytest.raises(ValueError, match="concrete file"):
+        client.snapshot_file(run, "*.dat")
+    (local / "input.dat").write_bytes(b"local input")
+    with pytest.raises(ValueError, match="overlaps"):
+        client.snapshot_file(run, "result.dat", destination=local / "input.dat")
+    assert (local / "input.dat").read_bytes() == b"local input"
+
+    destination = tmp_path / "copy.dat"
+    assert client.snapshot_file(run, "result.dat", destination=destination) == destination
+    assert destination.read_bytes() == b"result"

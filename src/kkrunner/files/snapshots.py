@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 from kkrunner.files.staging import staged_local_file
 
-from kkrunner.files.paths import declaration_paths, path_matches, paths_overlap
+from kkrunner.files.manifest import FileEntry
+from kkrunner.files.paths import declaration_paths, file_path, has_file_magic, path_matches, paths_overlap
 
 
 def matching_file(manifest, path):
@@ -22,6 +23,20 @@ def matching_file(manifest, path):
         if path_matches(path, os.path.abspath(entry.local_path)):
             return entry
     return None
+
+
+def snapshot_request(manifest, directory, file, destination):
+    """Resolve and validate one observational copy against its declaration."""
+    selected = file.local_path if isinstance(file, FileEntry) else file
+    path = file_path(selected, directory, required=True)
+    if path is None or has_file_magic(path):
+        raise ValueError("Snapshot requires one concrete file, not a wildcard")
+    entry = matching_file(manifest, path)
+    if entry is None:
+        raise ValueError(f"File is not a declared output or cache: {path}")
+    if destination is not None:
+        destination = check_destination(manifest, path, destination)
+    return path, entry, destination
 
 
 @contextmanager
