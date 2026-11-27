@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -175,7 +176,9 @@ async def follow_growing_files(paths, on_chunk, terminal, *, offsets=None, poll_
         while True:
             chunks = tail.read_available(max_sizes=limits)
             for kind, data in chunks:
-                on_chunk(kind, data)
+                pending = on_chunk(kind, data)
+                if inspect.isawaitable(pending):
+                    await pending
             if finished is None:
                 # A producer may write indefinitely after contact is lost.
                 # Check the wait outcome after every bounded read.

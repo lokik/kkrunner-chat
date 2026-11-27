@@ -43,41 +43,6 @@ _HEADER = _PROTOCOL.header
 _CODE_TO_KIND = {value: key for key, value in _PROTOCOL.codes.items()}
 
 
-class FramedSink:
-    """Write one calculation channel into the framed data stream."""
-
-    def __init__(self, stream, kind):
-        self.stream = stream
-        self.kind = kind
-
-    def write(self, data):
-        self.stream.write(encode_stream_frame(self.kind, data))
-
-    def flush(self):
-        self.stream.flush()
-
-
-async def follow_framed(follow, job_ref, **options):
-    """Deliver backend FOLLOW and its terminal outcome over one data channel.
-
-    Target stderr is reserved for SSH diagnostics. No client file state
-    or native process lifetime is owned here.
-    """
-    import sys
-
-    output = sys.stdout.buffer
-    output.write(STREAM_MAGIC)
-    output.flush()
-    outcome = await follow(
-        job_ref,
-        FramedSink(output, "out"),
-        FramedSink(output, "err"),
-        **options,
-    )
-    output.write(encode_terminal_frame(outcome))
-    output.flush()
-
-
 class StreamProtocolError(RuntimeError):
     """Malformed or unsupported remote stream protocol data."""
 

@@ -13,7 +13,7 @@ from kkrunner.client.contracts import Operation
 from kkrunner.targets.implementations.ssh.rpc import operation_command
 
 MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
-                      "stream", "follow_framed", "acknowledge", "acknowledge_submission"}
+                      "stream", "acknowledge", "acknowledge_submission"}
 
 
 @pytest.mark.parametrize("kind", ("kkrunner", "psij"))

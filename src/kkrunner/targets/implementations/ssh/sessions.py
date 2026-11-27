@@ -19,7 +19,7 @@ from kkrunner.targets.implementations.ssh.worker import WORKER_SOURCE
 
 from ...rpc import operation_result
 from .source import portable_bundle
-from .helpers import ssh_helper
+from .helpers import ssh_function
 
 
 class _Session:
@@ -172,10 +172,7 @@ class SshSessionPool:
         session.close()
 
     def _invoke(self, operation, args, kwargs, cancelled):
-        function = (
-            operation.function if operation.function is not None
-            else getattr(ssh_helper(operation.backend), operation.method)
-        )
+        function = ssh_function(operation)
         symbol, definitions = portable_bundle(function)
         session = self._take(cancelled)
         with self._lock:

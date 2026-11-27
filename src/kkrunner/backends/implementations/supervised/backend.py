@@ -228,12 +228,6 @@ class SupervisedBackend(Backend, ManagedOperations):
         import sys
         return await SupervisedBackend.follow(job_ref, sys.stdout.buffer, sys.stderr.buffer, **options)
 
-    @staticmethod
-    async def follow_framed(job_ref: str, **options):
-        from kkrunner.remote.stream import follow_framed
-        return await follow_framed(SupervisedBackend.follow, job_ref, **options)
-
-
 def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionReply:
     """Submit one process job, preserving the atomic release barrier."""
     if os.name != "posix":

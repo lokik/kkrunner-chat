@@ -210,7 +210,7 @@ class DirectOperations(Protocol):
 
     @staticmethod
     async def follow(
-        job_ref: str, stdout: ByteSink, stderr: ByteSink, **options: Unpack[FollowOptions],
+        job_ref: str, stdout: Union[ByteSink, AsyncByteSink], stderr: Union[ByteSink, AsyncByteSink], **options: Unpack[FollowOptions],
     ) -> StatusReply: ...
 
     @staticmethod
@@ -258,15 +258,11 @@ class ManagedOperations(Protocol):
 
     @staticmethod
     async def follow(
-        job_ref: str, stdout: ByteSink, stderr: ByteSink, **options: Unpack[FollowOptions],
+        job_ref: str, stdout: Union[ByteSink, AsyncByteSink], stderr: Union[ByteSink, AsyncByteSink], **options: Unpack[FollowOptions],
     ) -> StatusReply: ...
 
     @staticmethod
     async def stream(job_ref: str, **options: Unpack[FollowOptions]) -> StatusReply: ...
-
-    @staticmethod
-    async def follow_framed(job_ref: str, **options: Unpack[FollowOptions]) -> None: ...
-
 
 class Backend:
     """Configured native backend with a class-level static-operation interface.

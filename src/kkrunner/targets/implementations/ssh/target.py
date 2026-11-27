@@ -46,17 +46,13 @@ class SshTarget(Target):
 
     async def follow(self, operation, identity, on_output, **options):
         from .follow import follow_framed_command
-        if operation.backend.execution_mode == "direct":
-            # Send the portable direct follower to hosts without kkrunner.
-            command = operation_command(operation, python=self.python_command, framed=True)
-            process = await self.start(
-                (*command, operation_payload((identity,), options)),
-                stdin=asyncio.subprocess.PIPE,
-            )
-        else:
-            operation = Operation.for_backend(operation.backend, "follow_framed")
-            process = await self.start_operation(operation, identity, **options)
-        return await follow_framed_command(process, on_output)
+        command = operation_command(operation, python=self.python_command, framed=True,
+                                    observe_only=True, submission=False)
+        process = await self.start(
+            (*command, operation_payload((identity,), options)),
+            stdin=asyncio.subprocess.PIPE,
+        )
+        return await follow_framed_command(process, on_output, close_input=True)
 
     async def call(self, operation: Operation, *args, **kwargs):
         if self.pool_size and type(self) is SshTarget:
