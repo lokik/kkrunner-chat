@@ -1527,3 +1527,48 @@ def test_frozen_plan_survives_stale_status_and_local_capture(tmp_path):
     captured = capture_result_files(observed.files)
     assert captured.outputs == frozen.outputs
     assert captured.output_versions == ()
+
+
+def test_never_sync_compares_only_existing_local_pattern_members(tmp_path, monkeypatch):
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("present.dat", "absent.dat"):
+        (remote / name).write_text(name)
+    (local / "present.dat").write_text("present.dat")
+    target = SshTarget("loopback")
+    record = RunManager().new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            outputs=(FileEntry(local / "*.dat", remote / "*.dat"),),
+            mapping=FileMapping(local, remote, output_sync="never"),
+        ).initialize_availability(),
+    )
+
+    digests = []
+    async def query(self, sources, *, root=None, digest=False):
+        if digest:
+            digests.extend(sources)
+        return await LocalTarget.query_files(self, sources, root=root, digest=digest)
+
+    async def unexpected_transfer(*args, **kwargs):
+        pytest.fail("NEVER must not transfer output")
+
+    monkeypatch.setattr(SshTarget, "query_files", query)
+    monkeypatch.setattr(SshTarget, "get_files", unexpected_transfer)
+    monkeypatch.setattr(SshTarget, "get_file", unexpected_transfer)
+
+    files, error = ExecutionClient(target=target).collect_ended_files(
+        record, RunStatus(RunState.FINISHED, return_code=0),
+    )
+    assert error is None
+    assert digests == [str(remote / "present.dat")]
+    assert {version.path.name for version in files.output_versions} == {"present.dat"}
+    assert {entry.local_path: entry.availability_state for entry in files.artifacts} == {
+        str(local / "*.dat"): "available",
+        str(local / "present.dat"): "available",
+        str(local / "absent.dat"): "skipped",
+    }
+    assert not (local / "absent.dat").exists()

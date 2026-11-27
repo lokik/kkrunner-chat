@@ -370,6 +370,9 @@ class FileSession:
                     seen_remote.add(remote)
                     if self._published_locally(entry) or entry.availability_state == "skipped":
                         continue
+                    if policy == FileSyncPolicy.NEVER and not os.path.exists(entry.local_path):
+                        self._set_file_availability(entry.local_path, "skipped", kind=kind)
+                        continue
                     self._set_file_availability(entry.local_path, "pending", kind=kind)
                     candidates.append(entry)
                 # No root argument: query_files treats these names as literals.
