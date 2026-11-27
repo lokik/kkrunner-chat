@@ -957,7 +957,18 @@ class RunManager:
         """Refresh statuses; opt in to retrieving ended, unobserved remote output."""
 
         options = {} if on_error is None else {"on_error": on_error}
-        records = tuple(self.store.runs(active=True, **options) if records is None else records)
+        if records is None:
+            records = tuple(self.store.runs(active=True, **options))
+        else:
+            # An assigned backend identity is immutable. Only an active
+            # identity-less snapshot may need a newer submission reference.
+            records = tuple(
+                resolve_record(record, self.store)
+                if record.execution.backend_id is None
+                and not record.state.is_terminal and record.state != RunState.NEW
+                else record
+                for record in records
+            )
         current = {self._record_key(record): record for record in records}
         groups = {}
         for record in records:
