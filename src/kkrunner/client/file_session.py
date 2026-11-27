@@ -666,8 +666,8 @@ class FileSession:
         from kkrunner.runs.base import ExecutionSpec
 
         execution, files = attachment.execution, attachment.files
-        if not context.target.is_local and (execution.backend_id is None or execution.directory.remote is None):
-            raise ValueError("Remote run lacks backend identity or working directory")
+        if not context.target.is_local and execution.directory.remote is None:
+            raise ValueError("Remote run lacks working directory")
         spec = ExecutionSpec(
             argv=None, directory=execution.directory.local, input_file=files.input_file,
             output_file=files.output_file, error_file=None if files.stderr is None else files.stderr.local_path,

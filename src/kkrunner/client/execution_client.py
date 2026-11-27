@@ -310,25 +310,13 @@ class ExecutionClient:
             raise
 
     def collect_ended_files(self, record, status):
-        """Collect named outputs of an ended execution without opening an observer.
+        """Finalize ended files without observing a job; return (manifest, error).
 
-        The original observer may have died, but the persisted manifest still
-        defines which target files are eligible for retrieval.
+        The caller must own the file reservation. Error is None on success;
+        otherwise the returned manifest retains the partial collection.
         """
-        from kkrunner.client.contracts import JobAttachment
-        self._validate_run(record)
-
-        async def collect():
-            context = FileContext(self.target, StagingSpec.from_mapping(record.files.mapping))
-            session = await FileSession.from_attachment(
-                context, JobAttachment(record.execution, record.files),
-            )
-            try:
-                return await session.finalize_async(status)
-            finally:
-                session.close()
-
-        return _run_sync(collect())
+        from kkrunner.client.file_access import FileAccess
+        return FileAccess(self.target).collect_ended_files(record, status)
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         if BackendCapability.REATTACH not in self.backend.supports:

@@ -130,7 +130,8 @@ def test_shared_finished_status_uses_local_artifacts_and_snapshot(tmp_path, monk
     monkeypatch.setattr(client, "status", lambda *runs: (
         RunStatus(RunState.FINISHED, return_code=0, backend_id="shared-job"),
     ))
-    monkeypatch.setattr(client, "collect_ended_files",
+    from kkrunner.client.file_access import FileAccess
+    monkeypatch.setattr(FileAccess, "collect_ended_files",
                         lambda *args: pytest.fail("No download of shared files"))
     monkeypatch.setattr(client, "acknowledge", lambda *args: None)
 
@@ -143,7 +144,6 @@ def test_shared_finished_status_uses_local_artifacts_and_snapshot(tmp_path, monk
 
     # No separate copy is available if a shared result is later deleted.
     output.unlink()
-    from kkrunner.client.file_access import FileAccess
     monkeypatch.setattr(FileAccess, "resolve_result_files",
                         lambda *args: pytest.fail("No separate shared file copy"))
     assert manager.retrieve_result_files(finished) == finished

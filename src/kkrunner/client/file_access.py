@@ -30,6 +30,31 @@ class FileAccess:
         if run.execution.target != self.target:
             raise ValueError("Run belongs to a different transport")
 
+    def collect_ended_files(self, run, status):
+        """Return (manifest, error) after finalizing an ended run's files.
+
+        The caller owns the file reservation and any history update. A transfer
+        failure returns the partially finalized manifest and the original error;
+        successful collection returns the finalized manifest and None.
+        """
+        from kkrunner.client.file_session import FileSession
+
+        self._validate_target(run)
+        if not status.state.is_terminal:
+            raise ValueError("File collection requires terminal execution status")
+
+        async def collect():
+            context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
+            session = await FileSession.from_attachment(context, run)
+            try:
+                return await session.finalize_async(status), None
+            except (OSError, RuntimeError, ValueError) as exc:
+                return session.files, exc
+            finally:
+                session.close()
+
+        return _run_sync(collect())
+
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
         file, entry, destination = snapshot_request(
