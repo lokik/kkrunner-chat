@@ -247,7 +247,8 @@ def _capturable_entries(entries, *, frozen=False):
         and entry.availability_state not in ("skipped", "failed")
         and (not frozen or entry.availability_state == "available")
         and (
-            not has_file_magic(entry.local_path)
+            entry.source_pattern is not None
+            or not has_file_magic(entry.local_path)
             or (not frozen and entry.availability_state in (None, "pending"))
         )
     )
@@ -262,6 +263,10 @@ def snapshot_file_entries(entries, *, sync=False):
         if entry.kind == "directory":
             if os.path.isdir(entry.local_path):
                 paths[os.path.abspath(entry.local_path)] = entry.kind
+        elif entry.source_pattern is not None:
+            # Discovery already resolved this pathname, including literal glob characters.
+            if os.path.isfile(entry.local_path):
+                paths[os.path.abspath(entry.local_path)] = "file"
         else:
             paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,)), "file"))
     versions = []
