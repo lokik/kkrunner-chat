@@ -776,6 +776,10 @@ class FileSession:
 
         try:
             self.close()
+            if self._files.captured_at is not None:
+                # Finalization is not historical restoration. Never modify
+                # files whose provenance has already been captured.
+                return self._files
             if status.failure_phase in NO_EXECUTION_FAILURES:
                 self._files = self._files.skip_pending_artifacts()
                 return self._files
@@ -789,11 +793,10 @@ class FileSession:
                 await self._synchronize(required=required)
             from kkrunner.files.availability import capture_result_files
 
-            if self._files.captured_at is None:
-                self._files = capture_result_files(
-                    self._files, require_outputs=required,
-                    cache_versions=None if self.files_are_local else await self._target_cache_versions(),
-                )
+            self._files = capture_result_files(
+                self._files, require_outputs=required,
+                cache_versions=None if self.files_are_local else await self._target_cache_versions(),
+            )
             return self._files
         except Exception as exc:
             self._files = self._files.fail_pending_artifacts(str(exc))
