@@ -4,6 +4,7 @@ import asyncio
 import glob
 import os
 import posixpath
+from dataclasses import replace
 from functools import partial
 
 from kkrunner.client.file_context import FileContext
@@ -47,7 +48,9 @@ class FileAccess:
             session = None
             try:
                 context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
-                session = await FileSession.from_attachment(context, run)
+                session = await FileSession.from_attachment(
+                    context, replace(run, files=run.files.retry_failed_artifacts()),
+                )
                 return await session.finalize_async(status), None
             except (OSError, RuntimeError, ValueError) as exc:
                 # A session that failed to initialize has no partial state yet.

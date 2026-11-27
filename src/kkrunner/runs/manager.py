@@ -663,6 +663,8 @@ class RunManager:
                 # As in Run._finish(), diagnostic transfer failure cannot
                 # change a confirmed cancelled execution into another outcome.
                 status = replace(status, message=f"Execution cancelled; output retrieval failed: {error}")
+            elif status.state == RunState.FINISHED and status.message is None:
+                status = replace(status, message="Process ended; exit code unavailable")
             status = replace(status, files=files)
         changes = self._observation_changes(
             record, status,
@@ -769,17 +771,7 @@ class RunManager:
                 raise ValueError("Only failed downloads of successful backend jobs can be retried")
             # Keep already transferred artifacts and all bytes on disk.
             # Only failed transfers become eligible for a fresh attempt.
-            files = latest.files._map_artifacts(
-                lambda item: (
-                    replace(
-                        item,
-                        availability_state="pending",
-                        availability_message=None,
-                    )
-                    if item.availability_state == "failed"
-                    else item
-                )
-            )
+            files = latest.files.retry_failed_artifacts()
             return replace(
                 latest,
                 state=RunState.DOWNLOADING,
