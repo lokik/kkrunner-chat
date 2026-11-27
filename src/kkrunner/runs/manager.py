@@ -874,7 +874,7 @@ class RunManager:
             raise TypeError("Postprocessing retry requires a callable result processor")
         from kkrunner.runs.base import ExecutionOutcome
 
-        record = resolve_record(run, self.store)
+        record = resolve_record(run, self.store) if isinstance(run, str) else run
         lock = self._store_for(record).observation_lock(record)
         if not lock.acquire(blocking=False):
             raise ProcessingPending("Another client owns postprocessing")
