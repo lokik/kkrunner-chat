@@ -103,3 +103,17 @@ def test_move_to_unassigned_and_missing_project(tmp_path):
     assert store.get(done.id).project_id == first.id
     projects.reassign_runs((done.id,), None)
     assert store.get(done.id).project_id is None
+
+
+def test_move_missing_run_reports_missing_record_and_releases_lock(tmp_path):
+    projects = ProjectRepository(tmp_path / "projects")
+    first = projects.create("First")
+    second = projects.create("Second")
+    store = projects.run_store
+    original = _run(store, tmp_path, project_id=first.id)
+
+    with pytest.raises(FileNotFoundError):
+        projects.reassign_runs((original.id, "missing"), second.id)
+    assert store.get(original.id).project_id == first.id
+    moved, = projects.reassign_runs((original.id,), second.id)
+    assert moved.project_id == second.id
