@@ -984,11 +984,15 @@ class RunManager:
         groups = {}
         for record in tuple(current.values()):
             if record.state == RunState.PREPROCESSING:
+                key = self._record_key(record)
                 try:
-                    current[self._record_key(record)] = self.recover_preprocessing(record)
+                    record = self.recover_preprocessing(record)
                 except FileNotFoundError:
-                    current.pop(self._record_key(record), None)
-                continue
+                    current.pop(key, None)
+                    continue
+                current[key] = record
+                if record.state == RunState.PREPROCESSING:
+                    continue
             if not record.execution.available:
                 continue  # Browsable history; no supported target implementation.
             if record.execution.backend_id is None and self._is_stale_submitting(record):
