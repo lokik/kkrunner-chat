@@ -50,37 +50,6 @@ class FileSession:
             error_file=self._local_path(spec.error_file),
         )
 
-    def _declarations(self, kind):
-        if kind == "cache":
-            return [(item.file, item.before) for item in self._files.caches]
-        return [(entry, None) for entry in self._files.outputs]
-
-    def _targets(self, kind):
-        return {
-            entry.local_path: (entry.remote_path, before) if kind == "cache" else entry.remote_path
-            for entry, before in self._declarations(kind)
-            if entry.local_path is not None and entry.remote_path is not None
-            and entry.source_pattern is None and not has_file_magic(entry.remote_path)
-        }
-
-    def _patterns(self, kind):
-        return tuple(entry.remote_path for entry, _ in self._declarations(kind)
-                     if entry.remote_path is not None and entry.source_pattern is None
-                     and has_file_magic(entry.remote_path))
-
-    @property
-    def _cache_targets(self):
-        return self._targets("cache")
-
-    @property
-    def _cache_patterns(self):
-        return self._patterns("cache")
-
-    @property
-    def _cache_before(self):
-        return {entry.remote_path: before for entry, before in self._declarations("cache")
-                if entry.local_path is None}
-
     def configure_stream_retrieval(self, required):
         """Choose file retrieval when the job does not relay primary streams."""
         if type(required) is not bool:
@@ -323,15 +292,8 @@ class FileSession:
 
         return targets, tuple(patterns), pattern_before
 
-    async def _sync_output_entry(self, local, remote, required, *, source_pattern=None, kind="file"):
+    async def _sync_output_entry(self, local, remote, required, *, kind="file"):
         """Synchronize one concrete output and record its availability."""
-        if source_pattern is not None:
-            self._set_file_availability(
-                local,
-                "pending",
-                remote=remote,
-                source_pattern=source_pattern,
-            )
         try:
             available = await self._sync_one_output(local, remote, required, kind=kind)
         except Exception as exc:
@@ -349,7 +311,8 @@ class FileSession:
         remote_root = await self.context._resolved_remote_root()
         selected = seen_remote if seen_remote is not None else set()
         selected.update(excluded_remote)
-        cache_before = self._cache_before if kind == "cache" else {}
+        cache_before = ({cache.file.remote_path: cache.before for cache in self._files.caches
+                         if cache.file.local_path is None} if kind == "cache" else {})
         excluded_local = set(excluded_local)
         transport = self.context.target
         for pattern in patterns:
@@ -500,16 +463,8 @@ class FileSession:
             and file_digest(local, missing_ok=True) is not None
         )
 
-    async def _sync_cache_entry(self, local, remote, before, *, source_pattern=None, kind="file"):
+    async def _sync_cache_entry(self, local, remote, before, *, kind="file"):
         """Synchronize one concrete cache using its pre-run signature."""
-        if source_pattern is not None:
-            self._set_file_availability(
-                local,
-                "pending",
-                remote=remote,
-                kind="cache",
-                source_pattern=source_pattern,
-            )
         try:
             if kind == "directory":
                 entry = (await self.context.target.query_files([remote]))[0]
@@ -548,18 +503,22 @@ class FileSession:
         if self.context.output_files == FileSyncPolicy.NEVER:
             return
 
-        kinds = {entry.file.local_path: entry.file.kind for entry in self._files.caches}
-        for local, (remote, before) in self._cache_targets.items():
-            await self._sync_cache_entry(
-                local, remote, before, kind=kinds[local],
-            )
+        exact = []
+        patterns = []
+        for cache in self._files.caches:
+            entry = cache.file
+            if entry.remote_path is None or entry.source_pattern is not None:
+                continue
+            if has_file_magic(entry.remote_path):
+                patterns.append(entry.remote_path)
+            elif entry.local_path is not None:
+                exact.append(entry.remote_path)
+                await self._sync_cache_entry(
+                    entry.local_path, entry.remote_path, cache.before, kind=entry.kind,
+                )
 
-        if self._cache_patterns:
-            await self._sync_patterns(
-                self._cache_patterns,
-                kind="cache",
-                excluded_remote=(remote for remote, _ in self._cache_targets.values()),
-            )
+        if patterns:
+            await self._sync_patterns(patterns, kind="cache", excluded_remote=exact)
 
     def _remote_argv(self, argv, staged):
         out = []

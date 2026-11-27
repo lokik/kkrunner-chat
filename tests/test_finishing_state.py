@@ -171,7 +171,7 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
             raise transfer_error
         return current.files
 
-    monkeypatch.setattr(executor, "collect_ended_direct_files", collect)
+    monkeypatch.setattr(executor, "collect_ended_files", collect)
     cancelled = manager.cancel(record.id)
     assert calls == [record.id]
     assert cancelled.state == RunState.CANCELLED

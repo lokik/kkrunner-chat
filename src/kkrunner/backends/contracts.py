@@ -31,6 +31,8 @@ class BackendCapability(str, Enum):
     REATTACH = "reattach"
     RECOVER = "recover"
     STATUS = "status"
+    # Native terminal outcome is independent of the original live observer.
+    INDEPENDENT_OUTCOME = "independent_outcome"
     CANCEL = "cancel"
     SUBMIT_AND_FOLLOW = "submit_and_follow"
     ACKNOWLEDGE = "acknowledge"
