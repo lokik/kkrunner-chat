@@ -71,6 +71,18 @@ def test_cancellation_connection_error_preserves_unknown(tmp_path, monkeypatch):
     assert manager.store.get(record.id) == record
 
 
+
+@pytest.mark.parametrize("state", [RunState.FINISHING, RunState.DOWNLOADING, RunState.POSTPROCESSING])
+def test_cancel_after_native_exit_does_not_contact_backend(tmp_path, monkeypatch, state):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = stored(manager, tmp_path, state=state)
+    monkeypatch.setattr(manager, "client_for",
+                        lambda _: pytest.fail("Native execution has already ended"))
+    with pytest.raises(RuntimeError, match="Execution has finished"):
+        manager.cancel(record.id)
+    assert manager.store.get(record.id) == record
+
+
 def test_direct_job_cannot_cancel_after_restart(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = stored(manager, tmp_path, backend="direct")
