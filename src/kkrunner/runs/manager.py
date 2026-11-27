@@ -947,7 +947,7 @@ class RunManager:
             return True
 
     def reconcile_acknowledgements(self, *, on_error=None):
-        """Retry idempotent result ACKs for durable terminal records."""
+        """Explicitly retry idempotent result ACKs for durable terminal records."""
         options = {} if on_error is None else {"on_error": on_error}
         return tuple(
             record.id for record in self.store.runs(active=False, **options)
@@ -970,8 +970,6 @@ class RunManager:
     def refresh(self, records=None, *, on_error=None, retrieve_ended=False):
         """Refresh statuses; opt in to retrieving ended, unobserved remote output."""
 
-        if records is None:
-            self.reconcile_acknowledgements(on_error=on_error)
         options = {} if on_error is None else {"on_error": on_error}
         records = tuple(self.store.runs(active=True, **options) if records is None else records)
         current = {self._record_key(record): record for record in records}
