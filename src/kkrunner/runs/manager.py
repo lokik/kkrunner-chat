@@ -1048,8 +1048,8 @@ class RunManager:
         record = resolve_record(run, self.store)
         if record.state.is_terminal:
             return record
-        if record.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
-            raise RuntimeError("Execution has finished; postprocessing cannot be cancelled as a native job")
+        if record.state in (RunState.FINISHING, RunState.DOWNLOADING, RunState.POSTPROCESSING):
+            raise RuntimeError("Execution has finished; client finalization cannot be cancelled as a native job")
         if record.execution.backend_id is None:
             raise UnsupportedCapability("No durable execution reference is available for cancellation")
         client = self.client_for(record)
