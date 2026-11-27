@@ -13,7 +13,7 @@ from functools import partial
 
 from kkrunner.backends.contracts import (
     BackendCapability, JobFailurePhase, JobRef, JobStatus, ObservationUnavailable,
-    SubmissionNotStarted, decode_job_status,
+    SubmissionNotStarted, UnsupportedCapability, decode_job_status,
 )
 from kkrunner.client.contracts import Operation
 from kkrunner.execution import MpiNotFoundWarning, RunState
@@ -80,27 +80,30 @@ class _Execution:
         return await self._call.submission()
 
     async def observe(self, on_output, *, output_requested=None):
-        try:
-            if self._call is None:
-                facts = await self.target.follow(
-                    self._operation("follow"), self.ref.token, self._output_receiver(on_output),
-                    **self._follow_options, subscription=output_requested,
-                )
-            elif output_requested is None:
-                facts = await self._call.wait()
-            else:
-                facts = await self._call.wait_with_output(output_requested, self._initial_output)
-        except BaseException as exc:
-            self._record({"state": "unknown", "error": str(exc)})
-            raise
-        status = self._record(facts)
+        if self._call is None:
+            facts = await self.target.follow(
+                self._operation("follow"), self.ref.token, self._output_receiver(on_output),
+                **self._follow_options, subscription=output_requested,
+            )
+        elif output_requested is None:
+            facts = await self._call.wait()
+        else:
+            facts = await self._call.wait_with_output(output_requested, self._initial_output)
+        observed = decode_job_status(facts)
+        if self.snapshot.state.is_terminal and (
+            not observed.state.is_terminal
+            or self.snapshot.return_code is not None
+        ):
+            status = self.snapshot
+        else:
+            status = self._record(facts)
         if facts.get("output_error") is not None:
             self.output_error = OSError(facts["output_error"])
             return status
         # A late request can cross the terminal frame. Complete named-stream
         # replay from the bytes already delivered, without another backend wait.
         if (output_requested is not None and output_requested.enabled
-                and output_requested.enabled_late and status.state.is_terminal
+                and output_requested.enabled_late and observed.state.is_terminal
                 and facts.get("output_drained") is not True
                 and status.failure_phase not in (JobFailurePhase.LAUNCH, JobFailurePhase.SUBMISSION)):
             paths = {name: self._follow_options.get(name + "_path") for name in ("stdout", "stderr")}
@@ -125,9 +128,17 @@ class _Execution:
         # A concurrent live terminal reply is stronger than a liveness probe.
         return self.snapshot if self.snapshot.state.is_terminal else status
 
+    async def _cancel_native(self):
+        if self.ref is None or BackendCapability.CANCEL not in self.backend.supports:
+            raise UnsupportedCapability("No independent cancellation is available for this execution")
+        # A cancellation reply describes this request, not the outcome of
+        # the live observer. Do not overwrite its snapshot.
+        return decode_job_status(await self.target.call(self._operation("cancel"), self.ref.token))
+
     async def close(self):
-        if self._call is not None:
-            await self._call.close()
+        call, self._call = self._call, None
+        if call is not None:
+            await call.close()
 
 
 class DirectExecution(_Execution):
@@ -180,7 +191,9 @@ class DirectExecution(_Execution):
         )
 
     async def cancel(self):
-        await self._call.cancel()
+        if self._call is not None:
+            return await self._call.cancel()
+        return await self._cancel_native()
 
 
 class ManagedExecution(_Execution):
@@ -214,7 +227,7 @@ class ManagedExecution(_Execution):
         return status
 
     async def cancel(self):
-        return self._record(await self.target.call(self._operation("cancel"), self.ref.token))
+        return await self._cancel_native()
 
 
 def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):
