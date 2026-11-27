@@ -868,3 +868,32 @@ def test_restore_results_without_original_execution_backend(tmp_path, monkeypatc
     restored = manager.retrieve_result_files(record)
     assert path.read_text() == "historical result"
     assert restored.files.stdout.availability_state == "available"
+
+
+def test_historical_output_glob_excludes_input_and_cache_namespaces(tmp_path):
+    from kkrunner.files.manifest import CacheEntry
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("input.dat", "cache.dat", "result.dat"):
+        (remote / name).write_text(name)
+    (remote / "protected").mkdir()
+    (remote / "protected" / "inside.dat").write_text("input")
+    client = ExecutionClient(target=SshTarget("loopback"))
+    def entry(name, **kwargs):
+        return FileEntry(str(local / name), str(remote / name), **kwargs)
+    run = RunRecord(
+        id="protected-glob", state=RunState.FINISHED,
+        created_at="2026-10-13T08:00:00+00:00",
+        updated_at="2026-10-13T08:00:00+00:00",
+        execution=ExecutionMetadata(client.target, WorkingDirectory(str(local), str(remote)), "job"),
+        files=FileManifest(
+            mapping=FileMapping(str(local), str(remote)),
+            inputs=(entry("input.dat"), entry("protected", kind="directory")),
+            caches=(CacheEntry(entry("cache.dat")),),
+            outputs=(entry("**/*.dat"),),
+        ),
+    )
+    pairs = client.resolve_result_files(run, (str(local / "**/*.dat"),))
+    assert {pair.local_path for pair in pairs} == {str(local / "result.dat")}

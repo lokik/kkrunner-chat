@@ -354,7 +354,10 @@ class FileSession:
                     )
                 for local in pending:
                     self._set_file_availability(local, "available", kind=kind)
-                matched_paths = {item["path"] for item in matches}
+                matched_paths = {
+                    item["path"] for item in matches
+                    if kind != "output" or not self._files.output_excluded(item["path"], remote=True)
+                }
                 available = any(entry.remote_path in matched_paths and entry.availability_state == "available"
                                 for entry in self._files.artifacts)
                 self._set_file_availability(local_pattern, "available" if available else "skipped", kind=kind)

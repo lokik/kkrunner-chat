@@ -98,14 +98,16 @@ def test_uncollected_outputs_not_downloaded_even_after_reattach(tmp_path):
         for entry in files.outputs
     ))
 
-    session = object.__new__(FileSession)
-    session.context = SimpleNamespace(output_files=FileSyncPolicy.CHANGED)
-    session._files = files
-    session._staging = {
-        "output_targets": {entry.local_path: entry.remote_path for entry in files.outputs},
-        "output_patterns": (),
-    }
-    session.result = SimpleNamespace(output_file=None, error_file=None)
+    from kkrunner.client import StagingSpec
+    from kkrunner.client.file_context import FileContext
+    from .transfer_helpers import LoopbackFileTransfer
+
+    staging = StagingSpec(local_root=tmp_path, remote_root=remote_root)
+    session = FileSession(
+        FileContext(LoopbackFileTransfer(), staging),
+        ExecutionSpec(argv=None, directory=tmp_path, staging=staging),
+        files=files, remote_directory=remote_root,
+    )
     attempted = []
 
     async def capture(local, remote, required, **kwargs):
@@ -115,12 +117,7 @@ def test_uncollected_outputs_not_downloaded_even_after_reattach(tmp_path):
     asyncio.run(session._sync_output_files(required=True))
     assert [Path(local).name for local, _, _ in attempted] == ["result.dat"]
 
-    # The stored FileEntry carries collect=False; no ExecutionSpec declarations
-    # are available after reconstruction of a historical run.
-    session._staging = None
-    attempted.clear()
-    asyncio.run(session._sync_output_files(required=True))
-    assert [Path(local).name for local, _, _ in attempted] == ["result.dat"]
+    session.close()
 
 
 def test_collect_false_rejected_for_inputs_caches_and_primary_stream(tmp_path):
@@ -204,3 +201,41 @@ def test_remote_output_glob_exclusion_uses_mapped_path(tmp_path):
     assert (remote_root / "calculation" / "scratch.dat").exists()
     assert not (workdir / "scratch.dat").exists()
     assert (workdir / "result.dat").exists()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_output_globs_do_not_claim_inputs_or_caches(tmp_path, remote):
+    from kkrunner.client import ExecutionClient, StagingSpec
+    from .test_remote import _executor
+    import sys
+
+    local = tmp_path / "local"
+    local.mkdir()
+    target = tmp_path / "remote"
+    (local / "input.dat").write_text("input")
+    (local / "cache.dat").write_text("old cache")
+    (local / "protected").mkdir()
+    (local / "protected" / "inside.dat").write_text("directory input")
+    spec = ExecutionSpec(
+        (sys.executable, "-c",
+         "from pathlib import Path; "
+         "assert Path('input.dat').read_text() == 'input'; "
+         "assert Path('protected/inside.dat').read_text() == 'directory input'; "
+         "Path('cache.dat').write_text('new cache'); "
+         "Path('result.dat').write_text('result')"),
+        directory=local,
+        input_files=("input.dat", TaskFile("protected", kind="directory")),
+        cache_files=("cache.dat",),
+        output_files=("**/*.dat", "input*.dat"),
+        staging=StagingSpec(local_root=local, remote_root=target, output_sync="always"),
+    )
+    client = _executor() if remote else ExecutionClient()
+    run = client.create_run(spec, tracked=False)
+    assert run.run().return_code == 0
+    assert {version.path for version in run.files.output_versions} == {local / "result.dat"}
+    assert {version.path for version in run.files.cache_versions} == {local / "cache.dat"}
+    assert matching_file(run.files, local / "input.dat") is None
+    assert matching_file(run.files, local / "protected" / "inside.dat") is None
+    assert matching_file(run.files, local / "cache.dat") is not None
+    pattern = next(entry for entry in run.files.outputs if entry.local_path == str(local / "input*.dat"))
+    assert pattern.availability_state == "skipped"
