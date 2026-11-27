@@ -403,6 +403,29 @@ def test_unbound_project_manager_can_reserve_save_only_files(tmp_path):
     assert not store.runs()
 
 
+
+def test_save_only_without_default_store_respects_conflict_store(tmp_path):
+    disk = RunStore(tmp_path / "runs")
+    tracked = RunManager(disk)
+    save = RunManager(conflict_stores=(disk,))
+    spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
+    proposed = save.new_record(directory=tmp_path, files=FileManifest.from_spec(spec))
+    active = tracked.reserve(tracked.new_record(directory=tmp_path, files=proposed.files))
+    assert save.conflicts(proposed) == (active,)
+    bound = tracked.new_record(directory=tmp_path, files=proposed.files)
+    assert RunManager().conflicts(bound) == (active,)
+    with pytest.raises(DuplicateSubmissionError):
+        with save.preprocessing_reservation(spec):
+            pytest.fail("Conflicting preprocessing must not be entered")
+    tracked.complete(active, state=RunState.FAILED)
+    with save.preprocessing_reservation(spec):
+        assert len(save.conflicts(proposed)) == 1
+        (tmp_path / "input").write_text("prepared")
+    assert not save.conflicts(proposed)
+    assert (tmp_path / "input").read_text() == "prepared"
+    assert len(disk.runs()) == 1
+
+
 def test_save_only_does_not_recover_conflicting_abandoned_preprocessing(tmp_path):
     from kkrunner import MemoryRunStore
 
