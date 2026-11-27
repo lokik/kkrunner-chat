@@ -25,7 +25,6 @@ from .helpers import ssh_function
 class _Session:
     def __init__(self, transport, cancelled=None):
         self.loaded = set()
-        self.last_used = time.monotonic()
         self.diagnostics = bytearray()
         self.process = subprocess.Popen(
             transport._command((*transport.python_command, "-u", "-c", WORKER_SOURCE)),
@@ -92,7 +91,6 @@ class _Session:
             raise ConnectionError("Remote Python session could not install function definitions: "
                                   + str(reply.get("error") if isinstance(reply, dict) else reply))
         self.loaded.update(name for name, _ in missing)
-        self.last_used = time.monotonic()
         return reply
 
     def abort(self):
@@ -128,142 +126,183 @@ class _Session:
                     pass
 
 class SshSessionPool:
-    """Bounded pool of reusable SSH/Python subprocess pairs.
+    """Bounded SSH/Python workers for one target configuration.
 
-    A dedicated thread executor handles blocking pipes, so sessions do not
-    belong to the short-lived event loops created by run_coro_sync and Job.
+    All pool bookkeeping uses the registry condition. Blocking pipe I/O,
+    process startup and process cleanup never hold that lock.
     """
 
     def __init__(self, transport):
         self.target = transport
         self.idle_timeout = transport.pool_idle_seconds
-        self._lock = threading.Lock()
         self._idle = []
-        self._sessions = set()
-        self._inflight = {}
-        self._closed = threading.Event()
+        # A token exists from submission through Future completion (including
+        # queued calls and interpreter startup). Its value is the leased session.
+        self._pending = {}
         self._executor = ThreadPoolExecutor(
             max_workers=transport.pool_size, thread_name_prefix="kkrunner-ssh",
         )
-        self._reaper = threading.Thread(target=self._reap, daemon=True)
-        self._reaper.start()
 
     def _take(self, cancelled):
-        with self._lock:
-            if self._closed.is_set():
-                raise RuntimeError("SSH session pool has been closed")
+        with _CHANGED:
+            if cancelled.is_set():
+                raise CancelledError()
             if self._idle:
-                return self._idle.pop()
-        # ThreadPoolExecutor bounds the total number of simultaneous calls;
-        # each call either owns one session or starts exactly one new session.
-        session = _Session(self.target, cancelled)
-        with self._lock:
-            if self._closed.is_set():
-                session.close()
-                raise RuntimeError("SSH session pool has been closed")
-            self._sessions.add(session)
-        return session
+                _, session = self._idle.pop()
+                self._pending[cancelled] = session
+                _CHANGED.notify()
+                return session
 
-    def _retire(self, session):
-        with self._lock:
-            self._sessions.discard(session)
-            if session in self._idle:
-                self._idle.remove(session)
+        session = _Session(self.target, cancelled)
+        with _CHANGED:
+            if not cancelled.is_set():
+                self._pending[cancelled] = session
+                return session
         session.close()
+        raise CancelledError()
 
     def _invoke(self, operation, args, kwargs, cancelled):
         function = ssh_function(operation)
         symbol, definitions = portable_bundle(function)
         session = self._take(cancelled)
-        with self._lock:
-            self._inflight[cancelled] = session
+        reusable = False
         try:
             if cancelled.is_set():
                 raise CancelledError()
             reply = session.invoke(symbol, definitions, args, kwargs)
-        except BaseException:
-            # Never retry a possibly submitted operation on another connection.
-            self._retire(session)
-            raise
+            reusable = True
         finally:
-            with self._lock:
-                self._inflight.pop(cancelled, None)
-        with self._lock:
-            if not self._closed.is_set() and not cancelled.is_set():
-                self._idle.append(session)
-                session = None
-        if session is not None:
-            session.close()
-        # Application exceptions are not connection failures: keep this
-        # interpreter alive and decode the ordinary remote error contract.
+            with _CHANGED:
+                # Release the lease atomically with returning the interpreter
+                # to the pool. Cancellation must never abort its next user.
+                self._pending[cancelled] = None
+                if reusable and not cancelled.is_set():
+                    self._idle.append((time.monotonic() + self.idle_timeout, session))
+                    session = None
+            if session is not None:
+                session.close()
+        # Application errors do not poison a healthy interpreter.
         return operation_result(json.dumps(reply).encode("utf8"))
 
-    async def call(self, operation, *args, **kwargs):
+    def _submit(self, operation, args, kwargs):
+        """Called under the registry lock, before an idle pool can expire."""
         cancelled = threading.Event()
-        future = self._executor.submit(self._invoke, operation, args, kwargs, cancelled)
+        self._pending[cancelled] = None
         try:
-            return await asyncio.wrap_future(future)
-        except asyncio.CancelledError:
-            # Abort the worker rather than allowing an unobserved submission
-            # to continue using this transport. Never replay the request.
-            cancelled.set()
-            with self._lock:
-                session = self._inflight.get(cancelled)
-            if session is not None:
-                session.abort()
+            future = self._executor.submit(self._invoke, operation, args, kwargs, cancelled)
+        except BaseException:
+            del self._pending[cancelled]
+            _CHANGED.notify()
             raise
 
-    def _reap(self):
-        while not self._closed.wait(min(30.0, max(1.0, self.idle_timeout / 2))):
-            now = time.monotonic()
-            with self._lock:
-                expired = [s for s in self._idle if now - s.last_used >= self.idle_timeout]
-                for session in expired:
-                    self._idle.remove(session)
-                    self._sessions.remove(session)
-            for session in expired:
-                session.close()
+        def done(_):
+            with _CHANGED:
+                del self._pending[cancelled]
+                _CHANGED.notify()
 
-    def close(self):
-        self._closed.set()
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        with self._lock:
-            sessions = tuple(self._sessions)
-            self._sessions.clear()
-            self._idle.clear()
-            inflight = tuple(self._inflight)
-        for token in inflight:
+        future.add_done_callback(done)
+        return future, cancelled
+
+    def _cancel(self, token):
+        """Cancel one request, without releasing its lease prematurely."""
+        with _CHANGED:
             token.set()
-        for session in sessions:
-            session.close()
+            session = self._pending.get(token)
+            if session is not None:
+                session.abort()
+
+    def _detach(self):
+        """Remove idle workers and signal outstanding requests under the lock."""
+        for token, session in self._pending.items():
+            token.set()
+            if session is not None:
+                session.abort()
+        idle = [session for _, session in self._idle]
+        self._idle.clear()
+        return idle
+
+    def _shutdown(self):
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 _POOLS = {}
-_POOLS_LOCK = threading.Lock()
+_CHANGED = threading.Condition()
+_EXPIRY_THREAD = None
 
 
-def pool_for(transport):
-    with _POOLS_LOCK:
+async def call_pooled(transport, operation, *args, **kwargs):
+    """Acquire a pool and enqueue a request as one registry operation."""
+    global _EXPIRY_THREAD
+    with _CHANGED:
+        if _EXPIRY_THREAD is None:
+            _EXPIRY_THREAD = threading.Thread(
+                target=_expire_idle, name="kkrunner-ssh-expiry", daemon=True,
+            )
+            _EXPIRY_THREAD.start()
         pool = _POOLS.get(transport)
-        if pool is None or pool._closed.is_set():
-            pool = SshSessionPool(transport)
-            _POOLS[transport] = pool
-        return pool
+        if pool is None:
+            pool = _POOLS[transport] = SshSessionPool(transport)
+        future, token = pool._submit(operation, args, kwargs)
+    try:
+        return await asyncio.wrap_future(future)
+    except asyncio.CancelledError:
+        pool._cancel(token)
+        raise
+
+
+def _expire_idle():
+    """Sleep until the earliest idle deadline or a change to the registry."""
+    while True:
+        expired = []
+        empty = []
+        with _CHANGED:
+            now = time.monotonic()
+            deadline = None
+            for target, pool in tuple(_POOLS.items()):
+                idle = []
+                for expires, session in pool._idle:
+                    if expires <= now:
+                        expired.append(session)
+                    else:
+                        idle.append((expires, session))
+                        deadline = expires if deadline is None else min(deadline, expires)
+                pool._idle = idle
+                if not pool._idle and not pool._pending:
+                    del _POOLS[target]
+                    empty.append(pool)
+            if not expired and not empty:
+                _CHANGED.wait(None if deadline is None else max(0, deadline - time.monotonic()))
+                continue
+        # An expired session or pool is detached before releasing the lock.
+        # Neither slow shutdown nor remote I/O blocks requests on other targets.
+        for pool in empty:
+            pool._shutdown()
+        for session in expired:
+            session.close()
 
 
 def close_pool(transport):
-    with _POOLS_LOCK:
+    with _CHANGED:
         pool = _POOLS.pop(transport, None)
-    if pool is not None:
-        pool.close()
+        if pool is None:
+            return
+        idle = pool._detach()
+        _CHANGED.notify()
+    pool._shutdown()
+    for session in idle:
+        session.close()
 
 
 def _close_all():
-    with _POOLS_LOCK:
+    with _CHANGED:
         pools = tuple(_POOLS.values())
         _POOLS.clear()
+        idle = [session for pool in pools for session in pool._detach()]
+        _CHANGED.notify()
     for pool in pools:
-        pool.close()
+        pool._shutdown()
+    for session in idle:
+        session.close()
 
 
 atexit.register(_close_all)
