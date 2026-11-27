@@ -98,12 +98,16 @@ class Target:
         return Path(destination)
 
     async def file_digest(self, path):
-        """Return the SHA-256 digest of *path*, or ``None`` if it does not exist."""
-        raise NotImplementedError
+        """Return the SHA-256 digest of a regular file, or None."""
+        item = (await self.query_files([path], digest=True))[0]
+        return item.get("digest")
 
     async def file_signature(self, path):
-        """Return ``(size, mtime_ns)`` for *path*, or ``None`` if absent."""
-        raise NotImplementedError
+        """Return (size, mtime_ns) for a regular file, or None."""
+        item = (await self.query_files([path]))[0]
+        if item["status"] == "missing" or item["type"] != "file":
+            return None
+        return item["size"], item["mtime_ns"]
 
 
 async def _completed_process(process, argv, input=None, check=True):

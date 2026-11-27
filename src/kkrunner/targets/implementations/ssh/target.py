@@ -356,12 +356,3 @@ class SshTarget(Target):
     async def read_file(self, path):
         return (await self.run(("cat", "--", os.fspath(path)))).stdout
 
-    async def file_digest(self, path):
-        item = (await self.query_files([path], digest=True))[0]
-        return item.get("digest")
-
-    async def file_signature(self, path):
-        item = (await self.query_files([path]))[0]
-        if item["status"] == "missing" or item["type"] != "file":
-            return None
-        return item["size"], item["mtime_ns"]

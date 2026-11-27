@@ -14,11 +14,9 @@ from kkrunner.targets.contracts import Operation
 from kkrunner.files.queries import (
     checked_files,
     expand_local_files,
-    local_file_signature,
     query_files,
 )
 from kkrunner.files.snapshots import snapshot_destination
-from kkrunner.files.versions import file_digest
 
 from kkrunner.files.staging import staged_directory, staged_local_file
 from kkrunner.files.transfer import relative_file_pairs, transfer_path
@@ -92,7 +90,7 @@ class LocalTarget(Target):
 
     async def put_file(self, source, destination, *, verify=None, overwrite=True):
         source = os.fspath(source)
-        signature = local_file_signature(source)
+        signature = await self.file_signature(source)
         if signature is None:
             raise FileNotFoundError(source)
         destination = Path(destination)
@@ -103,7 +101,7 @@ class LocalTarget(Target):
             pass  # A new destination will be published by atomic replacement.
         with staged_local_file(destination, verify=verify, overwrite=overwrite) as temporary:
             await asyncio.to_thread(shutil.copyfile, source, temporary)
-            if local_file_signature(source) != signature:
+            if await self.file_signature(source) != signature:
                 raise RuntimeError(f"Local file changed while copying: {source}")
             stat = temporary.stat()
             os.utime(temporary, ns=(stat.st_atime_ns, signature[1]))
@@ -163,8 +161,3 @@ class LocalTarget(Target):
                 await asyncio.to_thread(shutil.copyfileobj, current, out)
         return Path(destination)
 
-    async def file_digest(self, path):
-        return await asyncio.to_thread(file_digest, path, missing_ok=True)
-
-    async def file_signature(self, path):
-        return await asyncio.to_thread(local_file_signature, path)
