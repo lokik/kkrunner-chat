@@ -284,10 +284,17 @@ class RunStore:
                 latest = self.get(record.id)
             except FileNotFoundError:
                 latest = replace(record, store=self)
+                exists = False
+            else:
+                exists = True
             if latest.created_at != record.created_at:
                 raise ValueError("Run id already belongs to a different persistent identity")
             updated = updater(latest)
             validate_update(latest, updated)
+            # Returning the authoritative record is an explicit no-op, not
+            # a request to repeat its durable publication.
+            if exists and updated is latest:
+                return latest
             return self._write_unlocked(updated)
 
     def reassign_project(
