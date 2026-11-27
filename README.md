@@ -1,16 +1,11 @@
 # KKRunner
 
-Run commands locally, over SSH or through a job scheduler from Python.
-KKRunner also supports MPI, file transfers, independent jobs and persistent
-run history.
+**One Python API for running programs on your laptop, a remote machine or a
+computing cluster.**
 
-## Installation
-
-From a KKRunner checkout, in a virtual environment:
-
-```sh
-python -m pip install .
-```
+Run ordinary commands or MPI applications, launch jobs that survive the exit
+of your Python session, reconnect to running jobs, transfer files over SSH
+and keep a persistent history of your calculations.
 
 ## Run a command
 
@@ -21,8 +16,8 @@ result = run(["echo", "Hello"])
 print(result.return_code)
 ```
 
-`run()` waits for completion and displays the output. Use an argument list
-or a single executable name. For shell expressions, invoke the shell explicitly.
+`run()` waits for the command to finish. Output is displayed live, or you can
+save it with `output_file="run.out"`.
 
 ## Start a job and reconnect later
 
@@ -37,38 +32,34 @@ job = submit(
 print(job.id)
 ```
 
-`submit()` returns without waiting for completion. The `kkrunner` backend
-keeps the job running independently of Python and saves its run ID by default.
+`submit()` returns as soon as the job is submitted. The built-in
+`kkrunner` backend keeps the job running even after you exit Python.
 
-Exit Python and reconnect from another shell on the same machine and account:
+While the job is running, reconnect from another Python session:
 
 ```python
 from kkrunner import RunManager
 
 job = RunManager.get_default().attach("RUN_ID")
 result = job.wait()
-print(result.return_code)
 ```
 
-Replace `RUN_ID` with the printed ID. Output is saved in `run.out`.
-If the saved run is already terminal, use
-`RunManager.get_default().store.get("RUN_ID")` instead.
+Use the ID printed above. You can also monitor or cancel jobs from the
+command line (see below).
 
-## Run on another machine
+## Run on a remote machine
 
 ```python
 from kkrunner import run
 
-# Run from a directory under your home directory.
 run("hostname", target="user@cluster")
 ```
 
-The default backend runs the command directly over SSH. Only Python is
-required on the target. Local paths under your home directory map to the
-corresponding paths under the remote home directory.
+That's all you need to change. Run from a directory under your home directory;
+KKRunner maps it to the corresponding location on the remote host.
+Direct SSH execution requires only Python on the remote machine.
 
-Declare `input_files` and `output_files` to transfer files automatically.
-For example, with a local `input.txt`:
+KKRunner can also upload input files and bring back the results:
 
 ```python
 run(
@@ -79,56 +70,51 @@ run(
 )
 ```
 
-This uploads `input.txt` and retrieves stdout as `output.txt`.
-For a custom directory mapping, see [remote execution](docs/remote.rst).
+The local `input.txt` is uploaded and the output is downloaded automatically.
+Use `output_files` for additional result files.
+Combine SSH with `backend="kkrunner"` for reconnectable remote jobs
+(requires KKRunner on the remote machine).
 
-Add `backend="kkrunner"` for an independent, reconnectable SSH job.
-That backend requires KKRunner on the target.
-
-## Run through a scheduler (PSI/J)
-
-Install the scheduler extra on the execution host:
-
-```sh
-python -m pip install '.[psij]'
-```
-
-With a configured Slurm scheduler:
+## Run on a computing cluster with PSI/J
 
 ```python
 from kkrunner import run
 
-result = run(["echo", "Hello"], backend="psij", output_file="slurm.out")
-print(result.return_code)
+run(["echo", "Hello"], backend="psij", output_file="slurm.out")
 ```
 
-Use `target="user@cluster"` to submit via SSH,
-`mpi=8` for an eight-process MPI program, or
-`PsijBackend(executor_name="slurm")` to configure the scheduler explicitly
-(import `PsijBackend` from `kkrunner`).
-Use `submit()` instead of `run()` to return after submission.
+This submits a job to Slurm and waits for its completion. As with other
+backends, you can use `submit()` instead, or add `target="user@cluster"`
+to submit remotely.
 
-## Save runs in a project
-
-Supervised and scheduler jobs are persistent by default. For direct jobs,
-use `persistent=True` to save run history; this does not make the direct
-backend independently reconnectable with a guaranteed exit code.
-
-Create a project once and keep its ID:
+For example, to run an MPI application through the remote scheduler:
 
 ```python
-from kkrunner import ProjectRepository
-
-project_id = ProjectRepository().create("Example").id
-print(project_id)
+job = submit(
+    "my_mpi_program",
+    target="user@cluster",
+    backend="psij",
+    mpi=8,
+    output_file="mpi.out",
+)
 ```
 
-Use an existing project ID in any Python session:
+Scheduler execution requires KKRunner with the PSI/J extra and a configured
+scheduler on the execution host.
+
+## Keep a history of calculations
+
+Supervised and scheduler jobs are saved automatically. Add
+`persistent=True` to save a directly executed job as well.
+
+Organize calculations into projects:
 
 ```python
-from kkrunner import ProjectRunManager, submit
+from kkrunner import ProjectRepository, ProjectRunManager, submit
 
-manager = ProjectRunManager(project="PROJECT_ID")
+project_id = ProjectRepository().create("My project").id
+manager = ProjectRunManager(project=project_id)
+
 job = submit(
     ["sh", "-c", "echo started; sleep 60; echo done"],
     backend="kkrunner",
@@ -139,12 +125,13 @@ print(job.id)
 print(manager.store.directory)
 ```
 
-The run is saved under the specified project ID. Use
-`manager.attach(run_id)` to reconnect to a nonterminal project run.
+Reuse the same project ID for subsequent calculations, including from
+other Python sessions. A project groups their run history and associated
+files.
 
-## Follow a run from the command line
+## Monitor jobs from the command line
 
-Use the run ID (not the project ID) and the store directory printed above:
+Use the run ID and the run store directory printed above:
 
 ```sh
 kkrunner --store /path/to/runs follow RUN_ID --from-start
@@ -152,30 +139,27 @@ kkrunner --store /path/to/runs status RUN_ID
 kkrunner --store /path/to/runs cancel RUN_ID
 ```
 
-Omit `--from-start` to follow only new output. The CLI uses the saved
-target and backend. Following output does not take over result processing
-or file downloads.
+The same commands work for local jobs, SSH jobs and scheduler jobs.
 
-## More usage and documentation
+## Installation
 
-For repeated jobs, reuse `ExecutionClient(target="user@cluster")` with
-its `run()` and `submit()` methods. Use `Run.create()` or
-`client.create_run()` when you need to prepare a run before submission.
-
-See the [documentation](https://ase2sprkkr.github.io/kkrunner/) or the
-[guide in this checkout](docs/index.rst) for
-[backends and MPI](docs/backends.rst), [file staging](docs/files.rst),
-[persistence and recovery](docs/persistent-runs.rst),
-[projects](docs/projects.rst) and [CLI options](docs/command-line.rst).
-
-## Development
+Python 3.9 or newer. Install from the KKRunner checkout in a virtual environment:
 
 ```sh
-python -m pip install -e '.[test]'
-python -m pytest -q
+python -m pip install .
+# With scheduler support:
+python -m pip install '.[psij]'
 ```
 
-See [development and documentation](docs/development.rst) for building
-packages, generating documentation, CI, publishing to PyPI and GitHub Pages.
+## Learn more
 
-[Architecture](docs/architecture.md) · [Source provenance](docs/remarks/source-provenance.md) · [MIT license](LICENCE)
+The [documentation](https://ase2sprkkr.github.io/kkrunner/) and
+[source guide](docs/index.rst) cover custom SSH and scheduler configurations,
+MPI launchers, live output callbacks, file staging and caching, project
+management, recovery and application-specific result processing.
+
+For repeated commands, configure an `ExecutionClient` once and use its
+`run()` and `submit()` methods. For advanced lifecycle control, use
+`Run.create()` to prepare a job before submission.
+
+[Development and tests](docs/development.rst) · [Architecture](docs/architecture.md) · [MIT license](LICENCE)
