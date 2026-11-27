@@ -366,6 +366,19 @@ def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatc
         try:
             assert downloading.wait(5), "transfer did not start"
             assert not path.exists()
+            assert disk.runs() == (record,)
+            assert not memory.runs()
+            # Even an independently configured manager in this process
+            # sees the internal reservation. Neither application store owns it.
+            independent = RunManager(RunStore(tmp_path / "independent"))
+            proposed = independent.new_record(directory=work, files=FileManifest(
+                stdout=FileEntry(str(path)),
+            ))
+            (reservation,) = independent.conflicts(proposed)
+            assert manager.conflicts(proposed) == (reservation,)
+            assert other.conflicts(proposed) == (reservation,)
+            with pytest.raises(DuplicateSubmissionError):
+                independent.reserve(proposed)
             run = pool.submit(submit).result(timeout=3)
             if concurrent not in ("directory", "active", "remote_writer"):
                 assert run.state == RunState.SUBMITTING
@@ -381,6 +394,7 @@ def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatc
             assert path.read_text() == "historical"
     assert not tuple(work.glob(".*.tmp"))
     assert [r.id for r in disk.runs()] == [record.id]
+    assert reservation not in independent.conflicts(proposed)
 
 
 @pytest.mark.parametrize("project_scoped", [False, True])
@@ -475,7 +489,17 @@ def test_directory_reservation_prevents_historical_download(tmp_path, monkeypatc
     assert manager.store.get(abandoned.id) == abandoned
     assert not path.exists()
     assert manager.refresh((abandoned,))[0].state == RunState.FAILED
+    proposed = manager.new_record(directory=work, files=reader.files)
+
+    async def download(self, source, destination, **kwargs):
+        assert {r.id for r in manager.store.runs()} == {record.id, reader.id, abandoned.id}
+        with pytest.raises(DuplicateSubmissionError):
+            manager.reserve(proposed)
+        await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTarget, "get_file", download)
     assert manager.retrieve_result_files(record).files.stdout.availability_state == "available"
+    assert not manager.conflicts(proposed)
     assert path.read_text() == "historical"
     assert tuple(work.iterdir()) == (path,)
     assert {r.id for r in manager.store.runs()} == {record.id, reader.id, abandoned.id}
