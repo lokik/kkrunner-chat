@@ -5,9 +5,9 @@ def run(
     argv, *, target=None, backend=None, directory=".", input_file=None, output_file=None,
     stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
     mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
-    persistent=None, detached=None, process_result=None, output_listener=None,
+    persistent=False, detached=None, process_result=None, output_listener=None,
 ):
-    """Run a command and wait; use Run.create for a separately managed lifetime."""
+    """Run a command and wait for completion."""
     from kkrunner.client.execution_client import ExecutionClient
 
     return ExecutionClient(backend, target=target).run(
@@ -24,7 +24,7 @@ def submit(
     argv, *, target=None, backend=None, directory=".", input_file=None, output_file=None,
     stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
     mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
-    persistent=None, detached=None, process_result=None, output_listener=None,
+    persistent=False, detached=None, process_result=None, output_listener=None,
 ):
     """Submit a command and return its Run without waiting for completion."""
     from kkrunner.client.execution_client import ExecutionClient

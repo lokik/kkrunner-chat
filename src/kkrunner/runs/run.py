@@ -92,7 +92,7 @@ class Run:
 
     @classmethod
     def create(
-        cls, spec, *, target=None, backend=None, persistent=None, detached=None, process_result=None,
+        cls, spec, *, target=None, backend=None, persistent=False, detached=None, process_result=None,
         callback=None, output_listener=None, owned_resources=None, preprocess=None,
         metadata=None, processing_required=None, run_id=None,
     ):
@@ -109,7 +109,7 @@ class Run:
 
     @classmethod
     def _create(
-        cls, client, spec, *, persistent=None, detached=None, process_result=None,
+        cls, client, spec, *, persistent=False, detached=None, process_result=None,
         callback=None, output_listener=None, owned_resources=None, preprocess=None,
         metadata=None, processing_required=None, run_id=None,
     ):
@@ -125,8 +125,6 @@ class Run:
             spec = ExecutionSpec(spec)
         spec.require_complete()
 
-        if persistent is None:
-            persistent = client.default_persistent
         if isinstance(persistent, RunManager):
             manager = persistent
         elif persistent is True:
@@ -134,7 +132,7 @@ class Run:
         elif persistent is False:
             manager = None
         else:
-            raise TypeError("persistent must be None, bool, or a RunManager")
+            raise TypeError("persistent must be bool or a RunManager")
 
         if detached is None:
             detached = client.default_detached

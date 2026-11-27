@@ -265,11 +265,12 @@ def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionRe
         # Pre-launch validation and filesystem failures are known non-submissions.
         raise SubmissionNotStarted(str(exc)) from exc
 
-    run_id = str(request.get("submission_key") or uuid4().hex)
+    submission_key = request.get("submission_key")
+    run_id = str(submission_key or uuid4().hex)
     receipt_id = uuid4().hex
     socket_dir = None
     process = None
-    published = False
+    committed = False
     start_fd = release_fd = socket_read_fd = socket_write_fd = None
     try:
         # IPC creation belongs inside the launch cleanup boundary.
@@ -331,32 +332,33 @@ def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionRe
             }
         )
 
-        # Durable identity precedes releasing the supervisor. Until this
-        # receipt is safely stored, the child cannot launch a calculation.
-        if request.get("detached"):
+        # Only a caller with a submission key can recover a lost acceptance
+        # reply. The backend handle and outcome receipt do not depend on it.
+        if request.get("detached") and submission_key is not None:
             mailbox.publish_submission(run_id, {
                 "remote_id": remote_id,
                 "directory": os.fspath(directory),
                 "output_file": output_path,
                 "error_file": error_path,
             })
-            published = True
+            committed = True
 
         os.write(release_fd, b"1")
+        committed = True
         with os.fdopen(socket_read_fd, "rb", closefd=True) as ready:
             socket_read_fd = None
             observed_path = ready.readline().decode("utf8").rstrip("\n")
         if observed_path != socket_path:
             raise RuntimeError("Remote supervisor did not create its follow socket")
     except BaseException as exc:
-        if not published and process is not None:
+        if not committed and process is not None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        if not published and socket_dir is not None:
+        if not committed and socket_dir is not None:
             shutil.rmtree(socket_dir, ignore_errors=True)
-        if isinstance(exc, OSError) and not published:
+        if isinstance(exc, OSError) and not committed:
             raise SubmissionNotStarted(str(exc)) from exc
         raise
     finally:

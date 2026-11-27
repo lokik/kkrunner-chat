@@ -71,9 +71,10 @@ to its record before RunManager reserves it; ExecutionClient never rewrites a
 RunRecord. Native status replies use one decoder before projection into client
 RunStatus values.
 
-``persistent=False`` selects absence of tracking, independently of backend.
-``Run.create(..., persistent=...)`` and ``client.create_run(..., persistent=...)`` selects tracking policy. The configured
-client supplies the default tracking policy; native backends do not own it.
+Tracking is opt-in for every backend: ``persistent=True`` uses the default
+RunManager, and ``persistent=manager`` selects a specific manager. The default
+``persistent=False`` creates no client run record. Backend identities and
+reattachment capabilities are independent of this choice.
 
 Execution intent and staging
 ----------------------------

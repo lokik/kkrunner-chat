@@ -81,11 +81,33 @@ def test_remote_target_and_backend_are_independent(tmp_path):
     direct = ExecutionClient(target="user@cluster")
     assert direct.target == SshTarget("user@cluster")
     assert direct.backend.name == "direct"
-    assert not direct.default_persistent
     client = ExecutionClient("psij", target="user@cluster")
     assert client.target == direct.target
     assert client.backend.options["executor_name"] == "slurm"
-    assert client.default_persistent
+
+
+@pytest.mark.parametrize("backend, detached", [
+    ("direct", False), ("direct", True), ("kkrunner", True), ("psij", True),
+])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_tracking_is_opt_in_independent_of_backend_and_detachment(backend, detached, persistent):
+    manager = RunManager(MemoryRunStore())
+    client = ExecutionClient(backend)
+    kwargs = {"detached": detached}
+    if persistent:
+        kwargs["persistent"] = True
+    with RunManager.as_default(manager):
+        jobs = [
+            Run.create("program", backend=backend, **kwargs),
+            client.create_run("program", **kwargs),
+        ]
+        for job in jobs:
+            try:
+                assert (job.id is not None) is persistent
+                assert (job.manager is manager) is persistent
+                assert job.detached is detached
+            finally:
+                job.close()
 
 
 def test_explicit_store_and_default_policy(tmp_path):

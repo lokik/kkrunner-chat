@@ -28,6 +28,7 @@ job = submit(
     ["sh", "-c", "echo started; sleep 60; echo done"],
     backend="kkrunner",
     output_file="run.out",
+    persistent=True,
 )
 print(job.id)
 ```
@@ -120,8 +121,8 @@ For scheduler configuration, MPI launchers and recovery capabilities, see
 
 ## Keep a history of calculations
 
-Supervised and scheduler jobs are saved automatically. Add
-`persistent=True` to save a directly executed job as well.
+Use `persistent=True` to save the run history, regardless of which backend
+executes the command.
 
 Organize calculations into projects:
 
@@ -207,6 +208,29 @@ Beyond starting commands, KKRunner can help your application:
 See [persistent runs and recovery](docs/persistent-runs.rst),
 [working with files](docs/files.rst), [projects](docs/projects.rst) and
 the [Python quickstart](docs/quickstart.rst).
+
+## Execution, detachment, reattachment and history
+
+These are separate choices:
+
+- **Waiting:** `run()` waits for the result; `submit()` returns a job you can
+  monitor or wait for later.
+- **Detachment:** a detached job keeps running when your client exits.
+  Supervisor and scheduler jobs are detached; direct jobs can opt in with
+  `detached=True`.
+- **Reattachment:** depends on the backend. The supervisor and scheduler can
+  reconnect to their jobs and retrieve the exit status when retained.
+  Direct execution can follow saved output by polling files rather than a live
+  stream. Save stdout and stderr in separate files to recover both channels;
+  after reconnecting, the direct backend cannot retrieve the original exit code.
+- **History (`persistent=True`):** saves a run ID, execution settings, status and
+  file records. It enables file-conflict protection across tracked jobs in the
+  same store and lets KKRunner restore the client-side run configuration from
+  its ID. It does not change the backend's reattachment capabilities.
+
+Without history, you can still use a supported backend's own `job.backend_id`
+with the [CLI](docs/command-line.rst). See [backends](docs/backends.rst) and
+[run history and recovery](docs/persistent-runs.rst).
 
 ## Installation
 

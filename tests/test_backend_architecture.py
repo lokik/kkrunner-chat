@@ -46,7 +46,6 @@ def test_backend_and_location_round_trip_independently(backend, location):
     assert restored.backend.name == backend.name
     assert restored.backend.options == client.backend.options
     assert restored.default_detached == backend().default_detached
-    assert restored.default_persistent == (backend().execution_mode == "managed")
     assert restored.backend.supports == backend().supports
 
 
