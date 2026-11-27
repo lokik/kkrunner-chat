@@ -774,8 +774,6 @@ class RunManager:
         authoritative and the attached raw runner replays/synchronizes files
         before task postprocessing can finish.
         """
-        record = resolve_record(run, self.store)
-
         def reopen(latest):
             if (
                 latest.state != RunState.FAILED
@@ -800,7 +798,7 @@ class RunManager:
                 updated_at=_now(),
             )
 
-        with self._history_edit(record) as (store, current):
+        with self._history_edit(run) as (store, current):
             return self._reserve_recovering(current, lambda: store.update(current, reopen))
 
     def begin_processing(self, record, *, return_code, files=None, execution=None, retry=False):
@@ -1029,7 +1027,9 @@ class RunManager:
         store = store_for(run, self.store)
         if store is None:
             raise RuntimeError("No run store is configured")
-        record = resolve_record(run, self.store)
+        # A supplied record already identifies its observation lock. Read
+        # the current contents only after claiming that lock.
+        record = store.get(run) if isinstance(run, str) else run
         owner = self._claim_client_files(record)
         try:
             yield store, store.get(record.id)
