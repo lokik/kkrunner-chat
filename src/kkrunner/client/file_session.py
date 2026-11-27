@@ -187,10 +187,8 @@ class FileSession:
         used[target] = source
         return target
 
-    async def _stage_input_pattern(self, entry, used, remote_root, *, required=True):
-        matches = self.context.expand_input(entry, remote_root)
-        if not matches and required:
-            raise FileNotFoundError(f"Local input pattern did not match any files: {entry.local_path}")
+    async def _stage_input_pattern(self, matches, used, remote_root, *, required=True):
+        """Stage a concrete, previously resolved local input set."""
         if not matches:
             return
         policy = self.context.input_files
@@ -213,7 +211,7 @@ class FileSession:
                 destination_directory=remote_root,
             )
 
-    async def _prepare_cache_files(self, used, manifest):
+    async def _prepare_cache_files(self, used, manifest, input_patterns):
         targets = {}
         patterns = []
         pattern_before = {}
@@ -227,7 +225,9 @@ class FileSession:
                 patterns.append(entry.remote_path)
                 # Cache patterns use the same transfer logic as inputs,
                 # but an unmatched cache pattern is optional.
-                await self._stage_input_pattern(entry, used, remote_root, required=False)
+                await self._stage_input_pattern(
+                    input_patterns[entry.local_path], used, remote_root, required=False,
+                )
                 continue
 
             # Cache inputs obey precisely the same staging policy as ordinary
@@ -579,9 +579,34 @@ class FileSession:
         return out
 
     async def _prepare_request(self, remote_directory, manifest):
+        from kkrunner.support.durability import sync_file
+
         used = {}
         primary = next((entry for entry in manifest.inputs
                         if entry.local_path == self.input_file), None)
+        # Resolve all local source patterns before the first upload. The
+        # staging routines below consume only these exact source/target pairs.
+        input_patterns = {}
+        for entry in (*manifest.inputs, *(cache.file for cache in manifest.caches)):
+            if entry is primary or not has_file_magic(entry.local_path):
+                continue
+            if entry.local_path not in input_patterns:
+                input_patterns[entry.local_path] = self.context.expand_input(
+                    entry, manifest.mapping.remote_root,
+                )
+            if entry in manifest.inputs and not entry.optional and not input_patterns[entry.local_path]:
+                raise FileNotFoundError(f"Local input pattern did not match any files: {entry.local_path}")
+
+        local_inputs = dict.fromkeys(
+            path for entry in manifest.input_entries
+            for path in (
+                tuple(match.local_path for match in input_patterns[entry.local_path])
+                if entry.local_path in input_patterns else (entry.local_path,)
+            )
+        )
+        for path in local_inputs:
+            if os.path.isfile(path):
+                sync_file(path)
         input_target = await self._stage_file(primary, used)
         stdin_target = await self._stage_file(manifest.stdin, used)
         for entry in manifest.inputs:
@@ -589,14 +614,19 @@ class FileSession:
                 continue
             required = not entry.optional
             if has_file_magic(entry.local_path):
-                await self._stage_input_pattern(entry, used, manifest.mapping.remote_root, required=required)
+                await self._stage_input_pattern(
+                    input_patterns[entry.local_path], used, manifest.mapping.remote_root,
+                    required=required,
+                )
             elif entry.kind == "directory":
                 await self._stage_directory(entry, used, required=required)
             else:
                 await self._stage_file(entry, used, required=required)
 
         inputs = dict(used)
-        cache_targets, cache_patterns, cache_before = await self._prepare_cache_files(used, manifest)
+        cache_targets, cache_patterns, cache_before = await self._prepare_cache_files(
+            used, manifest, input_patterns,
+        )
         staged = {source: target for target, source in used.items()}
         output_targets = [entry.remote_path for entry in manifest.outputs if not has_file_magic(entry.local_path)]
         output_patterns = [entry.remote_path for entry in manifest.outputs if has_file_magic(entry.local_path)]
@@ -695,7 +725,6 @@ class FileSession:
                     and manifest.stdout.local_path == manifest.stderr.local_path):
                 raise ValueError("Remote stdout and stderr must have distinct output files")
             self._flush_declared_handles()
-            sync_result_files(manifest.input_files)
             await self.context.target.run(("mkdir", "-p", "--", directory.target))
             return await self._prepare_request(directory.target, manifest)
         except Exception as exc:

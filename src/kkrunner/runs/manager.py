@@ -776,9 +776,10 @@ class RunManager:
                 or latest.return_code != 0
                 or latest.execution.backend_id is None
                 or latest.files.captured_at is not None
-                or latest.files.remote_patterns_resolved is False
             ):
-                raise ValueError("Only failed transfers with a valid file plan can be retried")
+                raise ValueError("Only failed downloads of successful backend jobs can be retried")
+            if latest.files.remote_patterns_resolved is False:
+                raise ValueError("Remote result pattern discovery failed; there is no download plan to retry")
             # Keep already transferred artifacts and all bytes on disk.
             # Only failed transfers become eligible for a fresh attempt.
             files = latest.files.retry_failed_artifacts()

@@ -40,7 +40,7 @@ def _missing_result_files(result_files, *, include_outputs=True):
         else:
             entries += (
                 result_files.stdout, result_files.stderr,
-                *(entry for entry in result_files.outputs if entry.collect
+                *(entry for entry in result_files.outputs if entry.collect and entry.local_path is not None
                   and (result_files.remote_patterns_resolved is not True
                        or entry.source_pattern is not None or not has_file_magic(entry.local_path))),
             )
