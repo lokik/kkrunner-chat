@@ -89,6 +89,13 @@ manager instances or projects use that store. ``ProjectRunManager`` uses
 the same mechanism. Untracked ``tracked=False`` calls and separate stores do
 not coordinate these reservations.
 
+Historical result retrieval checks active runs in the configured stores and
+uses a single internal, process-wide memory store for its temporary
+reservations. All run managers in the process check this store automatically.
+No fictitious calculation is added to application history. Other processes
+cannot see these temporary reservations. Existing destination files are still
+never replaced.
+
 Two active runs may read the same file. A write conflicts with another run's
 read or write. Cache declarations participate in both roles. Local uploads,
 download destinations and backend output paths are checked independently of

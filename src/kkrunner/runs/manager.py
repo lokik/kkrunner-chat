@@ -26,6 +26,7 @@ from kkrunner.runs.base import FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
 from kkrunner.files.availability import capture_result_files, file_is_current, sync_result_files
 from kkrunner.runs.files import RunFiles
+from kkrunner.runs.memory_store import MemoryRunStore
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
@@ -46,6 +47,9 @@ _STATE_RANK = {
     RunState.CANCELLED: 8,
 }
 _UNCHANGED = object()
+
+# Internal, process-wide reservations are not application run history.
+_TEMPORARY_RESERVATIONS = MemoryRunStore()
 
 
 def _now():
@@ -123,11 +127,11 @@ class RunManager:
     def _record_key(self, record):
         return record.key if record.store is not None else (self.store.lock_key, record.id)
 
-    def _reservation_stores(self):
+    def _reservation_stores(self, *additional):
         # Deduplicate disk stores opened through separate objects. The primary
         # store wins, and all managers take locks in the same order.
         stores = {self.store.lock_key: self.store}
-        for store in self.conflict_stores:
+        for store in (_TEMPORARY_RESERVATIONS, *self.conflict_stores, *additional):
             stores.setdefault(store.lock_key, store)
         return tuple(stores[key] for key in sorted(stores))
 
@@ -171,7 +175,7 @@ class RunManager:
             # This is a temporary reservation, not a new project calculation.
             # An unbound project manager can restore any historical record.
             scope = RunManager.new_record(
-                self, project_id=record.project_id,
+                self,
                 directory=execution.directory.local,
                 remote_directory=execution.directory.remote,
                 target=execution.target,
@@ -183,8 +187,8 @@ class RunManager:
                     mapping=mapping,
                 ),
             )
-            scope = replace(scope, store=self._store_for(record))
-            with self._scoped_reservation(scope):
+            scope = replace(scope, store=_TEMPORARY_RESERVATIONS)
+            with self._scoped_reservation(scope, conflict_stores=(self._store_for(record),)):
                 yield
 
         with self._history_edit(run) as (_, record):
@@ -444,7 +448,6 @@ class RunManager:
         This deliberately never creates a record or tombstone on disk.
         Other stores participate only in conflict detection.
         """
-        from kkrunner.runs.memory_store import MemoryRunStore
         if not isinstance(self.store, MemoryRunStore):
             raise TypeError("Save-only preprocessing requires MemoryRunStore")
         record = self.new_record(directory=spec.directory, files=FileManifest.from_spec(spec))
@@ -456,13 +459,13 @@ class RunManager:
             )))
 
     @contextmanager
-    def _scoped_reservation(self, record):
+    def _scoped_reservation(self, record, *, conflict_stores=()):
         """Reserve a synchronous scope without recovering other runs."""
         store = self._store_for(record)
         with store.observation_lock(record):
             reserved = self._reserve(record, lambda: store.save(
                 replace(record, state=RunState.PREPROCESSING, updated_at=_now()),
-            ))
+            ), conflict_stores=conflict_stores)
             try:
                 yield reserved
             finally:
@@ -505,12 +508,9 @@ class RunManager:
         reserve = self._reserve_recovering if recover_conflicts else self._reserve
         return reserve(record, activate)
 
-    def _reserve(self, record, activate):
+    def _reserve(self, record, activate, *, conflict_stores=()):
         """Check the footprint and activate a record under the same store locks."""
-        stores = self._reservation_stores()
-        owner = self._store_for(record)
-        if all(store.lock_key != owner.lock_key for store in stores):
-            stores = tuple(sorted((*stores, owner), key=lambda store: store.lock_key))
+        stores = self._reservation_stores(self._store_for(record), *conflict_stores)
         with ExitStack() as locks:
             for store in stores:
                 locks.enter_context(store.submission_lock())
