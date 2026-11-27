@@ -164,6 +164,7 @@ def test_save_only_refresh_tolerates_completed_reservation(tmp_path):
         active = manager.conflicts(proposed)
         assert manager.refresh(active)[0].state == RunState.PREPROCESSING
         assert manager.refresh() == ()
+    # The scoped reservation has been discarded, not moved to history.
     assert manager.refresh(active) == ()
 
 
