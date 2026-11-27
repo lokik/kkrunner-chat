@@ -89,6 +89,22 @@ def test_run_store_uses_durable_json_writer(tmp_path, monkeypatch):
     assert calls[0][0].name == f"{record.id}.json"
     assert calls[0][1]["mode"] == 384
 
+    # Status polling that changes nothing must not rewrite durable history.
+    assert manager.transition(record, state=RunState.NEW) == record
+    assert len(calls) == 1
+    running = manager.transition(record, state=RunState.RUNNING)
+    assert len(calls) == 2
+    assert manager.transition(running, state=RunState.RUNNING) == running
+    assert len(calls) == 2
+    assert store.get(record.id) == running
+
+
+def test_first_unchanged_update_still_creates_record(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    record = RunManager(store).new_record(directory=tmp_path)
+    assert store.update(record, lambda current: current) == record
+    assert store.get(record.id) == record
+
 
 def test_reservation_does_not_sync_application_inputs(tmp_path, monkeypatch):
     input_file = tmp_path / "input.inp"
