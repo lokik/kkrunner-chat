@@ -984,7 +984,7 @@ class RunManager:
             )
         current = {self._record_key(record): record for record in records}
         groups = {}
-        for record in records:
+        for record in tuple(current.values()):
             if record.state == RunState.PREPROCESSING:
                 try:
                     current[self._record_key(record)] = self.recover_preprocessing(record)
