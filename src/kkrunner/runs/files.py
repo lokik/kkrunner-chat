@@ -110,7 +110,7 @@ class RunFiles:
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
-        if record.files.shared_filesystem:
+        if record.execution.target.is_local or record.files.shared_filesystem:
             return record  # There is no separate target copy to restore.
         if record.execution.backend_id is None or not record.execution.available:
             return record

@@ -96,3 +96,23 @@ def test_local_staging_versions_inputs_before_launch_and_caches_afterwards(tmp_p
     assert result.output_versions[0].is_current()
     assert result.cache_versions[0].path == cache
     assert result.cache_versions[0].is_current()
+
+
+def test_local_history_retrieval_does_not_change_missing_artifact_metadata(tmp_path):
+    from kkrunner import RunManager, RunState, RunStore
+    from kkrunner.files import FileEntry
+    from kkrunner.files.availability import capture_result_files
+
+    output = tmp_path / "output"
+    output.write_text("result")
+    files = capture_result_files(FileManifest(stdout=FileEntry(str(output))))
+    store = RunStore(tmp_path / "runs")
+    manager = RunManager(store)
+    record = manager.new_record(directory=tmp_path, target=LocalTarget(), files=files)
+    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+                                execution=record.execution.submitted("historical"))
+    output.unlink()
+
+    assert manager.retrieve_result_files(record) == record
+    assert store.get(record.id) == record
+    assert record.files.output_versions[0].state() is FileState.MISSING
