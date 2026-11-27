@@ -143,16 +143,22 @@ def test_failed_snapshot_does_not_replace_previous_copy(tmp_path):
     assert target.read_bytes() == b"previous"
 
 
-def test_snapshot_runner_convenience(tmp_path):
+@pytest.mark.parametrize("tracked", [False, True])
+def test_snapshot_runner_convenience(tmp_path, tracked):
     import sys
     from kkrunner import ExecutionSpec
 
     manager = RunManager(RunStore(tmp_path / "history"))
     run = ExecutionClient(SupervisedBackend).create_run(
-        ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"), tracked=manager,
+        ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"),
+        tracked=manager if tracked else False,
     )
+    with pytest.raises(RuntimeError, match="not been submitted"):
+        run.snapshot_file("stdout.txt")
     run.run()
     assert run.snapshot_file("stdout.txt") == b"done\n"
+    if not tracked:
+        assert manager.store.runs() == ()
 
 
 def test_snapshot_destination_cannot_overwrite_declared_directory_contents(tmp_path):
