@@ -968,13 +968,16 @@ class RunManager:
         if records is None:
             records = tuple(self.store.runs(active=True, **options))
         else:
-            # An assigned backend identity is immutable. Preprocessing
-            # recovery already resolves the record under observation ownership.
+            # Postprocessing is client-owned state; only history can refresh it.
+            # Otherwise an assigned backend identity is immutable. Preprocessing
+            # recovery resolves the record under observation ownership.
             records = tuple(
                 resolve_record(record, self.store)
-                if record.execution.backend_id is None
-                and not record.state.is_terminal
-                and record.state not in (RunState.NEW, RunState.PREPROCESSING)
+                if record.state == RunState.POSTPROCESSING or (
+                    record.execution.backend_id is None
+                    and not record.state.is_terminal
+                    and record.state not in (RunState.NEW, RunState.PREPROCESSING)
+                )
                 else record
                 for record in records
             )

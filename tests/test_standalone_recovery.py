@@ -36,6 +36,31 @@ def pending(manager, directory):
     )
 
 
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_refresh_reads_current_postprocessing_outcome_without_backend(tmp_path, monkeypatch, fails):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    stale = pending(manager, tmp_path)
+    assert stale.execution.backend_id is not None
+
+    def process(outcome):
+        if fails:
+            raise ValueError("parser failed")
+        return Path(outcome.output_file).read_text()
+
+    if fails:
+        with pytest.raises(ValueError, match="parser failed"):
+            manager.retry_postprocessing(stale, process)
+    else:
+        assert manager.retry_postprocessing(stale, process) == "answer"
+    completed = manager.store.get(stale.id)
+    assert completed.state == (RunState.FAILED if fails else RunState.FINISHED)
+
+    monkeypatch.setattr(manager, "client_for",
+                        lambda _: pytest.fail("Postprocessing is not backend state"))
+    assert manager.refresh((stale,)) == (completed,)
+
+
 def test_opaque_metadata_is_json_and_recursively_immutable(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = pending(manager, tmp_path)
