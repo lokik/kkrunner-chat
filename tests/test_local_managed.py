@@ -365,7 +365,8 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     assert recover_submission(RUN_ID) is None
 
 
-def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(tmp_path):
+@pytest.mark.parametrize("abrupt_exit", [False, True], ids=["normal-exit", "abrupt-exit"])
+def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(tmp_path, abrupt_exit):
     import subprocess
 
     submit = """
@@ -389,9 +390,10 @@ run = submit(
     backend='kkrunner', persistent=manager,
 )
 print(run.id, flush=True)
-# Simulate abrupt client termination without running monitor cleanup.
-os._exit(0)
 """
+    if abrupt_exit:
+        # Simulate abrupt client termination without running monitor cleanup.
+        submit += "os._exit(0)\n"
     reconnect = """
 import sys
 from pathlib import Path

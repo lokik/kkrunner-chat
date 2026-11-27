@@ -44,7 +44,7 @@ from kkrunner import submit
 
 job = submit(
     [sys.executable, "-u", "-c",
-     "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
+     "import time\nfor i in range(60):\n    print(i)\n    time.sleep(1)"],
     backend="kkrunner",
     output_file="supervised.out",
     error_file="supervised.err",
@@ -188,7 +188,7 @@ manager = ProjectRunManager(project_repository=projects, project=project_id)
 
 job = submit(
     [sys.executable, "-u", "-c",
-     "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
+     "import time\nfor i in range(60):\n    print(i)\n    time.sleep(1)"],
     directory=project.directory,
     output_file="project.out",
     error_file="project.err",
