@@ -329,3 +329,50 @@ def test_never_policy_does_not_claim_missing_wildcard_copies_are_available(tmp_p
     assert not (workdir / "result-a.dat").exists()
     assert transport.downloads == []
     assert all(entry.availability_state == "skipped" for entry in runner.files.outputs)
+
+
+def test_retry_does_not_publish_disappeared_wildcard_child(tmp_path):
+    from kkrunner import ExecutionSpec, RunState
+    from kkrunner.client import StagingSpec
+    from kkrunner.client.file_context import FileContext
+    from kkrunner.client.file_session import FileSession
+    from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
+    from kkrunner.runs.base import RunStatus
+
+    from .test_remote import _OperationLoopbackTransport
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    pattern = local / "result-*.dat"
+    stale = local / "result-old.dat"
+    stale.write_text("unrelated old local data")
+    (remote / "result-new.dat").write_text("current result")
+
+    # A previous attempt discovered the old child but failed to retrieve
+    # it. Retrying resets its failed availability to pending; the remote
+    # child is now gone while another member of the pattern remains.
+    files = FileManifest(
+        outputs=(
+            FileEntry(str(pattern), str(remote / pattern.name)),
+            FileEntry(str(stale), str(remote / stale.name), source_pattern=str(pattern)),
+        ),
+        mapping=FileMapping(str(local), str(remote)),
+    ).initialize_availability()
+    staging = StagingSpec.from_mapping(files.mapping)
+    context = FileContext(_OperationLoopbackTransport(), staging)
+    session = FileSession(
+        context, ExecutionSpec(argv=None, directory=local, staging=staging),
+        files=files, remote_directory=str(remote),
+    )
+    try:
+        final = session.finalize(RunStatus(RunState.FINISHED, return_code=0))
+        artifacts = {entry.local_path: entry for entry in final.outputs}
+        assert artifacts[str(stale)].availability_state == "skipped"
+        assert artifacts[str(pattern)].availability_state == "available"
+        assert artifacts[str(local / "result-new.dat")].availability_state == "available"
+        assert {version.path.name for version in final.output_versions} == {"result-new.dat"}
+        assert stale.read_text() == "unrelated old local data"
+        assert (local / "result-new.dat").read_text() == "current result"
+    finally:
+        session.close()

@@ -760,9 +760,9 @@ class FileSession:
         """Synchronize target-side artifacts for a remote session."""
         await self._sync_output_files(required=required)
         await self._sync_cache_files()
-        for entry in self._files.artifacts:
-            if entry.availability_state == "pending":
-                self._set_file_availability(entry.local_path, "available")
+        # A previously discovered wildcard child may have disappeared
+        # before a retry. Only a synchronization decision can publish it.
+        self._files = self._files.skip_pending_artifacts()
 
     async def finalize_async(self, status):
         """Finalize owned files on the existing event loop, if any."""
