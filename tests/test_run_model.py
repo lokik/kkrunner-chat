@@ -2,7 +2,7 @@ from dataclasses import asdict
 
 import pytest
 
-from kkrunner.transports import LocalTransport, SshTransport
+from kkrunner.targets import LocalTarget, SshTarget
 from kkrunner.client.staging import StagingSpec
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files.manifest import (
@@ -18,19 +18,19 @@ from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 
 def test_execution_roundtrip_includes_backend_and_both_directories():
     original = ExecutionMetadata(
-        SshTransport("cluster"),
+        SshTarget("cluster"),
         WorkingDirectory("/local/case", "/scratch/case"),
         backend_id="slurm-42",
         backend=BackendConfig("psij", {"executor_name": "slurm"}),
     )
     assert ExecutionMetadata(**asdict(original)) == original
     assert original.directory.target == "/scratch/case"
-    assert original.transport == SshTransport("cluster")
+    assert original.target == SshTarget("cluster")
     assert original.backend.name == "psij"
 
 
 def test_local_working_directory_does_not_need_remote_copy():
-    run = ExecutionMetadata(LocalTransport(), WorkingDirectory("/tmp/work"))
+    run = ExecutionMetadata(LocalTarget(), WorkingDirectory("/tmp/work"))
     assert run.backend_id is None
     assert run.directory.target == "/tmp/work"
 
@@ -50,7 +50,7 @@ def test_manifest_roundtrip_includes_streams_and_cache_baseline():
 
 def test_empty_backend_identity_and_pathless_file_are_invalid():
     with pytest.raises(ValueError, match="backend_id"):
-        ExecutionMetadata(LocalTransport(), WorkingDirectory("/tmp"), backend_id="")
+        ExecutionMetadata(LocalTarget(), WorkingDirectory("/tmp"), backend_id="")
     with pytest.raises(ValueError, match="location"):
         FileEntry()
 
@@ -182,7 +182,7 @@ def test_manifest_availability_validation_is_shared_with_file_entry(existing, st
 
 
 def test_submitted_uses_execution_backend_id_validation():
-    execution = ExecutionMetadata(LocalTransport(), WorkingDirectory("/tmp"))
+    execution = ExecutionMetadata(LocalTarget(), WorkingDirectory("/tmp"))
     assert execution.backend_id is None
     with pytest.raises(ValueError, match="backend_id cannot be empty"):
         execution.submitted("")

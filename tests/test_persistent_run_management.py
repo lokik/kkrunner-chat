@@ -7,14 +7,14 @@ import pytest
 from kkrunner import RunManager, RunState, RunStore
 from kkrunner.backends import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, UnsupportedCapability
-from kkrunner.client import EndpointClient, LocalTransport
+from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.runs import ActiveRunDeletionError, ForgottenRunError, RunStatus
 
 
 def stored(manager, directory, *, state=RunState.UNKNOWN, backend="kkrunner"):
     record = manager.new_record(
         directory=directory, backend=BackendConfig(backend),
-        transport=LocalTransport(), metadata={"test": {"task": "SCF"}},
+        target=LocalTarget(), metadata={"test": {"task": "SCF"}},
     )
     return manager.transition(
         record, state=state, execution=record.execution.submitted("opaque-42"),
@@ -117,11 +117,11 @@ def test_stale_monitor_cannot_restore_forgotten_record(tmp_path):
 
 
 def test_endpoint_cancel_uses_existing_backend_operation(tmp_path, monkeypatch):
-    client = EndpointClient(backend="kkrunner", transport=LocalTransport())
+    client = ExecutionClient(backend="kkrunner", target=LocalTarget())
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
         directory=tmp_path, backend=BackendConfig("kkrunner"),
-        transport=LocalTransport(),
+        target=LocalTarget(),
     )
     record = replace(record, execution=record.execution.submitted("opaque-42"))
     calls = []

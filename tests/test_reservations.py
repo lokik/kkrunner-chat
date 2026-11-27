@@ -8,7 +8,7 @@ import pytest
 from kkrunner.runs import DuplicateSubmissionError
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.files import FileEntry, FileManifest, FileMapping
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.runs.conflicts import submission_conflicts
 
 
@@ -20,8 +20,8 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
         assert command == ("sh", "-c", 'printf "%s" "$HOME"')
         return SimpleNamespace(stdout=b"/home/tester\n")
 
-    monkeypatch.setattr(SshTransport, "run", fake_run)
-    client = EndpointClient(transport=SshTransport("cluster"))
+    monkeypatch.setattr(SshTarget, "run", fake_run)
+    client = ExecutionClient(target=SshTarget("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     spec = ExecutionSpec(
         ["unused"],
@@ -29,12 +29,12 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
         output_file=tmp_path / "case/stdout",
         staging=StagingSpec(local_root=tmp_path),
     )
-    first = manager.create_run(client, spec)
+    first = client.create_run(spec, persistent=manager)
     directory, files = first._file_session.submission_footprint()
     resolved = replace(first.record, execution=replace(first.record.execution, directory=directory), files=files)
     manager.reserve(resolved)
 
-    second = manager.create_run(client, spec)
+    second = client.create_run(spec, persistent=manager)
     with pytest.raises(DuplicateSubmissionError):
         second.submit()
     assert resolved.execution.directory.remote == "/home/tester/case"
@@ -48,7 +48,7 @@ def test_explicit_shared_filesystem_connects_different_host_aliases(tmp_path):
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/shared/work",
-        transport=SshTransport("host-a"),
+        target=SshTarget("host-a"),
         files=FileManifest(
             stdout=FileEntry(str(tmp_path / "one/out"), "/shared/work/out"),
             mapping=FileMapping(str(tmp_path / "one"), "/shared/work", filesystem_id="shared"),
@@ -57,7 +57,7 @@ def test_explicit_shared_filesystem_connects_different_host_aliases(tmp_path):
     second = manager.new_record(
         directory=tmp_path / "two",
         remote_directory="/shared/work",
-        transport=SshTransport("host-b"),
+        target=SshTarget("host-b"),
         files=FileManifest(
             stdout=FileEntry(str(tmp_path / "two/out"), "/shared/work/out"),
             mapping=FileMapping(str(tmp_path / "two"), "/shared/work", filesystem_id="shared"),
@@ -101,7 +101,7 @@ def test_distinct_local_inputs_mapped_to_same_target_conflict_if_uploaded(tmp_pa
     def record(name):
         root = tmp_path / name
         return manager.new_record(
-            directory=root, remote_directory="/shared", transport=SshTransport("cluster"),
+            directory=root, remote_directory="/shared", target=SshTarget("cluster"),
             files=FileManifest(
                 inputs=(FileEntry(str(root / "Fe.pot"), "/shared/Fe.pot"),),
                 stdout=FileEntry(str(root / f"{name}.out"), f"/shared/{name}.out"),

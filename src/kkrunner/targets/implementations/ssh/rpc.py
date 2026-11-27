@@ -1,7 +1,7 @@
 """Assemble one-shot SSH Python operation scripts."""
 
 from __future__ import annotations
-from kkrunner.transports.contracts import Operation
+from kkrunner.targets.contracts import Operation
 from .bootstrap import _json_call, _stream_call, _framed_call
 from .helpers import ssh_helper
 

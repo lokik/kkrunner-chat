@@ -17,12 +17,12 @@ import kkrunner.remote
 def test_public_managers_have_one_unambiguous_name():
     assert kkrunner.RunManager.__module__ == "kkrunner.runs.manager"
     assert kkrunner.projects.ProjectRunManager.__module__ == "kkrunner.projects.manager"
-    from kkrunner.client.endpoint import EndpointClient
-    from kkrunner.transports.implementations.ssh.transport import SshTransport
+    from kkrunner.client.execution_client import ExecutionClient
+    from kkrunner.targets.implementations.ssh.target import SshTarget
     from kkrunner.runs.run import Run
 
-    assert EndpointClient.__module__ == "kkrunner.client.endpoint"
-    assert SshTransport.__module__ == "kkrunner.transports.implementations.ssh.transport"
+    assert ExecutionClient.__module__ == "kkrunner.client.execution_client"
+    assert SshTarget.__module__ == "kkrunner.targets.implementations.ssh.target"
     assert Run.__module__ == "kkrunner.runs.run"
     assert not hasattr(kkrunner, "ExecutionManager")
     assert not hasattr(kkrunner, "RemoteExecutor")
@@ -32,12 +32,12 @@ def test_public_managers_have_one_unambiguous_name():
 
 def test_run_and_job_ownership_boundaries_are_explicit():
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
-    from kkrunner.client import EndpointClient, LocalTransport
+    from kkrunner.client import ExecutionClient, LocalTarget
     from kkrunner.backends.contracts import BackendCapability
 
     for backend in (DirectBackend, SupervisedBackend, PsijBackend):
         assert not hasattr(backend, "create_job")
-        client = EndpointClient(backend, transport=LocalTransport())
+        client = ExecutionClient(backend, target=LocalTarget())
         assert callable(client.create_run_parts)
     assert BackendCapability.REATTACH in DirectBackend().supports
     assert BackendCapability.REATTACH in SupervisedBackend().supports
@@ -66,7 +66,7 @@ def test_file_and_support_layers_do_not_depend_on_orchestration():
                     ), (path.name, node.module)
 
 
-def test_root_has_only_backend_independent_entry_points():
+def test_root_exports_common_execution_entry_points():
     assert set(kkrunner.__all__) - {"__version__"} == {
         "ExecutionSpec",
         "ExecutionOutcome",
@@ -76,13 +76,14 @@ def test_root_has_only_backend_independent_entry_points():
         "RunState",
         "TaskFile",
         "ProcessingPending",
-        "Run",
+        "Run", "run", "ExecutionClient", "StagingSpec", "MpiSpec",
+        "Target", "LocalTarget", "SshTarget", "DirectBackend", "SupervisedBackend",
+        "PsijBackend", "ProjectRepository", "ProjectRunManager",
     }
     for name in (
         "LocalExecutor",
         "PsijExecutor",
         "RemoteEndpointExecutor",
-        "ProjectRepository",
         "LocalRunner",
         "PsijRunner",
         "RemoteRunner",
@@ -98,7 +99,7 @@ from kkrunner.files import TaskFile
 from kkrunner import ExecutionSpec, RunStore, backends
 assert 'DirectBackend' in dir(backends)
 assert all(name not in sys.modules for name in (
-    'kkrunner.backends.implementations.psij', 'kkrunner.transports.implementations.ssh.transport', 'kkrunner.projects', 'psij',
+    'kkrunner.backends.implementations.psij', 'kkrunner.targets.implementations.ssh.target', 'kkrunner.projects', 'psij',
 ))
 from kkrunner.backends import DirectBackend
 assert backends.DirectBackend is DirectBackend
@@ -116,15 +117,15 @@ def test_process_strategies_have_distinct_implementations():
 
 def test_local_process_backend_selects_one_execution_strategy(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.job import Job
 
-    client = EndpointClient()
+    client = ExecutionClient()
     spec = ExecutionSpec(argv=("dummy",), directory=str(tmp_path), input_file=None)
     assert isinstance(client.create_run_parts(spec).job, Job)
     assert isinstance(client.create_run_parts(spec, submission_key="run-1").job, Job)
-    assert isinstance(EndpointClient(SupervisedBackend).create_run_parts(spec, submission_key="run-1").job, Job)
+    assert isinstance(ExecutionClient(SupervisedBackend).create_run_parts(spec, submission_key="run-1").job, Job)
 
 
 def test_remote_process_service_reuses_supervised_backend_operations():
@@ -249,59 +250,59 @@ def test_agent_and_direct_have_distinct_supported_operations():
 
 def test_concrete_implementations_are_separated_from_contracts():
     import kkrunner.backends
-    import kkrunner.transports
+    import kkrunner.targets
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
-    from kkrunner.transports import LocalTransport, SshTransport
+    from kkrunner.targets import LocalTarget, SshTarget
 
     root = Path(kkrunner.__file__).parent
     backend_impls = root / "backends" / "implementations"
-    transport_impls = root / "transports" / "implementations"
+    transport_impls = root / "targets" / "implementations"
     assert {p.name for p in backend_impls.iterdir() if p.is_dir() and p.name != "__pycache__"} == {
         "direct", "supervised", "psij"
     }
-    assert (transport_impls / "local" / "transport.py").is_file()
+    assert (transport_impls / "local" / "target.py").is_file()
     assert (transport_impls / "local" / "call.py").is_file()
-    assert (transport_impls / "ssh" / "transport.py").is_file()
+    assert (transport_impls / "ssh" / "target.py").is_file()
     assert (transport_impls / "ssh" / "call.py").is_file()
     assert not (transport_impls / "local.py").exists()
     assert not (transport_impls / "local_call.py").exists()
     assert (transport_impls / "unavailable.py").is_file()
     # Ignored __pycache__ artifacts can survive a package move in a local tree.
     # Assert the old Python sources are gone without requiring empty directories.
-    assert not list((root / "client" / "transports").rglob("*.py"))
+    assert not list((root / "client" / "targets").rglob("*.py"))
     assert all(cls.__module__.startswith("kkrunner.backends.implementations.")
                for cls in (DirectBackend, SupervisedBackend, PsijBackend))
-    assert all(cls.__module__.startswith("kkrunner.transports.implementations.")
-               for cls in (LocalTransport, SshTransport))
+    assert all(cls.__module__.startswith("kkrunner.targets.implementations.")
+               for cls in (LocalTarget, SshTarget))
     assert all(not hasattr(cls, "SshHelper") for cls in (DirectBackend, SupervisedBackend, PsijBackend))
 
 
 def test_transport_contracts_are_lazy_without_concrete_backends():
     script = """
 import sys
-from kkrunner.transports import Transport
-from kkrunner.transports.contracts import Operation, RunningCommand
+from kkrunner.targets import Target
+from kkrunner.targets.contracts import Operation, RunningCommand
 assert 'kkrunner.backends.implementations.direct' not in sys.modules
 assert 'kkrunner.backends.implementations.psij' not in sys.modules
-assert 'kkrunner.transports.implementations.ssh.transport' not in sys.modules
-assert Transport is not None and Operation is not None and RunningCommand is not None
+assert 'kkrunner.targets.implementations.ssh.target' not in sys.modules
+assert Target is not None and Operation is not None and RunningCommand is not None
 """
     subprocess.run([sys.executable, "-c", script], check=True, timeout=10)
 
 
 def test_transport_implementations_have_symmetric_package_exports():
-    from kkrunner.transports import LocalTransport, SshTransport, transport_from_dict
-    from kkrunner.client import LocalTransport as ClientLocalTransport
-    from kkrunner.transports.implementations.local import LocalTransport as LocalFromPackage
-    from kkrunner.transports.implementations.ssh import SshTransport as SshFromPackage
-    from kkrunner.transports.implementations.local.call import LocalCall
-    from kkrunner.transports.implementations.ssh.call import SshCall
+    from kkrunner.targets import LocalTarget, SshTarget, target_from_dict
+    from kkrunner.client import LocalTarget as ClientLocalTransport
+    from kkrunner.targets.implementations.local import LocalTarget as LocalFromPackage
+    from kkrunner.targets.implementations.ssh import SshTarget as SshFromPackage
+    from kkrunner.targets.implementations.local.call import LocalCall
+    from kkrunner.targets.implementations.ssh.call import SshCall
 
-    assert LocalFromPackage is LocalTransport is ClientLocalTransport
-    assert SshFromPackage is SshTransport
-    assert LocalTransport.__module__ == "kkrunner.transports.implementations.local.transport"
-    assert SshTransport.__module__ == "kkrunner.transports.implementations.ssh.transport"
-    assert LocalCall.__module__ == "kkrunner.transports.implementations.local.call"
-    assert SshCall.__module__ == "kkrunner.transports.implementations.ssh.call"
-    assert isinstance(transport_from_dict({"kind": "local"}), LocalTransport)
-    assert isinstance(transport_from_dict({"kind": "ssh", "host": "example"}), SshTransport)
+    assert LocalFromPackage is LocalTarget is ClientLocalTransport
+    assert SshFromPackage is SshTarget
+    assert LocalTarget.__module__ == "kkrunner.targets.implementations.local.target"
+    assert SshTarget.__module__ == "kkrunner.targets.implementations.ssh.target"
+    assert LocalCall.__module__ == "kkrunner.targets.implementations.local.call"
+    assert SshCall.__module__ == "kkrunner.targets.implementations.ssh.call"
+    assert isinstance(target_from_dict({"kind": "local"}), LocalTarget)
+    assert isinstance(target_from_dict({"kind": "ssh", "host": "example"}), SshTarget)

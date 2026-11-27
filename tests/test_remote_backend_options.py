@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 from kkrunner import ExecutionSpec
 from kkrunner.execution import MpiSpec
-from kkrunner.client import EndpointClient, StagingSpec
+from kkrunner.client import ExecutionClient, StagingSpec
 from kkrunner.backends import PsijBackend, DirectBackend
 from kkrunner.files import FileManifest
 
@@ -22,9 +22,9 @@ def test_remote_request_carries_target_backend_options_and_mpi_intent(tmp_path):
     potential = directory / "start.pot"
     potential.write_text("potential")
 
-    client = EndpointClient(
+    client = ExecutionClient(
         PsijBackend(executor_name="slurm"),
-        transport=_LoopbackSshTransport(),
+        target=_LoopbackSshTransport(),
     )
     spec = ExecutionSpec(
         argv=("program",),
@@ -70,7 +70,7 @@ def test_untracked_remote_request_has_its_own_submission_key(tmp_path):
     directory = root / "work"
     directory.mkdir(parents=True)
     remote_root.mkdir()
-    client = EndpointClient(PsijBackend(), transport=_LoopbackSshTransport())
+    client = ExecutionClient(PsijBackend(), target=_LoopbackSshTransport())
     parts = client.create_run_parts(ExecutionSpec(
         argv=("program",), directory=directory,
         staging=StagingSpec(local_root=root, remote_root=remote_root),
@@ -88,7 +88,7 @@ def test_remote_file_declarations_are_target_only_and_single_sourced(tmp_path):
     remote_root.mkdir()
     cache = directory / "restart.dat"
     cache.write_text("restart")
-    client = EndpointClient(DirectBackend, transport=_LoopbackSshTransport())
+    client = ExecutionClient(DirectBackend, target=_LoopbackSshTransport())
     spec = ExecutionSpec(
         argv=("program",), directory=directory,
         output_file=directory / "run.out",

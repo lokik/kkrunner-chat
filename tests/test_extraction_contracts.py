@@ -11,7 +11,7 @@ from kkrunner.runs import CorruptRunRecord
 from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, LocalTarget, SshTarget, StagingSpec
 from kkrunner.backends.contracts import JobStatus
 from kkrunner.client.backend_execution import DirectExecution
 from kkrunner.client.run_parts import RunParts
@@ -90,7 +90,7 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         def status(self):
             return JobStatus(self.state, return_code=self.return_code)
 
-    class Client(EndpointClient):
+    class Client(ExecutionClient):
         def __init__(self):
             super().__init__(SupervisedBackend)
 
@@ -113,7 +113,7 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         assert entered.wait(3)
 
     monkeypatch.setattr(Run, "_start_completion", start_and_yield)
-    run = manager.create_run(Client(), ExecutionSpec(["instant"], directory=tmp_path), process_result=process)
+    run = Client().create_run(ExecutionSpec(["instant"], directory=tmp_path), persistent=manager, process_result=process)
     try:
         run.submit()
     finally:
@@ -155,8 +155,8 @@ def test_cancel_and_failed_submit_do_not_deadlock():
 @pytest.mark.parametrize(
     "transport, backend",
     [
-        (LocalTransport(), BackendConfig("psij")),
-        (SshTransport("other-host"), BackendConfig("direct")),
+        (LocalTarget(), BackendConfig("psij")),
+        (SshTarget("other-host"), BackendConfig("direct")),
     ],
 )
 def test_local_publication_conflict_is_independent_of_backend(tmp_path, transport, backend):
@@ -166,7 +166,7 @@ def test_local_publication_conflict_is_independent_of_backend(tmp_path, transpor
     second = manager.new_record(
         directory=tmp_path,
         files=files,
-        transport=transport,
+        target=transport,
         backend=backend,
         remote_directory="/remote" if not transport.is_local else None,
     )
@@ -193,7 +193,7 @@ def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch)
         ["unused"], directory=local, output_file=output,
         staging=StagingSpec(local_root=local, remote_root=tmp_path / "remote"),
     )
-    run = Run.untracked(EndpointClient(DirectBackend, transport=_LoopbackSshTransport()), spec)
+    run = ExecutionClient(DirectBackend, target=_LoopbackSshTransport()).create_run(spec, persistent=False)
 
     async def rejected(self, request, on_output):
         raise RuntimeError("lost submit response")
@@ -244,7 +244,7 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
         def status(self):
             return JobStatus(self.state, return_code=self.return_code)
 
-    class Client(EndpointClient):
+    class Client(ExecutionClient):
         submissions = 0
 
         def __init__(self):
@@ -259,8 +259,8 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
 
     backend = Client()
     spec = ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "same-output")
-    first = manager.create_run(backend, spec, run_id="same-id")
-    second = manager.create_run(backend, spec, run_id="same-id")
+    first = backend.create_run(spec, persistent=manager, run_id="same-id")
+    second = backend.create_run(spec, persistent=manager, run_id="same-id")
     try:
         first.submit()
         with pytest.raises((RuntimeError, ValueError)):

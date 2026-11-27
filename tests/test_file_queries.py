@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from kkrunner.files import queries
-from kkrunner.transports import LocalTransport
+from kkrunner.targets import LocalTarget
 
 from .test_transport import _LoopbackSshTransport
 
@@ -51,7 +51,7 @@ def test_directory_digest_propagates_nested_read_failure(tmp_path, monkeypatch, 
 
 
 def test_directory_digest_portable_over_ssh(tmp_path):
-    from kkrunner.transports.contracts import Operation
+    from kkrunner.targets.contracts import Operation
 
     directory = tmp_path / "tree"
     directory.mkdir()
@@ -108,7 +108,7 @@ def test_batch_keeps_errors_separate_from_missing(tmp_path, monkeypatch, error_n
     assert error.value.errno == error_number
 
 
-@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
 def test_query_batch_and_discovery_unusual_names(tmp_path, factory):
     names = ["a b.dat", "tab\tline\nquote'\".dat", "-option.dat", "žluťoučký.dat", "[literal]*.dat"]
     paths = [tmp_path / name for name in names]
@@ -150,7 +150,7 @@ def test_ssh_combines_globs_and_metadata_in_one_request(tmp_path):
     assert "def query_files(" in calls[0][2]
 
 
-@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
 def test_discovery_confines_paths_and_symlinks(tmp_path, factory):
     root = tmp_path / "root"
     root.mkdir()
@@ -184,15 +184,15 @@ def test_ssh_single_file_transfer_preserves_nanoseconds_and_atomic_publication(t
 
 
 def test_remote_endpoint_reuses_configured_target_python_command():
-    from kkrunner.client import EndpointClient, SshTransport
+    from kkrunner.client import ExecutionClient, SshTarget
     from kkrunner.backends.config import BackendConfig
 
     command = (sys.executable,)
-    transport = SshTransport("host", python_command=command)
-    client = EndpointClient(transport=transport)
-    assert client.transport.python_command == command
-    restored = EndpointClient.from_config(transport.to_dict(), client.backend_config)
-    assert restored.transport.python_command == command
+    transport = SshTarget("host", python_command=command)
+    client = ExecutionClient(target=transport)
+    assert client.target.python_command == command
+    restored = ExecutionClient.from_config(transport.to_dict(), client.backend_config)
+    assert restored.target.python_command == command
 
 
 def test_special_file_metadata_does_not_open_fifo(tmp_path):
@@ -225,7 +225,7 @@ def test_remote_discovery_preserves_symlinked_root_namespace(tmp_path):
 
 def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
     from kkrunner import ExecutionSpec
-    from kkrunner.client import EndpointClient, StagingSpec
+    from kkrunner.client import ExecutionClient, StagingSpec
 
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
@@ -234,14 +234,14 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
         (remote / name).write_bytes(b"cache")
     calls = []
 
-    class Observed(LocalTransport):
+    class Observed(LocalTarget):
         is_local = False
 
         async def query_files(self, sources, *, root=None, digest=False):
             calls.append((tuple(sources), root))
             return await super().query_files(sources, root=root, digest=digest)
 
-    client = EndpointClient(transport=Observed())
+    client = ExecutionClient(target=Observed())
     spec = ExecutionSpec(
         argv=("unused",), directory=local,
         cache_files=("*.pot", "*.cache", "exact", "missing"),

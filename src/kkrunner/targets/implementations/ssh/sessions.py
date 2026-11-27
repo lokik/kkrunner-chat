@@ -15,7 +15,7 @@ import threading
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 
-from kkrunner.transports.implementations.ssh.worker import WORKER_SOURCE
+from kkrunner.targets.implementations.ssh.worker import WORKER_SOURCE
 
 from ...rpc import operation_result
 from .source import portable_bundle
@@ -135,7 +135,7 @@ class SshSessionPool:
     """
 
     def __init__(self, transport):
-        self.transport = transport
+        self.target = transport
         self.idle_timeout = transport.pool_idle_seconds
         self._lock = threading.Lock()
         self._idle = []
@@ -156,7 +156,7 @@ class SshSessionPool:
                 return self._idle.pop()
         # ThreadPoolExecutor bounds the total number of simultaneous calls;
         # each call either owns one session or starts exactly one new session.
-        session = _Session(self.transport, cancelled)
+        session = _Session(self.target, cancelled)
         with self._lock:
             if self._closed.is_set():
                 session.close()

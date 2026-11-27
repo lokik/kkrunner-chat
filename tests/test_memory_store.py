@@ -113,10 +113,10 @@ def test_session_record_json_roundtrip_with_file_version(tmp_path):
 @pytest.mark.parametrize("detached", [False, True])
 def test_run_exposes_actual_detached_policy(tmp_path, detached):
     from kkrunner import ExecutionSpec, Run
-    from kkrunner.client import EndpointClient
-    client = EndpointClient()
+    from kkrunner.client import ExecutionClient
+    client = ExecutionClient()
     spec = ExecutionSpec(["unused"], directory=tmp_path)
-    run = Run.create(client, spec, persistent=RunManager(MemoryRunStore()), detached=detached)
+    run = client.create_run(spec, persistent=RunManager(MemoryRunStore()), detached=detached)
     assert run.detached is detached
     assert run.record.detached is detached
     assert RunRecord(**run.record.to_dict()).detached is detached
@@ -207,7 +207,7 @@ def test_foreign_attach_observes_and_completes_in_own_store(tmp_path):
     import sys
     from kkrunner import ExecutionSpec, Run
     from kkrunner.backends import DirectBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
 
     disk, memory = RunStore(tmp_path / "runs"), MemoryRunStore()
     a, b = RunManager(disk), RunManager(memory)
@@ -220,7 +220,7 @@ def test_foreign_attach_observes_and_completes_in_own_store(tmp_path):
         directory=str(tmp_path), output_file=str(tmp_path / "out"),
     )
     disk.save(a.new_record(directory=tmp_path, run_id="same"))
-    run = Run.create(EndpointClient(DirectBackend), spec, persistent=b,
+    run = ExecutionClient(DirectBackend).create_run(spec, persistent=b,
                      detached=True, run_id="same")
     run.submit()
     try:
@@ -248,11 +248,11 @@ def test_foreign_attach_observes_and_completes_in_own_store(tmp_path):
 @pytest.mark.parametrize("memory", [False, True])
 def test_failed_direct_attach_releases_observation_claim(tmp_path, monkeypatch, memory):
     from kkrunner.backends import DirectBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     store = MemoryRunStore() if memory else RunStore(tmp_path / "runs")
     manager = RunManager(store)
-    client = EndpointClient(DirectBackend)
-    record = manager.new_record(directory=tmp_path, transport=client.transport,
+    client = ExecutionClient(DirectBackend)
+    record = manager.new_record(directory=tmp_path, target=client.target,
                                 backend=client.backend_config, detached=True)
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))
@@ -271,12 +271,12 @@ def test_failed_direct_attach_releases_observation_claim(tmp_path, monkeypatch, 
 def test_failed_direct_observer_start_closes_streams_before_releasing_claim(tmp_path, monkeypatch):
     from kkrunner import ExecutionSpec
     from kkrunner.backends import DirectBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
 
     store = MemoryRunStore()
     manager = RunManager(store)
-    client = EndpointClient(DirectBackend)
-    record = manager.new_record(directory=tmp_path, transport=client.transport,
+    client = ExecutionClient(DirectBackend)
+    record = manager.new_record(directory=tmp_path, target=client.target,
                                 backend=client.backend_config, detached=True)
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))

@@ -25,7 +25,7 @@ from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.support.file_locks import FileLock
-from kkrunner.transports.contracts import Operation
+from kkrunner.targets.contracts import Operation
 
 
 class FileSession:
@@ -163,7 +163,7 @@ class FileSession:
 
     @property
     def is_local(self):
-        return self.context.transport.is_local
+        return self.context.target.is_local
 
     def _local_path(self, value):
         if value is None:
@@ -189,7 +189,7 @@ class FileSession:
             return target
 
         local_digest = file_digest(source, missing_ok=True)
-        remote_digest = (await self.context.transport.file_digest(target)
+        remote_digest = (await self.context.target.file_digest(target)
                          if remote_digests is None else remote_digests.get(target))
         if local_digest is None:
             if not required and remote_digest is None:
@@ -202,7 +202,7 @@ class FileSession:
 
         if policy.should_transfer(local_digest, remote_digest):
             if uploads is None:
-                await self.context.transport.put_file(source, target)
+                await self.context.target.put_file(source, target)
             else:
                 uploads.append((source, target))
 
@@ -220,7 +220,7 @@ class FileSession:
         if os.path.lexists(source) and (os.path.islink(source) or not os.path.isdir(source)):
             raise ValueError(f"Directory input is not a regular directory: {source}")
         local_exists = os.path.isdir(source)
-        transport = self.context.transport
+        transport = self.context.target
         observed = (await transport.query_files([target]))[0]
         remote_exists = observed["status"] == "ok" and observed["type"] == "directory"
         if observed["status"] == "ok" and not remote_exists:
@@ -258,14 +258,14 @@ class FileSession:
         pending = [match.remote_path for match in matches if match.remote_path not in used]
         digests = {}
         if pending and policy != FileSyncPolicy.NEVER:
-            observed = await self.context.transport.query_files(pending, digest=True)
+            observed = await self.context.target.query_files(pending, digest=True)
             digests = {item["path"]: item.get("digest") for item in observed}
         uploads = []
         for match in matches:
             await self._stage_file(match, used, required=required, uploads=uploads,
                                    remote_digests=digests)
         if uploads:
-            await self.context.transport.put_files(
+            await self.context.target.put_files(
                 uploads, source_directory=self.context.local_root,
                 destination_directory=remote_root,
             )
@@ -305,7 +305,7 @@ class FileSession:
             # Stage all inputs first, then discover and capture all cache
             # baselines in one request, including exact paths and globs.
             exact = {remote for remote, _ in targets.values()}
-            entries = await self.context.transport.query_files(
+            entries = await self.context.target.query_files(
                 [*patterns, *(remote for remote, _ in targets.values())],
                 root=remote_root,
             )
@@ -319,7 +319,7 @@ class FileSession:
             for cache in manifest.caches:
                 entry = cache.file
                 if entry.kind == "directory" and entry.remote_path in directories:
-                    digest = await self.context.transport.call(
+                    digest = await self.context.target.call(
                         Operation.standalone(directory_digest), entry.remote_path,
                     )
                     if digest is None:
@@ -358,7 +358,7 @@ class FileSession:
         selected.update(excluded_remote)
         cache_before = self._cache_before if kind == "cache" else {}
         excluded_local = set(excluded_local)
-        transport = self.context.transport
+        transport = self.context.target
         for pattern in patterns:
             local_pattern = os.fspath(self.context._unmap_path(pattern, remote_root))
             pending = []
@@ -465,7 +465,7 @@ class FileSession:
         if policy == FileSyncPolicy.NEVER:
             return False
         if kind == "directory":
-            entry = (await self.context.transport.query_files([remote]))[0]
+            entry = (await self.context.target.query_files([remote]))[0]
             if entry["status"] == "missing":
                 if required:
                     raise FileNotFoundError(f"Required directory output not created: {remote}")
@@ -476,7 +476,7 @@ class FileSession:
                 if os.path.islink(local) or not os.path.isdir(local):
                     raise ValueError(f"Local directory output is not a directory: {local}")
                 if policy in (FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING):
-                    remote_digest = await self.context.transport.call(
+                    remote_digest = await self.context.target.call(
                         Operation.standalone(directory_digest), remote,
                     )
                     local_digest = directory_digest(local)
@@ -485,12 +485,12 @@ class FileSession:
                 if policy == FileSyncPolicy.MISSING:
                     # An existing but different local tree is not this run's result.
                     return False
-            await self.context.transport.get_directory(remote, local)
+            await self.context.target.get_directory(remote, local)
             return True
-        remote_digest = await self.context.transport.file_digest(remote)
+        remote_digest = await self.context.target.file_digest(remote)
         available, transfer = self._output_file_action(local, remote, required, remote_digest)
         if transfer:
-            await self.context.transport.get_file(remote, local)
+            await self.context.target.get_file(remote, local)
         return available
 
     def _output_file_action(self, local, remote, required, remote_digest):
@@ -523,11 +523,11 @@ class FileSession:
             )
         try:
             if kind == "directory":
-                entry = (await self.context.transport.query_files([remote]))[0]
+                entry = (await self.context.target.query_files([remote]))[0]
                 if entry["status"] == "missing":
                     state = "skipped"
                 elif entry["status"] == "ok" and entry["type"] == "directory":
-                    digest = await self.context.transport.call(
+                    digest = await self.context.target.call(
                         Operation.standalone(directory_digest), remote,
                     )
                     if digest is None:
@@ -544,9 +544,9 @@ class FileSession:
                     raise ValueError(f"Declared directory cache is not a directory: {remote}")
                 self._set_file_availability(local, state, kind="cache")
                 return
-            after = await self.context.transport.file_signature(remote)
+            after = await self.context.target.file_signature(remote)
             if self._cache_file_changed(local, before, after):
-                await self.context.transport.get_file(remote, local)
+                await self.context.target.get_file(remote, local)
                 state = "available"
             else:
                 state = "skipped"
@@ -633,7 +633,7 @@ class FileSession:
         )
 
     async def _target_versions(self, paths):
-        transport = self.context.transport
+        transport = self.context.target
         files = [target for target, (_, kind) in paths.items() if kind == "file"]
         observed = await transport.query_files(files, digest=True) if files else ()
         digests = {item["path"]: item.get("digest") for item in observed}
@@ -661,7 +661,7 @@ class FileSession:
                 continue
             if has_file_magic(entry.remote_path):
                 root = await self.context._resolved_remote_root()
-                for target in await self.context.transport.expand_files(entry.remote_path, root):
+                for target in await self.context.target.expand_files(entry.remote_path, root):
                     paths[target] = (await self.context.unmap_path(target), entry.kind)
             else:
                 paths[entry.remote_path] = (entry.local_path, entry.kind)
@@ -706,7 +706,7 @@ class FileSession:
                 raise ValueError("Remote stdout and stderr must have distinct output files")
             self._flush_declared_handles()
             sync_result_files(manifest.input_files)
-            await self.context.transport.run(("mkdir", "-p", "--", directory.target))
+            await self.context.target.run(("mkdir", "-p", "--", directory.target))
             return await self._prepare_request(directory.target, manifest)
         except Exception as exc:
             # No native calculation has been launched.
@@ -716,7 +716,7 @@ class FileSession:
     async def from_attachment(cls, context, attachment):
         """Open local streams and restore transfer baselines from FileManifest."""
         execution, files = attachment.execution, attachment.files
-        if context.transport.is_local:
+        if context.target.is_local:
             from kkrunner.runs.base import ExecutionSpec
             spec = ExecutionSpec(argv=None, directory=execution.directory.local,
                                  input_file=files.input_file, output_file=files.output_file,
@@ -777,10 +777,10 @@ class FileSession:
     def execution(self, backend_id):
         if backend_id is None and self._remote_directory is None:
             return None
-        from kkrunner.transports import require_persistable_transport
+        from kkrunner.targets import require_persistable_target
         from kkrunner.runs.model import ExecutionMetadata
         return ExecutionMetadata(
-            require_persistable_transport(self.context.transport),
+            require_persistable_target(self.context.target),
             self._working_directory(self._remote_directory),
             backend=self.context.client.backend_config,
             backend_id=backend_id,
@@ -871,16 +871,16 @@ class FileSession:
                 continue
             checked.add(local)
             try:
-                signature = await self.context.transport.file_signature(entry.remote_path)
+                signature = await self.context.target.file_signature(entry.remote_path)
                 if signature is None:
                     raise FileNotFoundError(f"Remote {kind} output is missing: {entry.remote_path}")
                 stat = os.stat(local)
                 if stat.st_size != signature[0]:
                     raise RuntimeError(f"Streamed {kind} size does not match remote output: {local}")
-                digest = await self.context.transport.file_digest(entry.remote_path)
+                digest = await self.context.target.file_digest(entry.remote_path)
                 if digest is None or file_digest(local) != digest:
                     raise RuntimeError(f"Streamed {kind} differs from remote output: {local}")
-                if await self.context.transport.file_signature(entry.remote_path) != signature:
+                if await self.context.target.file_signature(entry.remote_path) != signature:
                     raise RuntimeError(f"Remote {kind} changed during verification")
                 os.utime(local, ns=(stat.st_atime_ns, signature[1]))
             except Exception as exc:
@@ -900,12 +900,12 @@ class FileSession:
                 continue
             seen.add(entry.local_path)
             try:
-                if await self.context.transport.file_signature(entry.remote_path) is None:
+                if await self.context.target.file_signature(entry.remote_path) is None:
                     if required:
                         raise FileNotFoundError(f"Remote output stream is missing: {entry.remote_path}")
                     self._set_file_availability(entry.local_path, "skipped")
                     continue
-                await self.context.transport.get_file(entry.remote_path, entry.local_path)
+                await self.context.target.get_file(entry.remote_path, entry.local_path)
                 self._set_file_availability(entry.local_path, "available")
             except Exception as exc:
                 self._set_file_availability(entry.local_path, "failed", str(exc))

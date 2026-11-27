@@ -1,7 +1,7 @@
 API reference
 =============
 
-The root package provides backend-independent Run entry points. Execution
+The root package provides common execution entry points. Execution
 technology lives in :mod:`kkrunner.backends`; local/SSH transport, client pooling
 and remote file synchronization belong to :mod:`kkrunner.client`. The remote
 service protocol does not expose a client execution facade.
@@ -14,11 +14,13 @@ Common entry points
 .. autosummary::
    :toctree: _generated
 
+   run
    ExecutionSpec
    ExecutionOutcome
    Run
    RunManager
    RunStore
+   MemoryRunStore
    RunState
    TaskFile
    ProcessingPending
@@ -91,7 +93,7 @@ Backends and their execution contracts
    ObservationUnavailable
    UnsupportedCapability
 
-Clients, transports and pooling
+Clients, targets and pooling
 ---------------------------------------
 
 .. currentmodule:: kkrunner.client
@@ -99,16 +101,16 @@ Clients, transports and pooling
 .. autosummary::
    :toctree: _generated
 
-   EndpointClient
+   ExecutionClient
    StagingSpec
    JobProtocol
    SubmissionContext
    JobAttachment
    ClientPool
    default_client_pool
-   Transport
-   LocalTransport
-   SshTransport
+   Target
+   LocalTarget
+   SshTarget
 
 Projects
 --------

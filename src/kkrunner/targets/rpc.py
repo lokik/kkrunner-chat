@@ -14,7 +14,7 @@ class RemoteOperationError(RuntimeError):
     """The target ran the operation and reported an application failure."""
 
 def operation_payload(args, kwargs):
-    """Encode arguments using the same JSON contract for both transports."""
+    """Encode arguments using the same JSON contract for both targets."""
     return json.dumps({"args": args, "kwargs": kwargs}, allow_nan=False)
 
 

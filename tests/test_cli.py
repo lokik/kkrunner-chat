@@ -190,7 +190,7 @@ assert not any(name == "kkrunner" or name.startswith("kkrunner.") for name in sy
 
 def test_client_ssh_status_uses_public_transport(monkeypatch):
     from kkrunner_cli import client
-    import kkrunner.transports as transports
+    import kkrunner.targets as targets
     import kkrunner.remote.protocol as protocol
 
     seen = []
@@ -203,7 +203,7 @@ def test_client_ssh_status_uses_public_transport(monkeypatch):
         seen.append(("call", command, action, remote_id))
         return {"state": "running"}
 
-    monkeypatch.setattr(transports, "SshTransport", FakeSshTransport)
+    monkeypatch.setattr(targets, "SshTarget", FakeSshTransport)
     monkeypatch.setattr(protocol, "json_request", request)
     args = SimpleNamespace(host="example", ssh_option=["-p", "2222"],
                            agent="kkrunner-agent", remote_id="opaque")
@@ -216,7 +216,7 @@ def test_client_ssh_status_uses_public_transport(monkeypatch):
 
 def test_client_ssh_follow_imports_transport_framing(monkeypatch):
     from kkrunner_cli import client
-    from kkrunner.transports.implementations.ssh import follow
+    from kkrunner.targets.implementations.ssh import follow
 
     seen = []
     process = object()

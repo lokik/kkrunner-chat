@@ -260,12 +260,12 @@ class _FakeFollowerTransport:
 
 class _FakeFollowerWriter:
     def __init__(self, buffered=0):
-        self.transport = _FakeFollowerTransport(buffered)
+        self.target = _FakeFollowerTransport(buffered)
         self.frames = []
 
     def write(self, data):
         self.frames.append(data)
-        self.transport.buffered += len(data)
+        self.target.buffered += len(data)
 
 
 def test_live_only_channel_is_delivered_during_other_channel_replay():
@@ -333,7 +333,7 @@ def test_supervisor_finish_is_bounded_when_client_never_drains(tmp_path):
         streams = SupervisorStreams(tmp_path / "out", None)
         await streams.start()
 
-        class Transport:
+        class Target:
             def __init__(self, done):
                 self.done = done
                 self.aborted = False
@@ -347,10 +347,10 @@ def test_supervisor_finish_is_bounded_when_client_never_drains(tmp_path):
 
         class Writer:
             def __init__(self, transport):
-                self.transport = transport
+                self.target = transport
 
         done = asyncio.Event()
-        transport = Transport(done)
+        transport = Target(done)
         follower = _Follower(Writer(transport), {"out": 0, "err": 0})
         streams._followers.add(follower)
         streams.terminal({"state": "finished", "return_code": 0})

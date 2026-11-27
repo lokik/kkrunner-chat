@@ -7,7 +7,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends.contracts import JobRef, JobStatus, SubmissionNotStarted
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.client.job import Job
 from kkrunner.runs.base import ExecutionResources
 from kkrunner.runs.run import Run
@@ -83,7 +83,7 @@ def _controlled_job(*, fail_submit=False, already_running=False):
 def test_public_run_latches_cancel_before_submit(tmp_path):
     job, execution = _controlled_job()
     resource = _Resource()
-    client = EndpointClient()
+    client = ExecutionClient()
     run = Run(job, client=client, file_session=client.file_session(job.spec),
               owned_resources=ExecutionResources(resource))
     run.cancel().result(timeout=3)
@@ -124,7 +124,7 @@ def test_cancel_during_submit_is_dispatched_after_submission():
 def test_cancel_started_run_does_not_close_owned_resources_before_monitor_finishes():
     job, execution = _controlled_job(already_running=True)
     resource = _Resource()
-    client = EndpointClient()
+    client = ExecutionClient()
     resources = ExecutionResources(resource)
     run = Run(job, client=client, file_session=client.file_session(job.spec), owned_resources=resources)
     future = run.cancel()

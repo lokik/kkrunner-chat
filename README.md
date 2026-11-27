@@ -13,18 +13,31 @@ kkrunner --help
 Run these commands from the KKRunner checkout in a virtual environment.
 Use `python -m pip install --editable .` instead when editing the source.
 
-## Raw execution
+## Quick start
 
 ```python
 import sys
-from kkrunner import ExecutionSpec, Run
-from kkrunner.backends import DirectBackend
-from kkrunner.client import EndpointClient
+import kkrunner
 
-run = Run.untracked(EndpointClient(DirectBackend), ExecutionSpec([sys.executable, '-c', 'print(42)']))
-outcome = run.run()
-assert outcome.return_code == 0
+result = kkrunner.run([sys.executable, "-c", "print(42)"])
+assert result.return_code == 0
 ```
+
+Choose the target and backend independently:
+
+```python
+kkrunner.run("program", target="user@cluster", mpi=8)
+kkrunner.run("program", target="user@cluster", backend="psij",
+             output_file="stdout.txt")
+```
+
+A string target is an SSH address; omit it for local execution. The direct
+backend is the default in either case. To prepare a run without submitting it,
+use `Run.create(command, target=..., backend=...)` or reuse a configured
+`ExecutionClient` with `client.create_run(command)`. Both accept an
+`ExecutionSpec` instead of a command for file declarations and staging.
+Named output files preserve output; the blocking convenience displays only
+available, unredirected live output.
 
 Before local or SSH process backends launch a process, they check the selected
 serial or MPI executable on the execution host using its working directory and
@@ -41,17 +54,14 @@ Projects are optional; see the [project guide](docs/projects.rst) for grouping.
 ```python
 import sys
 from pathlib import Path
-from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.backends import SupervisedBackend
-from kkrunner.client import EndpointClient
+from kkrunner import ExecutionSpec, ExecutionClient, RunManager, RunStore
 
 root = Path('example').absolute()
 root.mkdir(exist_ok=True)
 manager = RunManager(RunStore(root / 'runs'))
-run = manager.create_run(
-    EndpointClient(SupervisedBackend),
+run = ExecutionClient("kkrunner").create_run(
     ExecutionSpec([sys.executable, '-c', 'print(42)'],
-                  directory=root, output_file='stdout.txt'),
+                  directory=root, output_file='stdout.txt'), persistent=manager,
     metadata={'example': {'label': 'answer'}},
 )
 outcome = run.run()

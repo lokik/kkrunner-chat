@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.backends import DirectBackend
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.client.contracts import Operation
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.files.queries import remote_file_cleanup
@@ -92,10 +92,10 @@ def test_endpoint_cleanup_rejects_paths_not_in_manifest(tmp_path):
     path.write_text("result")
     rogue.write_text("important")
     transport = LoopbackSshTransport()
-    client = EndpointClient(DirectBackend, transport=transport)
+    client = ExecutionClient(DirectBackend, target=transport)
     record = SimpleNamespace(
         execution=SimpleNamespace(
-            transport=transport,
+            target=transport,
             directory=WorkingDirectory(str(tmp_path), str(root)),
             backend=client.backend_config,
         ),
@@ -127,10 +127,10 @@ def test_manifest_file_in_nested_or_external_tau_directory_is_deletable(tmp_path
     unlisted = taudir / "other-run.tau"
     unlisted.write_text("do not delete")
 
-    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
     record = SimpleNamespace(
         execution=SimpleNamespace(
-            transport=client.transport,
+            target=client.target,
             directory=WorkingDirectory(str(tmp_path), str(workdir)),
             backend=client.backend_config,
         ),
@@ -231,10 +231,10 @@ def test_ssh_endpoint_deletes_recorded_directory_recursively(tmp_path):
     (taudir / "nested" / "one.tau").write_text("tau")
     other = taupath / "other-project.tau"
     other.write_text("keep")
-    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
     record = SimpleNamespace(
         execution=SimpleNamespace(
-            transport=client.transport,
+            target=client.target,
             directory=WorkingDirectory(str(local), str(work)),
             backend=client.backend_config,
         ),
@@ -294,10 +294,10 @@ def test_endpoint_requires_declared_kind_not_actual_filesystem_type(tmp_path):
     declared_directory = root / "listed-directory"
     declared_directory.write_text("file instead of expected directory")
     transport = LoopbackSshTransport()
-    client = EndpointClient(DirectBackend, transport=transport)
+    client = ExecutionClient(DirectBackend, target=transport)
     record = SimpleNamespace(
         execution=SimpleNamespace(
-            transport=transport,
+            target=transport,
             directory=WorkingDirectory(str(tmp_path), str(root)),
             backend=client.backend_config,
         ),

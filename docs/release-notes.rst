@@ -5,7 +5,7 @@ KKRunner is a standalone, program-independent Python library for launching,
 monitoring, recovering and managing scientific jobs. Developed as part of the
 ASE2SPRKKR execution refactoring, it can also be used by other applications.
 It separates execution backends (direct processes, supervised processes and
-PSI/J schedulers) from local and SSH transports, and supports MPI, persistent
+PSI/J schedulers) from local and SSH targets, and supports MPI, persistent
 project histories, reconnection to supported jobs, and tracked file transfers.
 ASE2SPRKKR 4.0 uses KKRunner for execution while retaining responsibility
 for SPR-KKR inputs and scientific results.
@@ -49,7 +49,7 @@ choices. It replaces the 0.1 client API and does not promise compatibility with
 persisted development records or a stable extension API.
 
 * Choose ``DirectBackend``, ``SupervisedBackend`` or ``PsijBackend`` independently
-  of ``LocalTransport`` or ``SshTransport``. ``EndpointClient`` binds the choices
+  of ``LocalTarget`` or ``SshTarget``. ``ExecutionClient`` binds the choices
   and can serve multiple runs.
 * Local calls invoke backend operations directly. SSH delivers self-contained
   direct operations as source; durable supervision and PSI/J operations use an
@@ -69,9 +69,9 @@ persisted development records or a stable extension API.
 * Linux process identities include the kernel boot UUID. PSI/J query and follow
   reconcile scheduler state before reporting terminal execution facts.
 
-Applications using ``RunClient`` must migrate to ``EndpointClient``. Configure
+Applications using ``RunClient`` must migrate to ``ExecutionClient``. Configure
 transport and backend separately and use ``Run.create()`` or
-``RunManager.create_run()`` for the full client lifecycle. Both ends of an SSH
+``Run.create(..., persistent=manager)`` for the full client lifecycle. Both ends of an SSH
 connection that uses installed helpers should run this beta.
 
 Docker SSH/Slurm integration remains opt-in; it requires a reachable container

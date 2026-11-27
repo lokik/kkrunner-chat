@@ -9,13 +9,13 @@ import pytest
 
 from kkrunner.backends.implementations.direct.backend import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
-from kkrunner.client import EndpointClient, LocalTransport
+from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.client.contracts import JobAttachment
 from kkrunner import RunManager, RunState, RunStore
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.rpc import operation_command
-from kkrunner.transports.rpc import operation_payload, operation_result
+from kkrunner.targets.implementations.ssh.rpc import operation_command
+from kkrunner.targets.rpc import operation_payload, operation_result
 
 
 pytestmark = pytest.mark.skipif(
@@ -144,7 +144,7 @@ def test_restart_manager_cancels_saved_direct_job(tmp_path):
         manager = RunManager(RunStore(tmp_path / "runs"))
         record = manager.new_record(
             directory=tmp_path,
-            transport=LocalTransport(),
+            target=LocalTarget(),
             backend=BackendConfig("direct"),
         )
         record = manager.transition(

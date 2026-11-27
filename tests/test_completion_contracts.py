@@ -5,7 +5,7 @@ from kkrunner import RunState, RunStore
 from kkrunner.runs import RunStatus
 from kkrunner.runs.manager import RunManager
 from kkrunner.backends import DirectBackend, SupervisedBackend
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 
 
 @pytest.mark.parametrize("optional", [False, True])
@@ -23,7 +23,7 @@ def test_missing_output_respects_optionality(tmp_path, optional):
 def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatch, terminal_state):
     manager = RunManager(RunStore(tmp_path / "runs"))
     calls = []
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
 
     def acknowledge(record):
         assert manager.store.get(record.id).state == terminal_state
@@ -32,7 +32,7 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
     monkeypatch.setattr(client, "acknowledge", acknowledge)
     manager.register_client(client)
     record = manager.new_record(
-        directory=tmp_path, transport=client.transport, backend=client.backend_config,
+        directory=tmp_path, target=client.target, backend=client.backend_config,
     )
     record = manager.transition(
         record, state=RunState.RUNNING, execution=record.execution.submitted("receipt"),
@@ -57,9 +57,8 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         results.append(run.wait())
         ended.set()
 
-    run = Run.untracked(
-        EndpointClient(DirectBackend),
-        ExecutionSpec(["true"], directory=tmp_path),
+    run = ExecutionClient(DirectBackend).create_run(
+        ExecutionSpec(["true"], directory=tmp_path), persistent=False,
         callback=completed,
     )
     run.submit()
@@ -70,7 +69,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
 def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, monkeypatch):
     manager = RunManager(RunStore(tmp_path / "runs"))
     calls = []
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
 
     def acknowledge(record):
         calls.append(record.id)
@@ -80,7 +79,7 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
     monkeypatch.setattr(client, "acknowledge", acknowledge)
     manager.register_client(client)
     record = manager.new_record(
-        directory=tmp_path, transport=client.transport, backend=client.backend_config,
+        directory=tmp_path, target=client.target, backend=client.backend_config,
     )
     record = manager.complete(
         record, state=RunState.FINISHED, return_code=0, execution=record.execution.submitted("receipt")
@@ -117,13 +116,13 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     acknowledgements = []
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
     monkeypatch.setattr(client, "acknowledge", lambda record: acknowledgements.append(record.id))
     manager.register_client(client)
     path = tmp_path / "out"
     record = manager.new_record(
         directory=tmp_path,
-        transport=client.transport, backend=client.backend_config,
+        target=client.target, backend=client.backend_config,
         remote_directory="/remote",
         files=FileManifest(stdout=FileEntry(str(path), "/remote/out", "failed", "download interrupted")),
     )
@@ -171,12 +170,11 @@ def test_completed_durable_result_cannot_be_postprocessed_again(tmp_path):
 def _tracked_test_run(tmp_path, monkeypatch, *, process_result=None):
     """Use real Run/Job/FileSession, intercepting only the native submit boundary."""
     from kkrunner import ExecutionSpec
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
     monkeypatch.setattr(client, "acknowledge_submission", lambda record: None)
     monkeypatch.setattr(client, "acknowledge", lambda record: None)
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(
-        client, ExecutionSpec(("instant",), directory=tmp_path),
+    run = client.create_run(ExecutionSpec(("instant",), directory=tmp_path), persistent=manager,
         process_result=process_result,
     )
     return run, manager
@@ -405,7 +403,7 @@ def test_completion_failure_relinquishes_handles_without_removing_evidence(tmp_p
 def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch, historical_input):
     from kkrunner.runs import DuplicateSubmissionError
     from kkrunner.files import FileMapping
-    from kkrunner.client import LocalTransport, SshTransport
+    from kkrunner.client import LocalTarget, SshTarget
 
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
@@ -413,9 +411,9 @@ def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch
     path = local / "data"
     source = remote / "data"
     source.write_text("historical")
-    monkeypatch.setattr(SshTransport, "expand_files", LocalTransport.expand_files)
-    monkeypatch.setattr(SshTransport, "get_file", LocalTransport.get_file)
-    client = EndpointClient(transport=SshTransport("loopback"))
+    monkeypatch.setattr(SshTarget, "expand_files", LocalTarget.expand_files)
+    monkeypatch.setattr(SshTarget, "get_file", LocalTarget.get_file)
+    client = ExecutionClient(target=SshTarget("loopback"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     manager.register_client(client)
     entry = FileEntry(str(path), str(source))
@@ -425,7 +423,7 @@ def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch
         mapping=FileMapping(str(local), str(remote)),
     )
     historical = manager.new_record(
-        directory=local, remote_directory=remote, transport=client.transport,
+        directory=local, remote_directory=remote, target=client.target,
         backend=client.backend_config, files=manifest,
     )
     historical = manager.complete(historical, state=RunState.FAILED,

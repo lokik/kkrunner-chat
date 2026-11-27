@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.backends import SupervisedBackend, PsijBackend
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.files.manifest import FileManifest, FileMapping
 from kkrunner.runs.base import ExecutionSpec, RunState
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
@@ -22,11 +22,11 @@ def loopback_ssh(monkeypatch):
         assert cwd is None
         return tuple(argv)
 
-    monkeypatch.setattr(SshTransport, "_command", command)
+    monkeypatch.setattr(SshTarget, "_command", command)
 
 
 def _executor(*, backend=SupervisedBackend):
-    return EndpointClient(backend, transport=SshTransport("loopback", python_command=(sys.executable,)))
+    return ExecutionClient(backend, target=SshTarget("loopback", python_command=(sys.executable,)))
 
 
 def _launch(local_root, remote_root):
@@ -97,7 +97,7 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
         cache_files=(cache,),
         staging=_launch(local_root, remote_root),
     )
-    original = Run.untracked(first_executor, spec, process_result=lambda outcome: outcome)
+    original = first_executor.create_run(spec, persistent=False, process_result=lambda outcome: outcome)
     original.submit()
     _wait_for_state(original, RunState.RUNNING)
     run = _record(original)
@@ -146,7 +146,7 @@ def test_remote_executor_first_attach_after_completion_replays_finished_run(tmp_
         output_files=(output_file,),
         staging=_launch(local_root, remote_root),
     )
-    original = Run.untracked(first_executor, spec)
+    original = first_executor.create_run(spec, persistent=False)
     assert original.run().return_code == 0
     run = _record(original)
     assert run.execution.backend_id is not None
@@ -168,7 +168,7 @@ def test_remote_executor_attach_rejects_reference_for_other_backend(tmp_path):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            executor.transport,
+            executor.target,
             WorkingDirectory(str(tmp_path), "/remote/calculation"),
             "job",
             backend=_executor(backend=PsijBackend).backend_config,
@@ -197,7 +197,7 @@ def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            endpoint.transport, WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle",
+            endpoint.target, WorkingDirectory(str(local_root), str(remote_root)), "opaque-handle",
             backend=endpoint.backend_config
         ),
         files=FileManifest(

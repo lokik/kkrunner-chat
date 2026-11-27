@@ -15,14 +15,14 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import DirectBackend, PsijBackend, SupervisedBackend
-from kkrunner.client import EndpointClient, LocalTransport, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, LocalTarget, SshTarget, StagingSpec
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.rpc import operation_command
-from kkrunner.transports.rpc import operation_payload
+from kkrunner.targets.implementations.ssh.rpc import operation_command
+from kkrunner.targets.rpc import operation_payload
 
 
-class LoopbackSshTransport(SshTransport):
+class LoopbackSshTransport(SshTarget):
     """Execute the actual SSH payload locally, without replacing its protocol."""
 
     def __init__(self):
@@ -36,12 +36,12 @@ class LoopbackSshTransport(SshTransport):
 @pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend, PsijBackend))
 @pytest.mark.parametrize("location", ("local", "ssh"))
 def test_backend_and_location_round_trip_independently(backend, location):
-    transport = LocalTransport() if location == "local" else SshTransport("example")
-    client = EndpointClient(backend, transport=transport)
-    config = (client.transport.to_dict(), asdict(client.backend_config))
-    restored = EndpointClient.from_config(*json.loads(json.dumps(config)))
+    transport = LocalTarget() if location == "local" else SshTarget("example")
+    client = ExecutionClient(backend, target=transport)
+    config = (client.target.to_dict(), asdict(client.backend_config))
+    restored = ExecutionClient.from_config(*json.loads(json.dumps(config)))
 
-    assert client.transport.kind == location
+    assert client.target.kind == location
     assert client.backend.name == backend.name
     assert restored.backend.name == backend.name
     assert restored.backend.options == client.backend.options
@@ -56,13 +56,13 @@ def test_same_ssh_endpoint_runs_selected_backend(tmp_path, monkeypatch, backend)
     local, remote = tmp_path / "client", tmp_path / "target"
     local.mkdir()
 
-    client = EndpointClient(backend, transport=LoopbackSshTransport())
+    client = ExecutionClient(backend, target=LoopbackSshTransport())
     spec = ExecutionSpec(
         (sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"),
         directory=str(local), output_file="stdout", error_file="stderr",
         staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.untracked(client, spec)
+    run = client.create_run(spec, persistent=False)
     assert run.run().return_code == 0
     assert (local / "stdout").read_bytes() == (remote / "stdout").read_bytes() == b"out\n"
     assert (local / "stderr").read_bytes() == (remote / "stderr").read_bytes() == b"err\n"

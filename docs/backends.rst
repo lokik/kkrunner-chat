@@ -23,14 +23,14 @@ The backend identifiers are ``direct``, ``kkrunner`` (the
 supervised-process implementation) and ``psij``. The choice of backend
 is separate from whether the application stores a persistent run record.
 
-Location and execution mode are independent. ``EndpointClient(BackendClass)``
-and ``EndpointClient(BackendClass, transport=transport)`` construct configured backend
+Location and execution mode are independent. ``ExecutionClient(BackendClass)``
+and ``ExecutionClient(BackendClass, target=transport)`` construct configured backend
 instances; both also accept an already configured instance. They default to
 ``DirectBackend``. ``client.backend`` is always an instance. Its immutable
 ``options`` and ``supports`` are computed when constructed; the backend class
 still supplies the static native operations. Location never
 selects supervision.
-``ExecutionMetadata.transport`` is an immutable ``LocalTransport`` or ``SshTransport``
+``ExecutionMetadata.target`` is an immutable ``LocalTarget`` or ``SshTarget``
 combining connection settings with the operations that use them. ``ExecutionMetadata.backend`` separately stores a
 ``BackendConfig`` with an allowed name and immutable options. Neither field
 contains a Python class name.
@@ -73,9 +73,9 @@ dependencies and complicate persistence and recovery. Their helper source
 contains only delegated method imports; actual code is imported on the target
 host. Direct SSH is deliberately independent and sends the compact worker
 source. Target-side invocation functions live in
-``kkrunner.transports.implementations.ssh.bootstrap``; the SSH command
-assembly lives in ``kkrunner.transports.implementations.ssh.rpc`` and shared
-reply decoding in ``kkrunner.transports.rpc``. Calculation stream FOLLOW uses framed data to
+``kkrunner.targets.implementations.ssh.bootstrap``; the SSH command
+assembly lives in ``kkrunner.targets.implementations.ssh.rpc`` and shared
+reply decoding in ``kkrunner.targets.rpc``. Calculation stream FOLLOW uses framed data to
 distinguish native stdout/stderr from SSH diagnostics and delivers a terminal
 receipt.
 
@@ -109,7 +109,7 @@ share the same process-group observation in this way.
 Direct SSH execution
 --------------------
 
-``EndpointClient`` with ``backend=DirectBackend`` creates a connection-owned client ``Job``. No
+``ExecutionClient`` with ``backend=DirectBackend`` creates a connection-owned client ``Job``. No
 ``kkrunner-agent`` or supervisor runs on the target; a minimal one-shot
 Python worker provides separate live stdout/stderr, cancellation and target-side
 file writing. File staging and synchronization still use ``FileSession``.
@@ -119,16 +119,16 @@ The same generic ``Job`` uses a transport-bound backend execution interface
 locally and over SSH. The backend reports acceptance and terminal status;
 SSH frames carry those facts alongside output, separately from transport
 diagnostics and the SSH command's exit status. The target Python command can be
-configured with ``SshTransport(python_command=("python3.12",))``.
+configured with ``SshTarget(python_command=("python3.12",))``.
 
 .. code-block:: python
 
    from kkrunner import Run, ExecutionSpec
    from kkrunner.backends import DirectBackend
-   from kkrunner.client import EndpointClient, SshTransport
+   from kkrunner.client import ExecutionClient, SshTarget
    from kkrunner.client import StagingSpec
 
-   client = EndpointClient(DirectBackend, transport=SshTransport("alice@cluster.example"))
+   client = ExecutionClient(DirectBackend, target=SshTarget("alice@cluster.example"))
    spec = ExecutionSpec(
        argv=("python3", "-c", "print('hello', flush=True)"),
        directory="/home/alice/work/job",
@@ -138,9 +138,9 @@ configured with ``SshTransport(python_command=("python3.12",))``.
            remote_root="/scratch/alice/runs",
        ),
    )
-   result = Run.untracked(client, spec).run()
+   result = client.create_run(spec, persistent=False).run()
 
-Use ``EndpointClient(SupervisedBackend, transport=transport)`` when a job
+Use ``ExecutionClient(SupervisedBackend, target=transport)`` when a job
 needs retained completion status and recovery after disconnection. Persistence
 of run metadata is a separate choice: a ``RunManager`` can persist either
 backend. Direct SSH retains process identity for STATUS queries and permits
@@ -156,30 +156,30 @@ Never automatically retry after uncertain connection loss.
 Local and scheduler execution
 -------------------------------
 
-Use ``Run.untracked(EndpointClient(DirectBackend), spec)`` for an untracked run. Use
-``RunManager.create_run(EndpointClient(SupervisedBackend), spec)`` for durable local
+Use ``ExecutionClient(DirectBackend).create_run(spec, persistent=False)`` for an untracked run. Use
+``Run.create(spec, backend='kkrunner', persistent=True)`` for durable local
 supervision; the execution mode does not depend on whether a submission key
 was supplied. The same manager interface accepts a scheduler client:
 
 .. code-block:: python
 
    from kkrunner.backends import PsijBackend
-   from kkrunner.client import EndpointClient
+   from kkrunner.client import ExecutionClient
 
-   client = EndpointClient(PsijBackend(executor_name="slurm"))
+   client = ExecutionClient(PsijBackend(executor_name="slurm"))
    # manager and spec are created as in the persistent-run example.
-   run = manager.create_run(client, spec)
+   run = client.create_run(spec, persistent=manager)
    run.submit()
 
-Backend instances and configured transports can be created without PSI/J
+Backend instances and configured targets can be created without PSI/J
 installed; executing a scheduler operation needs the extra. A scheduler job is only the backend part of
 a run: downloads and application processing may continue after that job exits.
 
-Transport identity and reuse
+Target identity and reuse
 -----------------------------
 
-:class:`~kkrunner.client.SshTransport` and
-:class:`~kkrunner.client.LocalTransport` contain immutable connection settings. :class:`~kkrunner.backends.BackendConfig` stores
+:class:`~kkrunner.client.SshTarget` and
+:class:`~kkrunner.client.LocalTarget` contain immutable connection settings. :class:`~kkrunner.backends.BackendConfig` stores
 the separate backend selection. :class:`~kkrunner.client.ClientPool` keys clients
 by both values and reconstructs supported clients after restart. Per-run launch
 policy belongs in ``StagingSpec`` and must not split the transport's identity.
@@ -271,7 +271,7 @@ Architecture boundary
 
 Backend classes define static target operations; their configured instances
 own the immutable ``options`` and ``supports``. They neither create client Jobs
-nor receive client file manifests. ``EndpointClient`` holds a configured
+nor receive client file manifests. ``ExecutionClient`` holds a configured
 backend instance and invokes its static methods. The SSH transport sends
 portable direct backend methods as source or builds import-only wrappers for
 managed backends; no SSH-specific helper is exposed by backend classes.

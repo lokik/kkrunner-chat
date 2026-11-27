@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from kkrunner.transports import LocalTransport, SshTransport
+from kkrunner.targets import LocalTarget, SshTarget
 from kkrunner.files.paths import declaration_paths, paths_overlap
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.runs.records import RunRecord
@@ -66,13 +66,13 @@ def _paths_overlap(first, second):
 
 def filesystem_namespace(record):
     """Identity of the execution filesystem, shared by reservations and cleanup."""
-    transport = record.execution.transport
-    if isinstance(transport, LocalTransport):
+    transport = record.execution.target
+    if isinstance(transport, LocalTarget):
         return ("local",)
     mapping = record.files.mapping
     if mapping is not None and mapping.filesystem_id is not None:
         return ("filesystem", mapping.filesystem_id)
-    if isinstance(transport, SshTransport):
+    if isinstance(transport, SshTarget):
         return ("ssh", str(transport.host).rsplit("@", 1)[-1].lower())
     # An unsupported transport must not be mistaken for the local filesystem.
     return ("unknown",)

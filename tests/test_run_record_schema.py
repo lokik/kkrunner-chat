@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from kkrunner.runs import CorruptRunRecord, ExecutionMetadata, RunRecord, WorkingDirectory
-from kkrunner.transports import LocalTransport
+from kkrunner.targets import LocalTarget
 from kkrunner.files import FileManifest
 from kkrunner import RunState, RunStore
 
@@ -42,7 +42,7 @@ def test_current_schema_round_trips_with_one_execution_identity(tmp_path, backen
         state=RunState.RUNNING,
         created_at=created_at,
         updated_at=created_at,
-        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id),
+        execution=ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), backend_id),
         files=FileManifest(),
         metadata={"test": {"task": "DOS"}},
         processing_required=True,
@@ -87,7 +87,7 @@ def test_run_store_rejects_duplicate_id_across_date_shards(tmp_path):
         state=RunState.RUNNING,
         created_at=created,
         updated_at=created,
-        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path))),
+        execution=ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path))),
         files=FileManifest(),
         metadata={"test": {"task": "DOS"}},
         processing_required=True,

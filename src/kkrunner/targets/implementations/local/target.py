@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from kkrunner.transports.contracts import Operation
+from kkrunner.targets.contracts import Operation
 from kkrunner.files.queries import (
     checked_files,
     expand_local_files,
@@ -22,13 +22,13 @@ from kkrunner.files.versions import file_digest
 
 from kkrunner.files.staging import staged_directory, staged_local_file
 from kkrunner.files.transfer import relative_file_pairs, transfer_path
-from ...base import Transport, _completed_process
+from ...base import Target, _completed_process
 from ...rpc import operation_payload
 
 
 @dataclass(frozen=True)
-class LocalTransport(Transport):
-    """Transport backed by asyncio subprocesses and the local filesystem."""
+class LocalTarget(Target):
+    """Target backed by asyncio subprocesses and the local filesystem."""
 
     kind: Literal["local"] = "local"
     is_local = True
@@ -36,7 +36,7 @@ class LocalTransport(Transport):
 
     def __post_init__(self):
         if self.kind != "local":
-            raise ValueError("LocalTransport.kind must be 'local'")
+            raise ValueError("LocalTarget.kind must be 'local'")
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
         from .call import LocalCall

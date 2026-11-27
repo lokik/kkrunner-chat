@@ -17,7 +17,7 @@ class ClientPool:
     @staticmethod
     def key_for_profile(profile):
         """Return the client configuration used for instance reuse."""
-        return (profile.transport, profile.backend)
+        return (profile.target, profile.backend)
 
     def get(self, key, factory):
         with self._lock:
@@ -29,19 +29,19 @@ class ClientPool:
 
     def for_config(self, transport, backend):
         from kkrunner.backends.config import BackendConfig
-        from kkrunner.client.endpoint import EndpointClient
-        from kkrunner.transports import (
-            require_persistable_transport,
-            transport_from_dict,
+        from kkrunner.client.execution_client import ExecutionClient
+        from kkrunner.targets import (
+            require_persistable_target,
+            target_from_dict,
         )
         if isinstance(transport, dict):
-            transport = transport_from_dict(transport)
-        require_persistable_transport(transport)
+            transport = target_from_dict(transport)
+        require_persistable_target(transport)
         if isinstance(backend, dict):
             backend = BackendConfig(**backend)
         if not transport.available or not backend.available:
             raise ValueError("Unsupported backend or transport; only local history is available")
-        return self.get((transport, backend), lambda: EndpointClient.from_config(transport, backend))
+        return self.get((transport, backend), lambda: ExecutionClient.from_config(transport, backend))
 
     def for_profile(self, profile):
         """Return the shared provider suitable for *profile*."""

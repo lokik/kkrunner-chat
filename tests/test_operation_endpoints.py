@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from kkrunner.client.contracts import Operation
-from kkrunner.transports import LocalTransport, SshTransport
+from kkrunner.targets import LocalTarget, SshTarget
 from kkrunner.support.decorators import portable
 
 
@@ -24,7 +24,7 @@ def portable_stream(text):
     sys.stdout.flush()
 
 
-class LoopbackSshTransport(SshTransport):
+class LoopbackSshTransport(SshTarget):
     """Execute the real target Python commands without an SSH daemon."""
 
     def __init__(self):
@@ -35,7 +35,7 @@ class LoopbackSshTransport(SshTransport):
         return tuple(argv)
 
 
-@pytest.mark.parametrize("endpoint_type", [LocalTransport, LoopbackSshTransport])
+@pytest.mark.parametrize("endpoint_type", [LocalTarget, LoopbackSshTransport])
 def test_portable_call(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
@@ -44,7 +44,7 @@ def test_portable_call(endpoint_type):
     asyncio.run(verify())
 
 
-@pytest.mark.parametrize("endpoint_type", [LocalTransport, LoopbackSshTransport])
+@pytest.mark.parametrize("endpoint_type", [LocalTarget, LoopbackSshTransport])
 def test_installed_call(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
@@ -70,7 +70,7 @@ def test_reject_nonportable_operation_before_submission():
     def nested(value):
         return captured + value
     # Source delivery requires explicit @portable; detailed validation is test-only.
-    from kkrunner.transports.implementations.ssh.rpc import operation_command
+    from kkrunner.targets.implementations.ssh.rpc import operation_command
     with pytest.raises(TypeError, match="@portable"):
         operation_command(Operation.standalone(nested))
     from kkrunner.backends import SupervisedBackend
@@ -78,7 +78,7 @@ def test_reject_nonportable_operation_before_submission():
         Operation.for_backend(SupervisedBackend, "not-an-operation")
 
 
-@pytest.mark.parametrize("endpoint_type", [LocalTransport, LoopbackSshTransport])
+@pytest.mark.parametrize("endpoint_type", [LocalTarget, LoopbackSshTransport])
 def test_installed_backend_operation_receives_only_explicit_json_arguments(endpoint_type):
     endpoint = endpoint_type()
     async def verify():
@@ -110,7 +110,7 @@ def test_ssh_loopback_streaming_operation_preserves_live_output():
 
     asyncio.run(verify())
 
-@pytest.mark.parametrize("transport_type", [LocalTransport, LoopbackSshTransport])
+@pytest.mark.parametrize("transport_type", [LocalTarget, LoopbackSshTransport])
 def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_path, monkeypatch):
     """The generated import-only helper must execute a real installed backend."""
     from kkrunner.backends import backend_class
@@ -129,7 +129,7 @@ def test_class_backend_operation_runs_locally_and_over_ssh(transport_type, tmp_p
 
 def test_installed_class_helper_source_never_contains_supervisor_implementation():
     from kkrunner.backends import backend_class
-    from kkrunner.transports.implementations.ssh.rpc import operation_command
+    from kkrunner.targets.implementations.ssh.rpc import operation_command
 
     op = Operation.for_backend(backend_class("kkrunner"), "submit")
     command = operation_command(op, python=(sys.executable,))

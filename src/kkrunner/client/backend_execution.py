@@ -19,7 +19,7 @@ from kkrunner.execution import MpiNotFoundWarning, RunState
 class _Execution:
     def __init__(self, backend, transport, *, ref=None, status=None):
         self.backend = backend
-        self.transport = transport
+        self.target = transport
         self.ref = ref
         self.snapshot = JobStatus(RunState.NEW)
         if status is not None:
@@ -77,12 +77,12 @@ class DirectExecution(_Execution):
     async def submit(self, request, on_output):
         request = dict(request, detached=self._detached)
         try:
-            prepared = await self.transport.call(self._operation("prepare_mpi"), request)
+            prepared = await self.target.call(self._operation("prepare_mpi"), request)
             if prepared["warning"] is not None:
                 warnings.warn(prepared["warning"], MpiNotFoundWarning, stacklevel=2)
             request = prepared["request"]
-            await self.transport.call(self._operation("prepare_target_outputs"), request)
-            self._call = await self.transport.open_call(
+            await self.target.call(self._operation("prepare_target_outputs"), request)
+            self._call = await self.target.open_call(
                 self._operation("stream"), request, on_output,
                 local_io=self._local_io, use_stdin=prepared["use_stdin"],
             )
@@ -121,7 +121,7 @@ class DirectExecution(_Execution):
         if self.ref is None or self.snapshot.state != RunState.UNKNOWN:
             return self.snapshot
         return self._record(
-            await self.transport.call(self._operation("status"), self.ref.token)
+            await self.target.call(self._operation("status"), self.ref.token)
         )
 
     async def cancel(self):
@@ -139,7 +139,7 @@ class ManagedExecution(_Execution):
 
     async def submit(self, request, on_output):
         try:
-            facts = await self.transport.call(self._operation("submit"), request)
+            facts = await self.target.call(self._operation("submit"), request)
         except SubmissionNotStarted as exc:
             self._record({"state": "failed", "failure_phase": "submission", "error": str(exc)})
             raise
@@ -153,17 +153,17 @@ class ManagedExecution(_Execution):
         return status
 
     async def observe(self, on_output):
-        return self._record(await self.transport.follow(
+        return self._record(await self.target.follow(
             self._operation("follow"), self.ref.token, on_output, **self._follow_options,
         ))
 
     async def status(self):
         if self.ref is None:
             return self.snapshot
-        return self._record(await self.transport.call(self._operation("status"), self.ref.token))
+        return self._record(await self.target.call(self._operation("status"), self.ref.token))
 
     async def cancel(self):
-        return self._record(await self.transport.call(self._operation("cancel"), self.ref.token))
+        return self._record(await self.target.call(self._operation("cancel"), self.ref.token))
 
 
 def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
-from kkrunner.transports import Transport, require_persistable_transport, transport_from_dict
+from kkrunner.targets import Target, require_persistable_target, target_from_dict
 from kkrunner.backends.config import BackendConfig
 
 
@@ -35,18 +35,18 @@ class ExecutionMetadata:
     A serializable component of a run, without live backend control or state.
     """
 
-    transport: Transport
+    target: Target
     directory: WorkingDirectory
     backend_id: Optional[str] = None
     submission_key: Optional[str] = None
     backend: BackendConfig = field(default_factory=BackendConfig)
 
     def __post_init__(self):
-        if isinstance(self.transport, dict):
-            object.__setattr__(self, "transport", transport_from_dict(self.transport))
+        if isinstance(self.target, dict):
+            object.__setattr__(self, "target", target_from_dict(self.target))
         if isinstance(self.directory, dict):
             object.__setattr__(self, "directory", WorkingDirectory(**self.directory))
-        require_persistable_transport(self.transport)
+        require_persistable_target(self.target)
         if isinstance(self.backend, dict):
             object.__setattr__(self, "backend", BackendConfig(**self.backend))
         if not isinstance(self.backend, BackendConfig):
@@ -72,4 +72,4 @@ class ExecutionMetadata:
     @property
     def available(self):
         """Whether backend control and target I/O can be reconstructed."""
-        return self.backend.available and self.transport.available
+        return self.backend.available and self.target.available

@@ -54,9 +54,9 @@ def _direct(args, *, action):
         return follow_remote(args.remote_id, sys.stdout.buffer, sys.stderr.buffer,
                              stdout_offset=offset, stderr_offset=offset,
                              stdout_path=args.stdout_path, stderr_path=args.stderr_path)
-    from kkrunner.transports import SshTransport
+    from kkrunner.targets import SshTarget
     from kkrunner.remote.protocol import json_request
-    transport = SshTransport(args.host, options=args.ssh_option)
+    transport = SshTarget(args.host, options=args.ssh_option)
     if action != "follow":
         from kkrunner.support.async_utils import run_coro_sync
         return run_coro_sync(json_request(transport, (args.agent,), action, args.remote_id))
@@ -66,7 +66,7 @@ def _direct(args, *, action):
 
 def _follow_remote(transport, command, remote_id, from_start, stdout_path, stderr_path):
     from kkrunner.remote.protocol import control_command
-    from kkrunner.transports.implementations.ssh.follow import follow_framed_command
+    from kkrunner.targets.implementations.ssh.follow import follow_framed_command
     from kkrunner.support.async_utils import run_coro_sync
 
     async def observe():
@@ -92,7 +92,7 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 
 def _persisted(args):
     from kkrunner.client.contracts import JobAttachment
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     record = _record(args)
     if args.host:
         raise ValueError("--host is only for --remote-id; persisted runs use their recorded transport")
@@ -120,7 +120,7 @@ def _persisted(args):
             raise RuntimeError("Run has not been submitted")
         return {"state": record.state.value, "return_code": record.return_code,
                 "error": record.message}
-    client = EndpointClient.from_config(record.execution.transport, record.execution.backend)
+    client = ExecutionClient.from_config(record.execution.target, record.execution.backend)
     attachment = JobAttachment(record.execution, record.files)
     if args.action == "status":
         return _facts(client.status(attachment)[0])
@@ -133,7 +133,7 @@ def _persisted(args):
         stream = sys.stderr.buffer if kind == "err" else sys.stdout.buffer
         stream.write(data)
         stream.flush()
-    remote = not client.transport.is_local
+    remote = not client.target.is_local
     def path(entry):
         return None if entry is None else entry.remote_path if remote else entry.local_path
     return run_coro_sync(client._follow(

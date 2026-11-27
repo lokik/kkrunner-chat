@@ -8,19 +8,19 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobRef
-from kkrunner.client import EndpointClient, StagingSpec
+from kkrunner.client import ExecutionClient, StagingSpec
 from kkrunner.client.backend_execution import ManagedExecution
 from kkrunner.client.file_context import FileContext
 from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
-from kkrunner.transports import LocalTransport
+from kkrunner.targets import LocalTarget
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.files.streams import OutputStreams
 from kkrunner.runs.base import FailurePhase
 from kkrunner.support.file_locks import FileLock
 
 
-class _Transport(LocalTransport):
+class _Transport(LocalTarget):
     """Remote-like observation over real local files, with no SSH daemon."""
 
     is_local = False
@@ -62,7 +62,7 @@ class _Transport(LocalTransport):
 
 
 def _session(tmp_path, transport, spec, *, files=None):
-    client = EndpointClient(SupervisedBackend, transport=transport)
+    client = ExecutionClient(SupervisedBackend, target=transport)
     context = FileContext(
         client, StagingSpec(local_root=tmp_path, remote_root=tmp_path,
                             output_sync=FileSyncPolicy.NEVER),

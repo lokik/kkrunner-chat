@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from kkrunner.runs import DuplicateSubmissionError
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
 from kkrunner import ExecutionSpec
@@ -72,7 +72,7 @@ class _Runner:
             self.callback(self.result)
 
 
-class _Executor(EndpointClient):
+class _Executor(ExecutionClient):
     def __init__(self):
         super().__init__(SupervisedBackend)
         self.runners = []
@@ -93,9 +93,8 @@ class _Executor(EndpointClient):
 
 
 def _run(manager, executor, directory, *, task="DOS", dataset="case"):
-    return manager.create_run(
-        executor,
-        spec=ExecutionSpec(argv=("unused",), directory=str(directory), output_file=str(directory / f"{dataset}.out")),
+    return executor.create_run(
+        ExecutionSpec(argv=("unused",), directory=str(directory), output_file=str(directory / f"{dataset}.out")), persistent=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": str(task).upper(), "dataset": dataset}},
     )
@@ -276,20 +275,20 @@ def test_wildcard_output_collisions_follow_pattern_overlap(
 
 
 def test_remote_conflicts_use_declared_target_paths_before_staging(tmp_path):
-    from kkrunner.client import SshTransport
+    from kkrunner.client import SshTarget
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    transport = SshTransport("cluster")
+    transport = SshTarget("cluster")
     first = manager.new_record(
         directory=tmp_path / "one",
         remote_directory="/jobs/shared",
-        transport=transport,
+        target=transport,
         files=FileManifest(stdout=FileEntry(local_path=str(tmp_path / "one/result.txt"))),
     )
     second = manager.new_record(
         directory=tmp_path / "two",
         remote_directory="/jobs/shared",
-        transport=transport,
+        target=transport,
         files=FileManifest(inputs=(FileEntry(local_path=str(tmp_path / "two/result.txt")),)),
     )
     manager.reserve(first)

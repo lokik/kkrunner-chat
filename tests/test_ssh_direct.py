@@ -8,15 +8,15 @@ from threading import Event
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
-from kkrunner.client import LocalTransport, EndpointClient, SshTransport, StagingSpec
+from kkrunner.client import LocalTarget, ExecutionClient, SshTarget, StagingSpec
 from kkrunner.files.queries import query_files
 from kkrunner.files.transfer import send_archive, receive_archive
-from kkrunner.transports.implementations.ssh.source import function_definition
+from kkrunner.targets.implementations.ssh.source import function_definition
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.rpc import operation_command
-from kkrunner.transports.rpc import operation_result
+from kkrunner.targets.implementations.ssh.rpc import operation_command
+from kkrunner.targets.rpc import operation_result
 
 _ARCHIVE_SOURCES = tuple(function_definition(function) for function in (send_archive, receive_archive))
 _QUERY_SOURCE = operation_command(Operation.standalone(query_files), python=(sys.executable,))[-1]
@@ -25,7 +25,7 @@ WORKER_SOURCE = operation_command(
 )[-1]
 
 
-class LoopbackSshTransport(SshTransport):
+class LoopbackSshTransport(SshTarget):
     def __init__(self):
         super().__init__("loopback", python_command=(sys.executable,))
 
@@ -59,7 +59,7 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
         output_files=(str(directory / "answer.dat"),),
         staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.untracked(EndpointClient(DirectBackend, transport=LoopbackSshTransport()), spec)
+    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, persistent=False)
     assert run.spec is spec
     observed = []
     run.add_output_listener(lambda data, kind: observed.append((kind, data)))
@@ -80,7 +80,7 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
 
 def test_direct_ssh_persistence_is_separate_from_job_mechanism(tmp_path):
     spec = ExecutionSpec(argv=("true",), directory=str(tmp_path))
-    backend = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    backend = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
     parts = backend.create_run_parts(spec, submission_key="client-submission-key")
     from kkrunner.client.job import Job
     assert type(parts.job) is Job
@@ -99,7 +99,7 @@ def test_direct_ssh_cancellation_stops_remote_process(tmp_path):
         output_file=str(local / "stdout.txt"),
         staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = Run.untracked(EndpointClient(DirectBackend, transport=LoopbackSshTransport()), spec)
+    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, persistent=False)
     ready = Event()
     run.add_output_listener(lambda data, kind: ready.set() if "ready" in data else None)
     run.submit()
@@ -113,7 +113,7 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
     target = tmp_path / "a.txt"
     target.write_bytes(b"123")
     req = json.dumps({"paths": [str(target)], "root": None, "digest": True})
-    result = asyncio.run(LocalTransport().run((sys.executable, "-c", _QUERY_SOURCE), input=json.dumps({
+    result = asyncio.run(LocalTarget().run((sys.executable, "-c", _QUERY_SOURCE), input=json.dumps({
         "args": [[str(target)]], "kwargs": {"root": None, "digest": True},
     }).encode()))
     value = operation_result(result.stdout.decode())
@@ -123,16 +123,16 @@ def test_direct_ssh_query_source_reports_metadata(tmp_path):
 
 
 def test_direct_ssh_uses_same_job_type_as_local_direct(tmp_path):
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.client.job import Job
-    local = EndpointClient(DirectBackend).create_run_parts(ExecutionSpec(argv=("true",), directory=str(tmp_path))).job
-    remote = EndpointClient(DirectBackend, transport=LoopbackSshTransport()).create_run_parts(
+    local = ExecutionClient(DirectBackend).create_run_parts(ExecutionSpec(argv=("true",), directory=str(tmp_path))).job
+    remote = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run_parts(
         ExecutionSpec(argv=("true",), directory=str(tmp_path))
     ).job
     assert type(local) is Job
     assert type(remote) is Job
-    assert local.execution.transport.is_local
-    assert not remote.execution.transport.is_local
+    assert local.execution.target.is_local
+    assert not remote.execution.target.is_local
 
 def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
     root = tmp_path / "local"
@@ -144,30 +144,30 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
         error_file=str(root / "combined.log"),
         staging=StagingSpec(local_root=str(root), remote_root=str(tmp_path / "remote")),
     )
-    run = Run.untracked(EndpointClient(DirectBackend, transport=LoopbackSshTransport()), spec)
+    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, persistent=False)
     with pytest.raises(Exception, match="distinct output files"):
         run.submit()
     assert not (root / "combined.log").exists()
 
 
 def test_direct_endpoint_round_trip_and_normalized_identity():
-    from kkrunner.transports import transport_from_dict
-    from kkrunner.transports import require_persistable_transport
+    from kkrunner.targets import target_from_dict
+    from kkrunner.targets import require_persistable_target
     from dataclasses import asdict
 
-    transport = SshTransport("user@example.net", options=("-p", "2200"))
-    client = EndpointClient(DirectBackend, transport=transport)
+    transport = SshTarget("user@example.net", options=("-p", "2200"))
+    client = ExecutionClient(DirectBackend, target=transport)
     configured = client.backend_config
-    restored = EndpointClient.from_config(asdict(transport), asdict(configured))
-    assert restored.transport == transport
+    restored = ExecutionClient.from_config(asdict(transport), asdict(configured))
+    assert restored.target == transport
     assert restored.backend_config == configured
-    assert isinstance(restored.transport, SshTransport)
-    assert not restored.transport.is_local
+    assert isinstance(restored.target, SshTarget)
+    assert not restored.target.is_local
 
-    python = SshTransport("user@example.net", python_command=("python3.12",))
-    restored_python = EndpointClient.from_config(asdict(python), asdict(configured))
-    assert restored_python.transport == python
-    assert restored_python.transport.python_command == ("python3.12",)
+    python = SshTarget("user@example.net", python_command=("python3.12",))
+    restored_python = ExecutionClient.from_config(asdict(python), asdict(configured))
+    assert restored_python.target == python
+    assert restored_python.target.python_command == ("python3.12",)
 
 
 def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
@@ -187,7 +187,7 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
     async def run_worker():
         # Keep the control pipe open while the target runs: EOF means SSH
         # disconnection and must cancel a direct process.
-        process = await LocalTransport().start(
+        process = await LocalTarget().start(
             (sys.executable, "-u", "-c", WORKER_SOURCE, json.dumps({"args": [request], "kwargs": {}})),
             stdin=asyncio.subprocess.PIPE,
         )
@@ -211,9 +211,8 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
 
 
 def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path):
-    run = Run.untracked(
-        EndpointClient(DirectBackend),
-        ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path)),
+    run = ExecutionClient(DirectBackend).create_run(
+        ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path)), persistent=False,
     )
     assert run.run().return_code == 0
     run.cancel()
@@ -225,9 +224,9 @@ def test_direct_ssh_preparation_preserves_spec(tmp_path):
     from kkrunner.client.backend_execution import DirectExecution
 
     spec = ExecutionSpec(argv=("true",), directory=tmp_path)
-    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
     parts = client.create_run_parts(spec)
     assert isinstance(parts.job.execution, DirectExecution)
     assert parts.job.spec is spec
     assert parts.files.spec is spec
-    assert parts.job.execution.transport is client.transport
+    assert parts.job.execution.target is client.target

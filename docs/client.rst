@@ -1,7 +1,7 @@
 Client, connection and backend
 ==============================
 
-``EndpointClient`` provides access to a configured backend through a transport.
+``ExecutionClient`` provides access to a configured backend through a transport.
 It can serve multiple runs and composes their ``Job``, backend binding and
 ``FileSession``. There is one client implementation for local and SSH execution:
 
@@ -9,36 +9,36 @@ It can serve multiple runs and composes their ``Job``, backend binding and
 
    from kkrunner import ExecutionSpec, Run
    from kkrunner.backends import DirectBackend, PsijBackend
-   from kkrunner.client import EndpointClient
-   from kkrunner.transports import SshTransport
+   from kkrunner.client import ExecutionClient
+   from kkrunner.targets import SshTarget
 
-   local = EndpointClient(DirectBackend)
-   remote = EndpointClient(
+   local = ExecutionClient(DirectBackend)
+   remote = ExecutionClient(
        PsijBackend(executor_name="slurm"),
-       transport=SshTransport("user@cluster"),
+       target=SshTarget("user@cluster"),
    )
-   run = Run.untracked(local, ExecutionSpec(["python3", "-c", "print(42)"]))
+   run = local.create_run(ExecutionSpec(["python3", "-c", "print(42)"]), persistent=False)
    run.run()
 
 The transport owns local invocation versus SSH RPC, including streaming
-FOLLOW. Both transports use the same backend methods. An SSH application
+FOLLOW. Both targets use the same backend methods. An SSH application
 error is decoded separately from a broken transport; a confirmed
 ``SubmissionNotStarted`` remains a confirmed non-submission across SSH.
 An interrupted transport remains uncertain and is never retried as a new job.
 
-Transports live under ``kkrunner.transports``. Their concrete implementations
+Transports live under ``kkrunner.targets``. Their concrete implementations
 are organized symmetrically in ``implementations/local/`` and
-``implementations/ssh/``, each with a ``transport.py`` and ``call.py``.
+``implementations/ssh/``, each with a ``target.py`` and ``call.py``.
 Shared transport contracts and invocation helpers remain in the parent package.
-``LocalTransport`` and
-``SshTransport`` combine immutable connection settings with the actual calls;
-there is no separate endpoint type. ``ExecutionMetadata.transport`` stores the transport,
+``LocalTarget`` and
+``SshTarget`` combine immutable connection settings with the actual calls;
+there is no separate endpoint type. ``ExecutionMetadata.target`` stores the target,
 whose dataclass fields serialize to JSON, including an explicit ``kind`` tag.
-``Transport.to_dict()`` exposes the same connection settings.
-``EndpointClient.from_config(transport, backend)`` reconstructs supported clients from
-objects or JSON dictionaries. Only local/ssh transports and the backend names
+``Target.to_dict()`` exposes the same connection settings.
+``ExecutionClient.from_config(target, backend)`` reconstructs supported clients from
+objects or JSON dictionaries. Only local/ssh targets and the backend names
 direct/kkrunner/psij are allowed; records never contain arbitrary Python imports.
-Persistent unsupported custom transports are rejected before a Run is created.
+Persistent unsupported custom targets are rejected before a Run is created.
 ClientPool uses the transport/backend pair as its identity. The SSH transport reuses a bounded pool of persistent SSH/Python sessions for
 short RPC calls; streaming operations and file transfers keep their own
 processes and stream handles.
@@ -67,12 +67,12 @@ FileContext owns the shared projection of paths and manifests. A symbolic
 directory preview performs no target I/O; reservation resolves the same mapping
 without staging or opening output files. FileSession adds transfer results and
 cache baselines after staging. Run applies the resolved directory and manifest
-to its record before RunManager reserves it; EndpointClient never rewrites a
+to its record before RunManager reserves it; ExecutionClient never rewrites a
 RunRecord. Native status replies use one decoder before projection into client
 RunStatus values.
 
-``Run.untracked`` selects absence of persistence, independently of backend.
-``Run.create(..., persistent=...)`` selects tracking policy. The configured
+``persistent=False`` selects absence of tracking, independently of backend.
+``Run.create(..., persistent=...)`` and ``client.create_run(..., persistent=...)`` selects tracking policy. The configured
 client supplies the default tracking policy; native backends do not own it.
 
 Execution intent and staging
@@ -100,7 +100,7 @@ The client projects this declaration to an ``ExecutionRequest`` with target
 paths and MPI options only. Backend code never reconstructs a client
 ``ExecutionSpec`` and never receives local roots or synchronization policy.
 Shared state/MPI values live in ``kkrunner.execution`` without importing the
-client, transports, file manifests or run monitoring. There is no second native
+client, targets, file manifests or run monitoring. There is no second native
 specification object alongside the JSON request.
 
 ``StagingSpec.filesystem_id`` identifies the target storage namespace for file

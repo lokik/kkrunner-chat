@@ -1,4 +1,4 @@
-"""Low-level asynchronous command and file transports."""
+"""Low-level asynchronous command and file targets."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
-from kkrunner.transports.contracts import Operation, RunningCommand
+from kkrunner.targets.contracts import Operation, RunningCommand
 from kkrunner.files.snapshots import snapshot_destination
 
 
-class Transport:
+class Target:
     """Run commands and move files on one target machine.
 
-    Transport operations are asynchronous because remote execution is mostly
+    Target operations are asynchronous because remote execution is mostly
     I/O. ``put_file()`` and ``get_file()`` are exact one-file primitives.
     ``put_files()`` and ``get_files()`` accept exact relative paths or explicit
     source/destination pairs, with separate roots for the two filesystems.
@@ -29,8 +29,8 @@ class Transport:
 
     def to_dict(self):
         """Return the immutable connection settings used for persistence."""
-        from . import require_persistable_transport
-        return asdict(require_persistable_transport(self))
+        from . import require_persistable_target
+        return asdict(require_persistable_target(self))
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
         """Start an execution call with backend acceptance/completion messages."""

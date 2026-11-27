@@ -7,8 +7,8 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
-from kkrunner.transports.implementations.ssh.follow import follow_framed_command
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
+from kkrunner.targets.implementations.ssh.follow import follow_framed_command
 from kkrunner.execution import RunState
 from kkrunner.remote.stream import (
     STREAM_MAGIC, StreamProtocolError, encode_stream_frame, encode_terminal_frame,
@@ -153,7 +153,7 @@ class _DiagnosticProcess:
         self._process.kill()
 
 
-class _DiagnosticTransport(SshTransport):
+class _DiagnosticTransport(SshTarget):
     def __init__(self):
         super().__init__("loopback", python_command=(sys.executable,))
 
@@ -170,7 +170,7 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
     workdir = local_root / "calculation"
     workdir.mkdir(parents=True)
     remote_root.mkdir()
-    client = EndpointClient(SupervisedBackend, transport=_DiagnosticTransport())
+    client = ExecutionClient(SupervisedBackend, target=_DiagnosticTransport())
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"),
         directory=workdir,
@@ -178,7 +178,7 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
         error_file=workdir / "output.err",
         staging=StagingSpec(local_root=local_root, remote_root=remote_root),
     )
-    assert Run.untracked(client, spec).run().return_code == 0
+    assert client.create_run(spec, persistent=False).run().return_code == 0
     assert (workdir / "output.txt").read_bytes() == b"stdout\n"
     assert (workdir / "output.err").read_bytes() == b"stderr\n"
     assert b"Permanently added" not in (workdir / "output.txt").read_bytes()

@@ -60,7 +60,7 @@ class FramedSink:
 async def follow_framed(follow, job_ref, **options):
     """Deliver backend FOLLOW and its terminal outcome over one data channel.
 
-    Transport stderr is reserved for SSH diagnostics. No client file state
+    Target stderr is reserved for SSH diagnostics. No client file state
     or native process lifetime is owned here.
     """
     import sys

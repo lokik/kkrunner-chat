@@ -38,12 +38,12 @@ class FileAccess:
             raise ValueError(f"Remote snapshot path is outside mapped root: {remote}")
         # Also reject remote symlinks that escape the mapped filesystem root.
         # query_files checks real path containment without requiring a stable file.
-        observed = await self.client.transport.query_files([normalized], root=root)
+        observed = await self.client.target.query_files([normalized], root=root)
         if not observed or observed[0]["status"] == "missing":
             raise FileNotFoundError(normalized)
         if observed[0]["type"] != "file":
             raise ValueError(f"Snapshot source is not a regular file: {normalized}")
-        return await self.client.transport.snapshot_file(normalized, destination=destination)
+        return await self.client.target.snapshot_file(normalized, destination=destination)
 
     def snapshot_file(self, run, file, *, destination=None):
         return _run_sync(self._snapshot_file(run, file, destination=destination))
@@ -66,7 +66,7 @@ class FileAccess:
             remote = entry.remote_path if entry is not None else None
             if remote is None:
                 remote = await context.map_path(local)
-            for matched in await self.client.transport.expand_files(remote, remote_root):
+            for matched in await self.client.target.expand_files(remote, remote_root):
                 destination = os.fspath(context._unmap_path(matched, remote_root)) if glob.has_magic(remote) else local
                 _relative_local_path(destination, context.local_root)
                 # Retain exact historical file identities. A wildcard is
@@ -92,7 +92,7 @@ class FileAccess:
             if os.path.lexists(target):
                 continue
             try:
-                await self.client.transport.get_file(
+                await self.client.target.get_file(
                     entry.remote_path, target,
                     verify=None if verify is None else partial(verify, target),
                     overwrite=False,
@@ -127,7 +127,7 @@ class FileAccess:
 
     async def _remote_cleanup(self, run, paths, *, expected=None):
         """Operate on declared remote files, including TAUDIR outside the run directory."""
-        if self.client.transport.is_local:
+        if self.client.target.is_local:
             raise ValueError("Remote-file cleanup requires a remote transport")
         entries = (
             *run.files.inputs, *run.files.outputs,
@@ -165,7 +165,7 @@ class FileAccess:
             for original_path, resolved_path in zip(paths, resolved)
         }
         replies = await asyncio.wait_for(
-            self.client.transport.call(
+            self.client.target.call(
                 Operation.standalone(remote_file_cleanup),
                 resolved, expected=expected_resolved, kinds=kinds_resolved,
             ),

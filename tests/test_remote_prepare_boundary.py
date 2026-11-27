@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from kkrunner import ExecutionSpec, RunState, RunStore, TaskFile
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.client.file_context import FileContext
 from kkrunner.client.file_session import FileSession
 from kkrunner.files import FileManifest
@@ -23,9 +23,9 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
         argv=("ignored",), directory=str(local), output_file="run.out",
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
-    client = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    client = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(client, spec, metadata={"example": {"task": "DOS"}})
+    run = client.create_run(spec, persistent=manager, metadata={"example": {"task": "DOS"}})
     expected = asyncio.run(FileContext(client, spec.staging).map_manifest(FileManifest.from_spec(spec)))
     target = str(remote / "local")
     request = {
@@ -73,7 +73,7 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(remote)),
     )
     local = FileManifest.from_spec(spec)
-    client = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    client = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     manifest = asyncio.run(FileContext(client, spec.staging).map_manifest(local))
 
     assert tuple(e.local_path for e in manifest.inputs) == (
@@ -109,14 +109,14 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
             input_sync="never", output_sync="never",
         ),
     )
-    class NoTransferTransport(SshTransport):
+    class NoTransferTransport(SshTarget):
         async def run(self, *args, **kwargs):
             pass
 
         async def query_files(self, sources, **kwargs):
             return ()
 
-    client = EndpointClient("kkrunner", transport=NoTransferTransport("cluster"))
+    client = ExecutionClient("kkrunner", target=NoTransferTransport("cluster"))
     session = client.create_run_parts(spec).files
     session.prepare_submission()
     request = session.prepare_job()
@@ -138,8 +138,8 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
 def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(tmp_path, monkeypatch, method):
     """The original preflight failure survives without a completion observer."""
     failure = SubmissionNotStarted("preflight refused")
-    client = EndpointClient("direct")
-    run = Run.untracked(client, ExecutionSpec(("ignored",), directory=str(tmp_path)),
+    client = ExecutionClient("direct")
+    run = client.create_run(ExecutionSpec(("ignored",), directory=str(tmp_path)), persistent=False,
                         process_result=lambda outcome: outcome)
 
     def rejected():
@@ -159,7 +159,7 @@ def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(tmp
 @pytest.mark.parametrize("conflict", ["mixed_input_optionality", "duplicate_output", "duplicate_cache"])
 def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict):
     """Invalid declarations fail at construction, before any transport access."""
-    class NoSideEffectTransport(SshTransport):
+    class NoSideEffectTransport(SshTarget):
         async def run(self, *args, **kwargs):
             pytest.fail("Remote command executed before manifest validation")
 
@@ -167,7 +167,7 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
             pytest.fail("Input uploaded before manifest validation")
 
         async def file_digest(self, *args, **kwargs):
-            pytest.fail("Transport probed before manifest validation")
+            pytest.fail("Target probed before manifest validation")
 
     local = tmp_path / "local"
     local.mkdir()
@@ -190,32 +190,32 @@ def test_invalid_manifest_rejected_before_remote_side_effects(tmp_path, conflict
         output_files=output_files, cache_files=cache_files,
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    client = EndpointClient("kkrunner", transport=NoSideEffectTransport("cluster"))
+    client = ExecutionClient("kkrunner", target=NoSideEffectTransport("cluster"))
     with pytest.raises(ValueError, match="Conflicting optionality|Duplicate file declaration"):
         client.create_run_parts(spec)
 
 
 def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkeypatch):
-    from kkrunner.client import LocalTransport
+    from kkrunner.client import LocalTarget
 
     local = tmp_path / "local"
     target = tmp_path / "target"
     local.mkdir()
     (local / "input").write_text("data")
     async def local_run(self, argv, **kwargs):
-        return await LocalTransport().run(argv, **kwargs)
+        return await LocalTarget().run(argv, **kwargs)
 
-    monkeypatch.setattr(SshTransport, "run", local_run)
-    monkeypatch.setattr(SshTransport, "file_digest", LocalTransport.file_digest)
-    monkeypatch.setattr(SshTransport, "put_file", LocalTransport.put_file)
-    monkeypatch.setattr(SshTransport, "query_files", LocalTransport.query_files)
-    client = EndpointClient(transport=SshTransport("loopback"))
+    monkeypatch.setattr(SshTarget, "run", local_run)
+    monkeypatch.setattr(SshTarget, "file_digest", LocalTarget.file_digest)
+    monkeypatch.setattr(SshTarget, "put_file", LocalTarget.put_file)
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+    client = ExecutionClient(target=SshTarget("loopback"))
     spec = ExecutionSpec(
         argv=("unused",), directory=local, input_file="input", output_file="out",
         staging=StagingSpec(local_root=local, remote_root=target),
     )
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(client, spec)
+    run = client.create_run(spec, persistent=manager)
     calls = []
     original = FileContext.map_manifest
 

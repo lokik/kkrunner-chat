@@ -8,13 +8,13 @@ import pytest
 
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client import EndpointClient, LocalTransport, SshTransport
+from kkrunner.client import ExecutionClient, LocalTarget, SshTarget
 from kkrunner.client.contracts import JobAttachment, Operation
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import ExecutionMetadata, WorkingDirectory
 
 
-class LoopbackSshTransport(SshTransport):
+class LoopbackSshTransport(SshTarget):
     def __init__(self):
         super().__init__("loopback", python_command=(sys.executable,))
 
@@ -34,10 +34,10 @@ def linux_identity(pid):
 def test_direct_output_attachment_does_not_submit(tmp_path):
     output = tmp_path / "output.txt"
     output.write_text("existing")
-    endpoint = EndpointClient(DirectBackend)
+    endpoint = ExecutionClient(DirectBackend)
     attachment = JobAttachment(
         ExecutionMetadata(
-            LocalTransport(), WorkingDirectory(str(tmp_path)),
+            LocalTarget(), WorkingDirectory(str(tmp_path)),
             backend=BackendConfig("direct"), backend_id="legacy-opaque-id",
         ),
         FileManifest(stdout=FileEntry(local_path=str(output))),
@@ -65,7 +65,7 @@ def test_direct_follow_local_and_portable_ssh(tmp_path, remote, offset):
     child = subprocess.Popen((sys.executable, "-c", script), start_new_session=True)
     try:
         token = linux_identity(child.pid)
-        transport = LoopbackSshTransport() if remote else LocalTransport()
+        transport = LoopbackSshTransport() if remote else LocalTarget()
         received = []
 
         async def observe():
@@ -98,7 +98,7 @@ def test_stopping_direct_follow_does_not_cancel_calculation(tmp_path, remote):
     )
     try:
         token = linux_identity(child.pid)
-        transport = LoopbackSshTransport() if remote else LocalTransport()
+        transport = LoopbackSshTransport() if remote else LocalTarget()
 
         async def observe():
             task = asyncio.create_task(transport.follow(
@@ -130,7 +130,7 @@ def test_direct_follow_waits_for_process_group(tmp_path):
     try:
         token = linux_identity(leader.pid)
         received = []
-        result = asyncio.run(asyncio.wait_for(LocalTransport().follow(
+        result = asyncio.run(asyncio.wait_for(LocalTarget().follow(
             Operation.for_backend(DirectBackend, "follow"), token,
             lambda data, kind: received.append(data),
             stdout_path=str(output), stderr_offset=None, poll_interval=0.05,

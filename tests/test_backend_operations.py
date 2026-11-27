@@ -8,9 +8,9 @@ import pytest
 
 from kkrunner.backends import backend_class
 from kkrunner.backends.support.class_helper import static_methods
-from kkrunner.transports.implementations.ssh.helpers import class_helper
+from kkrunner.targets.implementations.ssh.helpers import class_helper
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.targets.implementations.ssh.rpc import operation_command
 
 MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
                       "stream", "follow_framed", "acknowledge", "acknowledge_submission"}

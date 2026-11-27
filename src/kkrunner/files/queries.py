@@ -1,4 +1,4 @@
-"""Portable filesystem queries, independent of transports and job execution."""
+"""Portable filesystem queries, independent of targets and job execution."""
 
 import errno
 import os

@@ -5,7 +5,7 @@ from threading import Event
 from kkrunner import ExecutionSpec, Run, RunState, RunStore
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobRef, JobStatus
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.client.job import Job
 from kkrunner.runs.manager import RunManager
 
@@ -13,7 +13,7 @@ from kkrunner.runs.manager import RunManager
 def _run(tmp_path, *, manager=None, client=None, record=None, callback=None):
     """Use a real client Job and FileSession, controlling only backend observation."""
     manager = manager or RunManager(RunStore(tmp_path / "runs"))
-    client = client or EndpointClient(SupervisedBackend)
+    client = client or ExecutionClient(SupervisedBackend)
     acknowledgements = getattr(client, "_test_acknowledgements", None)
     if acknowledgements is None:
         acknowledgements = []
@@ -25,7 +25,7 @@ def _run(tmp_path, *, manager=None, client=None, record=None, callback=None):
     spec = ExecutionSpec(("true",), directory=str(tmp_path))
     if record is None:
         record = manager.new_record(
-            directory=tmp_path, transport=client.transport, backend=client.backend_config,
+            directory=tmp_path, target=client.target, backend=client.backend_config,
         )
         record = manager.transition(
             record, state=RunState.RUNNING,

@@ -7,7 +7,7 @@ from kkrunner.runs import DuplicateSubmissionError, RunStatus
 from kkrunner.backends.contracts import JobRef, RecoveryResult
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client.pool import ClientPool
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
 from kkrunner import ExecutionSpec
@@ -62,7 +62,7 @@ class _Runner:
         pass
 
 
-class _RecoveringExecutor(EndpointClient):
+class _RecoveringExecutor(ExecutionClient):
     def __init__(self, recovered):
         super().__init__(SupervisedBackend)
         self.recovered = recovered
@@ -87,10 +87,9 @@ class _RecoveringExecutor(EndpointClient):
 
 
 def _run(manager, executor, tmp_path):
-    return manager.create_run(
-        executor,
-        spec=ExecutionSpec(argv=("test-executable",), directory=str(tmp_path),
-                           output_file=str(tmp_path / "shared.out")),
+    return executor.create_run(
+        ExecutionSpec(argv=("test-executable",), directory=str(tmp_path),
+                           output_file=str(tmp_path / "shared.out")), persistent=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )

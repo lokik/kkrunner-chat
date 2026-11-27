@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner.client.job import Job
 from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.transports import LocalTransport
+from kkrunner.targets import LocalTarget
 from kkrunner.backends import DirectBackend
 from kkrunner.runs.base import ExecutionSpec, RunState
 
@@ -22,7 +22,7 @@ from kkrunner.runs.base import ExecutionSpec, RunState
 )
 def test_wait_without_started_monitor_fails_immediately(tmp_path, state, message):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = Job(DirectExecution(DirectBackend(), LocalTransport()), spec)
+    job = Job(DirectExecution(DirectBackend(), LocalTarget()), spec)
     job._state = state
     with pytest.raises(RuntimeError, match=message):
         job.wait()
@@ -30,7 +30,7 @@ def test_wait_without_started_monitor_fails_immediately(tmp_path, state, message
 
 def test_wait_and_run_async_return_completed_monitor_result(tmp_path):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = Job(DirectExecution(DirectBackend(), LocalTransport()), spec)
+    job = Job(DirectExecution(DirectBackend(), LocalTarget()), spec)
     job._state = RunState.FINISHED
     job._thread = object()
     job._done.set()

@@ -1,9 +1,9 @@
-"""Transport/backend persistence and reconstruction without application adapters."""
+"""Target/backend persistence and reconstruction without application adapters."""
 
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.backends import PsijBackend, SupervisedBackend
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client import EndpointClient, LocalTransport, SshTransport
+from kkrunner.client import ExecutionClient, LocalTarget, SshTarget
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.job import Job
 from kkrunner.client.pool import ClientPool
@@ -13,48 +13,48 @@ from kkrunner.runs.run import Run
 
 
 def test_endpoint_transport_host_and_cleanup(monkeypatch):
-    from kkrunner.transports.implementations.ssh import sessions
+    from kkrunner.targets.implementations.ssh import sessions
 
     closed = []
     monkeypatch.setattr(sessions, "close_pool", closed.append)
-    local = EndpointClient(transport=LocalTransport())
-    remote = EndpointClient(transport=SshTransport("cluster"))
-    assert local.computer is None
-    assert remote.computer == "cluster"
+    local = ExecutionClient(target=LocalTarget())
+    remote = ExecutionClient(target=SshTarget("cluster"))
+    assert local.target.host is None
+    assert remote.target.host == "cluster"
     local.close()
     remote.close()
-    assert closed == [remote.transport]
+    assert closed == [remote.target]
 
 
 def test_run_store_roundtrips_transport_and_backend_independently(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store, client_pool=ClientPool())
-    transport = SshTransport("cluster", options=("-v",), compression="zstd")
+    transport = SshTarget("cluster", options=("-v",), compression="zstd")
     backend = BackendConfig("psij", {"executor_name": "slurm"})
     record = manager.new_record(
-        directory=tmp_path, transport=transport, backend=backend,
+        directory=tmp_path, target=transport, backend=backend,
         metadata={"example": {"task": "DOS", "dataset": "case"}},
         processing_required=True,
     )
     store.save(record)
     loaded = store.get(record.id)
-    assert loaded.execution.transport == transport
+    assert loaded.execution.target == transport
     assert loaded.execution.backend == backend
-    assert isinstance(loaded.execution.transport, SshTransport)
+    assert isinstance(loaded.execution.target, SshTarget)
 
 
 def test_manager_reconstructs_local_supervised_client_after_restart(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store, client_pool=ClientPool())
     record = manager.new_record(
-        directory=tmp_path, transport=LocalTransport(), backend=BackendConfig("kkrunner"),
+        directory=tmp_path, target=LocalTarget(), backend=BackendConfig("kkrunner"),
         metadata={"example": {"task": "DOS"}}, processing_required=True,
     )
     store.save(record)
     restarted = RunManager(store, client_pool=ClientPool())
     client = restarted.client_for(store.get(record.id))
-    assert isinstance(client, EndpointClient)
-    assert client.transport == LocalTransport()
+    assert isinstance(client, ExecutionClient)
+    assert client.target == LocalTarget()
     assert isinstance(client.backend, SupervisedBackend)
 
 
@@ -69,11 +69,11 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
             return super().for_config(transport, backend)
 
     store = RunStore(tmp_path / "runs")
-    transport = SshTransport("cluster")
+    transport = SshTarget("cluster")
     backend = BackendConfig("kkrunner")
     manager = RunManager(store, client_pool=ClientPool())
     record = manager.new_record(
-        directory=tmp_path, transport=transport, backend=backend,
+        directory=tmp_path, target=transport, backend=backend,
         metadata={"example": {"task": "DOS"}}, processing_required=True,
     )
     store.save(record)
@@ -93,14 +93,14 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
         from kkrunner.client.backend_execution import bind_execution
 
         binding = bind_execution(
-            client.backend, client.transport,
+            client.backend, client.target,
             ref=JobRef(client.backend.name, attachment.execution.backend_id),
             status={"state": "running"},
         )
         job = Job(binding, spec)
         return RunParts(job, files)
 
-    monkeypatch.setattr(EndpointClient, "open_run_parts", fake_open)
+    monkeypatch.setattr(ExecutionClient, "open_run_parts", fake_open)
     monkeypatch.setattr(Run, "start", lambda self: starts.append(self))
     pool = RecordingPool()
     restarted = RunManager(store, client_pool=pool)
@@ -118,7 +118,7 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
 
 
 def test_pool_reconstructs_and_reuses_same_ssh_client():
-    transport = SshTransport("cluster", options=("-p", "2222"), compression="zstd")
+    transport = SshTarget("cluster", options=("-p", "2222"), compression="zstd")
     backend = BackendConfig("psij", {"executor_name": "slurm", "url": "local://slurm"})
     pool = ClientPool()
     first = pool.for_config(transport, backend)
@@ -126,20 +126,20 @@ def test_pool_reconstructs_and_reuses_same_ssh_client():
         "name": backend.name, "options": dict(backend.options),
     })
     assert first is second
-    assert isinstance(first, EndpointClient)
-    assert first.transport == transport
-    assert first.transport.options == ("-p", "2222")
-    assert first.transport.compression == "zstd"
+    assert isinstance(first, ExecutionClient)
+    assert first.target == transport
+    assert first.target.options == ("-p", "2222")
+    assert first.target.compression == "zstd"
     assert isinstance(first.backend, PsijBackend)
     assert dict(first.backend.options) == {"executor_name": "slurm", "url": "local://slurm"}
     pool.close()
 
 
 def test_default_psij_configuration_survives_client_reconstruction():
-    live = EndpointClient(PsijBackend, transport=SshTransport("cluster"))
-    restored = ClientPool().for_config(live.transport.to_dict(), live.backend_config)
+    live = ExecutionClient(PsijBackend, target=SshTarget("cluster"))
+    restored = ClientPool().for_config(live.target.to_dict(), live.backend_config)
     assert live.backend_config.name == "psij"
-    assert isinstance(restored, EndpointClient)
+    assert isinstance(restored, ExecutionClient)
     assert isinstance(restored.backend, PsijBackend)
-    assert restored.transport == live.transport
+    assert restored.target == live.target
     assert dict(restored.backend.options) == {"executor_name": "slurm", "url": None}

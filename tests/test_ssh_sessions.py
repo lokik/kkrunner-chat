@@ -8,8 +8,8 @@ import time
 import pytest
 
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.source import portable_bundle
-from kkrunner.transports.implementations.ssh.sessions import SshSessionPool
+from kkrunner.targets.implementations.ssh.source import portable_bundle
+from kkrunner.targets.implementations.ssh.sessions import SshSessionPool
 from kkrunner.support.decorators import depends_on, portable
 
 

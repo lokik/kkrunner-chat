@@ -10,31 +10,31 @@ import time
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunManager, RunState, RunStore
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends import DirectBackend
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.targets.implementations.ssh.rpc import operation_command
 WORKER_SOURCE = operation_command(Operation.for_backend(DirectBackend, "stream"), streaming=True)[-1]
 
 
 def test_explicit_and_contextual_persistence(tmp_path):
-    direct = EndpointClient(DirectBackend)
+    direct = ExecutionClient(DirectBackend)
     spec = ExecutionSpec((sys.executable, "-c", "print(42)"), directory=str(tmp_path))
-    assert Run.create(direct, spec).record is None
+    assert direct.create_run(spec).record is None
 
     manager = RunManager(RunStore(tmp_path / "records"))
-    tracked = Run.create(direct, spec, persistent=manager)
+    tracked = direct.create_run(spec, persistent=manager)
     assert tracked.manager is manager
     assert tracked.record.execution.submission_key
     assert tracked.record.execution.backend_id is None
     with RunManager.as_default(manager):
         assert RunManager.get_default() is manager
-        assert Run.create(direct, spec, persistent=True).manager is manager
+        assert direct.create_run(spec, persistent=True).manager is manager
     assert RunManager.get_default() is not manager
 
     # A backend's natural recovery capability never forces persistent records.
-    untracked_supervised = Run.create(EndpointClient(SupervisedBackend), spec, persistent=False)
+    untracked_supervised = ExecutionClient(SupervisedBackend).create_run(spec, persistent=False)
     assert untracked_supervised.record is None
     assert untracked_supervised._parts.submission_builder is not None
 
@@ -45,7 +45,7 @@ def test_tracked_direct_completes_without_recoverable_handle(tmp_path):
         directory=str(tmp_path), output_file="out.txt",
     )
     manager = RunManager(RunStore(tmp_path / "records"))
-    run = Run.create(EndpointClient(DirectBackend), spec, persistent=manager)
+    run = ExecutionClient(DirectBackend).create_run(spec, persistent=manager)
     assert run.run().return_code == 0
     assert run.state == RunState.FINISHED
     assert manager.store.get(run.id).state == RunState.FINISHED
@@ -67,7 +67,7 @@ def test_direct_local_detached_outlives_creating_python_process(tmp_path):
 from pathlib import Path
 import sys
 from kkrunner import ExecutionSpec, Run
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.backends import DirectBackend
 root, marker = sys.argv[1:]
 spec = ExecutionSpec(
@@ -75,7 +75,7 @@ spec = ExecutionSpec(
      "import pathlib,time; time.sleep(.6); pathlib.Path(%r).write_text('survived')" % marker),
     directory=root, output_file=str(Path(root) / "stdout.txt"),
 )
-Run.create(EndpointClient(DirectBackend), spec, detached=True).submit()
+ExecutionClient(DirectBackend).create_run(spec, detached=True).submit()
 """
     child = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path), str(marker)],
@@ -137,7 +137,7 @@ def test_direct_ssh_detached_waits_and_retrieves_declared_streams(tmp_path):
         error_file=str(local / "stderr.txt"),
         staging=StagingSpec(local_root=local, remote_root=remote),
     )
-    run = Run.create(EndpointClient(DirectBackend, transport=_LoopbackSshTransport()), spec, detached=True)
+    run = ExecutionClient(DirectBackend, target=_LoopbackSshTransport()).create_run(spec, detached=True)
     result = run.run()
     assert result.return_code == 0
     assert run.state == RunState.FINISHED
@@ -147,7 +147,7 @@ def test_direct_ssh_detached_waits_and_retrieves_declared_streams(tmp_path):
 
 
 def test_supervised_job_never_owns_client_manifest(tmp_path):
-    job = EndpointClient(SupervisedBackend).create_run_parts(
+    job = ExecutionClient(SupervisedBackend).create_run_parts(
         ExecutionSpec((sys.executable, "-c", "print('ok')"), directory=str(tmp_path)),
     )
     job = job.job
@@ -163,7 +163,7 @@ def test_single_submission_path_with_and_without_store(tmp_path, persistent):
         output_file=str(tmp_path / "out.txt"),
         directory=str(tmp_path),
     )
-    run = Run.create(EndpointClient(DirectBackend), spec, persistent=manager if persistent else False)
+    run = ExecutionClient(DirectBackend).create_run(spec, persistent=manager if persistent else False)
     result = run.run()
     assert result.return_code == 0
     assert run.state == RunState.FINISHED
@@ -182,7 +182,7 @@ def test_detached_local_uses_shared_file_tail_for_live_observation(tmp_path):
         output_file=str(tmp_path / "out.txt"),
         error_file=str(tmp_path / "err.txt"),
     )
-    run = Run.create(EndpointClient(DirectBackend), spec, detached=True)
+    run = ExecutionClient(DirectBackend).create_run(spec, detached=True)
     received = []
     run.add_output_listener(lambda data, kind: received.append((kind, data)))
     assert run.run().return_code == 0
@@ -205,7 +205,7 @@ def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
         directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
     )
     manager = RunManager(MemoryRunStore())
-    run = Run.create(EndpointClient(DirectBackend), spec, persistent=manager, detached=True)
+    run = ExecutionClient(DirectBackend).create_run(spec, persistent=manager, detached=True)
     run.submit()
     try:
         run.stop_observation()
@@ -230,7 +230,7 @@ def test_attached_direct_stops_listeners_but_drains_output(tmp_path):
          "print('finished', flush=True)" % str(gate)),
         directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
     )
-    run = Run.create(EndpointClient(DirectBackend), spec, detached=False)
+    run = ExecutionClient(DirectBackend).create_run(spec, detached=False)
     ready = Event()
     received = []
 

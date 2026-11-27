@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, Tuple
 
-from kkrunner.transports.contracts import Operation
+from kkrunner.targets.contracts import Operation
 from kkrunner.files.queries import (
     _sources,
     checked_files,
@@ -24,15 +24,15 @@ from kkrunner.files.snapshots import snapshot_destination
 
 from kkrunner.files.staging import staged_local_file
 from kkrunner.files.transfer import archive_compressions, relative_file_pairs, send_archive, receive_archive
-from ...base import Transport, _completed_process
+from ...base import Target, _completed_process
 from ...rpc import operation_payload, operation_result
 from .rpc import operation_command
 from .source import function_definition
 
 
 @dataclass(frozen=True)
-class SshTransport(Transport):
-    """Transport using the system ``ssh`` client."""
+class SshTarget(Target):
+    """Target using the system ``ssh`` client."""
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
         from .call import SshCall
@@ -57,7 +57,7 @@ class SshTransport(Transport):
         return await follow_framed_command(process, on_output)
 
     async def call(self, operation: Operation, *args, **kwargs):
-        if self.pool_size and type(self) is SshTransport:
+        if self.pool_size and type(self) is SshTarget:
             from .sessions import pool_for
             return await pool_for(self).call(operation, *args, **kwargs)
         # Custom transport subclasses and pool_size=0 retain one-shot SSH.
@@ -82,7 +82,7 @@ class SshTransport(Transport):
 
     def __post_init__(self):
         if self.kind != "ssh":
-            raise ValueError("SshTransport.kind must be 'ssh'")
+            raise ValueError("SshTarget.kind must be 'ssh'")
         for name in ("host", "ssh"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"SSH {name} must be a nonempty string")
