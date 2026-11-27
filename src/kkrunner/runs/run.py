@@ -11,6 +11,7 @@ from threading import Event, Lock, Thread
 
 from kkrunner.backends.contracts import BackendCapability
 from kkrunner.runs.base import (
+    ExecutionOutcome,
     ExecutionResources,
     FailurePhase,
     RunState,
@@ -267,8 +268,12 @@ class Run:
         try:
             self._job.wait()
             raw_state = self._job.state
-            outcome = self._file_session.result
-            outcome.return_code = self._job.return_code
+            outcome = ExecutionOutcome(
+                input_file=self._file_session.input_file,
+                output_file=self._file_session.output_file,
+                error_file=self._file_session.error_file,
+                return_code=self._job.return_code,
+            )
             self.result = outcome
             if raw_state.is_terminal:
                 status = self._job.status()
@@ -292,9 +297,6 @@ class Run:
                         return
                     # Diagnostic transfer errors cannot replace a failed or
                     # cancelled backend outcome.
-                outcome = self._file_session.result
-                outcome.return_code = self._job.return_code
-            self.result = outcome
             if raw_state == RunState.UNKNOWN:
                 self._state = RunState.UNKNOWN
                 self._failure_message = self._job.failure_message
