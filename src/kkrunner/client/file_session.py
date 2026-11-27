@@ -573,11 +573,18 @@ class FileSession:
             versions = await self._target_input_versions(manifest, inputs)
         return request, replace(manifest, caches=tuple(caches), input_versions=versions)
 
-    async def _target_versions(self, paths):
+    async def _target_versions(self, paths, *, root=None):
         transport = self.context.target
         files = [target for target, (_, kind) in paths.items() if kind == "file"]
-        observed = await transport.query_files(files, digest=True) if files else ()
-        digests = {item["path"]: item.get("digest") for item in observed}
+        observed = await transport.query_files(files, root=root, digest=True) if files else ()
+        digests = {item["path"]: item["digest"] for item in observed if "digest" in item}
+        if root is not None:
+            # The same query expands cache globs and captures their contents.
+            # Exact declarations retain their explicitly mapped local identity.
+            paths = {**paths, **{
+                target: (self.context._unmap_path(target, root), "file")
+                for target in digests if target not in paths
+            }}
         versions = []
         for target, (local, kind) in paths.items():
             digest = digests.get(target)
@@ -595,20 +602,15 @@ class FileSession:
         })
 
     async def _target_cache_versions(self):
-        paths = {}
+        paths = {
+            entry.remote_path: (entry.local_path, entry.kind)
+            for cache in self._files.caches
+            if (entry := cache.file).remote_path is not None and entry.local_path is not None
+        }
         root = None
-        for cache in self._files.caches:
-            entry = cache.file
-            if entry.remote_path is None or entry.local_path is None:
-                continue
-            if has_file_magic(entry.remote_path):
-                if root is None:
-                    root = await self.context._resolved_remote_root()
-                for target in await self.context.target.expand_files(entry.remote_path, root):
-                    paths[target] = (self.context._unmap_path(target, root), entry.kind)
-            else:
-                paths[entry.remote_path] = (entry.local_path, entry.kind)
-        return await self._target_versions(paths)
+        if any(has_file_magic(target) for target, (_, kind) in paths.items() if kind == "file"):
+            root = await self.context._resolved_remote_root()
+        return await self._target_versions(paths, root=root)
 
     def _flush_declared_handles(self):
         """Use live descriptors only after the caller has reserved their paths."""

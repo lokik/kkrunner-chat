@@ -274,3 +274,57 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
         assert targets[str(local / "missing")][1] is None
     finally:
         files.close()
+
+
+def test_final_cache_versions_batch_expansion_and_digest(tmp_path):
+    from kkrunner import ExecutionSpec, TaskFile
+    from kkrunner.client import ExecutionClient, StagingSpec
+    from kkrunner.files.versions import file_digest
+    from kkrunner.runs.base import RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    names = ("one.pot", "two.pot", "three.cache", "exact")
+    for name in names:
+        (remote / name).write_text(name)
+    (remote / "tree").mkdir()
+    (remote / "tree" / "data").write_text("directory")
+    calls = []
+
+    class Observed(LocalTarget):
+        is_local = False
+        supports_file_transfer = True
+
+        async def query_files(self, sources, *, root=None, digest=False):
+            calls.append((tuple(sources), root, digest))
+            return await super().query_files(sources, root=root, digest=digest)
+
+    client = ExecutionClient(target=Observed())
+    spec = ExecutionSpec(
+        argv=("unused",), directory=local,
+        cache_files=("*.pot", "*.cache", "exact", "missing", TaskFile("tree", kind="directory")),
+        staging=StagingSpec(local_root=local, remote_root=remote, input_sync="never", output_sync="never"),
+    )
+    session = client.file_session(spec)
+    try:
+        session.prepare_submission()
+        calls.clear()
+        files = session.finalize(RunStatus(RunState.FINISHED, return_code=0))
+        versions = {version.path.name: version for version in files.cache_versions}
+        assert set(versions) == {*names, "tree"}
+        for name in names:
+            assert versions[name].path == local / name
+            assert versions[name].digest == file_digest(remote / name)
+        assert versions["tree"].path == local / "tree"
+        assert versions["tree"].digest == queries.directory_digest(remote / "tree")
+        # Synchronization may inspect individual patterns, but provenance
+        # must not expand them again without capturing their digest.
+        assert not any(root is not None and not digest for _, root, digest in calls)
+        assert any(
+            root == str(remote) and digest
+            and {str(remote / "*.pot"), str(remote / "*.cache"), str(remote / "exact")}.issubset(sources)
+            for sources, root, digest in calls
+        )
+    finally:
+        session.close()
