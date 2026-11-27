@@ -258,9 +258,8 @@ class ProjectRepository:
             directory=directory,
         )
         with self._hierarchy_lock():
-            projects = self._read_projects()
-            if parent is not None and all(item.id != parent for item in projects):
-                raise KeyError(parent)
+            if parent is not None:
+                self.project(parent)
             with self._project_lock(project.id):
                 path = self._json_path(project.id)
                 if path.exists():
