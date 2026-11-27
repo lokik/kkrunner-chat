@@ -1,6 +1,4 @@
-"""Client transport/backend identity and pooled-client resource ownership."""
-
-import pytest
+"""Client transport/backend identity and client-cache behavior."""
 
 from kkrunner.client.pool import ClientPool
 
@@ -14,62 +12,18 @@ def test_client_profile_identity_normalizes_backend_options_without_host_resolut
     assert SshTarget("cluster") != SshTarget("cluster.example.org")
     assert LocalTarget() != SshTarget("cluster")
 
-
-
-def test_client_pool_close_attempts_all_after_failure():
-    """One failing backend must not prevent cleanup of the remaining backends."""
-    pool = ClientPool()
-    closed = []
-    backends = {}
-
-    class Executor:
-        def __init__(self, key, error=None):
-            self.key = key
-            self.error = error
-
-        def close(self):
-            closed.append(self.key)
-            if self.error is not None:
-                raise self.error
-
-    first_error = OSError("first close failed")
-    for key, error in (("first", first_error), ("second", RuntimeError("second close failed")), ("third", None)):
-        backend = Executor(key, error)
-        backends[key] = backend
-        assert pool.get(key, lambda backend=backend: backend) is backend
-    with pytest.raises(OSError, match="first close failed") as caught:
-        pool.close()
-    assert caught.value is first_error
-    assert closed == ["first", "second", "third"]
-    replacement = Executor("replacement")
-    assert pool.get("first", lambda: replacement) is replacement
-    assert replacement is not backends["first"]
-    pool.close()
-    assert closed == ["first", "second", "third", "replacement"]
-
-
-def test_client_pool_discard_closes_client_and_recreates_it():
+def test_client_pool_discard_and_clear_only_forget_cached_clients():
     from kkrunner.client import ExecutionClient
 
     pool = ClientPool()
-    client = pool.get("local", ExecutionClient)
-    assert pool.discard("local") is client
-    assert pool.discard("local") is None
-    assert pool.get("local", ExecutionClient) is not client
-    pool.close()
+    first = pool.get("first", ExecutionClient)
+    second = pool.get("second", ExecutionClient)
+    assert pool.discard("first") is first
+    assert pool.discard("first") is None
+    assert pool.get("second", ExecutionClient) is second
+    replacement = pool.get("first", ExecutionClient)
+    assert replacement is not first
 
-
-def test_client_pool_closes_shared_backend_only_once():
-    """A backend may be cached under several keys but is one owned object."""
-    pool = ClientPool()
-    calls = []
-
-    class Shared:
-        def close(self):
-            calls.append("closed")
-
-    shared = Shared()
-    assert pool.get("a", lambda: shared) is shared
-    assert pool.get("b", lambda: shared) is shared
-    pool.close()
-    assert calls == ["closed"]
+    pool.clear()
+    assert pool.get("first", ExecutionClient) is not replacement
+    assert pool.get("second", ExecutionClient) is not second

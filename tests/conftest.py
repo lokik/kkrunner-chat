@@ -3,6 +3,7 @@
 import pytest
 
 from kkrunner.client import pool
+from kkrunner.targets.implementations.ssh.sessions import _close_all
 
 
 @pytest.fixture(autouse=True)
@@ -12,8 +13,8 @@ def isolated_default_client_pool():
     try:
         yield
     finally:
-        pool._DEFAULT_CLIENT_POOL.close()
         pool._DEFAULT_CLIENT_POOL = previous
+        _close_all()
 
 
 @pytest.fixture(scope="session")

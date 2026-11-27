@@ -101,7 +101,7 @@ class SshTarget(Target):
             raise ValueError("SSH pool_idle_seconds must be between 1 and 86400")
 
     def close(self):
-        """Close the shared persistent Python sessions for this SSH profile."""
+        """Close sessions for this SSH configuration, including other clients' sessions."""
         from .sessions import close_pool
         close_pool(self)
         object.__setattr__(self, "_compression_mode", None)

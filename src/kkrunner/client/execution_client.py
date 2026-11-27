@@ -117,10 +117,6 @@ class ExecutionClient:
         runner.submit()
         return runner
 
-    def close(self):
-        """Release transport resources owned by the configured client."""
-        self.target.close()
-
     @classmethod
     def from_config(cls, target, backend):
         """Reconstruct a client from supported stored connection/backend data."""

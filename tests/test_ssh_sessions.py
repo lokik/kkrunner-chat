@@ -194,3 +194,32 @@ def test_idle_workers_exit():
             assert not pool._sessions
     finally:
         pool.close()
+
+
+def test_evicting_client_does_not_close_shared_target_sessions(monkeypatch):
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.client.pool import ClientPool
+    from kkrunner.targets import SshTarget
+
+    monkeypatch.setattr(SshTarget, "_command", staticmethod(LoopbackTransport._command))
+    pool = ClientPool()
+    target = SshTarget("loopback-client-cache", python_command=(sys.executable,))
+    equivalent = SshTarget("loopback-client-cache", python_command=(sys.executable,))
+    first = pool.for_config(target, BackendConfig("direct"))
+    second = pool.for_config(equivalent, BackendConfig("kkrunner"))
+
+    async def pid(client):
+        return await client.target.call(Operation.standalone(_remote_pid))
+
+    try:
+        initial = asyncio.run(pid(first))
+        assert asyncio.run(pid(second)) == initial
+        assert pool.discard((target, first.backend_config)) is first
+        assert asyncio.run(pid(second)) == initial
+        pool.clear()
+        assert asyncio.run(pid(second)) == initial
+        target.close()
+        # Explicit target shutdown, unlike cache eviction, retires the worker.
+        assert asyncio.run(pid(second)) != initial
+    finally:
+        equivalent.close()
