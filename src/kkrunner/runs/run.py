@@ -201,6 +201,8 @@ class Run:
 
     @property
     def files(self):
+        if self._record is not None and self._record.state.is_terminal:
+            return self._record.files
         return self._file_session.files
 
     @property
@@ -337,7 +339,7 @@ class Run:
             try:
                 if self._record is not None and self._record.processing_required:
                     self._record = self.manager.begin_processing(
-                        self._record, return_code=outcome.return_code, files=self.files,
+                        self._record, return_code=outcome.return_code, files=self._file_session.files,
                         execution=self.execution or self._record.execution,
                     )
                     self.result = self.manager.process_outcome(self._record, outcome, self._process_result)
@@ -705,7 +707,7 @@ class Run:
                     message=self._failure_message or self._job.failure_message,
                     failure_phase=phase,
                     artifacts_available=phase not in NO_ARTIFACTS_FAILURES,
-                    files=self.files,
+                    files=self._file_session.files,
                 )
             except BaseException:
                 # A cleanup error is reported to the waiter even if its failed
