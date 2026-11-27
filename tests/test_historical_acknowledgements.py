@@ -1,7 +1,11 @@
 """Refreshing live runs must not contact backends for historical receipts."""
 
-from kkrunner import RunState, RunStore
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 import pytest
+
+from kkrunner import RunState, RunStore
 
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobRef, RecoveryResult
@@ -24,7 +28,7 @@ def test_refresh_does_not_retry_historical_acknowledgements(tmp_path, monkeypatc
     )
     record = manager.transition(record, state=RunState.FINISHED, return_code=0)
 
-    # A new manager has no in-memory knowledge of earlier acknowledgements.
+    # Reopening history must not trigger any acknowledgement.
     manager = RunManager(store, client_pool=ClientPool())
     manager.register_client(client)
     acknowledged = []
@@ -96,3 +100,43 @@ def test_recovery_acknowledges_durable_identity_before_status_query(tmp_path, mo
         manager.recover_submitting(record)
     assert acknowledged == [record.id]
     assert manager.store.get(record.id).execution.backend_id == "recovered-job"
+
+
+def test_slow_receipt_ack_does_not_block_another_run_completion(tmp_path, monkeypatch):
+    from kkrunner.targets import SshTarget
+
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
+
+    def running(host):
+        client = ExecutionClient(SupervisedBackend, target=SshTarget(host))
+        manager.register_client(client)
+        record = manager.new_record(
+            directory=tmp_path, remote_directory="/work",
+            target=client.target, backend=client.backend_config,
+        )
+        return client, manager.transition(
+            record, state=RunState.RUNNING,
+            execution=record.execution.submitted(host + "-job"),
+        )
+
+    slow_client, slow = running("slow")
+    fast_client, fast = running("fast")
+    entered, release, fast_ack = Event(), Event(), Event()
+
+    def acknowledge_slow(record):
+        assert manager.store.get(record.id).state == RunState.FINISHED
+        entered.set()
+        assert release.wait(5), "Slow ACK was not released"
+
+    monkeypatch.setattr(slow_client, "acknowledge", acknowledge_slow)
+    monkeypatch.setattr(fast_client, "acknowledge", lambda record: fast_ack.set())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(manager.complete, slow, state=RunState.FINISHED, return_code=0)
+        try:
+            assert entered.wait(5)
+            second = pool.submit(manager.complete, fast, state=RunState.FINISHED, return_code=0)
+            assert second.result(timeout=2).state == RunState.FINISHED
+            assert fast_ack.is_set()
+        finally:
+            release.set()
+        assert first.result(timeout=5).state == RunState.FINISHED
