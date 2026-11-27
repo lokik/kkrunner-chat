@@ -870,6 +870,8 @@ class RunManager:
 
     def retry_postprocessing(self, run, process_result):
         """Retry a failed or interrupted processing attempt without rerunning a job."""
+        if not callable(process_result):
+            raise TypeError("Postprocessing retry requires a callable result processor")
         from kkrunner.runs.base import ExecutionOutcome
 
         record = resolve_record(run, self.store)

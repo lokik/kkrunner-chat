@@ -115,6 +115,31 @@ def test_result_processor_failure_is_postprocessing_failure(tmp_path):
     assert record.finished_at is not None
 
 
+
+@pytest.mark.parametrize("processor", [None, 42])
+def test_retry_without_processor_preserves_failed_result(tmp_path, processor):
+    from kkrunner.files import FileEntry, FileManifest
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    output = tmp_path / "out"
+    output.write_text("result")
+    record = manager.new_record(
+        directory=tmp_path, processing_required=True,
+        files=FileManifest(stdout=FileEntry(str(output))),
+    )
+    failed = manager.complete(
+        record, state=RunState.FAILED, return_code=0,
+        failure_phase=FailurePhase.POSTPROCESSING,
+        message="original parser error", artifacts_available=True,
+        execution=record.execution.submitted("native"),
+    )
+    with pytest.raises(TypeError, match="callable result processor"):
+        manager.retry_postprocessing(failed, processor)
+    assert manager.store.get(failed.id) == failed
+    assert not manager.store.runs(active=True)
+    assert manager.retry_postprocessing(failed, lambda outcome: "parsed") == "parsed"
+
+
 @pytest.mark.parametrize("during_retry", ["finished", "failed", "refreshed"])
 def test_retry_does_not_overwrite_concurrent_record_update(tmp_path, during_retry):
     from kkrunner.files import FileEntry, FileManifest
