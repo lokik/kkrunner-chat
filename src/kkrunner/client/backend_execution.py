@@ -1,8 +1,9 @@
 """Bind native backend operations to a transport for one client execution.
 
 Job uses this single interface. Session-bound execution retains a live call;
-managed execution uses independent native operations and an opaque reference.
-Neither implementation owns Run persistence or file synchronization.
+managed execution owns an opaque reference and may observe its initial
+submission through a live call. Neither implementation owns Run persistence
+or file synchronization.
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from __future__ import annotations
 import warnings
 
 from kkrunner.backends.contracts import (
-    JobRef, JobStatus, ObservationUnavailable, SubmissionNotStarted, decode_job_status,
+    BackendCapability, JobFailurePhase, JobRef, JobStatus, ObservationUnavailable,
+    SubmissionNotStarted, decode_job_status,
 )
 from kkrunner.client.contracts import Operation
 from kkrunner.execution import MpiNotFoundWarning, RunState
@@ -137,11 +139,23 @@ class ManagedExecution(_Execution):
 
     can_stop_observation = True
 
+    def __init__(self, backend, transport, *, ref=None, status=None):
+        super().__init__(backend, transport, ref=ref, status=status)
+        self._call = None
+
     async def submit(self, request, on_output):
         try:
-            # A new managed Job immediately follows its accepted reference.
-            # Backends with non-replayable streams may synchronize launch with FOLLOW.
-            facts = await self.target.call(self._operation("submit"), dict(request, wait_for_observer=True))
+            if BackendCapability.SUBMIT_AND_FOLLOW in self.backend.supports:
+                self._call = await self.target.open_call(
+                    self._operation("submit_and_follow"), request, on_output,
+                )
+                facts = await self._call.submission()
+                if (facts.get("remote_id") is None
+                        and facts.get("failure_phase") == JobFailurePhase.SUBMISSION.value
+                        and facts.get("state") == RunState.FAILED.value):
+                    raise SubmissionNotStarted(facts.get("error") or "Backend rejected submission")
+            else:
+                facts = await self.target.call(self._operation("submit"), request)
         except SubmissionNotStarted as exc:
             self._record({"state": "failed", "failure_phase": "submission", "error": str(exc)})
             raise
@@ -155,6 +169,8 @@ class ManagedExecution(_Execution):
         return status
 
     async def observe(self, on_output):
+        if self._call is not None:
+            return self._record(await self._call.wait())
         return self._record(await self.target.follow(
             self._operation("follow"), self.ref.token, on_output, **self._follow_options,
         ))
@@ -166,6 +182,10 @@ class ManagedExecution(_Execution):
 
     async def cancel(self):
         return self._record(await self.target.call(self._operation("cancel"), self.ref.token))
+
+    async def close(self):
+        if self._call is not None:
+            await self._call.close()
 
 
 def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):

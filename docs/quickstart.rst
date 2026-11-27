@@ -18,9 +18,10 @@ For a blocking local command, import :func:`kkrunner.run`.
 
 Commands are argument sequences, or a single executable pathname. Shell
 expansion is never performed. The function displays available unredirected
-output. The supervised backend waits for its first observer when a stream
-has no named file. It can start without an observer after a bounded grace
-period if the client disappears; missed live-only bytes cannot be replayed.
+output. The supervised backend establishes its initial observation connection
+as part of submission, before starting the calculation. It needs no separate
+FOLLOW request or observer-start timeout. Detached execution continues after
+the observer disconnects; missed live-only bytes cannot be replayed.
 For PSI/J or detached direct execution, declare named output files to capture
 their streams. Named files are also necessary for replay after disconnect.
 

@@ -113,7 +113,7 @@ def test_attached_supervisor_detects_session_disconnect(tmp_path):
             reader, writer = await asyncio.open_unix_connection(streams.socket_path)
             writer.write(b'{"command":"follow","offsets":{"out":0,"err":0}}\n')
             await writer.drain()
-            await asyncio.wait_for(streams.connected.wait(), 2)
+            assert await asyncio.wait_for(reader.readexactly(8), 2) == b"A2SFOLL1"
             writer.close()
             await writer.wait_closed()
             await asyncio.wait_for(streams.disconnected.wait(), 2)

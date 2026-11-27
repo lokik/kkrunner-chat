@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import socket
 import sys
 
 import pytest
@@ -21,6 +22,13 @@ def _spec(tmp_path, socket_fd, *, detached, argv=None):
     }
 
 
+def _initial_connection(spec):
+    """Pass the child endpoint exactly as Popen does in production."""
+    client, supervisor = socket.socketpair()
+    spec["initial_follower_fd"] = supervisor.detach()
+    return client
+
+
 def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch):
 
     async def check():
@@ -29,12 +37,12 @@ def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch):
             remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append((args, kwargs))
         )
         rd, wr = os.pipe()
-        task = asyncio.create_task(remote_process_worker._run(_spec(tmp_path, wr, detached=False)))
+        spec = _spec(tmp_path, wr, detached=False)
+        connection = _initial_connection(spec)
+        task = asyncio.create_task(remote_process_worker._run(spec))
         with os.fdopen(rd, "rb") as pipe:
-            path = (await asyncio.to_thread(pipe.readline)).decode().strip()
-        reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"command":"follow","offsets":{"out":0,"err":0}}\n')
-        await writer.drain()
+            assert await asyncio.to_thread(pipe.readline)
+        reader, writer = await asyncio.open_unix_connection(sock=connection)
         assert await reader.readexactly(8) == b"A2SFOLL1"
         writer.close()
         await writer.wait_closed()
@@ -66,13 +74,12 @@ def test_detached_run_survives_follow_disconnect(tmp_path, monkeypatch, live_onl
             ],
         )
         if live_only:
-            spec.update(wait_for_observer=True, output_file=None, error_file=None)
+            spec.update(output_file=None, error_file=None)
+        connection = _initial_connection(spec)
         task = asyncio.create_task(remote_process_worker._run(spec))
         with os.fdopen(rd, "rb") as pipe:
-            path = (await asyncio.to_thread(pipe.readline)).decode().strip()
-        reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"command":"follow","offsets":{"out":0,"err":0}}\n')
-        await writer.drain()
+            assert await asyncio.to_thread(pipe.readline)
+        reader, writer = await asyncio.open_unix_connection(sock=connection)
         assert await reader.readexactly(8) == b"A2SFOLL1"
         writer.close()
         await writer.wait_closed()
@@ -270,8 +277,8 @@ def test_unexpected_child_spawn_failure_is_classified_as_launch(tmp_path, monkey
 
 
 @pytest.mark.parametrize("named_stderr", [False, True])
-def test_detached_program_waits_for_first_observer_and_delivers_initial_bytes(tmp_path, monkeypatch, named_stderr):
-    from kkrunner.backends.implementations.supervised.streams import follow_socket
+def test_preconnected_supervisor_delivers_initial_bytes_even_before_client_reads(tmp_path, monkeypatch, named_stderr):
+    from kkrunner.backends.implementations.supervised.streams import receive
 
     async def check():
         monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
@@ -279,28 +286,45 @@ def test_detached_program_waits_for_first_observer_and_delivers_initial_bytes(tm
         marker = tmp_path / "started"
         spec = _spec(tmp_path, wr, detached=True, argv=[
             sys.executable, "-c",
-            "from pathlib import Path; import sys; Path('started').touch(); "
-            "print('first'); print('warning', file=sys.stderr)",
+            "from pathlib import Path; import sys; print('first', flush=True); "
+            "print('warning', file=sys.stderr, flush=True); Path('started').touch()",
         ])
-        spec.update(wait_for_observer=True, output_file=None)
+        spec["output_file"] = None
         if not named_stderr:
             spec["error_file"] = None
+        connection = _initial_connection(spec)
         task = asyncio.create_task(remote_process_worker._run(spec))
         try:
             with os.fdopen(rd, "rb") as pipe:
-                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
-            await asyncio.sleep(.1)
-            assert not marker.exists()
-            received = {"out": bytearray(), "err": bytearray()}
-            result = await asyncio.wait_for(follow_socket(
-                path, {"out": 0, "err": 0},
-                lambda kind, offset, data: received[kind].extend(data),
-            ), 5)
-            assert result["return_code"] == 0
+                assert await asyncio.to_thread(pipe.readline)
+
+            async def launched():
+                while not marker.exists():
+                    await asyncio.sleep(.01)
+
+            # No FOLLOW request, no reading from the socket, and no deadline
+            # in the production launch path. The program can already execute.
+            await asyncio.wait_for(launched(), 3)
+            reader, writer = await asyncio.open_unix_connection(sock=connection)
+            try:
+                received = {"out": bytearray(), "err": bytearray()}
+
+                async def collect():
+                    async for kind, offset, data in receive(reader):
+                        if kind == "terminal":
+                            return data
+                        assert offset == len(received[kind])
+                        received[kind].extend(data)
+
+                result = await asyncio.wait_for(collect(), 5)
+                assert result["return_code"] == 0
+                assert received == {"out": b"first\n", "err": b"warning\n"}
+            finally:
+                writer.close()
+                await writer.wait_closed()
             assert await asyncio.wait_for(task, 5) == 0
-            assert received == {"out": b"first\n", "err": b"warning\n"}
-            assert marker.exists()
         finally:
+            connection.close()
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -308,31 +332,26 @@ def test_detached_program_waits_for_first_observer_and_delivers_initial_bytes(tm
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("cancel", [False, True])
-def test_detached_start_barrier_has_bounded_wait_and_accepts_cancellation(tmp_path, monkeypatch, cancel):
+@pytest.mark.parametrize("detached", [False, True])
+def test_initial_observer_lost_before_supervisor_starts(tmp_path, monkeypatch, detached):
     async def check():
         captured = []
         monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append(args))
-        monkeypatch.setattr(remote_process_worker, "_OBSERVER_START_TIMEOUT", 5 if cancel else .05)
         rd, wr = os.pipe()
-        spec = _spec(tmp_path, wr, detached=True, argv=[
-            sys.executable, "-c", "from pathlib import Path; Path('started').touch()",
+        spec = _spec(tmp_path, wr, detached=detached, argv=[
+            sys.executable, "-c",
+            "import time; from pathlib import Path; time.sleep(.2); Path('completed').touch()",
         ])
-        spec.update(wait_for_observer=True, output_file=None, error_file=None)
+        spec.update(output_file=None, error_file=None)
+        connection = _initial_connection(spec)
+        connection.close()
         task = asyncio.create_task(remote_process_worker._run(spec))
         try:
             with os.fdopen(rd, "rb") as pipe:
-                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
-            if cancel:
-                reader, writer = await asyncio.open_unix_connection(path)
-                writer.write(b'{"command":"cancel"}\n')
-                await writer.drain()
-                assert b'"accepted":true' in await reader.readline()
-                writer.close()
-                await writer.wait_closed()
-            await asyncio.wait_for(task, 3)
-            assert (tmp_path / "started").exists() is not cancel
-            assert captured[0][1].value == ("cancelled" if cancel else "finished")
+                assert await asyncio.to_thread(pipe.readline)
+            await asyncio.wait_for(task, 5)
+            assert (tmp_path / "completed").exists() is detached
+            assert captured[0][1].value == ("finished" if detached else "cancelled")
         finally:
             if not task.done():
                 task.cancel()

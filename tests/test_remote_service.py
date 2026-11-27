@@ -380,48 +380,6 @@ def test_direct_follow_uses_shared_socket_protocol(tmp_path, monkeypatch):
     asyncio.run(exercise())
 
 
-def test_direct_follow_without_stream_files_is_live_only(tmp_path, monkeypatch):
-    import asyncio
-    import os
-    import sys
-
-    async def exercise():
-        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
-        rd, wr = os.pipe()
-        spec = {
-            "argv": [sys.executable, "-c", "print('live', flush=True)"],
-            "directory": str(tmp_path),
-            "output_file": None,
-            "error_file": None,
-            "receipt_id": "b" * 32,
-            "socket_fd": wr,
-            "detached": True,
-            "wait_for_observer": True,
-        }
-        worker = asyncio.create_task(remote_process_worker._run(spec))
-        with os.fdopen(rd, "rb") as source:
-            socket_path = (await asyncio.to_thread(source.readline)).decode().strip()
-        remote_id = encode_handle(
-            {
-                "kind": "kkrunner",
-                "socket_path": socket_path,
-                "identity": process_operations.ProcessIdentity.read(os.getpid()).to_dict(),
-                "receipt_id": "b" * 32,
-            }
-        )
-        out, err = (io.BytesIO(), io.BytesIO())
-        terminal = await asyncio.to_thread(
-            remote_service.follow_remote, remote_id, out, err, stdout_offset=0, stderr_offset=0
-        )
-        assert terminal["state"] == "finished"
-        assert out.getvalue() == b"live\n"
-        assert err.getvalue() == b""
-        assert await worker == 0
-        assert list(tmp_path.iterdir()) == []
-
-    asyncio.run(exercise())
-
-
 def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monkeypatch):
     """The PSI/J target must protect caches and clear stale outputs before submit."""
     from types import SimpleNamespace
@@ -897,3 +855,15 @@ def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, m
     monkeypatch.setattr(process_operations, "follow_socket", closed_socket)
     with pytest.raises(supervisor.SupervisorClosedBeforeFollow):
         remote_service.follow_remote(remote_id, io.BytesIO(), io.BytesIO(), stdout_offset=offset)
+
+
+def test_standalone_supervisor_submit_rejects_attached_without_observer(tmp_path):
+    import sys
+    from kkrunner.backends.contracts import SubmissionNotStarted
+
+    with pytest.raises(SubmissionNotStarted, match="requires an initial observer"):
+        process_operations.SupervisedBackend.submit({
+            "argv": [sys.executable, "-c", "raise AssertionError('must not launch')"],
+            "directory": str(tmp_path),
+            "detached": False,
+        })

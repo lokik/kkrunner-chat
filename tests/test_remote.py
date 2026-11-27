@@ -682,11 +682,11 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
     executor = ExecutionClient(SupervisedBackend, target=_OperationLoopbackTransport())
     runner = executor.create_run(spec, persistent=False)
 
-    def fail_after_preparation(_request):
+    async def fail_after_preparation(_request, **_kwargs):
         raise OSError("backend submission uncertain")
 
     # Submission now belongs to the selected backend, not ExecutionClient.
-    monkeypatch.setattr(SupervisedBackend, "submit", staticmethod(fail_after_preparation))
+    monkeypatch.setattr(SupervisedBackend, "submit_and_follow", staticmethod(fail_after_preparation))
     if preflight:
         runner._file_session.prepare_submission()
     with pytest.raises(OSError, match="backend submission uncertain"):

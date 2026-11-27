@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ from kkrunner.backends.implementations.supervised.streams import (
     SupervisorClosedBeforeFollow,
     SupervisorConnectionError,
     follow_socket,
+    receive,
 )
 from kkrunner.backends.implementations.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.backends.support.messages import (
@@ -55,7 +57,7 @@ class SupervisedBackend(Backend, ManagedOperations):
     default_detached = True
     def __init__(self, **options):
         super().__init__(**options)
-        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER, BackendCapability.CANCEL})
+        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER, BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW})
 
     @staticmethod
     def acknowledge_submission(run_id: str) -> AcknowledgeReply:
@@ -63,138 +65,30 @@ class SupervisedBackend(Backend, ManagedOperations):
 
     @staticmethod
     def submit(request: ExecutionRequest) -> SubmissionReply:
-        """Submit one process job, preserving the atomic release barrier."""
-        if os.name != "posix":
-            raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
-        from kkrunner.backends.support.process import prepare_mpi
+        """Launch a detached calculation without an initial observer."""
+        return _submit(request)
 
-        # Everything here happens before launching a supervisor. A failed local
-        # filesystem setup proves that submission never started, unlike a lost
-        # reply after Popen.
+    @staticmethod
+    async def submit_and_follow(request, *, stdout, stderr, started, control=None):
+        """Launch with an inherited FOLLOW connection; no later attach is needed."""
         try:
-            SupervisedBackend(**dict(request.get("backend_options") or {}))
-            request = normalize_request(request)
-            prepared = prepare_mpi(request)
-            if prepared["warning"] is not None:
-                warnings.warn(prepared["warning"], MpiNotFoundWarning, stacklevel=2)
-            execution = prepared["request"]
-            directory = Path(request["directory"])
-            directory.mkdir(parents=True, exist_ok=True)
-
-            output_path = request["output_file"]
-            error_path = request["error_file"]
-            for path in (output_path, error_path):
-                if path is not None:
-                    Path(path).parent.mkdir(parents=True, exist_ok=True)
-            prepare_target_outputs(request)
-        except Exception as exc:
-            # Pre-launch validation and filesystem failures are known non-submissions.
-            raise SubmissionNotStarted(str(exc)) from exc
-
-        run_id = str(request.get("submission_key") or uuid4().hex)
-        receipt_id = uuid4().hex
-        socket_dir = None
-        process = None
-        published = False
-        start_fd = release_fd = socket_read_fd = socket_write_fd = None
-        try:
-            # IPC creation belongs inside the launch cleanup boundary.
-            socket_dir = tempfile.mkdtemp(prefix="kkrunner-follow-")
-            socket_path = os.path.join(socket_dir, "socket")
-            worker_spec = {
-                "argv": execution["argv"],
-                "directory": os.fspath(directory),
-                "stdin": execution["stdin"],
-                "output_file": output_path,
-                "error_file": error_path,
-                "receipt_id": receipt_id,
-                "socket_dir": socket_dir,
-                "detached": request["detached"],
-                "wait_for_observer": request["wait_for_observer"] and (output_path is None or error_path is None),
-            }
-            env = os.environ.copy()
-            env["KKRunner_RUN_ID"] = run_id
-
-            start_fd, release_fd = os.pipe()
-            socket_read_fd, socket_write_fd = os.pipe()
-            worker_spec["socket_fd"] = socket_write_fd
-            env[_SPEC_ENV] = json.dumps(worker_spec, separators=(",", ":"))
-            env[_START_FD_ENV] = str(start_fd)
+            client, supervisor = socket.socketpair()
+        except OSError as exc:
+            return dict(status_reply(RunState.FAILED, failure_phase=FailurePhase.SUBMISSION,
+                                     error=str(exc)), remote_id=None)
+        with client, supervisor:
             try:
-                process = subprocess.Popen(
-                    [sys.executable, "-m", "kkrunner.backends.implementations.supervised.worker"],
-                    cwd=directory,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=env,
-                    start_new_session=True,
-                    close_fds=True,
-                    pass_fds=(start_fd, socket_write_fd),
-                )
-            finally:
-                # Close write ends before awaiting the supervisor handshake.
-                if start_fd is not None:
-                    fd, start_fd = start_fd, None
-                    os.close(fd)
-                if socket_write_fd is not None:
-                    fd, socket_write_fd = socket_write_fd, None
-                    os.close(fd)
-
-            identity = ProcessIdentity.read(process.pid)
-            if identity is None:
-                raise SubmissionNotStarted("Unable to verify the started remote process identity")
-            remote_id = encode_handle(
-                {
-                    "kind": "kkrunner",
-                    "identity": identity.to_dict(),
-                    "receipt_id": receipt_id,
-                    "socket_path": socket_path,
-                }
-            )
-
-            # Durable identity precedes releasing the supervisor. Until this
-            # receipt is safely stored, the child cannot launch a calculation.
-            if request.get("detached"):
-                mailbox.publish_submission(run_id, {
-                    "remote_id": remote_id,
-                    "directory": os.fspath(directory),
-                    "output_file": output_path,
-                    "error_file": error_path,
-                })
-                published = True
-
-            os.write(release_fd, b"1")
-            with os.fdopen(socket_read_fd, "rb", closefd=True) as ready:
-                socket_read_fd = None
-                observed_path = ready.readline().decode("utf8").rstrip("\n")
-            if observed_path != socket_path:
-                raise RuntimeError("Remote supervisor did not create its follow socket")
-        except BaseException as exc:
-            if not published and process is not None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            if not published and socket_dir is not None:
-                shutil.rmtree(socket_dir, ignore_errors=True)
-            if isinstance(exc, OSError) and not published:
-                raise SubmissionNotStarted(str(exc)) from exc
-            raise
-        finally:
-            for cleanup_fd in (start_fd, release_fd, socket_read_fd, socket_write_fd):
-                if cleanup_fd is not None:
-                    os.close(cleanup_fd)
-
-        reply: SubmissionReply = {
-            **status_reply(RunState.RUNNING),
-            "remote_id": remote_id,
-            "directory": os.fspath(directory),
-            "input_file": request["input_file"],
-            "output_file": output_path,
-            "error_file": error_path,
-        }
-        return reply
+                # The launch handshake is bounded by the lifetime of the child
+                # pipe, not by a deadline. The supervisor already owns a socket
+                # endpoint before the program can begin.
+                reply = _submit(request, initial_follower=supervisor)
+            except SubmissionNotStarted as exc:
+                return dict(status_reply(RunState.FAILED, failure_phase=FailurePhase.SUBMISSION,
+                                         error=str(exc)), remote_id=None)
+            notification = started(reply)
+            if inspect.isawaitable(notification):
+                await notification
+            return await _observe_initial(client, reply["remote_id"], stdout, stderr, control)
 
     @staticmethod
     def status(remote_id: str) -> StatusReply:
@@ -346,3 +240,203 @@ class SupervisedBackend(Backend, ManagedOperations):
     async def follow_framed(job_ref: str, **options):
         from kkrunner.remote.stream import follow_framed
         return await follow_framed(SupervisedBackend.follow, job_ref, **options)
+
+
+def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionReply:
+    """Submit one process job, preserving the atomic release barrier."""
+    if os.name != "posix":
+        raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
+    from kkrunner.backends.support.process import prepare_mpi
+
+    # Everything here happens before launching a supervisor. A failed local
+    # filesystem setup proves that submission never started, unlike a lost
+    # reply after Popen.
+    try:
+        SupervisedBackend(**dict(request.get("backend_options") or {}))
+        request = normalize_request(request)
+        if not request["detached"] and initial_follower is None:
+            raise ValueError("Attached supervisor requires an initial observer")
+        prepared = prepare_mpi(request)
+        if prepared["warning"] is not None:
+            warnings.warn(prepared["warning"], MpiNotFoundWarning, stacklevel=2)
+        execution = prepared["request"]
+        directory = Path(request["directory"])
+        directory.mkdir(parents=True, exist_ok=True)
+
+        output_path = request["output_file"]
+        error_path = request["error_file"]
+        for path in (output_path, error_path):
+            if path is not None:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+        prepare_target_outputs(request)
+    except Exception as exc:
+        # Pre-launch validation and filesystem failures are known non-submissions.
+        raise SubmissionNotStarted(str(exc)) from exc
+
+    run_id = str(request.get("submission_key") or uuid4().hex)
+    receipt_id = uuid4().hex
+    socket_dir = None
+    process = None
+    published = False
+    start_fd = release_fd = socket_read_fd = socket_write_fd = None
+    try:
+        # IPC creation belongs inside the launch cleanup boundary.
+        socket_dir = tempfile.mkdtemp(prefix="kkrunner-follow-")
+        socket_path = os.path.join(socket_dir, "socket")
+        worker_spec = {
+            "argv": execution["argv"],
+            "directory": os.fspath(directory),
+            "stdin": execution["stdin"],
+            "output_file": output_path,
+            "error_file": error_path,
+            "receipt_id": receipt_id,
+            "socket_dir": socket_dir,
+            "detached": request["detached"],
+        }
+        if initial_follower is not None:
+            worker_spec["initial_follower_fd"] = initial_follower.fileno()
+        env = os.environ.copy()
+        env["KKRunner_RUN_ID"] = run_id
+
+        start_fd, release_fd = os.pipe()
+        socket_read_fd, socket_write_fd = os.pipe()
+        worker_spec["socket_fd"] = socket_write_fd
+        env[_SPEC_ENV] = json.dumps(worker_spec, separators=(",", ":"))
+        env[_START_FD_ENV] = str(start_fd)
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "kkrunner.backends.implementations.supervised.worker"],
+                cwd=directory,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+                close_fds=True,
+                pass_fds=(start_fd, socket_write_fd) + (() if initial_follower is None else (initial_follower.fileno(),)),
+            )
+        finally:
+            # Close the inherited descriptors in the launching process.
+            if initial_follower is not None:
+                initial_follower.close()
+            # Close write ends before awaiting the supervisor handshake.
+            if start_fd is not None:
+                fd, start_fd = start_fd, None
+                os.close(fd)
+            if socket_write_fd is not None:
+                fd, socket_write_fd = socket_write_fd, None
+                os.close(fd)
+
+        identity = ProcessIdentity.read(process.pid)
+        if identity is None:
+            raise SubmissionNotStarted("Unable to verify the started remote process identity")
+        remote_id = encode_handle(
+            {
+                "kind": "kkrunner",
+                "identity": identity.to_dict(),
+                "receipt_id": receipt_id,
+                "socket_path": socket_path,
+            }
+        )
+
+        # Durable identity precedes releasing the supervisor. Until this
+        # receipt is safely stored, the child cannot launch a calculation.
+        if request.get("detached"):
+            mailbox.publish_submission(run_id, {
+                "remote_id": remote_id,
+                "directory": os.fspath(directory),
+                "output_file": output_path,
+                "error_file": error_path,
+            })
+            published = True
+
+        os.write(release_fd, b"1")
+        with os.fdopen(socket_read_fd, "rb", closefd=True) as ready:
+            socket_read_fd = None
+            observed_path = ready.readline().decode("utf8").rstrip("\n")
+        if observed_path != socket_path:
+            raise RuntimeError("Remote supervisor did not create its follow socket")
+    except BaseException as exc:
+        if not published and process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not published and socket_dir is not None:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+        if isinstance(exc, OSError) and not published:
+            raise SubmissionNotStarted(str(exc)) from exc
+        raise
+    finally:
+        for cleanup_fd in (start_fd, release_fd, socket_read_fd, socket_write_fd):
+            if cleanup_fd is not None:
+                os.close(cleanup_fd)
+
+    reply: SubmissionReply = {
+        **status_reply(RunState.RUNNING),
+        "remote_id": remote_id,
+        "directory": os.fspath(directory),
+        "input_file": request["input_file"],
+        "output_file": output_path,
+        "error_file": error_path,
+    }
+    return reply
+
+
+async def _observe_initial(connection, remote_id, stdout, stderr, control):
+    """Relay the preconnected supervisor stream using the ordinary call protocol."""
+    reader, writer = await asyncio.open_unix_connection(sock=connection)
+    streams = {"out": stdout, "err": stderr}
+    offsets = {"out": 0, "err": 0}
+    control_transport = None
+    tasks = []
+    try:
+        if control is None:
+            control = asyncio.StreamReader()
+            protocol = asyncio.StreamReaderProtocol(control)
+            pipe = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
+            try:
+                control_transport, _ = await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, pipe)
+            except BaseException:
+                pipe.close()
+                raise
+
+        async def relay():
+            async for kind, offset, data in receive(reader):
+                if kind == "terminal":
+                    return data
+                if offset != offsets[kind]:
+                    raise ValueError("Supervisor FOLLOW offset mismatch")
+                offsets[kind] += len(data)
+                result = streams[kind].write(data)
+                if inspect.isawaitable(result):
+                    await result
+                streams[kind].flush()
+            raise ConnectionError("Supervisor ended without terminal outcome")
+
+        async def read_control():
+            while line := await control.readline():
+                if line.strip() != b"cancel":
+                    raise ValueError("Unknown execution control command")
+                await asyncio.to_thread(SupervisedBackend.cancel, remote_id)
+
+        observation = asyncio.create_task(relay())
+        control_task = asyncio.create_task(read_control())
+        tasks = [observation, control_task]
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        if observation in done:
+            return observation.result()
+        control_task.result()
+        # EOF releases the observation connection, not the independent job.
+        return status_reply(RunState.UNKNOWN, error="Observation disconnected")
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if control_transport is not None:
+            control_transport.close()
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass

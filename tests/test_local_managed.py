@@ -192,16 +192,10 @@ def test_failed_execution_replaces_stale_stdout(tmp_path):
 
 
 def test_none_stream_paths_are_live_only(tmp_path, monkeypatch):
-    import asyncio
+    async def unexpected_follow(self, *args, **kwargs):
+        pytest.fail("New supervised submission must not need a separate FOLLOW call")
 
-    follow = LocalTarget.follow
-
-    async def delayed_follow(self, *args, **kwargs):
-        await asyncio.sleep(.2)
-        assert not (tmp_path / "started").exists()
-        return await follow(self, *args, **kwargs)
-
-    monkeypatch.setattr(LocalTarget, "follow", delayed_follow)
+    monkeypatch.setattr(LocalTarget, "follow", unexpected_follow)
     spec = _spec(tmp_path, (sys.executable, "-c",
                 "from pathlib import Path; Path('started').touch(); print('output')"),
                 out=None, err=None)
@@ -496,3 +490,15 @@ def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_
     asyncio.run(job._monitor())
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
+
+def test_initial_supervised_named_streams_are_not_delivered_twice(tmp_path):
+    spec = _spec(tmp_path, (sys.executable, "-c",
+                           "import sys; print('out'); print('err', file=sys.stderr)"))
+    runner = _managed_job(spec)
+    seen = {"out": [], "err": []}
+    runner.add_output_listener(lambda text, kind: seen[kind].append(text))
+    runner.submit()
+    assert runner.wait().return_code == 0
+    assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {"out": "out\n", "err": "err\n"}
+    assert (tmp_path / "out.txt").read_text() == "out\n"
+    assert (tmp_path / "err.txt").read_text() == "err\n"

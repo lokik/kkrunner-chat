@@ -18,7 +18,8 @@ MANAGED_OPERATIONS = {"submit", "status", "cancel", "recover", "follow",
 
 @pytest.mark.parametrize("kind", ("kkrunner", "psij"))
 def test_managed_backend_exposes_static_operations(kind):
-    assert set(static_methods(backend_class(kind))) == MANAGED_OPERATIONS
+    expected = MANAGED_OPERATIONS | ({"submit_and_follow"} if kind == "kkrunner" else set())
+    assert set(static_methods(backend_class(kind))) == expected
 
 
 @pytest.mark.parametrize("kind", ("kkrunner", "psij"))
@@ -29,7 +30,8 @@ def test_backend_imports_in_fresh_interpreter(kind):
               "print(json.dumps(sorted(k for k,v in vars(cls).items() if isinstance(v,staticmethod))))\n")
     result = subprocess.run([sys.executable, "-c", script, backend.__module__, backend.__name__],
                             check=True, capture_output=True, text=True)
-    assert set(json.loads(result.stdout)) == MANAGED_OPERATIONS
+    expected = MANAGED_OPERATIONS | ({"submit_and_follow"} if kind == "kkrunner" else set())
+    assert set(json.loads(result.stdout)) == expected
 
 
 def test_direct_backend_exposes_its_own_operations():

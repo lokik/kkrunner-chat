@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 
@@ -15,7 +16,6 @@ from kkrunner.execution import FailurePhase, RunState
 _SPEC_ENV = "KKRunner_REMOTE_PROCESS_SPEC"
 _START_FD_ENV = "KKRunner_REMOTE_PROCESS_START_FD"
 _LAUNCH_FAILURE_RETURN_CODE = 127
-_OBSERVER_START_TIMEOUT = 30
 
 
 def _exception_message(exc):
@@ -49,22 +49,23 @@ async def _run(spec):
     opened = []
     process = None
     streams_started = False
+    initial_socket = None
     try:
         try:
+            if "initial_follower_fd" in spec:
+                initial_socket = socket.socket(fileno=spec["initial_follower_fd"])
+            elif not streams.detached:
+                raise ValueError("Attached supervisor requires an initial observer")
             await streams.start()
             streams_started = True
+            if initial_socket is not None:
+                await streams.attach_initial(initial_socket)
+                initial_socket = None  # The asyncio stream now owns the socket.
             os.write(int(spec["socket_fd"]), (streams.socket_path + "\n").encode())
         finally:
             # Closing the handshake FD also wakes a waiting parent when the
             # supervisor cannot create its FOLLOW socket.
             os.close(int(spec["socket_fd"]))
-        if not streams.detached or spec.get("wait_for_observer", False):
-            connected = await streams.wait_for_observer(_OBSERVER_START_TIMEOUT)
-            if not connected and not streams.detached and not streams.cancelled.is_set():
-                message = "Client never connected to attached supervisor"
-                return return_code
-            # A detached submission must still launch when its original client
-            # disappears before FOLLOW. Late observers can request future bytes.
         if streams.cancelled.is_set() or (not streams.detached and streams.disconnected.is_set()):
             state, phase, return_code = RunState.CANCELLED, None, -signal.SIGTERM
             return return_code
@@ -136,6 +137,8 @@ async def _run(spec):
             await stop_local_process(process, process_group=True, timeout=1.0)
         return_code = process.returncode if process is not None else 127
     finally:
+        if initial_socket is not None:
+            initial_socket.close()
         for f in opened:
             try:
                 f.close()

@@ -40,11 +40,11 @@ class LocalTarget(Target):
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
         from .call import LocalCall
-        files, stdin = ({}, None) if local_io is None else local_io(request.get("detached", False))
+        files, stdin = (None, None) if local_io is None else local_io(request.get("detached", False))
         paths = {
             kind: path for kind, path in (("out", request.get("output_file")), ("err", request.get("error_file")))
             if path is not None
-        } if request.get("detached") else {}
+        } if operation.backend.execution_mode == "direct" and request.get("detached") else {}
         return LocalCall(
             getattr(operation.backend, operation.method), request, on_output,
             files=files, stdin=stdin if use_stdin else None, tail_paths=paths,

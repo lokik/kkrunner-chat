@@ -32,6 +32,7 @@ class BackendCapability(str, Enum):
     RECOVER = "recover"
     STATUS = "status"
     CANCEL = "cancel"
+    SUBMIT_AND_FOLLOW = "submit_and_follow"
 
 
 class SubmissionNotStarted(RuntimeError):
@@ -229,6 +230,8 @@ class ManagedOperations(Protocol):
     submit returns an opaque identity. status/cancel/follow return native
     facts. Cancelling follow closes only its observer, while cancel requests
     calculation termination. recover never starts a second calculation.
+    SUBMIT_AND_FOLLOW additionally declares a streaming submission operation
+    with the same acceptance and output hooks as a direct execution call.
     """
 
     @staticmethod

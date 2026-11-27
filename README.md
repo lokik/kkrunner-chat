@@ -70,9 +70,11 @@ print(Path(outcome.output_file).read_text())
 `attach()` reconnects to an existing nonterminal run, without submitting the
 command again. If a record is already terminal, inspect it with
 `manager.store.get("RUN_ID")` instead. Named output files allow output to be
-replayed after disconnection. To detach an active observer without cancelling
-the calculation, use `job.stop_observation()`; `job.cancel()` requests
-cancellation instead.
+replayed after disconnection. The initial observer is connected before the
+supervisor starts the command; output listeners registered before `submit()`
+receive the initial live output without a separate attach request. To detach
+an active observer without cancelling the calculation, use
+`job.stop_observation()`; `job.cancel()` requests cancellation instead.
 
 The supervisor and PSI/J backends enable persistence and detached execution
 by default. The direct backend does not provide the same durable reconnect

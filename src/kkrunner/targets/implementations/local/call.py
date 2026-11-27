@@ -16,9 +16,10 @@ class LocalCall(_Call):
         self._start(self._invoke(function, request, on_output, files, stdin, tail_paths))
 
     async def _invoke(self, function, request, on_output, files, stdin, tail_paths):
+        io = {} if files is None else {"files": files, "stdin": stdin}
         running = asyncio.create_task(function(
             request, stdout=OutputSink(on_output, "out"), stderr=OutputSink(on_output, "err"),
-            control=self._control, started=self._started, files=files, stdin=stdin,
+            control=self._control, started=self._started, **io,
         ))
         tasks = [running]
         if tail_paths:

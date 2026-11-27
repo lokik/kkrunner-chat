@@ -297,12 +297,18 @@ SSH-direct transfers these independent native functions as source when no
 KKRunner is installed on the target.
 
 ``RunParts`` owns the transfer-resource handoff to the Run completion observer,
-including failed attachment cleanup. Supervised execution retains an independent supervisor for receipts and
-recovery. Local FOLLOW awaits the existing socket coroutine directly. SSH
-starts a Python observer that calls the same backend FOLLOW and forwards
-framed bytes. Cancelling observation closes only that follower; cancelling
-the calculation requires the separate backend ``cancel`` operation. PSI/J
-observation uses native status callbacks and releases them on detach.
+including failed attachment cleanup. Supervised execution retains an independent
+supervisor for receipts and recovery. A new supervised Job uses
+``submit_and_follow``: the launching operation creates a socketpair and passes
+one endpoint to the supervisor. The initial follower is installed before the
+program starts, without waiting for a later connection. The submission receipt
+is still persisted before releasing the supervisor. Local and SSH clients use
+the same streaming-call contract for acceptance, output and terminal facts.
+Later attachment uses the named FOLLOW socket. Cancelling observation closes
+only the follower; a detached calculation continues. The separate backend
+``cancel`` operation terminates the calculation. Standalone ``submit`` starts a
+detached calculation without an observer. PSI/J observation uses native status
+callbacks and releases them on detach.
 
 Runtime ownership and immutable declarations
 --------------------------------------------

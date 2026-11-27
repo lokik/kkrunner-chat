@@ -193,15 +193,11 @@ def test_ssh_supervised_observer_attaches_before_live_only_program_launch(tmp_pa
     remote_root.mkdir()
     marker = remote_root / "calculation" / "started"
 
-    class DelayedObserver(_DiagnosticTransport):
+    class NoSecondObserver(_DiagnosticTransport):
         async def follow(self, operation, identity, on_output, **options):
-            # Leave time for the very short command to complete without the
-            # start barrier. The SSH FOLLOW uses the ordinary framed transport.
-            await asyncio.sleep(.2)
-            assert not marker.exists()
-            return await super().follow(operation, identity, on_output, **options)
+            pytest.fail("New supervised submission must not open another SSH FOLLOW")
 
-    client = ExecutionClient(SupervisedBackend, target=DelayedObserver())
+    client = ExecutionClient(SupervisedBackend, target=NoSecondObserver())
     spec = ExecutionSpec(
         argv=(sys.executable, "-c",
               "from pathlib import Path; import sys; Path('started').touch(); "
@@ -217,3 +213,19 @@ def test_ssh_supervised_observer_attaches_before_live_only_program_launch(tmp_pa
         "out": "first\n", "err": "warning\n",
     }
     assert marker.exists()
+
+
+def test_ssh_supervised_preflight_failure_reports_no_submission(tmp_path, monkeypatch):
+    from kkrunner.backends.contracts import SubmissionNotStarted
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "backend-state"))
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    client = ExecutionClient(SupervisedBackend, target=_DiagnosticTransport())
+    run = client.create_run(ExecutionSpec(
+        [str(remote / "missing-executable")],
+        directory=local, staging=StagingSpec(local_root=local, remote_root=remote),
+    ), persistent=False)
+    with pytest.raises(SubmissionNotStarted, match="Executable not found"):
+        run.submit()
+    assert run.backend_id is None
