@@ -15,7 +15,7 @@ from kkrunner.backends.contracts import SubmissionNotStarted, job_status_from_fa
 from kkrunner.client.contracts import BackendExecution
 from kkrunner.runs.base import (
     FailurePhase, OutputObservers, RunState,
-    dispatch_cancellation, finish_monitor, start_monitor, wait_for_monitor,
+    dispatch_cancellation, finish_monitor, wait_for_monitor,
 )
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
@@ -160,11 +160,9 @@ class Job:
             if self._state != RunState.NEW or self._request is None:
                 raise RuntimeError("Job is not prepared for submission")
             self._state = RunState.SUBMITTING
-            self._thread = Thread(target=self._thread_main, daemon=True)
             try:
-                self._thread.start()
+                self._start_thread()
             except Exception as exc:
-                self._thread = None
                 self._state = RunState.FAILED
                 self._failure_phase = FailurePhase.SUBMISSION
                 self._failure_message = str(exc)
@@ -307,7 +305,18 @@ class Job:
     def start(self):
         if self._thread is None and self.ref is None:
             return self.submit()
-        return start_monitor(self)
+        with self._lock:
+            if self._thread is not None:
+                return
+            self._start_thread()
+
+    def _start_thread(self):
+        self._thread = Thread(target=self._thread_main, daemon=True)
+        try:
+            self._thread.start()
+        except BaseException:
+            self._thread = None
+            raise
 
     def wait(self):
         if self._state == RunState.CANCELLED and self._thread is None:
