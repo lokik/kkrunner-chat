@@ -13,81 +13,229 @@ kkrunner --help
 Run these commands from the KKRunner checkout in a virtual environment.
 Use `python -m pip install --editable .` instead when editing the source.
 
-## Quick start
+## 1. Run a command locally
 
 ```python
 import sys
-import kkrunner
+from kkrunner import run
 
-result = kkrunner.run([sys.executable, "-c", "print(42)"])
-assert result.return_code == 0
+outcome = run([sys.executable, "-c", "print(42)"])
+print(outcome.return_code)  # 0
 ```
 
-Choose the target and backend independently:
+By default, the command runs directly on the local machine. `run()` waits
+for completion and displays unredirected output. Pass an argument list (or
+a single executable name); shell expansion is not performed.
 
-```python
-kkrunner.run("program", target="user@cluster", mpi=8)
-kkrunner.run("program", target="user@cluster", backend="psij",
-             output_file="stdout.txt")
-```
+To save stdout and stderr instead of displaying them, pass
+`output_file="stdout.txt"` and `error_file="stderr.txt"`.
 
-A string target is an SSH address; omit it for local execution. The direct
-backend is the default in either case. To prepare a run without submitting it,
-use `Run.create(command, target=..., backend=...)` or reuse a configured
-`ExecutionClient` with `client.create_run(command)`. Both accept an
-`ExecutionSpec` instead of a command for file declarations and staging.
-The blocking convenience displays unredirected live output. Supervised
-execution synchronizes the initial observer with launch when a stream is
-not saved. Named output files are needed for replay after disconnect and
-for capturing scheduler-owned or detached direct streams.
+## 2. Start a command and reconnect from another shell
 
-Before local or SSH process backends launch a process, they check the selected
-serial or MPI executable on the execution host using its working directory and
-`PATH`. Missing programs and files without execute permission produce explicit
-launch errors instead of relying on MPI's diagnostics. PSI/J does not apply
-this preflight on the submission host, because its filesystem and environment
-can differ from those of the compute nodes.
+Use the built-in supervisor (`backend="kkrunner"`) when a calculation must
+outlive the Python client. It runs independently and retains completion status.
 
-## Persistent execution
-
-A `RunManager` records runs in a `RunStore` so a later client can reconnect.
-Projects are optional; see the [project guide](docs/projects.rst) for grouping.
+In the first shell, start Python and execute:
 
 ```python
 import sys
-from pathlib import Path
-from kkrunner import ExecutionSpec, ExecutionClient, RunManager, RunStore
+from kkrunner import ExecutionSpec, Run
 
-root = Path('example').absolute()
-root.mkdir(exist_ok=True)
-manager = RunManager(RunStore(root / 'runs'))
-run = ExecutionClient("kkrunner").create_run(
-    ExecutionSpec([sys.executable, '-c', 'print(42)'],
-                  directory=root, output_file='stdout.txt'), persistent=manager,
-    metadata={'example': {'label': 'answer'}},
+job = Run.create(
+    ExecutionSpec(
+        [sys.executable, "-u", "-c",
+         "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
+        output_file="supervised.out",
+        error_file="supervised.err",
+    ),
+    backend="kkrunner",
+    persistent=True,
 )
-outcome = run.run()
-assert manager.store.get(run.id).state.value == 'finished'
+job.submit()  # start without waiting for completion
+print(job.id)
 ```
 
-`manager.attach(run_id)` resumes monitoring and required transfers. A result
-callback is optional; when supplied it receives an `ExecutionOutcome` and may
-return any Python object. To defer processing, create a run with
-`processing_required=True`, then supply `process_result=` on a later attach.
-Without that callback the durable state remains `postprocessing` and `wait()`
-raises `ProcessingPending`. The same exception tells an application observer
-that another client owns/already performed processing; load the historical
-application result instead of treating a raw outcome as a parsed result.
+Exit Python (e.g. Ctrl-D). The calculation continues. Copy the printed run ID
+and, in a different shell on the same machine and under the same user account,
+start Python again:
 
-`manager.retry_postprocessing(run_id, callback)` retries failed/interrupted
-processing against the captured files without submitting another process.
-`manager.resume_download(run_id)` reopens a failed download before attach.
-`run.stop_observation()` detaches observation without cancelling the backend;
-`run.cancel()` requests backend cancellation. Untracked raw local runs have no
-restart/reconnect guarantee; managed local runs use the same supervisor as SSH.
+```python
+from pathlib import Path
+from kkrunner import RunManager
 
-See the [documentation guide](docs/index.rst) and [architecture](docs/architecture.md)
-for usage, ownership, recovery and format rules.
+manager = RunManager.get_default()
+job = manager.attach("RUN_ID")  # replace with the printed ID
+outcome = job.wait()
+print(outcome.return_code)
+print(Path(outcome.output_file).read_text())
+```
+
+`attach()` reconnects to an existing nonterminal run, without submitting the
+command again. If a record is already terminal, inspect it with
+`manager.store.get("RUN_ID")` instead. Named output files allow output to be
+replayed after disconnection. To detach an active observer without cancelling
+the calculation, use `job.stop_observation()`; `job.cancel()` requests
+cancellation instead.
+
+The supervisor and PSI/J backends enable persistence and detached execution
+by default. The direct backend does not provide the same durable reconnect
+and exit-status guarantees, even when its process is detached. Keep the
+supervisor's state, the run store and the working files available.
+
+## 3. Run a command on another machine
+
+Select an SSH target independently of the execution backend:
+
+```python
+from pathlib import Path
+from kkrunner import run
+
+run("hostname", target="user@cluster", directory=Path.home())
+```
+
+Replace `user@cluster` with an accessible SSH host. The direct backend only
+needs Python on the target, not a KKRunner installation. By default, paths
+under the local home directory map to the corresponding paths under the remote
+home directory.
+
+To upload input files and retrieve output files from a different working
+directory, specify a file mapping:
+
+```python
+from pathlib import Path
+from kkrunner import StagingSpec, run
+
+work = Path("ssh-example").resolve()
+work.mkdir(exist_ok=True)
+(work / "input.txt").write_text("hello from the client\n")
+
+outcome = run(
+    ["cat", "input.txt"],
+    target="user@cluster",
+    directory=work,
+    staging=StagingSpec(local_root=work, remote_root="kkrunner-example"),
+    input_files=["input.txt"],
+    output_file="output.txt",
+)
+print((work / "output.txt").read_text())
+```
+
+The remote root is relative to the remote home directory (an absolute path
+can also be used). KKRunner uploads declared inputs and retrieves declared
+outputs; additional result files can be listed in `output_files`.
+Add `backend="kkrunner"` for remote supervised execution. That backend
+requires KKRunner in the target Python environment.
+
+## 4. Submit a job using PSI/J
+
+Install the optional scheduler dependency in the execution environment:
+
+```sh
+python -m pip install '.[psij]'
+```
+
+On a host with a configured Slurm scheduler:
+
+```python
+from kkrunner import PsijBackend, run
+
+outcome = run(
+    ["python3", "-c", "print(42)"],
+    backend=PsijBackend(executor_name="slurm"),
+    output_file="slurm.out",
+    error_file="slurm.err",
+)
+print(outcome.return_code)
+```
+
+The backend submits to the scheduler and waits for the job and its output.
+`backend="psij"` is shorthand for the default Slurm configuration.
+Add `target="user@cluster"` to submit via SSH; KKRunner, PSI/J and access to
+the scheduler must then be available on the target. For MPI programs, pass
+`mpi=8` (or the required process count). Use `Run.create(...)` and
+`submit()` instead of the blocking convenience to monitor the job separately.
+
+## 5. Persist runs and group them in projects
+
+Persistence records a stable run ID, backend identity, file manifest and
+lifecycle state in a `RunStore`. Use `persistent=True` for the default user
+store, or pass `persistent=RunManager(RunStore("/path/to/runs"))` to choose
+a different store. Persistence does not require a project.
+
+Projects group runs under a persistent project ID. Create a project once:
+
+```python
+from pathlib import Path
+from kkrunner import ProjectRepository
+
+projects = ProjectRepository()
+work = Path("project-example").resolve()
+work.mkdir(exist_ok=True)
+project = projects.create("Example", directory=work)
+print(project.id)
+```
+
+Use that project's ID for subsequent calculations, including from another
+Python session:
+
+```python
+import sys
+from kkrunner import ExecutionSpec, ProjectRepository, ProjectRunManager, Run
+
+projects = ProjectRepository()
+project_id = "PROJECT_ID"  # replace with the ID printed above
+project = projects.project(project_id)
+manager = ProjectRunManager(project_repository=projects, project=project_id)
+
+job = Run.create(
+    ExecutionSpec(
+        [sys.executable, "-u", "-c",
+         "import time; exec('for i in range(60):\\n print(i); time.sleep(1)')"],
+        directory=project.directory,
+        output_file="project.out",
+        error_file="project.err",
+    ),
+    backend="kkrunner",
+    persistent=manager,
+)
+job.submit()
+print("Run ID:", job.id)
+print("Run store:", manager.store.directory)
+```
+
+The project's ID is recorded in `manager.store.get(job.id).project_id`.
+All projects in this repository share a run store. The manager can reconnect
+to an existing run via `manager.attach(run_id)`, just as in section 2.
+
+## 6. Follow a saved run from the command line
+
+Use the **run ID**, not the project ID or scheduler job ID, and the run store
+directory printed above. In another shell:
+
+```sh
+kkrunner --store /path/to/runs status RUN_ID
+kkrunner --store /path/to/runs follow RUN_ID --from-start
+```
+
+Without `--from-start`, `follow` displays only newly arriving output.
+Use `status` to inspect execution state and `cancel RUN_ID` in place of
+`status RUN_ID` to request cancellation. Following output is observation
+only; it does not take over client-side downloads or result processing.
+For an SSH run, the saved record supplies the target and backend; there is
+no need to pass the hostname again.
+
+## Further usage
+
+Reuse an `ExecutionClient(target="user@cluster")` for repeated commands:
+`client.run(command)` waits for completion, while
+`client.create_run(ExecutionSpec(...))` prepares a run for separate
+submission and monitoring.
+
+See the [user guide](docs/index.rst) for
+[execution backends](docs/backends.rst), [remote execution](docs/remote.rst),
+[file staging](docs/files.rst), [persistent runs and recovery](docs/persistent-runs.rst),
+[projects](docs/projects.rst), and the [command-line interface](docs/command-line.rst).
+The [architecture guide](docs/architecture.md) describes the internal design.
 
 ## Development and distribution
 
