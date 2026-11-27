@@ -65,3 +65,17 @@ def test_late_uncaptured_manifest_cannot_destroy_historical_snapshot(tmp_path):
     assert late.files == completed.files
     assert late.files.output_versions == completed.files.output_versions
     assert manager.store.get(running.id).files == completed.files
+
+
+def test_late_progress_cannot_publish_exit_code_before_completion(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    running = manager.transition(_record(manager, tmp_path), state=RunState.RUNNING)
+    finished = manager.transition(running, state=RunState.FINISHED)
+    assert finished.return_code is None
+
+    progress = manager.transition(running, state=RunState.DOWNLOADING, return_code=7)
+    assert progress == finished
+
+    completed = manager.transition(running, state=RunState.FAILED, return_code=7)
+    assert completed.state == RunState.FAILED
+    assert completed.return_code == 7

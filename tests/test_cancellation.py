@@ -35,6 +35,7 @@ class _ControlledExecution:
         self.release = Event()
         self.cancelled = Event()
         self.cancel_calls = 0
+        self.observation_calls = 0
 
     def configure_detached(self, detached):
         pass
@@ -52,6 +53,7 @@ class _ControlledExecution:
         return JobStatus(RunState.QUEUED)
 
     async def observe(self, on_output):
+        self.observation_calls += 1
         if not await asyncio.to_thread(self.cancelled.wait, 5):
             raise TimeoutError("test did not cancel job")
         return JobStatus(RunState.CANCELLED)
@@ -118,7 +120,7 @@ def test_cancel_during_submit_is_dispatched_after_submission():
     assert future.result(timeout=5) is None
     job.wait()
     assert job.state is RunState.CANCELLED
-    job.cancel()
+    assert job.cancel() is future
     assert execution.cancel_calls == 1
 
 
@@ -133,3 +135,28 @@ def test_cancel_started_run_does_not_close_owned_resources_before_monitor_finish
     assert not resources.closed
     assert not resource.closed
     assert execution.cancel_calls == 1
+
+
+def test_attached_job_can_start_after_thread_creation_failure(monkeypatch):
+    job, execution = _controlled_job(already_running=True)
+
+    def fail(_thread):
+        raise RuntimeError("cannot start thread")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Thread, "start", fail)
+        with pytest.raises(RuntimeError, match="cannot start thread"):
+            job.start()
+        assert not job.observing
+
+    job.start()
+    try:
+        job.start()
+        future = job.cancel()
+        future.result(timeout=5)
+        assert job.cancel() is future
+        assert job.wait().state == RunState.CANCELLED
+        assert execution.observation_calls == 1
+        assert execution.cancel_calls == 1
+    finally:
+        execution.cancelled.set()

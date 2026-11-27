@@ -275,13 +275,17 @@ def test_remote_input_file_policies(tmp_path, policy, local_value, remote_value,
 
 
 @pytest.mark.parametrize("direction", ("input", "output"))
-def test_remote_never_policy_ignores_missing_declared_file(tmp_path, direction):
+@pytest.mark.parametrize("kind", ("file", "directory"))
+def test_remote_never_policy_ignores_missing_declared_file(tmp_path, direction, kind):
+    from kkrunner import TaskFile
+
     transport = _SpyTransport()
     missing = tmp_path / "local" / "calculation" / "missing.dat"
+    declaration = TaskFile(missing, kind=kind)
     kwargs = (
-        {"declared_input_files": (missing,), "input_files": "never"}
+        {"declared_input_files": (declaration,), "input_files": "never"}
         if direction == "input"
-        else {"declared_output_files": (missing,), "output_files": "never"}
+        else {"declared_output_files": (declaration,), "output_files": "never"}
     )
     executor, spec, _, remote_root = _text_run(tmp_path, transport, code="print('done')", **kwargs)
     if direction == "input":

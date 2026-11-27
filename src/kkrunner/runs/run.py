@@ -19,6 +19,8 @@ from kkrunner.runs.base import (
     wait_for_monitor,
 )
 from kkrunner.runs.processing import ProcessingPending
+from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, project_run_state
+from kkrunner.runs.stores import resolve_record, store_for
 
 
 class Run:
@@ -207,10 +209,10 @@ class Run:
 
     @property
     def failure_phase(self):
-        from kkrunner.runs.manager import _failure_phase
         if self._record is not None and self._record.state.is_terminal:
             return self._record.failure_phase
-        return _failure_phase(self._failure_phase or self._job.failure_phase)
+        phase = self._failure_phase or self._job.failure_phase
+        return None if phase is None else FailurePhase(phase)
 
     @property
     def failure_message(self):
@@ -236,7 +238,6 @@ class Run:
             # The native job has ended, but client finalization is not published.
             current = RunState.DOWNLOADING
         else:
-            from kkrunner.runs.states import project_run_state
             current = project_run_state(
                 self._job.state, files_pending=self._started,
                 processing_pending=self._process_result is not None,
@@ -274,6 +275,11 @@ class Run:
             self.result = outcome
             if raw_state.is_terminal:
                 self._state = RunState.DOWNLOADING
+                if self.manager is not None:
+                    with self._completion_lock:
+                        self._record = self.manager.transition(
+                            self._record, state=self._state, return_code=self.return_code,
+                        )
                 try:
                     if (
                         raw_state == RunState.FINISHED and self._job.return_code == 0
@@ -288,8 +294,8 @@ class Run:
                     # FileSession finalizes and closes its streams before processing.
                     self._file_session.finalize(self._job.status())
                 except Exception as exc:
+                    self._file_session.mark_transfer_failed(str(exc))
                     if raw_state == RunState.FINISHED:
-                        self._file_session.mark_transfer_failed(str(exc))
                         self._exception = exc
                         self._state = RunState.FAILED
                         self._failure_phase = self._file_failure_phase()
@@ -422,7 +428,7 @@ class Run:
             self._started = False
             raise
 
-    def _observed_submission_state(self):
+    def _observed_job_state(self):
         """Persist execution progress, never a premature client completion.
 
         A backend can finish between submit()/start() and the Run monitor
@@ -432,7 +438,7 @@ class Run:
         """
         state = self._job.state
         if state.is_terminal:
-            return RunState.RUNNING
+            return RunState.DOWNLOADING
         return state
 
     def _close_files_after_failed_submission(self):
@@ -530,12 +536,12 @@ class Run:
                     # before the completion monitor can claim its resources.
                     raise RuntimeError("Backend submit returned without a job identity")
 
-                # Commit accepted identity before giving a monitor ownership
-                # of streams. Receipt ACK is only safe after that commit.
+                # Commit accepted identity and observed state before giving
+                # the completion monitor ownership. ACK follows this commit.
                 self._record = manager.transition(
-                    self._record,
-                    execution=self.execution,
-                    files=self.files,
+                    self._record, state=self._observed_job_state(),
+                    execution=self.execution, files=self.files,
+                    failure_phase=self.failure_phase,
                 )
                 self._monitor_record_version = self._record.updated_at
             self._start_completion()
@@ -582,17 +588,6 @@ class Run:
             raise
 
         if manager is not None:
-            with self._completion_lock:
-                if not self._completion_persisted:
-
-                    self._record = manager.transition(
-                        self._record,
-                        state=self._observed_submission_state(),
-                        execution=self.execution,
-                        failure_phase=self.failure_phase,
-                        files=self.files,
-                    )
-                    self._monitor_record_version = self._record.updated_at
             manager._acknowledge_submission(self._record, client=self.client)
 
     def _claim_observation(self):
@@ -639,7 +634,7 @@ class Run:
         if self.manager is None:
             return
         with self._completion_lock:
-            state = self._observed_submission_state()
+            state = self._observed_job_state()
             if not self._completion_persisted and self.backend_id is not None and state != RunState.NEW:
                 self._record = self.manager.transition(
                     self._record, state=state, execution=self.execution,
@@ -666,7 +661,7 @@ class Run:
         # A durable record must remain recoverable even if the client dies
         # between resource release and publication. Only ephemeral execution
         # may delete its working files at this boundary.
-        preserve = (manager._store_for(record).durable
+        preserve = (store_for(record, manager.store).durable
                     or fields["failure_phase"] in (FailurePhase.DOWNLOAD, FailurePhase.POSTPROCESSING))
         cleanup_error = None
         try:
@@ -681,11 +676,9 @@ class Run:
     def _sync_completion(self):
         if self.manager is None:
             return
-        from kkrunner.runs.manager import _NO_ARTIFACTS_FAILURES
         with self._completion_lock:
             if self._completion_persisted:
                 return
-            from kkrunner.runs.stores import resolve_record
             latest = resolve_record(self._record, self.manager.store)
             if latest.state.is_terminal and not (
                 latest.state == RunState.FINISHED and latest.return_code is None
@@ -713,7 +706,7 @@ class Run:
                     latest, state=self._state, execution=self.execution,
                     return_code=self.return_code, message=self.failure_message,
                     failure_phase=phase,
-                    artifacts_available=phase not in _NO_ARTIFACTS_FAILURES,
+                    artifacts_available=phase not in NO_ARTIFACTS_FAILURES,
                     files=self.files,
                 )
             except BaseException:
@@ -780,33 +773,20 @@ class Run:
         _close_distinct((self._parts, resources))
 
     def cancel(self):
-        try:
-            with self._lock:
-                result = self._job.cancel()
-                cancelled_before_submit = (
-                    not self._submitting and not self._started and not self._settled
-                    and self._job.state == RunState.CANCELLED
-                )
-                if cancelled_before_submit:
-                    self._state = RunState.CANCELLED
-                    self._exception = asyncio.CancelledError("Run was cancelled before submission")
-                    self._settled = True
+        with self._lock:
+            result = self._job.cancel()
+            cancelled_before_submit = (
+                not self._submitting and not self._started and not self._settled
+                and self._job.state == RunState.CANCELLED
+            )
             if cancelled_before_submit:
-                self._close_files_after_failed_submission()
-                self._release_resources(suppress_errors=True)
-            return result
-        finally:
-            # Cancellation during staging has no accepted execution yet.
-            # submit() owns its reservation until it records cancellation or
-            # starts the accepted job's completion monitor.
-            if self.manager is not None and self._started and self._record.state != RunState.NEW:
-                with self._completion_lock:
-                    if not self._completion_persisted:
-                        self._record = self.manager.transition(
-                            self._record, state=self._observed_submission_state(),
-                            execution=self.execution,
-                            failure_phase=self.failure_phase,
-                        )
+                self._state = RunState.CANCELLED
+                self._exception = asyncio.CancelledError("Run was cancelled before submission")
+                self._settled = True
+        if cancelled_before_submit:
+            self._close_files_after_failed_submission()
+            self._release_resources(suppress_errors=True)
+        return result
 
 
 __all__ = ["Run"]
