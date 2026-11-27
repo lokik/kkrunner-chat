@@ -244,3 +244,47 @@ def test_failed_status_query_does_not_replace_a_newer_observation(tmp_path, monk
     (refreshed,) = manager.refresh((record,))
     assert refreshed.state == RunState.RUNNING
     assert refreshed.message is None
+
+
+def test_refresh_uses_backend_identity_assigned_after_snapshot(tmp_path):
+    manager = _manager(tmp_path)
+    executor = _Executor()
+    manager.register_client(executor)
+    record = manager.new_record(
+        directory=tmp_path, target=executor.target, backend=executor.backend_config,
+    )
+    stale = manager.transition(record, state=RunState.SUBMITTING)
+    current = manager.transition(stale, state=RunState.QUEUED,
+                                 execution=stale.execution.submitted("native"))
+    refreshed, = manager.refresh((stale,))
+    assert refreshed.state == RunState.RUNNING
+    assert executor.status_calls == [(JobAttachment(current.execution, current.files),)]
+
+
+def test_refresh_uses_assigned_identity_without_preliminary_store_read(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    executor = _Executor()
+    manager.register_client(executor)
+    record = manager.new_record(
+        directory=tmp_path, target=executor.target, backend=executor.backend_config,
+        processing_required=True,
+    )
+    stale = manager.transition(record, state=RunState.RUNNING,
+                               execution=record.execution.submitted("native"))
+    current = manager.transition(stale, state=RunState.POSTPROCESSING, return_code=0)
+    status = executor.status
+    get = manager.store.get
+    reads = []
+
+    def read(run_id):
+        reads.append(run_id)
+        return get(run_id)
+
+    def query(*attachments):
+        assert not reads
+        return status(*attachments)
+
+    monkeypatch.setattr(manager.store, "get", read)
+    monkeypatch.setattr(executor, "status", query)
+    assert manager.refresh((stale,)) == (current,)
+    assert executor.status_calls == [(JobAttachment(stale.execution, stale.files),)]
