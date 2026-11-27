@@ -69,16 +69,8 @@ class FileSession:
                      and has_file_magic(entry.remote_path))
 
     @property
-    def _output_targets(self):
-        return self._targets("output")
-
-    @property
     def _cache_targets(self):
         return self._targets("cache")
-
-    @property
-    def _output_patterns(self):
-        return self._patterns("output")
 
     @property
     def _cache_patterns(self):

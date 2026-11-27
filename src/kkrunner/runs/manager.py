@@ -24,7 +24,8 @@ from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
-from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current, sync_result_files
+from kkrunner.files.availability import capture_result_files, file_is_current, sync_result_files
+from kkrunner.runs.files import RunFiles
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
@@ -728,17 +729,19 @@ class RunManager:
                     result_files, require_outputs=state == RunState.FINISHED and return_code == 0,
                 )
             except OSError as exc:
-                state = RunState.FAILED
-                phase = FailurePhase.ARTIFACTS
-                message = str(exc)
+                capture_error = str(exc)
+                if state in (RunState.FINISHED, RunState.POSTPROCESSING):
+                    state = RunState.FAILED
+                    phase = FailurePhase.ARTIFACTS
+                    message = capture_error
                 result_files = result_files._map_artifacts(
                     lambda item: (
                         replace(
                             item,
                             availability_state="failed",
-                            availability_message=message,
+                            availability_message=capture_error,
                         )
-                        if item.availability_state in (None, "pending")
+                        if item.availability_state in (None, "pending", "available")
                         else item
                     )
                 )

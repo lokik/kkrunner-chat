@@ -89,7 +89,9 @@ def test_backend_job_status_excludes_download_and_processing(tmp_path):
     job = _job(execution, tmp_path)
     _configure(job, tmp_path)
     job.submit()
-    assert job.wait().return_code == 0
+    result = job.wait()
+    assert isinstance(result, JobStatus)
+    assert result.return_code == 0
     assert job.ref == JobRef("kkrunner", "opaque-job")
     # status() is passive; refresh_status() explicitly invokes the backend.
     status = job.status()

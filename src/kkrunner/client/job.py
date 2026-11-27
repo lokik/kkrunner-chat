@@ -14,7 +14,7 @@ from threading import Event, Lock, Thread
 from kkrunner.backends.contracts import SubmissionNotStarted, job_status_from_facts
 from kkrunner.client.contracts import BackendExecution
 from kkrunner.runs.base import (
-    ExecutionOutcome, FailurePhase, OutputObservers, RunState,
+    FailurePhase, OutputObservers, RunState,
     dispatch_cancellation, finish_monitor, start_monitor, wait_for_monitor,
 )
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
@@ -47,12 +47,7 @@ class Job:
         self._stream_writer = None
         self._output_observers = OutputObservers(output_listener)
         self._output_error = None
-        from kkrunner.files.paths import file_path
-        self.result = ExecutionOutcome(
-            input_file=file_path(spec.input_file, spec.directory),
-            output_file=file_path(spec.output_file, spec.directory),
-            error_file=file_path(spec.error_file, spec.directory),
-        )
+        self._return_code = None
         self._apply_status(execution.snapshot)
 
     @property
@@ -79,7 +74,12 @@ class Job:
 
     @property
     def return_code(self):
-        return self.result.return_code
+        return self._return_code
+
+    @property
+    def result(self):
+        """The observed backend facts, not a client file result."""
+        return self.status()
 
     @property
     def failure_phase(self):
@@ -105,7 +105,7 @@ class Job:
 
     def _apply_status(self, status):
         self._state = status.state
-        self.result.return_code = status.return_code
+        self._return_code = status.return_code
         phase = status.failure_phase
         self._failure_phase = None if phase is None else FailurePhase(phase.value)
         self._failure_message = status.message

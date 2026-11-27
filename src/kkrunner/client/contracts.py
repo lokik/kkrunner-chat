@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Callable, Optional, Protocol
 if TYPE_CHECKING:
     from kkrunner.backends.contracts import JobRef, JobStatus
     from kkrunner.files.manifest import FileManifest
-    from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
+    from kkrunner.runs.base import ExecutionSpec
     from kkrunner.runs.model import ExecutionMetadata
 
 
@@ -112,6 +112,6 @@ class JobProtocol(Protocol):
 
     def stop_observation(self) -> None: ...
 
-    def wait(self) -> ExecutionOutcome: ...
+    def wait(self) -> JobStatus: ...
 
     def cancel(self) -> None: ...
