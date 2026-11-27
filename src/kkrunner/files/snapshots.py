@@ -7,7 +7,7 @@ from pathlib import Path
 from kkrunner.files.staging import staged_local_file
 
 from kkrunner.files.manifest import FileEntry
-from kkrunner.files.paths import declaration_paths, file_path, has_file_magic, path_matches, paths_overlap
+from kkrunner.files.paths import declaration_paths, file_path, has_file_magic, path_matches, paths_overlap, relative_local_path
 
 
 def matching_file(manifest, path):
@@ -37,6 +37,8 @@ def snapshot_request(manifest, directory, file, destination):
     entry = matching_file(manifest, path)
     if entry is None:
         raise ValueError(f"File is not a declared output or cache: {path}")
+    if manifest.mapping is not None:
+        relative_local_path(path, manifest.mapping.local_root)
     if destination is not None:
         destination = check_destination(manifest, path, destination)
     return path, entry, destination

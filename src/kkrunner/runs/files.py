@@ -109,7 +109,7 @@ class RunFiles:
         record = resolve_record(run, self.store)
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has not been submitted")
-        if record.execution.directory.remote is not None and not record.files.shared_filesystem:
+        if not record.execution.target.is_local and not record.files.shared_filesystem:
             return self._client_for(record).snapshot_file(record, file, destination=destination)
 
         from kkrunner.files.snapshots import local_snapshot, snapshot_request
