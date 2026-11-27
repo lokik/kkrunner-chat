@@ -17,7 +17,7 @@ from kkrunner.files.manifest import (
     FileManifest,
     FileSyncPolicy,
 )
-from kkrunner.files.paths import file_path, has_file_magic
+from kkrunner.files.paths import file_path, has_file_magic, path_matches
 from kkrunner.files.queries import directory_digest, local_file_signature
 from kkrunner.files.streams import OutputStreams
 from kkrunner.files.versions import FileVersion, file_digest
@@ -295,10 +295,28 @@ class FileSession:
                          if cache.file.local_path is None} if kind == "cache" else {})
         excluded_local = set(excluded_local)
         transport = self.context.target
+        entries = (
+            (cache.file for cache in self._files.caches) if kind == "cache"
+            else (self._files.stdout, self._files.stderr, *self._files.outputs)
+        )
+        published = set()
+        for entry in entries:
+            if (entry is None or not entry.collect or entry.kind != "file"
+                    or entry.local_path is None or entry.remote_path is None
+                    or has_file_magic(entry.remote_path)):
+                continue
+            if self._published_locally(entry):
+                published.add(entry.remote_path)
+            elif entry.source_pattern is not None and entry.availability_state == "available":
+                # A missing local copy must be resolved again, not silently
+                # retained as available if the remote member has also gone.
+                self._set_file_availability(entry.local_path, "pending", kind=kind)
         for declaration in declarations:
             pattern = declaration.remote_path
             local_pattern = declaration.local_path
             mandatory = required and not declaration.optional
+            retained = {path for path in published if path_matches(path, pattern)
+                        and (kind != "output" or not self._files.output_excluded(path, remote=True))}
             pending = []
             downloads = []
             try:
@@ -312,7 +330,7 @@ class FileSession:
                 )
                 matches = [item for item in observed
                            if item["status"] == "ok" and item["type"] == "file"]
-                if not matches:
+                if not matches and not retained:
                     if mandatory:
                         raise FileNotFoundError(f"Declared remote {kind} pattern did not match any files: {pattern}")
                     self._set_file_availability(local_pattern, "skipped", kind=kind)
@@ -326,7 +344,7 @@ class FileSession:
                         continue
                     seen_remote.add(remote)
                     local = os.fspath(self.context._unmap_path(remote, remote_root))
-                    if local in excluded_local:
+                    if local in excluded_local or remote in retained:
                         continue
                     self._set_file_availability(
                         local, "pending", remote=remote, kind=kind, source_pattern=local_pattern,
@@ -356,8 +374,10 @@ class FileSession:
                 for local in pending:
                     self._set_file_availability(local, "available", kind=kind)
                 matched_paths = {item["path"] for item in matches}
-                available = any(entry.remote_path in matched_paths and entry.availability_state == "available"
-                                for entry in self._files.artifacts)
+                available = bool(retained) or any(
+                    entry.remote_path in matched_paths and entry.availability_state == "available"
+                    for entry in self._files.artifacts
+                )
                 self._set_file_availability(local_pattern, "available" if available else "skipped", kind=kind)
             except Exception as exc:
                 for local in pending:
