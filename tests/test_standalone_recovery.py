@@ -94,7 +94,8 @@ def test_corrupt_record_is_not_hidden_during_enumeration(tmp_path):
         manager.store.runs()
 
 
-def test_processing_claim_excludes_other_clients(tmp_path):
+@pytest.mark.parametrize("by_id", [False, True])
+def test_processing_claim_excludes_other_clients(tmp_path, monkeypatch, by_id):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store)
     record = pending(manager, tmp_path)
@@ -111,8 +112,13 @@ def test_processing_claim_excludes_other_clients(tmp_path):
     assert entered.wait(5)
     try:
         other = RunManager(RunStore(store.directory))
-        with pytest.raises(ProcessingPending):
-            other.retry_postprocessing(record.id, lambda outcome: pytest.fail("duplicate callback"))
+        with monkeypatch.context() as patch:
+            if not by_id:
+                patch.setattr(record.store, "get",
+                              lambda _: pytest.fail("An owned bound record needs no preliminary read"))
+            with pytest.raises(ProcessingPending):
+                other.retry_postprocessing(record.id if by_id else record,
+                                           lambda outcome: pytest.fail("duplicate callback"))
     finally:
         release.set()
         thread.join(5)
