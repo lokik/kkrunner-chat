@@ -86,7 +86,7 @@ required result processing. Detaching observation does not release it.
 
 Coordination applies to runs in the same ``RunStore``, even when different
 manager instances or projects use that store. ``ProjectRunManager`` uses
-the same mechanism. Untracked ``persistent=False`` calls and separate stores do
+the same mechanism. Untracked ``tracked=False`` calls and separate stores do
 not coordinate these reservations.
 
 Two active runs may read the same file. A write conflicts with another run's

@@ -59,7 +59,7 @@ def test_direct_remote_stages_runs_streams_and_downloads_without_agent(tmp_path)
         output_files=(str(directory / "answer.dat"),),
         staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, persistent=False)
+    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, tracked=False)
     assert run.spec is spec
     observed = []
     run.add_output_listener(lambda data, kind: observed.append((kind, data)))
@@ -99,7 +99,7 @@ def test_direct_ssh_cancellation_stops_remote_process(tmp_path):
         output_file=str(local / "stdout.txt"),
         staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, persistent=False)
+    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, tracked=False)
     ready = Event()
     run.add_output_listener(lambda data, kind: ready.set() if "ready" in data else None)
     run.submit()
@@ -144,7 +144,7 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
         error_file=str(root / "combined.log"),
         staging=StagingSpec(local_root=str(root), remote_root=str(tmp_path / "remote")),
     )
-    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, persistent=False)
+    run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, tracked=False)
     with pytest.raises(Exception, match="distinct output files"):
         run.submit()
     assert not (root / "combined.log").exists()
@@ -212,7 +212,7 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
 
 def test_direct_local_cancel_after_termination_does_not_relabel_success(tmp_path):
     run = ExecutionClient(DirectBackend).create_run(
-        ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path)), persistent=False,
+        ExecutionSpec(argv=(sys.executable, "-c", "print('finished')"), directory=str(tmp_path)), tracked=False,
     )
     assert run.run().return_code == 0
     run.cancel()

@@ -116,7 +116,7 @@ def test_run_exposes_actual_detached_policy(tmp_path, detached):
     from kkrunner.client import ExecutionClient
     client = ExecutionClient()
     spec = ExecutionSpec(["unused"], directory=tmp_path)
-    run = client.create_run(spec, persistent=RunManager(MemoryRunStore()), detached=detached)
+    run = client.create_run(spec, tracked=RunManager(MemoryRunStore()), detached=detached)
     assert run.detached is detached
     assert run.record.detached is detached
     assert RunRecord(**run.record.to_dict()).detached is detached
@@ -220,7 +220,7 @@ def test_foreign_attach_observes_and_completes_in_own_store(tmp_path):
         directory=str(tmp_path), output_file=str(tmp_path / "out"),
     )
     disk.save(a.new_record(directory=tmp_path, run_id="same"))
-    run = ExecutionClient(DirectBackend).create_run(spec, persistent=b,
+    run = ExecutionClient(DirectBackend).create_run(spec, tracked=b,
                      detached=True, run_id="same")
     run.submit()
     try:

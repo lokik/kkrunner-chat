@@ -89,7 +89,7 @@ def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
         return outcome
 
     run = ExecutionClient(DirectBackend).create_run(
-        ExecutionSpec((sys.executable, "-c", "print('complete')"), directory=str(tmp_path)), persistent=False,
+        ExecutionSpec((sys.executable, "-c", "print('complete')"), directory=str(tmp_path)), tracked=False,
         process_result=process,
     )
     try:
@@ -104,7 +104,7 @@ def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
 
 def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable(tmp_path, monkeypatch):
     run = ExecutionClient(DirectBackend).create_run(
-        ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path)), persistent=False,
+        ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path)), tracked=False,
     )
 
     def fail_wait():

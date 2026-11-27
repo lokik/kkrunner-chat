@@ -23,14 +23,15 @@ No separate agent endpoint or persistent agent service is required.
        ["python3", "-c", "print(42)"], directory=directory, output_file="stdout.txt",
        staging=StagingSpec(local_root=directory, remote_root="/absolute/remote/work"),
    )
-   run = client.create_run(spec, persistent=manager)
+   run = client.create_run(spec, tracked=manager)
    run.run()
 
 For a one-shot command use ``ExecutionClient(DirectBackend, target=transport)``.
 For a scheduler use ``ExecutionClient(PsijBackend(executor_name="slurm"), target=transport)``.
-The client and file session stay the same. Direct local process identities use
-PID and start time, but direct execution currently offers no independent
-reattachment or authoritative exit status after losing its observer.
+The client and file session stay the same. Direct execution can reconnect to
+saved output by polling files, but cannot recover the original exit status
+once the submitting observer is lost. Declare separate stdout and stderr
+files to recover both output channels.
 
 Select the target Python environment on the transport:
 

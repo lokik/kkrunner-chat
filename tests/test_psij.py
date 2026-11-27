@@ -176,6 +176,10 @@ def test_submit_returns_native_identity_without_creating_client_monitor(monkeypa
     monkeypatch.setattr(operations, "_create_executor", lambda options: (PSIJ, executor))
     facts = PsijBackend.submit(request_at(tmp_path))
     assert len(executor.submitted) == 1
+    native = executor.submitted[0].spec
+    key = native.environment["KKRunner_RUN_ID"]
+    assert isinstance(key, str) and key
+    assert native.attributes.custom_attributes == {"slurm.comment": slurm.submission_marker(key)}
     assert decode_handle(facts["remote_id"])["native_id"] == "123"
     assert facts["state"] == "queued"
     assert facts["directory"] == str(tmp_path)

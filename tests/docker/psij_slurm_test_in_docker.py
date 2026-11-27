@@ -20,7 +20,7 @@ def main():
                 directory=work,
                 output_file=directory / "stdout.txt",
                 output_files=(directory / "result.txt",),
-            ), persistent=manager,
+            ), tracked=manager,
         )
         outcome = run.run()
         assert outcome.return_code == 0, (

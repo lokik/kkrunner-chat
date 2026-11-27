@@ -15,7 +15,7 @@ def test_direct_mode_never_switches_implicitly(tmp_path):
     assert isinstance(backend.create_run_parts(spec).job, Job)
     assert isinstance(backend.create_run_parts(spec, submission_key="run-id").job, Job)
     manager = RunManager(RunStore(tmp_path / "runs"))
-    assert backend.create_run(spec, persistent=manager).record is not None
+    assert backend.create_run(spec, tracked=manager).record is not None
 
 
 def test_supervised_mode_is_explicit_and_persistable(tmp_path):

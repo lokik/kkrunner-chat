@@ -94,7 +94,7 @@ class _Executor(ExecutionClient):
 
 def _run(manager, executor, directory, *, task="DOS", dataset="case"):
     return executor.create_run(
-        ExecutionSpec(argv=("unused",), directory=str(directory), output_file=str(directory / f"{dataset}.out")), persistent=manager,
+        ExecutionSpec(argv=("unused",), directory=str(directory), output_file=str(directory / f"{dataset}.out")), tracked=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": str(task).upper(), "dataset": dataset}},
     )

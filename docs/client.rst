@@ -17,7 +17,7 @@ It can serve multiple runs and composes their ``Job``, backend binding and
        PsijBackend(executor_name="slurm"),
        target=SshTarget("user@cluster"),
    )
-   run = local.create_run(ExecutionSpec(["python3", "-c", "print(42)"]), persistent=False)
+   run = local.create_run(ExecutionSpec(["python3", "-c", "print(42)"]), tracked=False)
    run.run()
 
 The transport owns local invocation versus SSH RPC, including streaming
@@ -71,9 +71,10 @@ to its record before RunManager reserves it; ExecutionClient never rewrites a
 RunRecord. Native status replies use one decoder before projection into client
 RunStatus values.
 
-``persistent=False`` selects absence of tracking, independently of backend.
-``Run.create(..., persistent=...)`` and ``client.create_run(..., persistent=...)`` selects tracking policy. The configured
-client supplies the default tracking policy; native backends do not own it.
+Tracking is opt-in for every backend: ``tracked=True`` uses the default
+RunManager, and ``tracked=manager`` selects a specific manager. The default
+``tracked=False`` creates no client run record. Backend identities and
+reattachment capabilities are independent of this choice.
 
 Execution intent and staging
 ----------------------------

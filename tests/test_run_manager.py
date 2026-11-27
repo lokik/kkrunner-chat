@@ -114,7 +114,7 @@ def test_submit_persists_submitting_before_backend_call(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
     run = executor.create_run(
-        _spec(tmp_path), persistent=manager,
+        _spec(tmp_path), tracked=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "ARPES", "dataset": "case"}},
     )
@@ -143,7 +143,7 @@ def test_completion_postprocesses_only_successful_execution(tmp_path, return_cod
     executor = _Executor()
     processed = []
     run = executor.create_run(
-        _spec(tmp_path), persistent=manager,
+        _spec(tmp_path), tracked=manager,
         process_result=lambda outcome: processed.append(outcome) or outcome,
         metadata={"test": {"task": "DOS"}},
     )
@@ -185,13 +185,13 @@ def test_duplicate_submission_is_blocked_by_persisted_namespace(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
     first = executor.create_run(
-        _spec(tmp_path), persistent=manager,
+        _spec(tmp_path), tracked=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )
     first.submit()
     second = executor.create_run(
-        _spec(tmp_path), persistent=manager,
+        _spec(tmp_path), tracked=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )

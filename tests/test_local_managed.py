@@ -214,6 +214,21 @@ def test_none_stream_paths_are_live_only(tmp_path, monkeypatch):
     assert attached.state == RunState.FINISHED
 
 
+def test_untracked_supervised_run_retains_backend_outcome_without_submission_ticket(tmp_path, monkeypatch):
+    state = tmp_path / "backend-state"
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(state))
+    from kkrunner import submit
+
+    job = submit(
+        [sys.executable, "-c", "print(42)"], backend="kkrunner",
+        directory=tmp_path, output_file="untracked.out",
+    )
+    assert job.id is None
+    assert job.wait().return_code == 0
+    assert not list((state / "remote-submissions").glob("*.json"))
+    assert SupervisedBackend.status(job.backend_id)["return_code"] == 0
+
+
 def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
     runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
@@ -387,7 +402,7 @@ print(42)
 '''
 run = submit(
     [sys.executable, '-c', command], directory=root, output_file='run.out',
-    backend='kkrunner', persistent=manager,
+    backend='kkrunner', tracked=manager,
 )
 print(run.id, flush=True)
 """

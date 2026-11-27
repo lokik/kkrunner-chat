@@ -6,8 +6,6 @@ import pytest
 
 from kkrunner.backends.implementations.psij.slurm import submission_marker
 from kkrunner.backends.implementations.psij.submission import prepare_job
-from kkrunner.client import ExecutionClient
-from kkrunner.backends import PsijBackend
 from kkrunner import ExecutionSpec
 from kkrunner.client.execution_request import execution_request
 
@@ -52,19 +50,3 @@ def test_project_job_carries_kkrunner_submission_identity(tmp_path, executor_nam
     else:
         assert job.spec.attributes is None
 
-
-def test_untracked_psij_submission_has_independent_recovery_key(tmp_path):
-    client = ExecutionClient(PsijBackend(executor_name="slurm"))
-    spec = ExecutionSpec(("program",), directory=str(tmp_path), output_file="run.out")
-    parts = client.create_run_parts(spec)
-    request = parts.submission_builder({"directory": str(tmp_path)})
-    submission_key = request["submission_key"]
-    assert isinstance(submission_key, str) and submission_key
-    job = prepare_job(
-        _FAKE_PSIJ, execution_request(spec), executor_name="slurm",
-        submission_key=submission_key,
-    )
-    assert job.spec.environment["KKRunner_RUN_ID"] == submission_key
-    assert job.spec.attributes.custom_attributes == {
-        "slurm.comment": submission_marker(submission_key),
-    }

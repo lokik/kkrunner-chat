@@ -24,17 +24,17 @@ def test_explicit_and_contextual_persistence(tmp_path):
     assert direct.create_run(spec).record is None
 
     manager = RunManager(RunStore(tmp_path / "records"))
-    tracked = direct.create_run(spec, persistent=manager)
+    tracked = direct.create_run(spec, tracked=manager)
     assert tracked.manager is manager
     assert tracked.record.execution.submission_key
     assert tracked.record.execution.backend_id is None
     with RunManager.as_default(manager):
         assert RunManager.get_default() is manager
-        assert direct.create_run(spec, persistent=True).manager is manager
+        assert direct.create_run(spec, tracked=True).manager is manager
     assert RunManager.get_default() is not manager
 
-    # A backend's natural recovery capability never forces persistent records.
-    untracked_supervised = ExecutionClient(SupervisedBackend).create_run(spec, persistent=False)
+    # A backend's natural recovery capability never forces tracked records.
+    untracked_supervised = ExecutionClient(SupervisedBackend).create_run(spec, tracked=False)
     assert untracked_supervised.record is None
     assert untracked_supervised._parts.submission_builder is not None
 
@@ -45,7 +45,7 @@ def test_tracked_direct_completes_without_recoverable_handle(tmp_path):
         directory=str(tmp_path), output_file="out.txt",
     )
     manager = RunManager(RunStore(tmp_path / "records"))
-    run = ExecutionClient(DirectBackend).create_run(spec, persistent=manager)
+    run = ExecutionClient(DirectBackend).create_run(spec, tracked=manager)
     assert run.run().return_code == 0
     assert run.state == RunState.FINISHED
     assert manager.store.get(run.id).state == RunState.FINISHED
@@ -155,20 +155,20 @@ def test_supervised_job_never_owns_client_manifest(tmp_path):
     assert not hasattr(job, "files")
 
 
-@pytest.mark.parametrize("persistent", [False, True])
-def test_single_submission_path_with_and_without_store(tmp_path, persistent):
+@pytest.mark.parametrize("tracked", [False, True])
+def test_single_submission_path_with_and_without_store(tmp_path, tracked):
     manager = RunManager(RunStore(tmp_path / "stored"))
     spec = ExecutionSpec(
         (sys.executable, "-c", "print('finished')"),
         output_file=str(tmp_path / "out.txt"),
         directory=str(tmp_path),
     )
-    run = ExecutionClient(DirectBackend).create_run(spec, persistent=manager if persistent else False)
+    run = ExecutionClient(DirectBackend).create_run(spec, tracked=manager if tracked else False)
     result = run.run()
     assert result.return_code == 0
     assert run.state == RunState.FINISHED
     assert (tmp_path / "out.txt").read_text() == "finished\n"
-    if persistent:
+    if tracked:
         assert manager.store.get(run.id).state == RunState.FINISHED
     else:
         assert run.id is None
@@ -205,7 +205,7 @@ def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
         directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
     )
     manager = RunManager(MemoryRunStore())
-    run = ExecutionClient(DirectBackend).create_run(spec, persistent=manager, detached=True)
+    run = ExecutionClient(DirectBackend).create_run(spec, tracked=manager, detached=True)
     run.submit()
     try:
         run.stop_observation()

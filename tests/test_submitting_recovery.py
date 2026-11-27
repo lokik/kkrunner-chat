@@ -89,7 +89,7 @@ class _RecoveringExecutor(ExecutionClient):
 def _run(manager, executor, tmp_path):
     return executor.create_run(
         ExecutionSpec(argv=("test-executable",), directory=str(tmp_path),
-                           output_file=str(tmp_path / "shared.out")), persistent=manager,
+                           output_file=str(tmp_path / "shared.out")), tracked=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )

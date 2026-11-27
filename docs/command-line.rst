@@ -18,8 +18,9 @@ Client commands
    kkrunner --store /path/to/runs follow RUN_ID --from-start
    kkrunner --store /path/to/runs cancel RUN_ID
 
-For a direct backend handle (which lacks the metadata, download state, and
-postprocessing ownership of a persisted run), explicitly use ``--remote-id``.
+To work with a backend handle directly (without the metadata, download state,
+and postprocessing ownership of a saved run), use ``--remote-id`` with
+``job.backend_id``.
 These commands run locally if ``--host`` is omitted, or send control requests
 over SSH when a host is supplied:
 
@@ -31,8 +32,8 @@ over SSH when a host is supplied:
    kkrunner --host user@cluster cancel --remote-id HANDLE
 
 A handle alone cannot identify a ``RunStore``, application result, or
-a stream file location. For scheduler handles, direct follow may require
-``--stdout-path`` and ``--stderr-path``. Run-ID operations use recorded
+a stream file location. For direct process or scheduler handles, following
+saved streams may require ``--stdout-path`` and ``--stderr-path``. Run-ID operations use recorded
 endpoint and stream paths instead.
 
 Agent protocol

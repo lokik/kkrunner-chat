@@ -56,8 +56,9 @@ available unredirected output, unless an explicit output listener is supplied.
    0
 
 Submission is separate from detachment: select ``backend="kkrunner"`` for
-a supervised run that survives client exit. With named output files and
-the default persistence enabled, use the returned ``job.id`` to reconnect.
+a supervised run that survives client exit. Set ``tracked=True`` to save
+a client run record; with named output files, use the returned ``job.id`` to
+reconnect through a RunManager.
 
 Prepare a Run
 --------------

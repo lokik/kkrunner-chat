@@ -65,7 +65,7 @@ def test_remote_request_carries_target_backend_options_and_mpi_intent(tmp_path):
     assert manifest.inputs
 
 
-def test_untracked_remote_request_has_its_own_submission_key(tmp_path):
+def test_untracked_remote_request_has_no_client_submission_key(tmp_path):
     root, remote_root = tmp_path / "local", tmp_path / "remote"
     directory = root / "work"
     directory.mkdir(parents=True)
@@ -77,7 +77,7 @@ def test_untracked_remote_request_has_its_own_submission_key(tmp_path):
     ))
     request, _manifest = asyncio.run(parts.files._prepare_async())
     complete = parts.submission_builder(request)
-    assert complete["submission_key"]
+    assert complete["submission_key"] is None
     assert complete["backend"] == "psij"
 
 

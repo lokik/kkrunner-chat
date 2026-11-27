@@ -178,7 +178,7 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
         error_file=workdir / "output.err",
         staging=StagingSpec(local_root=local_root, remote_root=remote_root),
     )
-    assert client.create_run(spec, persistent=False).run().return_code == 0
+    assert client.create_run(spec, tracked=False).run().return_code == 0
     assert (workdir / "output.txt").read_bytes() == b"stdout\n"
     assert (workdir / "output.err").read_bytes() == b"stderr\n"
     assert b"Permanently added" not in (workdir / "output.txt").read_bytes()
@@ -206,7 +206,7 @@ def test_ssh_supervised_observer_attaches_before_live_only_program_launch(tmp_pa
         staging=StagingSpec(local_root=local_root, remote_root=remote_root),
     )
     seen = {"out": [], "err": []}
-    run = client.create_run(spec, persistent=False,
+    run = client.create_run(spec, tracked=False,
                             output_listener=lambda text, kind: seen[kind].append(text))
     assert run.run().return_code == 0
     assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {
@@ -225,7 +225,7 @@ def test_ssh_supervised_preflight_failure_reports_no_submission(tmp_path, monkey
     run = client.create_run(ExecutionSpec(
         [str(remote / "missing-executable")],
         directory=local, staging=StagingSpec(local_root=local, remote_root=remote),
-    ), persistent=False)
+    ), tracked=False)
     with pytest.raises(SubmissionNotStarted, match="Executable not found"):
         run.submit()
     assert run.backend_id is None

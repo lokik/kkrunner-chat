@@ -27,7 +27,7 @@ records have separate stores.
        project=project,
    )
    run = ExecutionClient(SupervisedBackend).create_run(
-       ExecutionSpec([sys.executable, "-c", "pass"], directory=directory), persistent=manager,
+       ExecutionSpec([sys.executable, "-c", "pass"], directory=directory), tracked=manager,
    )
    print(run.run().return_code)
    print(manager.store.get(run.id).project_id == project.id)

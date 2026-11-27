@@ -71,7 +71,7 @@ persisted development records or a stable extension API.
 
 Applications using ``RunClient`` must migrate to ``ExecutionClient``. Configure
 transport and backend separately and use ``Run.create()`` or
-``Run.create(..., persistent=manager)`` for the full client lifecycle. Both ends of an SSH
+``Run.create(..., tracked=manager)`` for the full client lifecycle. Both ends of an SSH
 connection that uses installed helpers should run this beta.
 
 Docker SSH/Slurm integration remains opt-in; it requires a reachable container

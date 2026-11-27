@@ -113,7 +113,7 @@ them. See the application guide for its storage policy and temporary-file rules.
 
 For runs managed through the same RunStore, submission reserves declared file
 paths until the run reaches a terminal state. This applies with or without
-projects; untracked (`persistent=False`) executions do not take these reservations.
+projects; untracked (`tracked=False`) executions do not take these reservations.
 
 Before reservation the SSH client resolves absolute target paths without
 staging or opening outputs. Only after the complete footprint has been durably
@@ -318,8 +318,8 @@ before launch, so a failed launch cannot expose output from a previous run.
 
 ## Independent persistence, detachment and recovery
 
-`Run.create(spec, target=None, backend=None, persistent=None, detached=None)` selects client-side
-record storage and process lifetime independently. `persistent=True` uses
+`Run.create(spec, target=None, backend=None, tracked=False, detached=None)` selects client-side
+record storage and process lifetime independently. `tracked=True` uses
 `RunManager.get_default()`, while an explicit manager (including a project
 manager) controls where the record is stored. `RunManager.as_default(manager)`
 selects a scoped default without changing other contexts.
