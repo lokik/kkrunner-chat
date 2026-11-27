@@ -838,3 +838,33 @@ def test_history_write_failure_is_not_a_transfer_failure(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="history is read-only"):
         manager.retrieve_result_files(record)
     assert output.read_text() == "result"
+
+
+def test_restore_results_without_original_execution_backend(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.runs.manager import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    path = local / "result.dat"
+    source = remote / path.name
+    source.write_text("historical result")
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        backend=BackendConfig("removed-backend"),
+        files=FileManifest(
+            stdout=FileEntry(str(path), str(source)),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+                                execution=record.execution.submitted("historical"))
+    assert not record.execution.available
+    monkeypatch.setattr(manager.client_pool, "for_config",
+                        lambda *args: pytest.fail("File retrieval must not reconstruct a backend"))
+    restored = manager.retrieve_result_files(record)
+    assert path.read_text() == "historical result"
+    assert restored.files.stdout.availability_state == "available"

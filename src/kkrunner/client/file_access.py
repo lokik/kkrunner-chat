@@ -1,4 +1,4 @@
-"""Snapshots and retrieval of declared files through a client's file context."""
+"""Snapshots, retrieval and cleanup of declared files on a target."""
 
 import asyncio
 import glob
@@ -23,17 +23,19 @@ def _destination_path(path):
 
 
 class FileAccess:
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, target):
+        self.target = target
+
+    def _validate_target(self, run):
+        if run.execution.target != self.target:
+            raise ValueError("Run belongs to a different transport")
 
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
         file, entry, destination = snapshot_request(
             run.files, run.execution.directory.local, file, destination,
         )
-        if self.client.target.is_local or run.files.shared_filesystem:
-            return await asyncio.to_thread(local_snapshot, file, destination=destination)
-        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
+        context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
         if run.files.mapping is None:
             relative_local_path(file, context.local_root)
         root = await context._resolved_remote_root()
@@ -45,19 +47,27 @@ class FileAccess:
             raise ValueError(f"Remote snapshot path is outside mapped root: {remote}")
         # Also reject remote symlinks that escape the mapped filesystem root.
         # query_files checks real path containment without requiring a stable file.
-        observed = await self.client.target.query_files([normalized], root=root)
+        observed = await self.target.query_files([normalized], root=root)
         if not observed or observed[0]["status"] == "missing":
             raise FileNotFoundError(normalized)
         if observed[0]["type"] != "file":
             raise ValueError(f"Snapshot source is not a regular file: {normalized}")
-        return await self.client.target.snapshot_file(normalized, destination=destination)
+        return await self.target.snapshot_file(normalized, destination=destination)
 
     def snapshot_file(self, run, file, *, destination=None):
+        self._validate_target(run)
+        if self.target.is_local or run.files.shared_filesystem:
+            path, _, destination = snapshot_request(
+                run.files, run.execution.directory.local, file, destination,
+            )
+            return local_snapshot(path, destination=destination)
+        if not self.target.available:
+            raise ValueError("Unsupported transport; only local history is available")
         return _run_sync(self._snapshot_file(run, file, destination=destination))
 
     async def _resolve_result_files(self, run, files):
         """Read-only discovery: freeze the exact source and destination pairs."""
-        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
+        context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
         if not context.transfers_files:
             return ()  # No independent target copy exists.
         remote_root = await context._resolved_remote_root()
@@ -76,7 +86,7 @@ class FileAccess:
             if remote is None:
                 remote = context._map_path(local, remote_root)
             wildcard = glob.has_magic(remote)
-            for matched in await self.client.target.expand_files(remote, remote_root):
+            for matched in await self.target.expand_files(remote, remote_root):
                 destination = os.fspath(context._unmap_path(matched, remote_root)) if wildcard else local
                 if (entry is not None and entry in run.files.outputs and wildcard
                         and run.files.output_excluded(matched, remote=True)):
@@ -93,6 +103,7 @@ class FileAccess:
         return tuple(pairs.values())
 
     def resolve_result_files(self, run, files):
+        self._validate_target(run)
         return _run_sync(self._resolve_result_files(run, files))
 
     async def _download_result_files(self, entries, *, verify=None):
@@ -103,7 +114,7 @@ class FileAccess:
             if os.path.lexists(target):
                 continue
             try:
-                await self.client.target.get_file(
+                await self.target.get_file(
                     entry.remote_path, target,
                     verify=None if verify is None else partial(verify, target),
                     overwrite=False,
@@ -141,7 +152,8 @@ class FileAccess:
 
     async def _remote_cleanup(self, run, paths, *, expected=None):
         """Operate on declared remote files, including TAUDIR outside the run directory."""
-        if not self.client.target.transfers_files(shared_filesystem=run.files.shared_filesystem):
+        self._validate_target(run)
+        if not self.target.transfers_files(shared_filesystem=run.files.shared_filesystem):
             raise ValueError("Remote-file cleanup requires a separate target filesystem")
         entries = (
             *run.files.inputs, *run.files.outputs,
@@ -158,7 +170,7 @@ class FileAccess:
         paths = tuple(paths)
         if not set(paths).issubset(declared) or len(paths) != len(set(paths)):
             raise ValueError("Only distinct, declared remote manifest paths may be inspected or deleted")
-        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
+        context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
         # The manifest is the authority: execution.directory.target is not
         # necessarily the parent of all output files (e.g. TAUDIR under a
         # separate TAUPATH). The target still rejects symlinks, directories,
@@ -179,7 +191,7 @@ class FileAccess:
             for original_path, resolved_path in zip(paths, resolved)
         }
         replies = await asyncio.wait_for(
-            self.client.target.call(
+            self.target.call(
                 Operation.standalone(remote_file_cleanup),
                 resolved, expected=expected_resolved, kinds=kinds_resolved,
             ),

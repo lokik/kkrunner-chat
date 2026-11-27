@@ -273,7 +273,8 @@ def test_failed_launch_is_terminal_without_result_collection(tmp_path, monkeypat
     assert output.read_text() == "old output"
     assert not manager.output_file_is_current(saved)
     output.unlink()
-    monkeypatch.setattr(client, "resolve_result_files",
+    from kkrunner.client.file_access import FileAccess
+    monkeypatch.setattr(FileAccess, "resolve_result_files",
                         lambda *args: pytest.fail("No failed-launch output to restore"))
     assert manager.retrieve_result_files(saved) == saved
 

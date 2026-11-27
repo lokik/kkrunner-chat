@@ -13,23 +13,13 @@ from kkrunner.files.queries import checked_files, query_files
 from kkrunner.client.staging import StagingSpec
 
 
-async def query_remote_home(transport):
-    """Resolve the target's home using the same rules for SSH and agent."""
-    result = await transport.run(("sh", "-c", 'printf "%s" "$HOME"'))
-    home = result.stdout.decode("utf8").strip()
-    if not home or not posixpath.isabs(home):
-        raise RuntimeError("Could not determine absolute remote home directory")
-    return posixpath.normpath(home)
-
-
 class FileContext:
     """Per-run filesystem and synchronization policy."""
 
-    def __init__(self, client, staging):
+    def __init__(self, target, staging):
         if not isinstance(staging, StagingSpec):
             staging = StagingSpec(**dict(staging))
-        self.client = client
-        self.target = client.target
+        self.target = target
         self.filesystem_id = staging.filesystem_id
         self.shared_filesystem = staging.shared_filesystem
         self.transfers_files = self.target.transfers_files(shared_filesystem=self.shared_filesystem)
@@ -37,9 +27,6 @@ class FileContext:
         self.remote_root = None if staging.remote_root is None else os.fspath(staging.remote_root)
         self.input_files = FileSyncPolicy(staging.input_sync) if self.transfers_files else FileSyncPolicy.NEVER
         self.output_files = FileSyncPolicy(staging.output_sync) if self.transfers_files else FileSyncPolicy.NEVER
-
-    async def _remote_home(self):
-        return await self.client._remote_home()
 
     def _target_root(self, home):
         """Use the same root rules for a symbolic preview and a resolved path."""
@@ -61,7 +48,7 @@ class FileContext:
     async def _resolved_remote_root(self):
         if self.target.is_local or (self.remote_root is not None and posixpath.isabs(self.remote_root)):
             return self._target_root("~")
-        return self._target_root(await self._remote_home())
+        return self._target_root(await self.target.home_directory())
 
     def _map_path(self, path, remote_root):
         if self.target.is_local:
@@ -84,7 +71,7 @@ class FileContext:
             return os.path.abspath(path)
         path = os.fspath(path)
         if path == "~" or path.startswith("~/"):
-            home = await self._remote_home()
+            home = await self.target.home_directory()
             return home if path == "~" else posixpath.normpath(posixpath.join(home, path[2:]))
         return posixpath.normpath(path)
 

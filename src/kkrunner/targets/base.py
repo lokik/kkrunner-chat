@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
@@ -52,6 +53,16 @@ class Target:
 
     async def run(self, argv, *, cwd=None, input=None, check=True):
         raise NotImplementedError
+
+    async def home_directory(self):
+        """Return the absolute home directory on this target."""
+        if self.is_local:
+            return str(Path.home())
+        result = await self.run(("sh", "-c", 'printf "%s" "$HOME"'))
+        home = result.stdout.decode("utf8").strip()
+        if not home or not posixpath.isabs(home):
+            raise RuntimeError("Could not determine absolute remote home directory")
+        return posixpath.normpath(home)
 
     async def call(self, operation: Operation, *args, **kwargs):
         """Run one context-independent operation and return its JSON result."""

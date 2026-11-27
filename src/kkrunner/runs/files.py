@@ -1,8 +1,7 @@
 """File versions, snapshots and verified retrieval for tracked runs.
 
-RunFiles receives the authoritative RunStore and client pool explicitly.
+RunFiles receives the authoritative RunStore and uses each record's target.
 It updates file availability, while RunManager owns run lifecycle transitions.
-Manifest capture and local file checks are independent of either service.
 """
 
 from __future__ import annotations
@@ -11,6 +10,7 @@ import os
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from kkrunner.client.file_access import FileAccess
 from kkrunner.files.availability import file_is_current
 from kkrunner.files.manifest import ArtifactAvailabilityState
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
@@ -68,12 +68,8 @@ def _missing_result_files(result_files, *, include_outputs=True):
 class RunFiles:
     """File operations on tracked runs, independent of lifecycle orchestration."""
 
-    def __init__(self, *, store, client_pool):
+    def __init__(self, *, store):
         self.store = store
-        self.client_pool = client_pool
-
-    def _client_for(self, record):
-        return self.client_pool.for_config(record.execution.target, record.execution.backend)
 
     def input_file_is_current(self, run):
         record = resolve_record(run, self.store)
@@ -109,14 +105,7 @@ class RunFiles:
         record = resolve_record(run, self.store)
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has not been submitted")
-        if not record.execution.target.is_local and not record.files.shared_filesystem:
-            return self._client_for(record).snapshot_file(record, file, destination=destination)
-
-        from kkrunner.files.snapshots import local_snapshot, snapshot_request
-        path, _, destination = snapshot_request(
-            record.files, record.execution.directory.local, file, destination,
-        )
-        return local_snapshot(path, destination=destination)
+        return FileAccess(record.execution.target).snapshot_file(record, file, destination=destination)
 
     def retrieve_result_files(self, run, *, reserve):
         record = resolve_record(run, self.store)
@@ -125,7 +114,7 @@ class RunFiles:
 
         if not record.execution.target.transfers_files(shared_filesystem=record.files.shared_filesystem):
             return record  # There is no separate target copy to restore.
-        if record.execution.backend_id is None or not record.execution.available:
+        if record.execution.backend_id is None or not record.execution.target.available:
             return record
         missing = _missing_result_files(
             record.files, include_outputs=record.failure_phase not in NO_EXECUTION_FAILURES,
@@ -133,7 +122,7 @@ class RunFiles:
         if not missing:
             return record
 
-        client = self._client_for(record)
+        access = FileAccess(record.execution.target)
 
         versions = {os.path.abspath(os.fspath(version.path)): version
                     for version in record.files.all_versions}
@@ -154,7 +143,7 @@ class RunFiles:
         by_destination = {}
         for path in missing:
             try:
-                entries = client.resolve_result_files(record, (path,))
+                entries = access.resolve_result_files(record, (path,))
                 if not entries:
                     raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
                 for entry in entries:
@@ -180,7 +169,7 @@ class RunFiles:
                     def verify_entry(target, temporary):
                         verify(target if has_file_magic(path) else path, temporary)
 
-                    client.download_result_files(entries, verify=verify_entry)
+                    access.download_result_files(entries, verify=verify_entry)
                     if not all(os.path.isfile(entry.local_path) for entry in entries):
                         raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
                 except (OSError, RuntimeError) as exc:

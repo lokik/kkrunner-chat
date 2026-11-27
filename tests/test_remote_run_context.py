@@ -16,10 +16,9 @@ class _Transport:
 
 def test_run_context_is_staging_policy_not_executor(tmp_path):
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/a", input_sync="always", output_sync="missing")
+    context = FileContext(endpoint.target, StagingSpec(local_root=tmp_path, remote_root="/scratch/a", input_sync="always", output_sync="missing")
     )
     assert not hasattr(context, 'create_job')
-    assert context.client is endpoint
     assert context.target is endpoint.target
     assert context.local_root == tmp_path.resolve()
     assert context.remote_root == "/scratch/a"
@@ -27,11 +26,11 @@ def test_run_context_is_staging_policy_not_executor(tmp_path):
 
 def test_different_run_staging_policies_share_one_endpoint(tmp_path):
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    first = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/one"))
-    second = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/two"))
+    first = FileContext(endpoint.target, StagingSpec(local_root=tmp_path, remote_root="/scratch/one"))
+    second = FileContext(endpoint.target, StagingSpec(local_root=tmp_path, remote_root="/scratch/two"))
     assert first is not second
-    assert first.client is endpoint
-    assert second.client is endpoint
+    assert first.target is endpoint.target
+    assert second.target is endpoint.target
     assert first.remote_root == "/scratch/one"
     assert second.remote_root == "/scratch/two"
 
@@ -68,7 +67,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
         ),
     )
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=local, remote_root=remote))
+    context = FileContext(endpoint.target, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="test-manifest",
         state=RunState.RUNNING,
@@ -94,14 +93,14 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
 
 def test_absolute_remote_root_needs_no_remote_home_query(tmp_path, monkeypatch):
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root="/scratch/../work"))
+    context = FileContext(endpoint.target, StagingSpec(local_root=tmp_path, remote_root="/scratch/../work"))
     calls = []
 
-    async def remote_home():
+    async def remote_home(self):
         calls.append("home")
         raise AssertionError("Absolute remote roots must not query remote HOME")
 
-    monkeypatch.setattr(endpoint, "_remote_home", remote_home)
+    monkeypatch.setattr(SshTarget, "home_directory", remote_home)
     directory = tmp_path / "calculation"
     directory.mkdir()
     assert asyncio.run(context.map_path(directory)) == "/work/calculation"
@@ -122,16 +121,20 @@ def test_absolute_remote_root_needs_no_remote_home_query(tmp_path, monkeypatch):
 )
 def test_home_relative_remote_root_still_resolves_home_once(tmp_path, monkeypatch, root, expected):
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=tmp_path, remote_root=root))
+    context = FileContext(endpoint.target, StagingSpec(local_root=tmp_path, remote_root=root))
     calls = []
 
-    async def remote_home():
-        calls.append("home")
-        return "/home/user"
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(endpoint, "_remote_home", remote_home)
+    async def run(self, argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout=b"/home/user")
+
+    monkeypatch.setattr(SshTarget, "run", run)
     assert asyncio.run(context._resolved_remote_root()) == expected
-    assert calls == ["home"]
+    second = FileContext(endpoint.target, StagingSpec(local_root=tmp_path, remote_root=root))
+    assert asyncio.run(second._resolved_remote_root()) == expected
+    assert calls == [("sh", "-c", 'printf "%s" "$HOME"')]
 
 
 def test_attach_does_not_open_or_create_output_paths(tmp_path):
@@ -148,7 +151,7 @@ def test_attach_does_not_open_or_create_output_paths(tmp_path):
     stdout = local / "stdout.txt"
     stderr = local / "stderr.txt"
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=local, remote_root=remote))
+    context = FileContext(endpoint.target, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="stream-open-failure",
         state=RunState.RUNNING,
@@ -179,7 +182,7 @@ def test_unmap_rejects_symlink_parent_outside_local_root(tmp_path):
     outside.mkdir()
     (root / "redirect").symlink_to(outside, target_is_directory=True)
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=root, remote_root="/remote"))
+    context = FileContext(endpoint.target, StagingSpec(local_root=root, remote_root="/remote"))
     with pytest.raises(ValueError, match="outside mapped root"):
         asyncio.run(context.unmap_path("/remote/redirect/output.dat"))
 
@@ -190,5 +193,5 @@ def test_unmap_preserves_internal_symlink_spelling(tmp_path):
     actual.mkdir(parents=True)
     (root / "alias").symlink_to(actual, target_is_directory=True)
     endpoint = ExecutionClient(target=SshTarget("cluster"))
-    context = FileContext(endpoint, StagingSpec(local_root=root, remote_root="/remote"))
+    context = FileContext(endpoint.target, StagingSpec(local_root=root, remote_root="/remote"))
     assert asyncio.run(context.unmap_path("/remote/alias/output.dat")) == root / "alias" / "output.dat"

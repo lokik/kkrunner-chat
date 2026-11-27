@@ -227,3 +227,18 @@ def test_shared_snapshot_respects_mapped_root_for_both_apis(tmp_path):
     source.write_bytes(b"shared result")
     for snapshot in (manager.snapshot_file, client.snapshot_file):
         assert snapshot(run, "result.dat") == b"shared result"
+
+
+def test_snapshot_does_not_depend_on_execution_backend(tmp_path, monkeypatch):
+    manager, run, _, source_root = running_run(tmp_path, remote=True)
+    (source_root / "result.dat").write_bytes(b"partial output")
+    # File access uses only the target even when execution cannot be reopened.
+    historical = replace(run, execution=replace(run.execution, backend=BackendConfig("removed-backend")))
+    assert not historical.execution.available
+    other = RunManager(RunStore(tmp_path / "other"))
+    historical = other.store.save(historical)
+    monkeypatch.setattr(other.client_pool, "for_config",
+                        lambda *args: pytest.fail("Snapshots must not reconstruct a backend"))
+    assert other.snapshot_file(historical, "result.dat") == b"partial output"
+    client = ExecutionClient(target=historical.execution.target)
+    assert client.snapshot_file(historical, "result.dat") == b"partial output"

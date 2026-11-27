@@ -94,8 +94,9 @@ class SshTarget(Target):
             raise ValueError("SSH python_command must not be empty")
         if self.compression not in (None, "auto", "gz", "bz2", "xz", "zstd"):
             raise ValueError("Invalid SSH compression")
-        # Runtime cache, deliberately excluded from dataclass persistence/identity.
+        # Runtime caches, deliberately excluded from dataclass persistence/identity.
         object.__setattr__(self, "_compression_mode", None)
+        object.__setattr__(self, "_home_directory_cache", None)
         if type(self.pool_size) is not int or self.pool_size < 0 or self.pool_size > 64:
             raise ValueError("SSH pool_size must be between 0 and 64")
         if (type(self.pool_idle_seconds) not in (float, int)
@@ -107,6 +108,12 @@ class SshTarget(Target):
         from .sessions import close_pool
         close_pool(self)
         object.__setattr__(self, "_compression_mode", None)
+        object.__setattr__(self, "_home_directory_cache", None)
+
+    async def home_directory(self):
+        if self._home_directory_cache is None:
+            object.__setattr__(self, "_home_directory_cache", await super().home_directory())
+        return self._home_directory_cache
 
     async def _archive_compression(self):
         """Negotiate with the configured target Python, once per transport."""

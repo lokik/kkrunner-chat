@@ -28,7 +28,7 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
     client = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = client.create_run(spec, tracked=manager, metadata={"example": {"task": "DOS"}})
-    expected = asyncio.run(FileContext(client, spec.staging).map_manifest(FileManifest.from_spec(spec)))
+    expected = asyncio.run(FileContext(client.target, spec.staging).map_manifest(FileManifest.from_spec(spec)))
     target = str(remote / "local")
     request = {
         "argv": ["ignored"], "directory": target,
@@ -76,7 +76,7 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
     )
     local = FileManifest.from_spec(spec)
     client = ExecutionClient("kkrunner", target=SshTarget("cluster"))
-    manifest = asyncio.run(FileContext(client, spec.staging).map_manifest(local))
+    manifest = asyncio.run(FileContext(client.target, spec.staging).map_manifest(local))
 
     assert tuple(e.local_path for e in manifest.inputs) == (
         str(directory / "main.inp"), str(directory / "extra.inp"),

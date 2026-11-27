@@ -538,7 +538,7 @@ def test_remote_directory_mapping(tmp_path, root_mode, remote_root, expected):
     else:
         local = Path.home() / "calculations" / "Fe"
         launch = StagingSpec() if remote_root is None else StagingSpec(remote_root=remote_root)
-    context = FileContext(endpoint, launch)
+    context = FileContext(endpoint.target, launch)
     mapped = asyncio.run(context.map_directory(local))
     assert mapped == expected
 
@@ -546,7 +546,7 @@ def test_remote_directory_mapping(tmp_path, root_mode, remote_root, expected):
 def test_remote_directory_mapping_rejects_path_outside_local_root(tmp_path):
     local_root = tmp_path / "local"
     endpoint = _executor()
-    context = FileContext(endpoint, StagingSpec(local_root=local_root, remote_root="/scratch/tester"))
+    context = FileContext(endpoint.target, StagingSpec(local_root=local_root, remote_root="/scratch/tester"))
     with pytest.raises(ValueError, match="outside mapped root"):
         asyncio.run(context.map_directory(tmp_path / "elsewhere"))
 

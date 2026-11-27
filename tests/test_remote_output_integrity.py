@@ -26,7 +26,7 @@ def _session(tmp_path, *, stdout=b"same", stderr=b"error"):
     ).initialize_availability()
     client = ExecutionClient()
     session = FileSession(
-        FileContext(client, StagingSpec()),
+        FileContext(client.target, StagingSpec()),
         ExecutionSpec(argv=(), directory=tmp_path),
         files=manifest,
     )
