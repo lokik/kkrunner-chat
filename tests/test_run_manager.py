@@ -249,6 +249,26 @@ def test_failed_status_query_does_not_replace_a_newer_observation(tmp_path, monk
     assert refreshed.message is None
 
 
+
+def test_refresh_observes_job_submitted_after_preprocessing_snapshot(tmp_path):
+    manager = _manager(tmp_path)
+    executor = _Executor()
+    manager.register_client(executor)
+    record = manager.new_record(
+        directory=tmp_path, target=executor.target, backend=executor.backend_config,
+    )
+    stale = manager.reserve(record, preprocessing=True)
+    submitting = manager.begin_submission(stale)
+    queued = manager.transition(
+        submitting, state=RunState.QUEUED,
+        execution=submitting.execution.submitted("native"),
+    )
+
+    refreshed, = manager.refresh((stale,))
+    assert refreshed.state == RunState.RUNNING
+    assert executor.status_calls == [(JobAttachment(queued.execution, queued.files),)]
+
+
 def test_refresh_uses_backend_identity_assigned_after_snapshot(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
