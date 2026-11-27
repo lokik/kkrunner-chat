@@ -39,9 +39,13 @@ whose dataclass fields serialize to JSON, including an explicit ``kind`` tag.
 objects or JSON dictionaries. Only local/ssh targets and the backend names
 direct/kkrunner/psij are allowed; records never contain arbitrary Python imports.
 Persistent unsupported custom targets are rejected before a Run is created.
-ClientPool uses the transport/backend pair as its identity. The SSH transport reuses a bounded pool of persistent SSH/Python sessions for
-short RPC calls; streaming operations and file transfers keep their own
-processes and stream handles.
+ClientPool caches clients by transport/backend pair; discarding a client or
+clearing the cache does not close connections. The SSH transport reuses a
+bounded pool of persistent SSH/Python sessions for short RPC calls, shared
+by all clients with equal SSH configurations. Sessions expire when idle.
+Explicit ``SshTarget.close()`` closes that configuration's shared sessions;
+it is not a client shutdown operation. Streaming operations and file
+transfers keep their own processes and stream handles.
 
 A single FileSession handles local and remote files. It owns live client file
 handles and finalizes the sole FileManifest. Local execution needs no copying;

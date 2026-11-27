@@ -12,18 +12,11 @@ from kkrunner.runs.manager import RunManager
 from kkrunner.runs.run import Run
 
 
-def test_endpoint_transport_host_and_cleanup(monkeypatch):
-    from kkrunner.targets.implementations.ssh import sessions
-
-    closed = []
-    monkeypatch.setattr(sessions, "close_pool", closed.append)
+def test_endpoint_transport_host():
     local = ExecutionClient(target=LocalTarget())
     remote = ExecutionClient(target=SshTarget("cluster"))
     assert local.target.host is None
     assert remote.target.host == "cluster"
-    local.close()
-    remote.close()
-    assert closed == [remote.target]
 
 
 def test_run_store_roundtrips_transport_and_backend_independently(tmp_path):
@@ -114,7 +107,7 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
         assert starts == [attached]
     finally:
         attached._parts.close()
-        pool.close()
+        pool.clear()
 
 
 def test_pool_reconstructs_and_reuses_same_ssh_client():
@@ -132,7 +125,7 @@ def test_pool_reconstructs_and_reuses_same_ssh_client():
     assert first.target.compression == "zstd"
     assert isinstance(first.backend, PsijBackend)
     assert dict(first.backend.options) == {"executor_name": "slurm", "url": "local://slurm"}
-    pool.close()
+    pool.clear()
 
 
 def test_default_psij_configuration_survives_client_reconstruction():

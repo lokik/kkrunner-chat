@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from threading import RLock
 
-from kkrunner.files.streams import _close_distinct
-
 
 class ClientPool:
     """Process-local cache of clients keyed by transport and backend."""
@@ -37,22 +35,17 @@ class ClientPool:
         return self.for_config(*self.key_for_profile(profile))
 
     def discard(self, key):
-        """Forget one pooled client and close it."""
+        """Forget one cached client without affecting its target or runs."""
         with self._lock:
-            client = self._clients.pop(key, None)
-        if client is not None:
-            client.close()
-        return client
+            return self._clients.pop(key, None)
 
     def discard_profile(self, profile):
         return self.discard(self.key_for_profile(profile))
 
-    def close(self):
-        """Close every pooled client, propagating the first close failure."""
+    def clear(self):
+        """Forget cached clients; transport sessions have a separate lifetime."""
         with self._lock:
-            endpoints = tuple(self._clients.values())
             self._clients.clear()
-        _close_distinct(endpoints)
 
 
 _DEFAULT_CLIENT_POOL = ClientPool()
