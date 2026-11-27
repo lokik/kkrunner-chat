@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import os
+import stat
 from pathlib import Path
 from kkrunner.files.staging import staged_local_file
 
@@ -72,8 +73,11 @@ def check_destination(manifest, source, destination):
 
 def local_snapshot(path, *, destination=None):
     """Read existing file bytes or stream an atomic observational copy."""
+    path = Path(path)
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError(f"Snapshot source is not a regular file: {path}")
     if destination is None:
-        return Path(path).read_bytes()
+        return path.read_bytes()
     import shutil
     with snapshot_destination(destination) as output:
         with open(path, "rb") as source:

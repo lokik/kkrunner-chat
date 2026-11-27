@@ -16,7 +16,7 @@ from kkrunner.files.queries import (
     expand_local_files,
     query_files,
 )
-from kkrunner.files.snapshots import snapshot_destination
+from kkrunner.files.snapshots import local_snapshot
 
 from kkrunner.files.staging import staged_directory, staged_local_file
 from kkrunner.files.transfer import relative_file_pairs, transfer_path
@@ -154,10 +154,5 @@ class LocalTarget(Target):
         return await asyncio.to_thread(Path(path).read_bytes)
 
     async def snapshot_file(self, source, *, destination=None):
-        if destination is None:
-            return await self.read_file(source)
-        with snapshot_destination(destination) as out:
-            with open(source, "rb") as current:
-                await asyncio.to_thread(shutil.copyfileobj, current, out)
-        return Path(destination)
+        return await asyncio.to_thread(local_snapshot, source, destination=destination)
 
