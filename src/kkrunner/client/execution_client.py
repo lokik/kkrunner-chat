@@ -208,7 +208,10 @@ class ExecutionClient:
             raise ValueError("Run has no native execution identity")
 
         async def request():
-            reply = await self._invoke("cancel", native_id)
+            try:
+                reply = await self._invoke("cancel", native_id)
+            except NotImplementedError as exc:
+                raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
             return RunStatus.from_job_status(
                 decode_job_status(reply), backend_id=native_id,
             )

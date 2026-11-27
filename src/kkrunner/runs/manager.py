@@ -1056,14 +1056,7 @@ class RunManager:
         if record.execution.backend_id is None:
             raise UnsupportedCapability("No durable execution reference is available for cancellation")
         client = self.client_for(record)
-        if BackendCapability.CANCEL not in client.backend.supports:
-            raise UnsupportedCapability("This backend cannot cancel a job after restart")
-        try:
-            status = client.cancel(JobAttachment(record.execution, record.files))
-        except NotImplementedError as exc:
-            # Remote direct execution cannot prove the identity of legacy jobs.
-            # Translate the backend-level limitation at the public manager boundary.
-            raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
+        status = client.cancel(JobAttachment(record.execution, record.files))
         return self._apply_observation(
             record, status, self._record_observation, retrieve_ended=True,
         )
@@ -1083,9 +1076,6 @@ class RunManager:
             raise RuntimeError(f"Run {record.id} has no backend reference")
         client = self.client_for(record) if client is None else client
         self.register_client(client)
-        if BackendCapability.REATTACH not in client.backend.supports:
-            from kkrunner.backends.contracts import UnsupportedCapability
-            raise UnsupportedCapability("This backend does not support reattachment")
         owner = self._claim_client_files(record)
         parts = None
         try:
