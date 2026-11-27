@@ -19,7 +19,9 @@ class Target:
     ``put_file()`` and ``get_file()`` are exact one-file primitives.
     ``put_files()`` and ``get_files()`` accept exact relative paths or explicit
     source/destination pairs, with separate roots for the two filesystems.
-    Pattern expansion belongs to the caller.
+    Pattern expansion belongs to the caller. Filesystem and transport I/O
+    failures raise OSError (including its specific filesystem subclasses);
+    raw command execution via run() retains its subprocess contract.
     """
 
     is_local = False
