@@ -45,7 +45,9 @@ processes and stream handles.
 
 A single FileSession handles local and remote files. It owns live client file
 handles and finalizes the sole FileManifest. Local execution needs no copying;
-SSH execution stages inputs, relays streams and retrieves results. After
+SSH execution stages inputs, relays live output only to observers and
+synchronizes all declared result files (including stdout/stderr) after native
+completion. The local copies are not written during observation. After
 staging, transfer selections and cache baselines come from the manifest rather
 than independently maintained lists. Snapshots and manual retrieval are in the
 file-access layer, with the client delegating those requests.

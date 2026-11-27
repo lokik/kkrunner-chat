@@ -261,8 +261,6 @@ class Run:
         return self.manager.snapshot_file(self._record, file, destination=destination)
 
     def _file_failure_phase(self):
-        if self._job.output_error is not None:
-            return FailurePhase.OUTPUT
         return FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD
 
     def _finish(self):
@@ -275,16 +273,6 @@ class Run:
             if raw_state.is_terminal:
                 self._state = RunState.DOWNLOADING
                 try:
-                    if (
-                        raw_state == RunState.FINISHED and self._job.return_code == 0
-                        and self._job.output_error is not None
-                    ):
-                        raise self._job.output_error
-                    if raw_state == RunState.FINISHED and self._job.return_code is None:
-                        # The original SSH observer cannot guarantee that it
-                        # delivered every byte. Re-read target-owned streams.
-                        if not self._file_session.is_local:
-                            self._file_session.configure_stream_retrieval(True)
                     # FileSession finalizes and closes its streams before processing.
                     self._file_session.finalize(self._job.status())
                 except Exception as exc:

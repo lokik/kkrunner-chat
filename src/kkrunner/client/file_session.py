@@ -1,4 +1,4 @@
-"""Client-side staging, stream persistence and result-file synchronization.
+"""Client-side staging and terminal result-file synchronization.
 
 This session never submits, observes, waits for, or cancels a backend job. A
 Run owns the session and invokes it before and after a distinct Job.
@@ -7,7 +7,6 @@ Run owns the session and invokes it before and after a distinct Job.
 from __future__ import annotations
 
 import os
-from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from kkrunner.files.streams import OutputStreams
 from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
-from kkrunner.support.file_locks import FileLock
 from kkrunner.targets.contracts import Operation
 
 
@@ -42,19 +40,11 @@ class FileSession:
         self._prepared = None
         self._streams = None
         self._closed = False
-        self._stream_positions = {}
-        self._retrieve_primary_streams = False
         self.result = ExecutionOutcome(
             output_file=self._local_path(spec.output_file),
             input_file=self._local_path(spec.input_file),
             error_file=self._local_path(spec.error_file),
         )
-
-    def configure_stream_retrieval(self, required):
-        """Choose file retrieval when the job does not relay primary streams."""
-        if type(required) is not bool:
-            raise TypeError("Stream retrieval policy must be bool")
-        self._retrieve_primary_streams = required
 
     @property
     def files(self):
@@ -88,40 +78,6 @@ class FileSession:
         for entry in self._files.artifacts:
             if entry.availability_state in (None, "pending"):
                 self._set_file_availability(entry.local_path, "failed", message)
-
-    def _write_output(self, data, kind):
-        """Persist FOLLOW bytes at their logical offset, not blindly append.
-
-        Multiple clients may follow the same run into the same local stream.
-        Hold a cross-process lock while comparing overlapping bytes and
-        extending only the missing suffix. A sidecar avoids changing the
-        contents of the stream on platforms with byte-range file locks.
-        """
-        streams = self._streams
-        target = (
-            streams.error_file if kind == "err" else streams.output_file
-        ) if streams is not None else None
-        if target is None or not data:
-            return
-        offset = self._stream_positions[kind]
-        target.flush()
-        path = Path(self._local_path(target))
-        lock_path = path.with_name(f".{path.name}.follow.lock")
-        with FileLock(lock_path), path.open("r+b", buffering=0) as stream:
-            stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            if size < offset:
-                raise RuntimeError(f"FOLLOW stream was truncated: {path}")
-            overlap = min(size - offset, len(data))
-            if overlap:
-                stream.seek(offset)
-                if stream.read(overlap) != data[:overlap]:
-                    raise RuntimeError(f"Conflicting FOLLOW bytes at offset {offset}: {path}")
-            if overlap < len(data):
-                stream.seek(offset + overlap)
-                stream.write(data[overlap:])
-                stream.flush()
-        self._stream_positions[kind] = offset + len(data)
 
     @property
     def is_local(self):
@@ -373,38 +329,28 @@ class FileSession:
                 raise
 
     async def _sync_output_files(self, required):
-        policy = self.context.output_files
-        if policy == FileSyncPolicy.NEVER:
-            # FOLLOW transfers primary streams even when separate artifact
-            # synchronization is disabled.
-            primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
-            for entry in self._files.artifacts:
-                if entry.availability_state == "pending":
-                    self._set_file_availability(
-                        entry.local_path,
-                        "available" if entry.local_path in primary else "skipped",
-                    )
-            return
-
-        # The persisted manifest is the sole authority for which declared
-        # outputs may be absent. This also works on historical attach, whose
-        # reconstructed ExecutionSpec has no output declarations.
-        declarations = tuple(entry for entry in self._files.outputs
-                             if entry.collect and entry.source_pattern is None
+        # Primary streams are ordinary output files, not a reconstruction
+        # of the live FOLLOW stream. NEVER disables transfers for all outputs;
+        # existing identical copies (including shared mounts) remain usable.
+        required = required and self.context.output_files != FileSyncPolicy.NEVER
+        declarations = tuple(entry for entry in (self._files.stdout, self._files.stderr, *self._files.outputs)
+                             if entry is not None and entry.collect and entry.source_pattern is None
                              and entry.remote_path is not None)
-        exact = tuple(entry for entry in declarations if not has_file_magic(entry.remote_path))
-        for entry in exact:
-            if entry.local_path is not None:
-                await self._sync_output_entry(
-                    entry.local_path, entry.remote_path, required and not entry.optional,
-                    kind=entry.kind,
-                )
+        seen_remote = set()
+        for entry in declarations:
+            if has_file_magic(entry.remote_path) or entry.local_path is None or entry.remote_path in seen_remote:
+                continue
+            seen_remote.add(entry.remote_path)
+            await self._sync_output_entry(
+                entry.local_path, entry.remote_path, required and not entry.optional,
+                kind=entry.kind,
+            )
 
         primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
-        seen_remote = {entry.remote_path for entry in self._files.outputs
-                       if entry.source_pattern is None and entry.remote_path is not None
-                       and entry.local_path is not None
-                       and not has_file_magic(entry.remote_path)}
+        # Even uncollected exact declarations must not be collected via a glob.
+        seen_remote.update(entry.remote_path for entry in self._files.outputs
+                           if entry.source_pattern is None and entry.remote_path is not None
+                           and not has_file_magic(entry.remote_path))
         for entry in declarations:
             if has_file_magic(entry.remote_path):
                 await self._sync_patterns(
@@ -415,7 +361,7 @@ class FileSession:
 
     async def _sync_one_output(self, local, remote, required, *, kind="file"):
         policy = self.context.output_files
-        if policy == FileSyncPolicy.NEVER:
+        if policy == FileSyncPolicy.NEVER and not os.path.exists(local):
             return False
         if kind == "directory":
             entry = (await self.context.target.query_files([remote]))[0]
@@ -428,16 +374,18 @@ class FileSession:
             if os.path.lexists(local):
                 if os.path.islink(local) or not os.path.isdir(local):
                     raise ValueError(f"Local directory output is not a directory: {local}")
-                if policy in (FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING):
+                if policy != FileSyncPolicy.ALWAYS:
                     remote_digest = await self.context.target.call(
                         Operation.standalone(directory_digest), remote,
                     )
                     local_digest = directory_digest(local)
                     if remote_digest is not None and remote_digest == local_digest:
                         return True
-                if policy == FileSyncPolicy.MISSING:
+                if policy in (FileSyncPolicy.MISSING, FileSyncPolicy.NEVER):
                     # An existing but different local tree is not this run's result.
                     return False
+            if policy == FileSyncPolicy.NEVER:
+                return False
             await self.context.target.get_directory(remote, local)
             return True
         remote_digest = await self.context.target.file_digest(remote)
@@ -502,6 +450,9 @@ class FileSession:
 
     async def _sync_cache_files(self):
         if self.context.output_files == FileSyncPolicy.NEVER:
+            for cache in self._files.caches:
+                if cache.file.local_path is not None and cache.file.availability_state == "pending":
+                    self._set_file_availability(cache.file.local_path, "skipped", kind="cache")
             return
 
         exact = []
@@ -661,50 +612,19 @@ class FileSession:
 
     @classmethod
     async def from_attachment(cls, context, attachment):
-        """Open local streams and restore transfer baselines from FileManifest."""
+        """Restore file declarations without opening or creating output files."""
+        from kkrunner.client.staging import StagingSpec
+        from kkrunner.runs.base import ExecutionSpec
+
         execution, files = attachment.execution, attachment.files
-        if context.target.is_local:
-            from kkrunner.runs.base import ExecutionSpec
-            spec = ExecutionSpec(argv=None, directory=execution.directory.local,
-                                 input_file=files.input_file, output_file=files.output_file,
-                                 error_file=None if files.stderr is None else files.stderr.local_path)
-            return cls(context, spec, files=files, remote_directory=execution.directory.target)
-        if execution.backend_id is None or execution.directory.remote is None:
+        if not context.target.is_local and (execution.backend_id is None or execution.directory.remote is None):
             raise ValueError("Remote run lacks backend identity or working directory")
-        directory = Path(execution.directory.local)
-        directory.mkdir(parents=True, exist_ok=True)
-        output_local = files.output_file
-        error_local = None if files.stderr is None else files.stderr.local_path
-        with ExitStack() as streams:
-            output = None if output_local is None else streams.enter_context(open(output_local, "ab"))
-            error = (
-                None if error_local is None
-                else output if error_local == output_local
-                else streams.enter_context(open(error_local, "ab"))
-            )
-            from kkrunner.client.staging import StagingSpec
-            from kkrunner.runs.base import ExecutionSpec
-            spec = ExecutionSpec(
-                argv=None,
-                input_file=files.input_file,
-                output_file=output_local,
-                error_file=error_local,
-                directory=os.fspath(directory),
-                staging=StagingSpec(
-                    local_root=os.fspath(context.local_root),
-                    remote_root=context.remote_root,
-                    input_sync=context.input_files.value,
-                    output_sync=context.output_files.value,
-                    filesystem_id=context.filesystem_id,
-                ),
-            )
-            session = cls(
-                context, spec, files=files,
-                remote_directory=execution.directory.remote,
-            )
-            session._streams = OutputStreams(output, error)
-            streams.pop_all()  # Explicitly transfer stream ownership.
-            return session
+        spec = ExecutionSpec(
+            argv=None, directory=execution.directory.local, input_file=files.input_file,
+            output_file=files.output_file, error_file=None if files.stderr is None else files.stderr.local_path,
+            staging=StagingSpec.from_mapping(files.mapping),
+        )
+        return cls(context, spec, files=files, remote_directory=execution.directory.target)
 
     @property
     def working_directory(self):
@@ -737,16 +657,14 @@ class FileSession:
             self._files = manifest
 
     def prepare_job(self):
-        """Open locally owned output streams for an already staged request."""
+        """Return the staged request; remote output is owned by the backend."""
         if self._prepared is None:
             raise SubmissionNotStarted("Files must be staged before preparing the job")
-        request = self._prepared
         if not self.is_local:
-            try:
-                self._streams.open(self.spec.directory)
-            except Exception as exc:
-                raise SubmissionNotStarted(str(exc)) from exc
-        return dict(request)
+            # Release application-supplied handles before the remote producer
+            # starts and before any eventual atomic download replaces a path.
+            self.close()
+        return dict(self._prepared)
 
     def local_call_io(self, detached=False):
         """Borrow local live streams for an in-process backend invocation."""
@@ -772,95 +690,20 @@ class FileSession:
         )
 
     def observation(self):
-        """Declare byte-delivery hooks without transferring file ownership."""
+        """A new observer replays named streams independently of local files."""
         return {
-            "stream_offsets": self._observation_offsets(),
-            "stream_writer": None if self.is_local else self._write_output,
-            "stream_paths": self.stream_paths,
-        }
-
-    def _observation_offsets(self):
-        if self.is_local:
-            return {
+            "stream_offsets": {
                 "out": None if self.spec.is_partial and self.spec.output_file is None else 0,
                 "err": None if self.spec.is_partial and self.spec.error_file is None else 0,
-            }
-        offsets = {}
-        streams = self._streams
-        for kind, target in (
-            ("out", None if streams is None else streams.output_file),
-            ("err", None if streams is None else streams.error_file),
-        ):
-            if target is None:
-                offsets[kind] = None if self.spec.is_partial else 0
-            elif kind == "err" and target is streams.output_file:
-                offsets[kind] = offsets["out"]
-            else:
-                target.flush()
-                offsets[kind] = os.path.getsize(self._local_path(target))
-        self._stream_positions = dict(offsets)
-        return offsets
-
-    async def _verify_streams(self):
-        """Confirm that streamed files exactly match the authoritative target."""
-        checked = set()
-        for kind, entry in (("stdout", self._files.stdout), ("stderr", self._files.stderr)):
-            if entry is None or entry.local_path is None or entry.remote_path is None:
-                continue
-            local = entry.local_path
-            if local in checked:
-                continue
-            checked.add(local)
-            try:
-                signature = await self.context.target.file_signature(entry.remote_path)
-                if signature is None:
-                    raise FileNotFoundError(f"Remote {kind} output is missing: {entry.remote_path}")
-                stat = os.stat(local)
-                if stat.st_size != signature[0]:
-                    raise RuntimeError(f"Streamed {kind} size does not match remote output: {local}")
-                digest = await self.context.target.file_digest(entry.remote_path)
-                if digest is None or file_digest(local) != digest:
-                    raise RuntimeError(f"Streamed {kind} differs from remote output: {local}")
-                if await self.context.target.file_signature(entry.remote_path) != signature:
-                    raise RuntimeError(f"Remote {kind} changed during verification")
-                os.utime(local, ns=(stat.st_atime_ns, signature[1]))
-            except Exception as exc:
-                self._set_file_availability(local, "failed", str(exc))
-                raise
-
-    async def _retrieve_target_streams(self, *, required):
-        # The target process wrote directly to named files. Release client
-        # stream handles before downloading, so data is never truncated by a
-        # stale local writer or blocked by an open descriptor on Windows.
-        self.close()
-        seen = set()
-        for entry in (self._files.stdout, self._files.stderr):
-            if entry is None or entry.local_path is None or entry.remote_path is None:
-                continue
-            if entry.local_path in seen:
-                continue
-            seen.add(entry.local_path)
-            try:
-                if await self.context.target.file_signature(entry.remote_path) is None:
-                    if required:
-                        raise FileNotFoundError(f"Remote output stream is missing: {entry.remote_path}")
-                    self._set_file_availability(entry.local_path, "skipped")
-                    continue
-                await self.context.target.get_file(entry.remote_path, entry.local_path)
-                self._set_file_availability(entry.local_path, "available")
-            except Exception as exc:
-                self._set_file_availability(entry.local_path, "failed", str(exc))
-                raise
+            },
+            "stream_paths": self.stream_paths,
+        }
 
     async def _synchronize(self, *, required):
         """Synchronize target-side artifacts for a remote session."""
         try:
-            if self._retrieve_primary_streams:
-                await self._retrieve_target_streams(required=required)
             await self._sync_output_files(required=required)
             await self._sync_cache_files()
-            if required:
-                await self._verify_streams()
         except Exception as exc:
             self._set_pending_failed(str(exc))
             raise
@@ -883,10 +726,8 @@ class FileSession:
             if required and self._files.failed_artifacts:
                 raise FileNotFoundError(self._files.availability_message)
         else:
-            try:
-                await self._synchronize(required=required)
-            finally:
-                self.close()
+            self.close()
+            await self._synchronize(required=required)
         from kkrunner.files.availability import capture_result_files
 
         if self._files.captured_at is None:

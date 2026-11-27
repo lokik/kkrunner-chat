@@ -44,10 +44,6 @@ class _Execution:
         if detached != self.backend.default_detached:
             raise ValueError("Detached policy is fixed by the selected backend")
 
-    @property
-    def requires_stream_retrieval(self):
-        return False
-
     def configure_observation(self, *, stream_offsets, stream_paths):
         self._follow_options = {
             "stdout_offset": stream_offsets.get("out"), "stderr_offset": stream_offsets.get("err"),
@@ -86,10 +82,6 @@ class DirectExecution(_Execution):
 
     def configure_detached(self, detached):
         self._detached = detached
-
-    @property
-    def requires_stream_retrieval(self):
-        return self._detached
 
     def configure_observation(self, *, stream_offsets, stream_paths):
         if any(offset not in (None, 0) for offset in stream_offsets.values()):
