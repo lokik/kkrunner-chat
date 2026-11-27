@@ -349,6 +349,13 @@ class FileManifest:
             if item.availability_state in (None, "pending") else item
         )
 
+    def retry_failed_artifacts(self):
+        """Reopen failed transfers without retracting published artifacts."""
+        return self._map_artifacts(
+            lambda item: replace(item, availability_state="pending", availability_message=None)
+            if item.availability_state == "failed" else item
+        )
+
     def fail_pending_artifacts(self, message):
         """Mark unresolved artifacts failed without retracting published files."""
         return self._map_artifacts(

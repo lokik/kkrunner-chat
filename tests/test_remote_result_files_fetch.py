@@ -1019,3 +1019,143 @@ def test_history_does_not_claim_file_created_during_retrieval(tmp_path, monkeypa
     assert restored.files.stdout.availability_state == "failed"
     assert "already exists" in restored.files.stdout.availability_message
     assert restored.files.output_versions == (version,)
+
+
+@pytest.mark.parametrize("state", [RunState.CANCELLED, RunState.FINISHED])
+def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, state):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager, RunStatus
+    from kkrunner.client.pool import ClientPool
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("stdout", "stderr"):
+        (remote / name).write_text(name)
+
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+
+    async def download(self, source, destination, **kwargs):
+        if str(source) == str(remote / "stderr"):
+            raise OSError("stderr transfer failed")
+        await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTarget, "get_file", download)
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=client.backend_config,
+        files=FileManifest(
+            stdout=FileEntry(local / "stdout", remote / "stdout"),
+            stderr=FileEntry(local / "stderr", remote / "stderr"),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("native-job"))
+    monkeypatch.setattr(client, "status", lambda *runs: (
+        RunStatus(state, backend_id="native-job"),
+    ))
+    updated = manager.refresh((record,), retrieve_ended=True)[0]
+    saved = manager.store.get(record.id)
+    assert saved == updated
+    assert saved.state == (RunState.CANCELLED if state == RunState.CANCELLED else RunState.DOWNLOADING)
+    assert (local / "stdout").read_text() == "stdout"
+    assert not (local / "stderr").exists()
+    assert saved.files.stdout.availability_state == "available"
+    assert saved.files.stderr.availability_state == "failed"
+    assert saved.files.stderr.availability_message == "stderr transfer failed"
+    if state == RunState.CANCELLED:
+        assert saved.files.captured_at is not None
+        assert {v.path.name for v in saved.files.output_versions} == {"stdout"}
+    else:
+        assert saved.files.captured_at is None
+        monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
+        finished = manager.refresh((saved,), retrieve_ended=True)[0]
+        assert finished.state == RunState.FINISHED
+        assert finished.files.stderr.availability_state == "available"
+        assert (local / "stderr").read_text() == "stderr"
+        assert finished.message == "Process ended; exit code unavailable"
+
+
+def test_client_collects_ended_files_without_original_backend(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    (remote / "stdout").write_text("result")
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=BackendConfig("unavailable-test-backend"),
+        files=FileManifest(
+            stdout=FileEntry(local / "stdout", remote / "stdout"),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    # File collection needs neither a backend reference nor an installed backend.
+    files, error = client.collect_ended_files(record, RunStatus(RunState.CANCELLED))
+    assert error is None
+    assert (local / "stdout").read_text() == "result"
+    assert files.stdout.availability_state == "available"
+    assert files.output_versions[0].is_current()
+
+
+def test_ended_file_collection_reports_session_setup_failure(tmp_path):
+    from kkrunner.runs import RunManager, RunStatus
+    from kkrunner.client.file_access import FileAccess
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    target = SshTarget("loopback")
+    record = RunManager().new_record(
+        directory=local, target=target,
+        files=FileManifest(
+            stdout=FileEntry(local / "stdout", remote / "stdout"),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    files, error = FileAccess(target).collect_ended_files(
+        record, RunStatus(RunState.CANCELLED),
+    )
+    assert isinstance(error, ValueError)
+    assert "working directory" in str(error)
+    assert files.stdout.availability_state == "failed"
+    assert files.stdout.availability_message == str(error)
+    assert not (local / "stdout").exists()
+
+
+def test_ended_collection_retry_rechecks_failed_pattern_members(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    target = SshTarget("loopback")
+    client = ExecutionClient(target=target)
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    pattern = local / "*.dat"
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            outputs=(
+                FileEntry(pattern, remote / "*.dat", availability_state="failed"),
+                FileEntry(local / "missing.dat", remote / "missing.dat",
+                          source_pattern=pattern, availability_state="failed"),
+            ),
+            mapping=FileMapping(local, remote),
+        ),
+    )
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+    files, error = client.collect_ended_files(record, RunStatus(RunState.FINISHED))
+    assert error is None
+    assert all(entry.availability_state == "skipped" for entry in files.outputs)
+    assert files.captured_at is not None

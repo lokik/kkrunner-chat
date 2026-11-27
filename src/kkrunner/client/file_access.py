@@ -4,6 +4,7 @@ import asyncio
 import glob
 import os
 import posixpath
+from dataclasses import replace
 from functools import partial
 
 from kkrunner.client.file_context import FileContext
@@ -29,6 +30,37 @@ class FileAccess:
     def _validate_target(self, run):
         if run.execution.target != self.target:
             raise ValueError("Run belongs to a different transport")
+
+    def collect_ended_files(self, run, status):
+        """Return (manifest, error) after finalizing an ended run's files.
+
+        The caller owns the file reservation and any history update. A transfer
+        failure returns the partially finalized manifest and the original error;
+        successful collection returns the finalized manifest and None.
+        """
+        from kkrunner.client.file_session import FileSession
+
+        self._validate_target(run)
+        if not status.state.is_terminal:
+            raise ValueError("File collection requires terminal execution status")
+
+        async def collect():
+            session = None
+            try:
+                context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
+                session = await FileSession.from_attachment(
+                    context, replace(run, files=run.files.retry_failed_artifacts()),
+                )
+                return await session.finalize_async(status), None
+            except (OSError, RuntimeError, ValueError) as exc:
+                # A session that failed to initialize has no partial state yet.
+                files = run.files.fail_pending_artifacts(str(exc)) if session is None else session.files
+                return files, exc
+            finally:
+                if session is not None:
+                    session.close()
+
+        return _run_sync(collect())
 
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
