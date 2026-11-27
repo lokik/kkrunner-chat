@@ -145,6 +145,9 @@ def test_refresh_of_settled_run_exposes_current_terminal_facts(tmp_path, monkeyp
     assert run.files.captured_at is not None
     assert run.files == run.record.files
 
+    monkeypatch.setattr(job, "cancel", lambda: pytest.fail("Native execution already finished"))
+    assert run.cancel().result(timeout=1) is None
+
 
 def test_new_observer_can_complete_after_unknown_observation(tmp_path):
     delivered = []

@@ -7,6 +7,7 @@ postprocessing.  RunManager is the sole authority for durable state changes.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from threading import Event, Lock, Thread
 
 from kkrunner.runs.base import (
@@ -782,6 +783,11 @@ class Run:
 
     def cancel(self):
         with self._lock:
+            if self._record is not None and self._record.state.is_terminal:
+                # A refreshed terminal record can be newer than the old observer.
+                result = Future()
+                result.set_result(None)
+                return result
             result = self._job.cancel()
             cancelled_before_submit = (
                 not self._submitting and not self._started and not self._settled
