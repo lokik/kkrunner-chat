@@ -51,7 +51,7 @@ print(42)
 """
     job = submit(
         [sys.executable, "-c", command], directory=tmp_path,
-        output_file="out", persistent=manager,
+        output_file="out", tracked=manager,
         output_listener=lambda text, kind: received.append((text, kind)),
     )
     try:
@@ -89,13 +89,13 @@ def test_remote_target_and_backend_are_independent(tmp_path):
 @pytest.mark.parametrize("backend, detached", [
     ("direct", False), ("direct", True), ("kkrunner", True), ("psij", True),
 ])
-@pytest.mark.parametrize("persistent", [False, True])
-def test_tracking_is_opt_in_independent_of_backend_and_detachment(backend, detached, persistent):
+@pytest.mark.parametrize("tracked", [False, True])
+def test_tracking_is_opt_in_independent_of_backend_and_detachment(backend, detached, tracked):
     manager = RunManager(MemoryRunStore())
     client = ExecutionClient(backend)
     kwargs = {"detached": detached}
-    if persistent:
-        kwargs["persistent"] = True
+    if tracked:
+        kwargs["tracked"] = True
     with RunManager.as_default(manager):
         jobs = [
             Run.create("program", backend=backend, **kwargs),
@@ -103,8 +103,8 @@ def test_tracking_is_opt_in_independent_of_backend_and_detachment(backend, detac
         ]
         for job in jobs:
             try:
-                assert (job.id is not None) is persistent
-                assert (job.manager is manager) is persistent
+                assert (job.id is not None) is tracked
+                assert (job.manager is manager) is tracked
                 assert job.detached is detached
             finally:
                 job.close()
@@ -113,7 +113,7 @@ def test_tracking_is_opt_in_independent_of_backend_and_detachment(backend, detac
 def test_explicit_store_and_default_policy(tmp_path):
     manager = RunManager(MemoryRunStore())
     with RunManager.as_default(manager):
-        run = Run.create([sys.executable, "-c", "pass"], persistent=True)
+        run = Run.create([sys.executable, "-c", "pass"], tracked=True)
         assert run.manager is manager
         assert run.id is not None
         assert run.record.state == kkrunner.RunState.NEW
@@ -128,7 +128,7 @@ def test_project_binding_and_version_one_serialization(tmp_path):
     client = ExecutionClient()
     run = client.create_run(
         ExecutionSpec([sys.executable, "-c", "pass"], directory=tmp_path),
-        persistent=manager,
+        tracked=manager,
     )
     assert run.record.project_id == project.id
     assert run.record.to_dict()["execution"]["transport"] == {"kind": "local"}
@@ -149,9 +149,9 @@ def test_factory_output_listener(tmp_path):
 
 def test_untracked_cannot_request_record_metadata_or_preprocessing():
     with pytest.raises(ValueError, match="Record metadata"):
-        Run.create("program", persistent=False, metadata={"test": {"name": "example"}})
+        Run.create("program", tracked=False, metadata={"test": {"name": "example"}})
     with pytest.raises(ValueError, match="Preprocessing"):
-        Run.create("program", persistent=False, preprocess=lambda: None)
+        Run.create("program", tracked=False, preprocess=lambda: None)
 
 
 def test_removed_entry_points_are_not_aliases():

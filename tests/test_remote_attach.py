@@ -97,7 +97,7 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
         cache_files=(cache,),
         staging=_launch(local_root, remote_root),
     )
-    original = first_executor.create_run(spec, persistent=False, process_result=lambda outcome: outcome)
+    original = first_executor.create_run(spec, tracked=False, process_result=lambda outcome: outcome)
     original.submit()
     _wait_for_state(original, RunState.RUNNING)
     run = _record(original)
@@ -146,7 +146,7 @@ def test_remote_executor_first_attach_after_completion_replays_finished_run(tmp_
         output_files=(output_file,),
         staging=_launch(local_root, remote_root),
     )
-    original = first_executor.create_run(spec, persistent=False)
+    original = first_executor.create_run(spec, tracked=False)
     assert original.run().return_code == 0
     run = _record(original)
     assert run.execution.backend_id is not None

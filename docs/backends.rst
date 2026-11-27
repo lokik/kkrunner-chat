@@ -138,7 +138,7 @@ configured with ``SshTarget(python_command=("python3.12",))``.
            remote_root="/scratch/alice/runs",
        ),
    )
-   result = client.create_run(spec, persistent=False).run()
+   result = client.create_run(spec, tracked=False).run()
 
 Use ``ExecutionClient(SupervisedBackend, target=transport)`` when a job
 needs retained completion status and recovery after disconnection. Persistence
@@ -156,8 +156,8 @@ Never automatically retry after uncertain connection loss.
 Local and scheduler execution
 -------------------------------
 
-Use ``ExecutionClient(DirectBackend).create_run(spec, persistent=False)`` for an untracked run. Use
-``Run.create(spec, backend='kkrunner', persistent=True)`` for durable local
+Use ``ExecutionClient(DirectBackend).create_run(spec, tracked=False)`` for an untracked run. Use
+``Run.create(spec, backend='kkrunner', tracked=True)`` for durable local
 supervision; the execution mode does not depend on whether a submission key
 was supplied. The same manager interface accepts a scheduler client:
 
@@ -168,7 +168,7 @@ was supplied. The same manager interface accepts a scheduler client:
 
    client = ExecutionClient(PsijBackend(executor_name="slurm"))
    # manager and spec are created as in the persistent-run example.
-   run = client.create_run(spec, persistent=manager)
+   run = client.create_run(spec, tracked=manager)
    run.submit()
 
 Backend instances and configured targets can be created without PSI/J

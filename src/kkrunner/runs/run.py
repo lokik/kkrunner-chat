@@ -92,7 +92,7 @@ class Run:
 
     @classmethod
     def create(
-        cls, spec, *, target=None, backend=None, persistent=False, detached=None, process_result=None,
+        cls, spec, *, target=None, backend=None, tracked=False, detached=None, process_result=None,
         callback=None, output_listener=None, owned_resources=None, preprocess=None,
         metadata=None, processing_required=None, run_id=None,
     ):
@@ -101,7 +101,7 @@ class Run:
 
         return cls._create(
             ExecutionClient(backend, target=target), spec,
-            persistent=persistent, detached=detached, process_result=process_result,
+            tracked=tracked, detached=detached, process_result=process_result,
             callback=callback, output_listener=output_listener, owned_resources=owned_resources,
             preprocess=preprocess, metadata=metadata, processing_required=processing_required,
             run_id=run_id,
@@ -109,7 +109,7 @@ class Run:
 
     @classmethod
     def _create(
-        cls, client, spec, *, persistent=False, detached=None, process_result=None,
+        cls, client, spec, *, tracked=False, detached=None, process_result=None,
         callback=None, output_listener=None, owned_resources=None, preprocess=None,
         metadata=None, processing_required=None, run_id=None,
     ):
@@ -125,14 +125,14 @@ class Run:
             spec = ExecutionSpec(spec)
         spec.require_complete()
 
-        if isinstance(persistent, RunManager):
-            manager = persistent
-        elif persistent is True:
+        if isinstance(tracked, RunManager):
+            manager = tracked
+        elif tracked is True:
             manager = RunManager.get_default()
-        elif persistent is False:
+        elif tracked is False:
             manager = None
         else:
-            raise TypeError("persistent must be bool or a RunManager")
+            raise TypeError("tracked must be bool or a RunManager")
 
         if detached is None:
             detached = client.default_detached

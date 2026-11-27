@@ -25,7 +25,7 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
     )
     client = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = client.create_run(spec, persistent=manager, metadata={"example": {"task": "DOS"}})
+    run = client.create_run(spec, tracked=manager, metadata={"example": {"task": "DOS"}})
     expected = asyncio.run(FileContext(client, spec.staging).map_manifest(FileManifest.from_spec(spec)))
     target = str(remote / "local")
     request = {
@@ -139,7 +139,7 @@ def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(tmp
     """The original preflight failure survives without a completion observer."""
     failure = SubmissionNotStarted("preflight refused")
     client = ExecutionClient("direct")
-    run = client.create_run(ExecutionSpec(("ignored",), directory=str(tmp_path)), persistent=False,
+    run = client.create_run(ExecutionSpec(("ignored",), directory=str(tmp_path)), tracked=False,
                         process_result=lambda outcome: outcome)
 
     def rejected():
@@ -215,7 +215,7 @@ def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkey
         staging=StagingSpec(local_root=local, remote_root=target),
     )
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = client.create_run(spec, persistent=manager)
+    run = client.create_run(spec, tracked=manager)
     calls = []
     original = FileContext.map_manifest
 

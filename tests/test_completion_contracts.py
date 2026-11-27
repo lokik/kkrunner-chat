@@ -58,7 +58,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         ended.set()
 
     run = ExecutionClient(DirectBackend).create_run(
-        ExecutionSpec(["true"], directory=tmp_path), persistent=False,
+        ExecutionSpec(["true"], directory=tmp_path), tracked=False,
         callback=completed,
     )
     run.submit()
@@ -174,7 +174,7 @@ def _tracked_test_run(tmp_path, monkeypatch, *, process_result=None):
     monkeypatch.setattr(client, "acknowledge_submission", lambda record: None)
     monkeypatch.setattr(client, "acknowledge", lambda record: None)
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = client.create_run(ExecutionSpec(("instant",), directory=tmp_path), persistent=manager,
+    run = client.create_run(ExecutionSpec(("instant",), directory=tmp_path), tracked=manager,
         process_result=process_result,
     )
     return run, manager

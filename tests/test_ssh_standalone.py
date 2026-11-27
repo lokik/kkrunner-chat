@@ -105,7 +105,7 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
             output_files=(local / "answer.txt",),
             staging=StagingSpec(local_root=local, remote_root="/home/tester/jobs"),
         )
-        run = executor.create_run(spec, persistent=manager)
+        run = executor.create_run(spec, tracked=manager)
         first_output = Event()
         run.add_output_listener(lambda text, kind: first_output.set() if "started" in text else None)
         run.submit()

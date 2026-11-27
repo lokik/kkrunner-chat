@@ -14,7 +14,7 @@ from kkrunner.execution import MpiSpec
 
 
 def _run(spec):
-    return ExecutionClient(DirectBackend).create_run(spec, persistent=False)
+    return ExecutionClient(DirectBackend).create_run(spec, tracked=False)
 
 
 @pytest.mark.parametrize("store_stdout, store_stderr", ((True, True), (True, False), (False, True), (False, False)))
@@ -114,7 +114,7 @@ def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
     finally:
         parts.close()
 
-    run = client.create_run(spec, persistent=False)
+    run = client.create_run(spec, tracked=False)
     with pytest.raises(FileNotFoundError, match="Required output file is missing"):
         run.run()
     assert run.state is RunState.FAILED

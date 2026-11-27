@@ -23,7 +23,7 @@ No separate agent endpoint or persistent agent service is required.
        ["python3", "-c", "print(42)"], directory=directory, output_file="stdout.txt",
        staging=StagingSpec(local_root=directory, remote_root="/absolute/remote/work"),
    )
-   run = client.create_run(spec, persistent=manager)
+   run = client.create_run(spec, tracked=manager)
    run.run()
 
 For a one-shot command use ``ExecutionClient(DirectBackend, target=transport)``.

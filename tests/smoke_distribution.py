@@ -28,7 +28,7 @@ raw = ExecutionClient(DirectBackend).create_run(
         [sys.executable, "-c", "print(42)"],
         directory=root,
         output_file="raw.out",
-    ), persistent=False)
+    ), tracked=False)
 assert raw.run().return_code == 0
 assert (root / "raw.out").read_text() == "42\n"
 
@@ -40,7 +40,7 @@ run = ExecutionClient(SupervisedBackend).create_run(
         [sys.executable, "-c", "print(43)"],
         directory=root,
         output_file="managed.out",
-    ), persistent=manager,
+    ), tracked=manager,
     processing_required=True,
 )
 try:
@@ -74,7 +74,7 @@ run = client.create_run(
         directory=local,
         output_file="remote.out",
         staging=StagingSpec(local_root=local, remote_root=remote),
-    ), persistent=False)
+    ), tracked=False)
 assert run.run().return_code == 0
 assert (local / "remote.out").read_text() == "44\n"
 commands = {entry.name for entry in md.distribution("kkrunner").entry_points if entry.group == "console_scripts"}

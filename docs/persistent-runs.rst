@@ -17,11 +17,11 @@ downloading files or processing results.
 in a directory. Each record contains a stable run ID, backend identity, file
 manifest and lifecycle state. :class:`~kkrunner.RunManager` creates managed
 runs backed by that store and returns a :class:`~kkrunner.Run`.
-Tracking is opt-in for every backend: ``persistent=True`` uses the default
-manager, while ``persistent=manager`` selects a specific one. Without a run
+Tracking is opt-in for every backend: ``tracked=True`` uses the default
+manager, while ``tracked=manager`` selects a specific one. Without a run
 record, backend handles and backend-level observation remain independent of
 client history; see :doc:`command-line`.
-Use ``Run.create(spec, backend='kkrunner', persistent=manager)`` and
+Use ``Run.create(spec, backend='kkrunner', tracked=manager)`` and
 ``run.submit()`` to start one.
 After restarting the client, reopen the same store and call
 ``manager.attach(run_id)`` to continue a nonterminal run.
@@ -60,7 +60,7 @@ its missing result processor. The command is not submitted again:
            [sys.executable, "-c", "print(43)"],
            directory=directory,
            output_file="stdout.txt",
-       ), persistent=manager,
+       ), tracked=manager,
        processing_required=True,
    )
    try:

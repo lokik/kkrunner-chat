@@ -29,12 +29,12 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
         output_file=tmp_path / "case/stdout",
         staging=StagingSpec(local_root=tmp_path),
     )
-    first = client.create_run(spec, persistent=manager)
+    first = client.create_run(spec, tracked=manager)
     directory, files = first._file_session.submission_footprint()
     resolved = replace(first.record, execution=replace(first.record.execution, directory=directory), files=files)
     manager.reserve(resolved)
 
-    second = client.create_run(spec, persistent=manager)
+    second = client.create_run(spec, tracked=manager)
     with pytest.raises(DuplicateSubmissionError):
         second.submit()
     assert resolved.execution.directory.remote == "/home/tester/case"

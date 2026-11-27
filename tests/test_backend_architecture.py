@@ -61,7 +61,7 @@ def test_same_ssh_endpoint_runs_selected_backend(tmp_path, monkeypatch, backend)
         directory=str(local), output_file="stdout", error_file="stderr",
         staging=StagingSpec(local_root=str(local), remote_root=str(remote)),
     )
-    run = client.create_run(spec, persistent=False)
+    run = client.create_run(spec, tracked=False)
     assert run.run().return_code == 0
     assert (local / "stdout").read_bytes() == (remote / "stdout").read_bytes() == b"out\n"
     assert (local / "stderr").read_bytes() == (remote / "stderr").read_bytes() == b"err\n"

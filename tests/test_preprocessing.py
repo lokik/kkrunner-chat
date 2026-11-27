@@ -23,7 +23,7 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
         directory=tmp_path, input_file=TaskFile(input_file, write=True), output_file="out",
     )
     competitor_spec = replace(spec, output_file="other.out", input_file=input_file)
-    competitor = client.create_run(competitor_spec, persistent=other)
+    competitor = client.create_run(competitor_spec, tracked=other)
 
     def preprocess():
         assert run.state == RunState.PREPROCESSING
@@ -34,7 +34,7 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
             competitor.submit()
         input_file.write_text("generated")
 
-    run = client.create_run(spec, persistent=manager, preprocess=preprocess)
+    run = client.create_run(spec, tracked=manager, preprocess=preprocess)
     assert not input_file.exists()
     run.run()
     assert run.state == RunState.FINISHED
@@ -53,7 +53,7 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     def preprocess():
         raise ValueError("invalid input")
 
-    run = client.create_run(spec, persistent=manager, preprocess=preprocess)
+    run = client.create_run(spec, tracked=manager, preprocess=preprocess)
     with pytest.raises(ValueError, match="invalid input"):
         run.submit()
     assert run.backend_id is None
@@ -62,7 +62,7 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     assert record.failure_phase == FailurePhase.PREPROCESSING
     assert record.files.captured_at is None
     assert not (tmp_path / "out").exists()
-    replacement = client.create_run(replace(spec, input_files=()), persistent=manager)
+    replacement = client.create_run(replace(spec, input_files=()), tracked=manager)
     replacement.run()
     assert replacement.state == RunState.FINISHED
 
@@ -85,11 +85,11 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
     disk = RunStore(tmp_path / "runs")
     memory = MemoryRunStore()
     ephemeral = RunManager(memory, conflict_stores=(disk,))
-    persistent = RunManager(disk, conflict_stores=(memory,))
+    disk_manager = RunManager(disk, conflict_stores=(memory,))
     spec = ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path,
                          output_file="out", input_files=(TaskFile("input", write=True),))
     client = ExecutionClient()
-    competitor = client.create_run(replace(spec, input_files=()), persistent=persistent)
+    competitor = client.create_run(replace(spec, input_files=()), tracked=disk_manager)
 
     def preprocess():
         assert run.record.store is memory
@@ -98,7 +98,7 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
         with pytest.raises(DuplicateSubmissionError):
             competitor.submit()
 
-    run = client.create_run(spec, persistent=ephemeral, preprocess=preprocess)
+    run = client.create_run(spec, tracked=ephemeral, preprocess=preprocess)
     run.start()
     run.wait()
     assert run.state == RunState.FINISHED
@@ -112,15 +112,15 @@ def test_save_only_reservation_is_memory_only(tmp_path):
     disk = RunStore(tmp_path / "runs")
     memory = MemoryRunStore()
     save = RunManager(memory, conflict_stores=(disk,))
-    persistent = RunManager(disk, conflict_stores=(memory,))
+    disk_manager = RunManager(disk, conflict_stores=(memory,))
     spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
-    reader = persistent.new_record(directory=tmp_path, files=FileManifest.from_spec(
+    reader = disk_manager.new_record(directory=tmp_path, files=FileManifest.from_spec(
         ExecutionSpec(argv=(), directory=tmp_path, input_file="input")))
     with save.preprocessing_reservation(spec):
         assert memory.runs()[0].state == RunState.PREPROCESSING
         assert not disk.runs()
         with pytest.raises(DuplicateSubmissionError):
-            persistent.reserve(reader)
+            disk_manager.reserve(reader)
         (tmp_path / "input").write_text("prepared")
     assert not memory.runs()
     assert not disk.runs()
@@ -129,7 +129,7 @@ def test_save_only_reservation_is_memory_only(tmp_path):
             raise ValueError("bad input")
     assert not memory.runs()
     with pytest.raises(TypeError, match="MemoryRunStore"):
-        with persistent.preprocessing_reservation(spec):
+        with disk_manager.preprocessing_reservation(spec):
             pass
 
 
@@ -138,7 +138,7 @@ def test_staging_of_preprocessed_run_does_not_appear_as_native_submission(tmp_pa
     other = RunManager(RunStore(tmp_path / "runs"), submitting_grace=0)
     run = ExecutionClient().create_run(ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path, input_files=(TaskFile("input", write=True),),
-    ), persistent=manager, preprocess=lambda: (tmp_path / "input").write_text("prepared"))
+    ), tracked=manager, preprocess=lambda: (tmp_path / "input").write_text("prepared"))
     prepare = run._file_session.prepare_submission
 
     def observe():
@@ -203,7 +203,7 @@ def test_staging_failure_is_preprocessing_even_without_callback(tmp_path, monkey
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = ExecutionClient().create_run(ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path,
-    ), persistent=manager)
+    ), tracked=manager)
     def reject():
         assert run.record.state == RunState.PREPROCESSING
         raise OSError("staging failed")
@@ -249,7 +249,7 @@ def test_terminal_publication_follows_actual_resource_cleanup(tmp_path, outcome)
         return result
 
     resource = Resource()
-    run = ExecutionClient().create_run(spec, persistent=manager, preprocess=preprocess,
+    run = ExecutionClient().create_run(spec, tracked=manager, preprocess=preprocess,
         process_result=process if outcome in ("processing", "parser-error") else None,
         owned_resources=ExecutionResources(resource, on_detach=resource.detach),
     )
@@ -313,7 +313,7 @@ def test_cleanup_error_is_visible_to_completion_callback_without_wait(tmp_path):
         seen.append((run.state, run.record.state, run.failure_phase))
         done.set()
 
-    run = ExecutionClient().create_run(ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path), persistent=manager,
+    run = ExecutionClient().create_run(ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path), tracked=manager,
         owned_resources=ExecutionResources(Resource()), callback=completed,
     )
     run.submit()
@@ -338,7 +338,7 @@ def test_memory_run_can_delete_owned_temporary_files_on_completion(tmp_path):
 
     run = ExecutionClient().create_run(ExecutionSpec(
             (sys.executable, "-c", "print('result')"), directory=tmp_path, output_file=output,
-        ), persistent=manager,
+        ), tracked=manager,
         owned_resources=ExecutionResources(Resource(), on_detach=lambda: pytest.fail("unexpected detach")),
     )
     run.run()
@@ -374,7 +374,7 @@ def test_rejected_run_does_not_flush_or_close_borrowed_file(tmp_path, role):
             reserved = manager.reserve(reserved, preprocessing=True)
             run = ExecutionClient().create_run(ExecutionSpec(
                 argv=(sys.executable, "-c", "pass"), directory=tmp_path, **{role: stream},
-            ), persistent=manager)
+            ), tracked=manager)
             assert path.read_text() == "original"
             with pytest.raises(DuplicateSubmissionError):
                 run.submit()

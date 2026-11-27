@@ -38,7 +38,7 @@ class ExecutionClient:
         self._remote_home_cache = None
 
     def create_run(
-        self, spec, *, persistent=False, detached=None, process_result=None,
+        self, spec, *, tracked=False, detached=None, process_result=None,
         callback=None, output_listener=None, owned_resources=None, preprocess=None,
         metadata=None, processing_required=None, run_id=None,
     ):
@@ -47,7 +47,7 @@ class ExecutionClient:
 
         return Run._create(
             self, spec,
-            persistent=persistent, detached=detached, process_result=process_result,
+            tracked=tracked, detached=detached, process_result=process_result,
             callback=callback, output_listener=output_listener, owned_resources=owned_resources,
             preprocess=preprocess, metadata=metadata, processing_required=processing_required,
             run_id=run_id,
@@ -57,7 +57,7 @@ class ExecutionClient:
         self, argv, *, directory=".", input_file=None, output_file=None,
         stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
         mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
-        persistent=False, detached=None, process_result=None, output_listener=None,
+        tracked=False, detached=None, process_result=None, output_listener=None,
     ):
         """Run a command and wait, displaying available unredirected output."""
         return self.submit(
@@ -65,7 +65,7 @@ class ExecutionClient:
             stdin=stdin, error_file=error_file, input_files=input_files,
             output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
             mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
-            persistent=persistent, detached=detached, process_result=process_result,
+            tracked=tracked, detached=detached, process_result=process_result,
             output_listener=output_listener,
         ).wait()
 
@@ -73,7 +73,7 @@ class ExecutionClient:
         self, argv, *, directory=".", input_file=None, output_file=None,
         stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
         mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
-        persistent=False, detached=None, process_result=None, output_listener=None,
+        tracked=False, detached=None, process_result=None, output_listener=None,
     ):
         """Submit a command and return its Run, displaying available unredirected output."""
         import sys
@@ -96,7 +96,7 @@ class ExecutionClient:
                     sys.stderr.flush()
 
         runner = self.create_run(
-            spec, persistent=persistent, detached=detached,
+            spec, tracked=tracked, detached=detached,
             process_result=process_result, output_listener=output_listener,
         )
         runner.submit()

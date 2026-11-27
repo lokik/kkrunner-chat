@@ -131,7 +131,7 @@ def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
             output_file=tmp_path / "stdout.txt",
-        ), persistent=manager,
+        ), tracked=manager,
     )
     assert isinstance(run.run(), ExecutionOutcome)
     record = manager.store.get(run.id)
@@ -147,7 +147,7 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
             output_file=tmp_path / "stdout.txt",
-        ), persistent=manager,
+        ), tracked=manager,
         processing_required=True,
     )
     with pytest.raises(ProcessingPending):
@@ -167,7 +167,7 @@ def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypat
             [sys.executable, "-c", "import time; time.sleep(.4); print(42)"],
             directory=tmp_path,
             output_file=tmp_path / "stdout.txt",
-        ), persistent=manager,
+        ), tracked=manager,
     )
     run.submit()
     identity = run.backend_id
@@ -268,7 +268,7 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             output_file=local / "stdout",
             output_files=(local / "answer.txt",),
             staging=StagingSpec(local_root=local, remote_root=remote),
-        ), persistent=manager,
+        ), tracked=manager,
     )
     with pytest.raises(OSError, match="interrupted download"):
         run.run()

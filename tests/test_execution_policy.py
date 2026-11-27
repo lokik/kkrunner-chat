@@ -27,7 +27,7 @@ def _local_spec(tmp_path, code="print('ok')"):
 
 
 def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path):
-    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), persistent=False)
+    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), tracked=False)
     observer_errors = []
 
     def broken_observer(*_):
@@ -47,7 +47,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
     def fail(_outcome):
         raise ValueError("parser failed")
 
-    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), persistent=False, process_result=fail)
+    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), tracked=False, process_result=fail)
     raw = runner._job
     runner.submit()
     with pytest.raises(ValueError, match="parser failed"):
@@ -58,7 +58,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
-    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), persistent=False,
+    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), tracked=False,
         callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed")),
     )
     runner.submit()
@@ -310,9 +310,9 @@ def test_partial_spec_cannot_be_submitted_to_public_backend_apis(tmp_path):
     spec = ExecutionSpec(argv=None, directory=str(tmp_path))
     client = ExecutionClient(DirectBackend)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        client.create_run(spec, persistent=False)
+        client.create_run(spec, tracked=False)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
         client.create_run_parts(spec)
     manager = RunManager(RunStore(tmp_path / "store"))
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        client.create_run(spec, persistent=manager)
+        client.create_run(spec, tracked=manager)

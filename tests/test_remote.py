@@ -47,7 +47,7 @@ def _processed_run(executor, spec):
         error = b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes()
         return SimpleNamespace(return_code=outcome.return_code, output=output, error=error)
 
-    return executor.create_run(spec, persistent=False, process_result=process)
+    return executor.create_run(spec, tracked=False, process_result=process)
 
 
 def _executor(target=None, **kwargs):
@@ -175,7 +175,7 @@ def test_remote_executor_local_transport_streams_output(tmp_path):
 def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
     transport = _SpyTransport()
     executor, spec, _, remote_root = _text_run(tmp_path, transport)
-    runner = executor.create_run(spec, persistent=False)
+    runner = executor.create_run(spec, tracked=False)
 
     try:
         runner._file_session.prepare_submission()
@@ -557,7 +557,7 @@ def test_remote_none_stream_files_are_live_only(tmp_path):
         staging=_launch(tmp_path, tmp_path / "remote"),
     )
     observed = []
-    runner = executor.create_run(spec, persistent=False)
+    runner = executor.create_run(spec, tracked=False)
     runner.add_output_listener(lambda text, kind: observed.append((kind, text)))
     outcome = runner.run()
     assert runner.state == RunState.FINISHED
@@ -648,7 +648,7 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
         output_file=None,
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote"), input_sync="always"),
     )
-    runner = _executor().create_run(spec, persistent=False)
+    runner = _executor().create_run(spec, tracked=False)
     if preflight:
         with pytest.raises(SubmissionNotStarted, match="Local input file"):
             runner._file_session.prepare_submission()
@@ -680,7 +680,7 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
     executor = ExecutionClient(SupervisedBackend, target=_OperationLoopbackTransport())
-    runner = executor.create_run(spec, persistent=False)
+    runner = executor.create_run(spec, tracked=False)
 
     async def fail_after_preparation(_request, **_kwargs):
         raise OSError("backend submission uncertain")

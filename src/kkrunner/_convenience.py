@@ -5,7 +5,7 @@ def run(
     argv, *, target=None, backend=None, directory=".", input_file=None, output_file=None,
     stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
     mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
-    persistent=False, detached=None, process_result=None, output_listener=None,
+    tracked=False, detached=None, process_result=None, output_listener=None,
 ):
     """Run a command and wait for completion."""
     from kkrunner.client.execution_client import ExecutionClient
@@ -15,7 +15,7 @@ def run(
         stdin=stdin, error_file=error_file, input_files=input_files,
         output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
         mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
-        persistent=persistent, detached=detached,
+        tracked=tracked, detached=detached,
         process_result=process_result, output_listener=output_listener,
     )
 
@@ -24,7 +24,7 @@ def submit(
     argv, *, target=None, backend=None, directory=".", input_file=None, output_file=None,
     stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
     mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
-    persistent=False, detached=None, process_result=None, output_listener=None,
+    tracked=False, detached=None, process_result=None, output_listener=None,
 ):
     """Submit a command and return its Run without waiting for completion."""
     from kkrunner.client.execution_client import ExecutionClient
@@ -34,6 +34,6 @@ def submit(
         stdin=stdin, error_file=error_file, input_files=input_files,
         output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
         mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
-        persistent=persistent, detached=detached,
+        tracked=tracked, detached=detached,
         process_result=process_result, output_listener=output_listener,
     )

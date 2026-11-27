@@ -81,7 +81,7 @@ def test_run_is_durable_in_project_namespace_before_backend_submit(tmp_path):
     manager, projects, project = _fixture(tmp_path)
     executor = _Executor()
     run = executor.create_run(
-        ExecutionSpec(("unused",), directory=str(tmp_path)), persistent=manager,
+        ExecutionSpec(("unused",), directory=str(tmp_path)), tracked=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "input_definition": "DOS"}},
     )
@@ -108,7 +108,7 @@ def test_project_must_exist_before_backend_is_created(tmp_path, explicit):
     with pytest.raises(errors, match=message):
         selected = manager.for_project("missing") if explicit else manager
         executor.create_run(
-            ExecutionSpec(("unused",), directory=str(tmp_path)), persistent=selected,
+            ExecutionSpec(("unused",), directory=str(tmp_path)), tracked=selected,
             process_result=lambda outcome: outcome,
             metadata={"test": {"task": "DOS"}},
         )

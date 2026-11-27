@@ -149,7 +149,7 @@ def test_snapshot_runner_convenience(tmp_path):
 
     manager = RunManager(RunStore(tmp_path / "history"))
     run = ExecutionClient(SupervisedBackend).create_run(
-        ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"), persistent=manager,
+        ExecutionSpec([sys.executable, "-c", "print('done')"], directory=tmp_path, output_file="stdout.txt"), tracked=manager,
     )
     run.run()
     assert run.snapshot_file("stdout.txt") == b"done\n"

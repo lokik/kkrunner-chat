@@ -402,7 +402,7 @@ print(42)
 '''
 run = submit(
     [sys.executable, '-c', command], directory=root, output_file='run.out',
-    backend='kkrunner', persistent=manager,
+    backend='kkrunner', tracked=manager,
 )
 print(run.id, flush=True)
 """

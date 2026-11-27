@@ -113,7 +113,7 @@ def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
         assert entered.wait(3)
 
     monkeypatch.setattr(Run, "_start_completion", start_and_yield)
-    run = Client().create_run(ExecutionSpec(["instant"], directory=tmp_path), persistent=manager, process_result=process)
+    run = Client().create_run(ExecutionSpec(["instant"], directory=tmp_path), tracked=manager, process_result=process)
     try:
         run.submit()
     finally:
@@ -193,7 +193,7 @@ def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch)
         ["unused"], directory=local, output_file=output,
         staging=StagingSpec(local_root=local, remote_root=tmp_path / "remote"),
     )
-    run = ExecutionClient(DirectBackend, target=_LoopbackSshTransport()).create_run(spec, persistent=False)
+    run = ExecutionClient(DirectBackend, target=_LoopbackSshTransport()).create_run(spec, tracked=False)
 
     async def rejected(self, request, on_output):
         raise RuntimeError("lost submit response")
@@ -259,8 +259,8 @@ def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
 
     backend = Client()
     spec = ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "same-output")
-    first = backend.create_run(spec, persistent=manager, run_id="same-id")
-    second = backend.create_run(spec, persistent=manager, run_id="same-id")
+    first = backend.create_run(spec, tracked=manager, run_id="same-id")
+    second = backend.create_run(spec, tracked=manager, run_id="same-id")
     try:
         first.submit()
         with pytest.raises((RuntimeError, ValueError)):

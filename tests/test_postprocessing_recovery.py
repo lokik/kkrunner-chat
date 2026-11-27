@@ -80,7 +80,7 @@ def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
     manager = RunManager(store)
     finished = Event()
     run = _Executor().create_run(
-        ExecutionSpec(argv=("unused",), directory=str(tmp_path)), persistent=manager,
+        ExecutionSpec(argv=("unused",), directory=str(tmp_path)), tracked=manager,
         process_result=lambda outcome: outcome,
         callback=lambda result: finished.set(),
         metadata={"example": {"task": "DOS".upper()}},
@@ -101,7 +101,7 @@ def test_result_processor_failure_is_postprocessing_failure(tmp_path):
         raise ValueError("result parsing failed")
 
     run = executor.create_run(
-        ExecutionSpec(argv=("unused",), directory=str(tmp_path)), persistent=manager,
+        ExecutionSpec(argv=("unused",), directory=str(tmp_path)), tracked=manager,
         process_result=fail,
         metadata={"example": {"task": "DOS".upper()}},
     )
