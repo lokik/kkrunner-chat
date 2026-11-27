@@ -13,36 +13,45 @@ from functools import lru_cache
 from hashlib import sha256
 
 
-def function_definition(fn, *, static=False, name=None):
-    """Assemble an explicitly marked function and its declared dependencies.
-
-    Dependencies are emitted before their users. Source extraction is not
-    responsible for verifying portability (which the tests enforce).
-    """
-    emitted = {}
+def _dependency_order(function):
+    """Return each declared portable dependency once, before its users."""
+    visited = set()
     visiting = set()
-    definitions = []
+    order = []
 
-    def visit(function, *, name=None):
-        if not getattr(function, "__kkrunner_portable__", False):
+    def visit(fn):
+        if not getattr(fn, "__kkrunner_portable__", False):
             raise TypeError("Remote operation must be marked with @portable")
-        binding = name or function.__name__
-        if function in visiting:
+        if fn in visiting:
             raise TypeError("Cyclic remote source dependencies")
-        if binding in emitted:
-            if emitted[binding] is not function:
-                raise TypeError(f"Conflicting remote dependency name: {binding}")
+        if fn in visited:
             return
-        emitted[binding] = function
-        visiting.add(function)
-        for dependency in function.__source_dependencies__:
+        visiting.add(fn)
+        bindings = set()
+        for dependency in fn.__source_dependencies__:
+            if dependency.__name__ in bindings:
+                raise TypeError(f"Duplicate remote dependency name: {dependency.__name__}")
+            bindings.add(dependency.__name__)
             visit(dependency)
-        definitions.append((function, name))
-        visiting.remove(function)
+        visiting.remove(fn)
+        visited.add(fn)
+        order.append(fn)
 
-    visit(fn, name=name)
-    return "".join(_function_definition(function, name=binding)
-                   for function, binding in definitions)
+    visit(function)
+    return order
+
+
+def function_definition(fn, *, static=False, name=None):
+    """Assemble a portable dependency graph in one flat namespace."""
+    emitted = {}
+    definitions = []
+    for function in _dependency_order(fn):
+        binding = (name if function is fn else None) or function.__name__
+        if binding in emitted:
+            raise TypeError(f"Conflicting remote dependency name: {binding}")
+        emitted[binding] = function
+        definitions.append(_function_definition(function, name=binding))
+    return "".join(definitions)
 
 
 def _function_definition(fn, *, name=None):
@@ -75,31 +84,8 @@ def portable_bundle(function):
         identity = f"{fn.__module__}.{fn.__qualname__}"
         return "_kkrunner_" + sha256(identity.encode("utf8")).hexdigest()[:24]
 
-    visited = set()
-    visiting = set()
-    order = []
-
-    def visit(fn):
-        if not getattr(fn, "__kkrunner_portable__", False):
-            raise TypeError("Remote operation must be marked with @portable")
-        if fn in visiting:
-            raise TypeError("Cyclic remote source dependencies")
-        if fn in visited:
-            return
-        visiting.add(fn)
-        bindings = set()
-        for dependency in fn.__source_dependencies__:
-            if dependency.__name__ in bindings:
-                raise TypeError(f"Duplicate remote dependency name: {dependency.__name__}")
-            bindings.add(dependency.__name__)
-            visit(dependency)
-        visiting.remove(fn)
-        visited.add(fn)
-        order.append(fn)
-
-    visit(function)
     definitions = []
-    for fn in order:
+    for fn in _dependency_order(function):
         source = _function_definition(fn, name=symbol(fn))
         node = ast.parse(source).body[0]
         aliases = [

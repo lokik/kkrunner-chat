@@ -32,10 +32,11 @@ class FileSession:
     """Own mapped files and local streams for exactly one client Run."""
 
     def __init__(
-        self, context, spec, *, files=None, remote_directory=None,
+        self, context, spec, *, files=None, remote_directory=None, allow_live_streams=False,
     ):
         self.context = context
         self.spec = spec
+        self._allow_live_streams = allow_live_streams
         self._files = FileManifest.from_spec(spec) if files is None else files
         self._remote_directory = remote_directory
         self._prepared = None
@@ -686,7 +687,7 @@ class FileSession:
             directory, manifest = await self._resolve_footprint()
             from kkrunner.client.execution_request import execution_request
             declaration = self.spec
-            if self.context.client.backend.execution_mode == "direct":
+            if self._allow_live_streams:
                 declaration = replace(self.spec, **{
                     name: file_path(getattr(self.spec, name), self.spec.directory)
                     for name in ("stdin", "output_file", "error_file")
@@ -759,32 +760,22 @@ class FileSession:
             streams.pop_all()  # Explicitly transfer stream ownership.
             return session
 
-    def _working_directory(self, target):
+    @property
+    def working_directory(self):
         from kkrunner.runs.model import WorkingDirectory
-        return WorkingDirectory(os.path.abspath(self.spec.directory), None if self.is_local else target)
+        return WorkingDirectory(os.path.abspath(self.spec.directory),
+                                None if self.is_local else self._remote_directory)
 
     async def _resolve_footprint(self):
         if self._remote_directory is None:
             target = await self.context.map_directory(self.spec.directory)
             self._files = await self.context.map_manifest(self._files)
             self._remote_directory = target
-        return self._working_directory(self._remote_directory), self._files
+        return self.working_directory, self._files
 
     def submission_footprint(self):
         """Resolve names once, without creating or transferring files."""
         return _run_sync(self._resolve_footprint())
-
-    def execution(self, backend_id):
-        if backend_id is None and self._remote_directory is None:
-            return None
-        from kkrunner.targets import require_persistable_target
-        from kkrunner.runs.model import ExecutionMetadata
-        return ExecutionMetadata(
-            require_persistable_target(self.context.target),
-            self._working_directory(self._remote_directory),
-            backend=self.context.client.backend_config,
-            backend_id=backend_id,
-        )
 
     def prepare_submission(self):
         """Stage files before backend submit; persistent Run records the manifest."""
@@ -800,8 +791,9 @@ class FileSession:
             self._files = manifest
 
     def prepare_job(self):
-        """Open locally owned output streams and return a backend request."""
-        self.prepare_submission()
+        """Open locally owned output streams for an already staged request."""
+        if self._prepared is None:
+            raise SubmissionNotStarted("Files must be staged before preparing the job")
         request = self._prepared
         if not self.is_local:
             try:
@@ -914,18 +906,8 @@ class FileSession:
                 self._set_file_availability(entry.local_path, "failed", str(exc))
                 raise
 
-    async def _synchronize(self, state):
-        if self.is_local:
-            from kkrunner.files.availability import local_manifest
-            from kkrunner.runs.base import RunStatus
-            self.close()
-            self._files = local_manifest(self._files, RunStatus(
-                state, return_code=self._status.return_code,
-                failure_phase=self._status.failure_phase, message=self._status.message))
-            if state == RunState.FINISHED and self._status.return_code == 0 and self._files.failed_artifacts:
-                raise FileNotFoundError(self._files.availability_message)
-            return
-        required = state == RunState.FINISHED and self._status.return_code == 0
+    async def _synchronize(self, *, required):
+        """Synchronize target-side artifacts for a remote session."""
         try:
             if self._retrieve_primary_streams:
                 await self._retrieve_target_streams(required=required)
@@ -945,18 +927,25 @@ class FileSession:
 
     async def finalize_async(self, status):
         """Finalize owned files on the existing event loop, if any."""
-        self._status = status
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
-        try:
-            await self._synchronize(status.state)
-        finally:
+        required = status.state == RunState.FINISHED and status.return_code == 0
+        if self.is_local:
+            from kkrunner.files.availability import local_manifest
             self.close()
+            self._files = local_manifest(self._files, status)
+            if required and self._files.failed_artifacts:
+                raise FileNotFoundError(self._files.availability_message)
+        else:
+            try:
+                await self._synchronize(required=required)
+            finally:
+                self.close()
         from kkrunner.runs.files import capture_result_files
 
         if self._files.captured_at is None:
             self._files = capture_result_files(
-                self._files, require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
+                self._files, require_outputs=required,
                 cache_versions=None if self.is_local else await self._target_cache_versions(),
             )
         return self._files

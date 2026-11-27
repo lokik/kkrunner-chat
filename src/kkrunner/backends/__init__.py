@@ -6,18 +6,23 @@ imported lazily only by the target that executes them.
 from __future__ import annotations
 
 
+# Fixed lazy imports; not a runtime registration mechanism.
+_BACKENDS = {
+    "direct": (".implementations.direct.backend", "DirectBackend"),
+    "kkrunner": (".implementations.supervised.backend", "SupervisedBackend"),
+    "psij": (".implementations.psij.backend", "PsijBackend"),
+}
+
+
 def backend_class(kind):
     """Resolve one of the supported backend identifiers."""
-    if kind == "direct":
-        from .implementations.direct.backend import DirectBackend
-        return DirectBackend
-    if kind == "kkrunner":
-        from .implementations.supervised.backend import SupervisedBackend
-        return SupervisedBackend
-    if kind == "psij":
-        from .implementations.psij.backend import PsijBackend
-        return PsijBackend
-    raise ValueError(f"Unsupported backend: {kind!r}")
+    from importlib import import_module
+
+    try:
+        module, name = _BACKENDS[kind]
+    except KeyError:
+        raise ValueError(f"Unsupported backend: {kind!r}") from None
+    return getattr(import_module(module, __name__), name)
 
 
 def configured_backend(backend=None, *, options=None):
@@ -38,15 +43,15 @@ def configured_backend(backend=None, *, options=None):
 
 
 def available_backend_names():
-    return frozenset(("direct", "kkrunner", "psij"))
+    return frozenset(_BACKENDS)
 
 
 def installed_backend_names():
     """Backends the installed agent can submit and reattach."""
-    return frozenset(("kkrunner", "psij"))
+    return available_backend_names() - {"direct"}
 
 
-__all__ = ["DirectBackend", "SupervisedBackend", "PsijBackend", "BackendConfig"]
+__all__ = [name for _, name in _BACKENDS.values()] + ["BackendConfig"]
 
 
 def __getattr__(name):
@@ -54,13 +59,12 @@ def __getattr__(name):
         from .config import BackendConfig
         globals()[name] = BackendConfig
         return BackendConfig
-    kinds = {"DirectBackend": "direct", "SupervisedBackend": "kkrunner", "PsijBackend": "psij"}
-    try:
-        value = backend_class(kinds[name])
-    except KeyError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    globals()[name] = value
-    return value
+    for kind, (_, class_name) in _BACKENDS.items():
+        if name == class_name:
+            value = backend_class(kind)
+            globals()[name] = value
+            return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__():

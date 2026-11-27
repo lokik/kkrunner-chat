@@ -55,7 +55,7 @@ def _processed(raw, client):
             error=b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes(),
         )
 
-    runner = Run(raw.job, client=client, parts=raw, process_result=process)
+    runner = Run(raw, client=client, process_result=process)
     runner.start()
     return runner
 

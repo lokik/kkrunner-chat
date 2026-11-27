@@ -55,9 +55,10 @@ class SupervisedBackend(Backend, ManagedOperations):
     resolves_mpi_launcher = True
     execution_mode = "managed"
     default_detached = True
-    def __init__(self, **options):
-        super().__init__(**options)
-        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER, BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW})
+    _supports = frozenset({
+        BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER,
+        BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE,
+    })
 
     @staticmethod
     def acknowledge_submission(run_id: str) -> AcknowledgeReply:
@@ -227,12 +228,6 @@ class SupervisedBackend(Backend, ManagedOperations):
     async def stream(job_ref: str, **options):
         import sys
         return await SupervisedBackend.follow(job_ref, sys.stdout.buffer, sys.stderr.buffer, **options)
-
-    @staticmethod
-    async def follow_framed(job_ref: str, **options):
-        from kkrunner.remote.stream import follow_framed
-        return await follow_framed(SupervisedBackend.follow, job_ref, **options)
-
 
 def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionReply:
     """Submit one process job, preserving the atomic release barrier."""

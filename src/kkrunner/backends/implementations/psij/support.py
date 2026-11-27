@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 
 from kkrunner.backends.contracts import JobFailurePhase, JobStatus
@@ -100,8 +101,10 @@ async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
     handle = decode_handle(remote_id)
     job = _attach_job(handle)
 
-    def emit(kind, data):
-        streams[kind].write(data)
+    async def emit(kind, data):
+        pending = streams[kind].write(data)
+        if inspect.isawaitable(pending):
+            await pending
         streams[kind].flush()
 
     loop = asyncio.get_running_loop()

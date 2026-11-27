@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from subprocess import SubprocessError
+
 from kkrunner.backends import configured_backend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, JobRef, decode_job_status
@@ -12,8 +14,21 @@ from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client.staging import StagingSpec
-from kkrunner.runs.base import RunStatus
+from kkrunner.runs.base import RunState, RunStatus
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
+
+
+def normalize_config(target, backend):
+    """Normalize a stored client configuration before reconstruction or pooling."""
+    from kkrunner.targets import require_persistable_target, target_from_dict
+    if isinstance(target, dict):
+        target = target_from_dict(target)
+    if isinstance(backend, dict):
+        backend = BackendConfig(**backend)
+    require_persistable_target(target)
+    if not target.available or not backend.available:
+        raise ValueError("Unsupported backend or transport; only local history is available")
+    return target, backend
 
 
 class ExecutionClient:
@@ -109,12 +124,7 @@ class ExecutionClient:
     @classmethod
     def from_config(cls, target, backend):
         """Reconstruct a client from supported stored connection/backend data."""
-        from kkrunner.targets import require_persistable_target, target_from_dict
-        if isinstance(target, dict):
-            target = target_from_dict(target)
-        if isinstance(backend, dict):
-            backend = BackendConfig(**backend)
-        require_persistable_target(target)
+        target, backend = normalize_config(target, backend)
         return cls(backend.create(), target=target)
 
     @property
@@ -156,20 +166,20 @@ class ExecutionClient:
 
     def acknowledge_submission(self, run):
         """Release the submission receipt after the manager persisted acceptance."""
-        if self.backend.execution_mode != "managed":
-            # Output-only reattachment has no durable supervisor receipt.
+        if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return None
         key = run.execution.submission_key or run.id
         return _run_sync(self._invoke("acknowledge_submission", key))
 
     def acknowledge(self, run):
         """Release a delivered receipt after the manager persisted completion."""
-        if self.backend.execution_mode != "managed":
+        if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return None
         self._validate_run(run)
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
 
     def status(self, *runs):
+        """Query each native job; a failed connection leaves only that observation unknown."""
         if BackendCapability.STATUS not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("This backend has no independent status query")
@@ -182,8 +192,15 @@ class ExecutionClient:
             result = []
             for run in runs:
                 token = run.execution.backend_id
-                status = decode_job_status(await self._invoke("status", token))
-                result.append(RunStatus.from_job_status(status, backend_id=token))
+                try:
+                    facts = await self._invoke("status", token)
+                except (OSError, SubprocessError) as exc:
+                    result.append(RunStatus(
+                        RunState.UNKNOWN, backend_id=token,
+                        message=f"Cannot query execution status: {exc}",
+                    ))
+                else:
+                    result.append(RunStatus.from_job_status(decode_job_status(facts), backend_id=token))
             return tuple(result)
 
         return _run_sync(query()) if runs else ()
@@ -237,7 +254,8 @@ class ExecutionClient:
         return _run_sync(self._recover_submission(submission_key, submission, submitted_at=submitted_at))
 
     def file_session(self, spec):
-        return FileSession(FileContext(self, spec.staging), spec)
+        return FileSession(FileContext(self, spec.staging), spec,
+                           allow_live_streams=self.backend.execution_mode == "direct")
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         from uuid import uuid4
@@ -308,15 +326,13 @@ class ExecutionClient:
             files.close()
             raise
 
-    def collect_ended_direct_files(self, record, status):
-        """Recover outputs without reattaching or resubmitting direct execution.
+    def collect_ended_files(self, record, status):
+        """Collect named outputs of an ended execution without opening an observer.
 
         The original observer may have died, but the persisted manifest still
         defines which target files are eligible for retrieval.
         """
         from kkrunner.client.contracts import JobAttachment
-        if self.backend.name != "direct":
-            raise ValueError("Only direct execution uses unobserved file collection")
         self._validate_run(record)
 
         async def collect():

@@ -39,8 +39,8 @@ class Run:
     """
 
     def __init__(
-        self, job, *, client=None, manager=None, record=None,
-        process_result=None, callback=None, file_session=None, parts=None, owned_resources=None,
+        self, parts, *, client, manager=None, record=None,
+        process_result=None, callback=None, owned_resources=None,
         preprocess=None, detached=False, observation_lock=None,
     ):
         if (manager is None) != (record is None):
@@ -49,13 +49,6 @@ class Run:
             raise ValueError("Result processing was not declared in RunRecord")
         if owned_resources is not None and not isinstance(owned_resources, ExecutionResources):
             raise TypeError("owned_resources must be ExecutionResources or None")
-        from kkrunner.client.run_parts import RunParts
-        if parts is None:
-            if file_session is None:
-                from kkrunner.client.execution_client import ExecutionClient
-                client = client if client is not None else ExecutionClient()
-                file_session = client.file_session(job.spec)
-            parts = RunParts(job, file_session)
         self._parts = parts
         self._owned_resources = owned_resources
         self._submitting = False
@@ -179,7 +172,7 @@ class Run:
         if output_listener is not None:
             parts.job.add_output_listener(output_listener)
         return cls(
-            parts.job, client=client, manager=manager, record=record, parts=parts,
+            parts, client=client, manager=manager, record=record,
             process_result=process_result, callback=callback, detached=detached,
             owned_resources=owned_resources, preprocess=preprocess,
         )
@@ -202,11 +195,16 @@ class Run:
 
     @property
     def execution(self):
-        proposed = self._file_session.execution(self.backend_id)
-        if proposed is None or self._record is None:
-            return proposed
-        from dataclasses import replace
-        return replace(proposed, submission_key=self._record.execution.submission_key)
+        from kkrunner.runs.model import ExecutionMetadata
+        if self.backend_id is None and self._file_session.remote_directory is None:
+            return None
+        return ExecutionMetadata(
+            target=self.client.target,
+            directory=self._file_session.working_directory,
+            backend=self.client.backend_config,
+            backend_id=self.backend_id,
+            submission_key=None if self._record is None else self._record.execution.submission_key,
+        )
 
     @property
     def files(self):
@@ -271,6 +269,11 @@ class Run:
             raise RuntimeError("Snapshot of an untracked Run requires a workspace")
         return self.manager.snapshot_file(self._record, file, destination=destination)
 
+    def _file_failure_phase(self):
+        if self._job.output_error is not None:
+            return FailurePhase.OUTPUT
+        return FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD
+
     def _finish(self):
         try:
             self._job.wait()
@@ -291,17 +294,14 @@ class Run:
                         # delivered every byte. Re-read target-owned streams.
                         if not self._file_session.is_local:
                             self._file_session.configure_stream_retrieval(True)
+                    # FileSession finalizes and closes its streams before processing.
                     self._file_session.finalize(self._job.status())
-                    # Flush and close the client-owned streams *before*
-                    # postprocessing can durably publish a finished Run.
-                    self._parts.close()
                 except Exception as exc:
                     if raw_state == RunState.FINISHED:
                         self._file_session.mark_transfer_failed(str(exc))
                         self._exception = exc
                         self._state = RunState.FAILED
-                        self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
-                                               FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
+                        self._failure_phase = self._file_failure_phase()
                         self._failure_message = str(exc)
                         return
                     # Diagnostic transfer errors cannot replace a failed or
@@ -386,8 +386,7 @@ class Run:
                     self._exception = exc
                 if self._state == RunState.FINISHED:
                     self._state = RunState.FAILED
-                    self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
-                                           FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
+                    self._failure_phase = self._file_failure_phase()
                     self._failure_message = str(exc)
             try:
                 if self.manager is not None:
@@ -497,7 +496,7 @@ class Run:
                 # Keep staging ownership from the instant the reservation becomes visible.
                 self._claim_observation()
                 # Reservation and duplicate-submit checks are atomic at the store.
-                self._record = manager.reserve(self._record, preprocessing=True)
+                self._record = manager.reserve(self._record, preprocessing=True, recover_conflicts=True)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
                 self._state = RunState.PREPROCESSING
@@ -594,7 +593,6 @@ class Run:
             raise
 
         if manager is not None:
-            manager.register_client(self.client)
             with self._completion_lock:
                 if not self._completion_persisted:
 
@@ -606,7 +604,7 @@ class Run:
                         files=self.files,
                     )
                     self._monitor_record_version = self._record.updated_at
-            manager._acknowledge_submission(self.client, self._record)
+            manager._acknowledge_submission(self._record, client=self.client)
 
     def _claim_observation(self):
         if self.manager is not None and self._observation_lock is None:

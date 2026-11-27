@@ -47,7 +47,7 @@ def _stream_call(function):
 
 
 @portable
-def _framed_call(function, protocol_factory, observe_only=False):
+def _framed_call(function, protocol_factory, observe_only=False, submission=True):
     """Portable invocation carrying accepted identity, output and backend status."""
     import asyncio
     import json
@@ -101,10 +101,10 @@ def _framed_call(function, protocol_factory, observe_only=False):
             await write(protocol.encode("started", facts))
 
         async def invoke():
-            return await function(
-                *payload["args"], **payload["kwargs"],
-                stdout=Sink("out"), stderr=Sink("err"), started=started,
-            )
+            sinks = {"stdout": Sink("out"), "stderr": Sink("err")}
+            if submission:
+                sinks["started"] = started
+            return await function(*payload["args"], **payload["kwargs"], **sinks)
 
         try:
             await write(protocol.magic)

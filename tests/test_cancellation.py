@@ -6,6 +6,7 @@ from threading import Event, Thread
 import pytest
 
 from kkrunner import ExecutionSpec, RunState
+from kkrunner.client.run_parts import RunParts
 from kkrunner.backends.contracts import JobRef, JobStatus, SubmissionNotStarted
 from kkrunner.client import ExecutionClient
 from kkrunner.client.job import Job
@@ -84,7 +85,7 @@ def test_public_run_latches_cancel_before_submit(tmp_path):
     job, execution = _controlled_job()
     resource = _Resource()
     client = ExecutionClient()
-    run = Run(job, client=client, file_session=client.file_session(job.spec),
+    run = Run(RunParts(job, client.file_session(job.spec)), client=client,
               owned_resources=ExecutionResources(resource))
     run.cancel().result(timeout=3)
     assert run.state is RunState.CANCELLED
@@ -126,7 +127,7 @@ def test_cancel_started_run_does_not_close_owned_resources_before_monitor_finish
     resource = _Resource()
     client = ExecutionClient()
     resources = ExecutionResources(resource)
-    run = Run(job, client=client, file_session=client.file_session(job.spec), owned_resources=resources)
+    run = Run(RunParts(job, client.file_session(job.spec)), client=client, owned_resources=resources)
     future = run.cancel()
     future.result(timeout=5)
     assert not resources.closed

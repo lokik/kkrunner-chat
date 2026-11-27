@@ -1,3 +1,5 @@
+from subprocess import CalledProcessError
+
 import pytest
 
 from kkrunner.files import FileEntry, FileManifest
@@ -66,7 +68,8 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
     assert results == [run.result]
 
 
-def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error", [OSError("temporarily disconnected"), CalledProcessError(255, ["ssh"])])
+def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, monkeypatch, error):
     manager = RunManager(RunStore(tmp_path / "runs"))
     calls = []
     client = ExecutionClient(SupervisedBackend)
@@ -74,7 +77,7 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
     def acknowledge(record):
         calls.append(record.id)
         if len(calls) == 1:
-            raise OSError("temporarily disconnected")
+            raise error
 
     monkeypatch.setattr(client, "acknowledge", acknowledge)
     manager.register_client(client)
@@ -439,3 +442,46 @@ def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch
         path.write_text("already available")
         assert manager.retrieve_result_files(historical) == historical
     assert path.read_text() == "already available"
+
+
+@pytest.mark.parametrize("backend", ("direct", "psij"))
+def test_receipt_reconciliation_does_not_create_client_for_backend_without_receipts(tmp_path, monkeypatch, backend):
+    from kkrunner.backends.config import BackendConfig
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("No backend receipt exists to acknowledge")
+
+    monkeypatch.setattr(manager, "client_for", unexpected)
+    record = manager.new_record(directory=tmp_path, backend=BackendConfig(backend))
+    record = manager.complete(
+        record, state=RunState.FINISHED, return_code=0,
+        execution=record.execution.submitted("native-job"),
+    )
+    assert manager.reconcile_acknowledgements() == ()
+    assert manager.store.get(record.id) == record
+
+
+def test_failed_submission_ack_does_not_prevent_status_refresh(tmp_path, monkeypatch):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    client = ExecutionClient(SupervisedBackend)
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=tmp_path, target=client.target, backend=client.backend_config,
+    )
+    record = manager.transition(record, state=RunState.QUEUED,
+                                execution=record.execution.submitted("receipt"))
+    monkeypatch.setattr(client, "status", lambda *runs: (RunStatus(RunState.RUNNING, backend_id="receipt"),))
+    attempts = []
+
+    def acknowledge(run):
+        attempts.append(run.id)
+        if len(attempts) == 1:
+            raise CalledProcessError(255, ["ssh"])
+
+    monkeypatch.setattr(client, "acknowledge_submission", acknowledge)
+    (running,) = manager.refresh((record,))
+    assert running.state == RunState.RUNNING
+    assert manager.refresh((running,))[0].state == RunState.RUNNING
+    assert attempts == [record.id, record.id]

@@ -18,7 +18,6 @@ from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.pool import default_client_pool
 from kkrunner.targets import (
     LocalTarget,
-    SshTarget,
     require_persistable_target,
 )
 from kkrunner.files.manifest import FileEntry, FileManifest
@@ -388,7 +387,7 @@ class RunManager:
                     directory=WorkingDirectory(execution.directory.local, recovery.directory),
                 )
             files = record.files
-            if isinstance(config, SshTarget):
+            if not config.is_local:
                 files = files.with_remote_stream_paths(
                     stdout=recovery.output_file, stderr=recovery.error_file,
                 )
@@ -466,7 +465,7 @@ class RunManager:
 
     @contextmanager
     def _scoped_reservation(self, record):
-        """Use the ordinary preprocessing reservation for a synchronous scope."""
+        """Reserve a synchronous scope without recovering other runs."""
         store = self._store_for(record)
         with store.observation_lock(record):
             reserved = self._reserve(record, lambda: store.save(
@@ -494,7 +493,8 @@ class RunManager:
                 locks.enter_context(store.submission_lock())
             return self._conflicts(record, stores)
 
-    def reserve(self, record, *, preprocessing=False):
+    def reserve(self, record, *, preprocessing=False, recover_conflicts=False):
+        """Reserve atomically; optionally request a separate conflict recovery first."""
         if self._store_for(record).lock_key != self.store.lock_key:
             raise ValueError("Cannot reserve a record owned by another store")
         record = replace(record, store=self.store)
@@ -506,45 +506,48 @@ class RunManager:
                 existing = None
             if existing is not None and (existing != record or existing.state != RunState.NEW):
                 raise ValueError(f"Run id {record.id!r} already exists; use attach()")
-            if not preprocessing and record.files is not None:
-                sync_result_files(record.files.input_files)
             return self.transition(
                 record, state=RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING,
             )
 
-        return self._reserve(record, activate)
+        reserve = self._reserve_recovering if recover_conflicts else self._reserve
+        return reserve(record, activate)
 
     def _reserve(self, record, activate):
         """Check the footprint and activate a record under the same store locks."""
-        attempted_refresh = set()
         stores = self._reservation_stores()
         owner = self._store_for(record)
         if all(store.lock_key != owner.lock_key for store in stores):
             stores = tuple(sorted((*stores, owner), key=lambda store: store.lock_key))
+        with ExitStack() as locks:
+            for store in stores:
+                locks.enter_context(store.submission_lock())
+            conflicts = self._conflicts(record, stores)
+            if conflicts:
+                raise DuplicateSubmissionError(record, conflicts)
+            return activate()
+
+    def _reserve_recovering(self, record, activate):
+        """Explicit higher-level policy: recover abandoned conflicts outside reservation locks."""
+        attempted_refresh = set()
         while True:
-            with ExitStack() as locks:
-                for store in stores:
-                    locks.enter_context(store.submission_lock())
-                conflicts = self._conflicts(record, stores)
-                if not conflicts:
-                    return activate()
+            try:
+                return self._reserve(record, activate)
+            except DuplicateSubmissionError as exc:
                 refreshable = tuple(
-                    conflict for conflict in conflicts
+                    conflict for conflict in exc.conflicts
                     if self._record_key(conflict) not in attempted_refresh
                     and (
                         conflict.state == RunState.PREPROCESSING
                         or conflict.execution.available and (
                             self._is_stale_submitting(conflict)
-                            or (conflict.execution.backend.name == "direct"
+                            or (conflict.execution.backend.execution_mode == "direct"
                                 and conflict.execution.backend_id is not None)
                         )
                     )
                 )
-
-            if not refreshable:
-                raise DuplicateSubmissionError(record, conflicts)
-            # Recovery is a refresh operation, not a second reservation algorithm.
-            # Recheck the actual store contents, regardless of the refresh result.
+                if not refreshable:
+                    raise
             attempted_refresh.update(self._record_key(conflict) for conflict in refreshable)
             self.refresh(refreshable)
 
@@ -552,7 +555,7 @@ class RunManager:
     def _observed_run_state(record, status):
         from kkrunner.runs.states import project_run_state
         return project_run_state(status.state,
-                                 files_pending=isinstance(record.execution.target, SshTarget) and status.files is None,
+                                 files_pending=not record.execution.target.is_local and status.files is None,
                                  processing_pending=record.processing_required and status.return_code == 0,
                                  failure_phase=status.failure_phase)
 
@@ -632,11 +635,12 @@ class RunManager:
 
     def _record_observation(self, record, status, *, retrieve_ended=False):
         """Finalize local artifacts; collect ended Direct SSH output only on request."""
+        observed_at = record.updated_at
         record, status = self._current_observation(record, status)
         if status is None:
             return record
         if (
-            isinstance(record.execution.target, LocalTarget)
+            record.execution.target.is_local
             and status.state.is_terminal and status.files is None
         ):
             # Backend status contains execution facts only. The client-side
@@ -645,8 +649,8 @@ class RunManager:
             status = replace(status, files=local_manifest(record.files, status))
         if (
             retrieve_ended
-            and record.execution.backend.name == "direct"
-            and isinstance(record.execution.target, SshTarget)
+            and record.execution.backend.execution_mode == "direct"
+            and not record.execution.target.is_local
             and (status.state == RunState.CANCELLED or (
                 status.state == RunState.FINISHED and status.return_code is None
             ))
@@ -656,7 +660,7 @@ class RunManager:
             # recover cancellation on a later observation, so collect any
             # diagnostics now, under the same ownership as completion.
             try:
-                files = self.client_for(record).collect_ended_direct_files(record, status)
+                files = self.client_for(record).collect_ended_files(record, status)
             except (OSError, RuntimeError, ValueError, SubprocessError) as exc:
                 if status.state != RunState.CANCELLED:
                     return self.transition(
@@ -673,19 +677,17 @@ class RunManager:
                 status = replace(status, message=message)
             status = replace(status, files=files)
         changes = self._observation_changes(record, status)
+        if changes["state"] == RunState.UNKNOWN:
+            # Uncertainty must not replace a more recent observation or cause
+            # further receipt requests over a possibly unavailable transport.
+            return self.transition(record, expected_updated_at=observed_at, **changes)
         if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
-            result_files = status.files if status.files is not None else record.files
-            if record.execution.directory.remote is None and result_files is not None:
-                from kkrunner.files.availability import discover_local_files
-                result_files = discover_local_files(
-                    result_files, require_outputs=status.return_code == 0,
-                )
-            changes["files"] = result_files
+            changes["files"] = status.files if status.files is not None else record.files
             updated = self.complete(record, **changes, artifacts_available=True)
         else:
             updated = self.transition(record, **changes)
             self._acknowledge_result(updated)
-        self._acknowledge_submission(self.client_for(updated), updated)
+        self._acknowledge_submission(updated)
         return updated
 
     def completion_fields(
@@ -804,7 +806,7 @@ class RunManager:
             )
 
         with self._history_edit(record) as (store, current):
-            return self._reserve(current, lambda: store.update(current, reopen))
+            return self._reserve_recovering(current, lambda: store.update(current, reopen))
 
     def begin_processing(self, record, *, return_code, files=None, execution=None, retry=False):
         """Claim processing under the caller's existing client ownership.
@@ -834,7 +836,7 @@ class RunManager:
 
         # A historical attempt must first become active. The actual file
         # validation can then run without submission or store locks.
-        claimed = (self._reserve(latest, lambda: store.update(latest, activate))
+        claimed = (self._reserve_recovering(latest, lambda: store.update(latest, activate))
                    if latest.state.is_terminal else latest)
         try:
             manifest = capture_result_files(self._merged_result_files(claimed, files))
@@ -917,7 +919,8 @@ class RunManager:
 
     def _acknowledge_result(self, record):
         """Best-effort ACK after durable completion; failed ACKs remain retryable."""
-        if not record.state.is_terminal or record.execution.backend_id is None:
+        if (not record.state.is_terminal or record.execution.backend_id is None
+                or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return False
         if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0:
             # Retry will reattach to download preserved output. Retain the
@@ -930,7 +933,7 @@ class RunManager:
             try:
                 client = self.client_for(record)
                 client.acknowledge(record)
-            except (OSError, RuntimeError, ValueError, NotImplementedError):
+            except (OSError, SubprocessError, RuntimeError, ValueError):
                 return False
             self._acknowledged_results.add(key)
             return True
@@ -943,14 +946,16 @@ class RunManager:
             if self._acknowledge_result(record)
         )
 
-    @staticmethod
-    def _acknowledge_submission(client, record):
+    def _acknowledge_submission(self, record, *, client=None):
         """Discard the submission receipt only after RunStore is durable."""
-        if record.execution.backend_id is None:
+        if (record.execution.backend_id is None
+                or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return
         try:
+            if client is None:
+                client = self.client_for(record)
             client.acknowledge_submission(record)
-        except (OSError, RuntimeError):
+        except (OSError, SubprocessError, RuntimeError):
             # The receipt remains recoverable until a subsequent refresh.
             pass
 
@@ -997,7 +1002,7 @@ class RunManager:
             guarded = []
             try:
                 for record in group:
-                    if client.backend.name == "direct":
+                    if client.backend.execution_mode == "direct":
                         ownership = self._store_for(record).observation_lock(record)
                         if not ownership.acquire(blocking=False):
                             # The original observer is alive, possibly already
@@ -1009,24 +1014,13 @@ class RunManager:
                     guarded.append(record)
                 if not guarded:
                     continue
-                try:
-                    statuses = client.status(
-                        *(JobAttachment(record.execution, record.files) for record in guarded)
-                    )
-                except Exception as exc:
-                    if client.backend.name != "direct":
-                        raise
-                    # A lost connection is uncertainty, not proof of exit.
-                    for record in guarded:
-                        current[self._record_key(record)] = self.transition(
-                            record, state=RunState.UNKNOWN,
-                            message=f"Cannot query direct process status: {exc}",
-                        )
-                    continue
+                statuses = client.status(
+                    *(JobAttachment(record.execution, record.files) for record in guarded)
+                )
                 if len(statuses) != len(guarded):
                     raise RuntimeError("Target returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):
-                    if client.backend.name == "direct":
+                    if client.backend.execution_mode == "direct":
                         updated = self._record_observation(record, status, retrieve_ended=retrieve_ended)
                     else:
                         updated = self._apply_observation(record, status, self._record_observation)
@@ -1118,8 +1112,8 @@ class RunManager:
                 output_listener=output_listener,
             )
             attached = Run(
-                parts.job, client=client, manager=self, record=record,
-                process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
+                parts, client=client, manager=self, record=record,
+                process_result=process_result, callback=callback, owned_resources=owned_resources,
                 observation_lock=owner,
             )
         except BaseException:

@@ -124,16 +124,16 @@ def capture_result_files(result_files, *, require_outputs=True, cache_versions=N
         return result_files
     from kkrunner.files.availability import discover_local_files
 
+    result_files = discover_local_files(result_files, require_outputs=require_outputs)
     output_entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
     cache_entries = tuple(item.file for item in result_files.caches)
-    captured = replace(
+    return replace(
         result_files,
         output_versions=snapshot_file_entries(_capturable_entries(output_entries), sync=True),
         cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries))
                         if cache_versions is None else cache_versions),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )
-    return discover_local_files(captured, require_outputs=require_outputs)
 
 
 class RunFiles:

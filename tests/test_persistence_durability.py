@@ -90,7 +90,7 @@ def test_run_store_uses_durable_json_writer(tmp_path, monkeypatch):
     assert calls[0][1]["mode"] == 384
 
 
-def test_reserve_syncs_inputs_before_submitting_record(tmp_path, monkeypatch):
+def test_reservation_does_not_sync_application_inputs(tmp_path, monkeypatch):
     input_file = tmp_path / "input.inp"
     input_file.write_text("input")
     store = RunStore(tmp_path / "runs")
@@ -114,7 +114,7 @@ def test_reserve_syncs_inputs_before_submitting_record(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "transition", tracked_transition)
     reserved = manager.reserve(record)
     assert reserved.state == RunState.SUBMITTING
-    assert events[:2] == [("sync", "input.inp"), ("state", "submitting")]
+    assert events == [("state", "submitting")]
 
 
 def test_artifact_publication_syncs_outputs_before_terminal_record(tmp_path, monkeypatch):

@@ -44,7 +44,8 @@ def test_removed_process_backend_name_is_rejected():
 
 def test_direct_backend_is_portable_without_agent():
     from kkrunner.remote.service import _backend_for_kind
-    from kkrunner.targets.implementations.ssh.helpers import ssh_helper
-    assert ssh_helper(backend_class("direct")) is backend_class("direct")
+    from kkrunner.targets.implementations.ssh.helpers import ssh_function
+    direct = backend_class("direct")
+    assert ssh_function(Operation.for_backend(direct, "status")) is direct.status
     with pytest.raises(ValueError, match="installed agent"):
         _backend_for_kind("direct")

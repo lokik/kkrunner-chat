@@ -466,10 +466,17 @@ def test_directory_reservation_prevents_historical_download(tmp_path, monkeypatc
         assert not tuple(work.iterdir())
         assert manager.store.get(record.id) == record
         manager.complete(active, state=RunState.FAILED)
+    # Even abandoned preprocessing is not implicitly recovered by a download.
+    abandoned = manager.reserve(manager.new_record(directory=work, files=reader.files), preprocessing=True)
+    with pytest.raises(DuplicateSubmissionError):
+        manager.retrieve_result_files(record)
+    assert manager.store.get(abandoned.id) == abandoned
+    assert not path.exists()
+    assert manager.refresh((abandoned,))[0].state == RunState.FAILED
     assert manager.retrieve_result_files(record).files.stdout.availability_state == "available"
     assert path.read_text() == "historical"
     assert tuple(work.iterdir()) == (path,)
-    assert {r.id for r in manager.store.runs()} == {record.id, reader.id}
+    assert {r.id for r in manager.store.runs()} == {record.id, reader.id, abandoned.id}
 
 
 def test_restore_wildcard_alias_conflicts_with_canonical_destination(tmp_path):

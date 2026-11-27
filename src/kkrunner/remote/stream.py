@@ -44,7 +44,7 @@ _CODE_TO_KIND = {value: key for key, value in _PROTOCOL.codes.items()}
 
 
 class FramedSink:
-    """Write one calculation channel into the framed data stream."""
+    """Synchronous framed stream sink for the installed command-line agent."""
 
     def __init__(self, stream, kind):
         self.stream = stream
@@ -55,27 +55,6 @@ class FramedSink:
 
     def flush(self):
         self.stream.flush()
-
-
-async def follow_framed(follow, job_ref, **options):
-    """Deliver backend FOLLOW and its terminal outcome over one data channel.
-
-    Target stderr is reserved for SSH diagnostics. No client file state
-    or native process lifetime is owned here.
-    """
-    import sys
-
-    output = sys.stdout.buffer
-    output.write(STREAM_MAGIC)
-    output.flush()
-    outcome = await follow(
-        job_ref,
-        FramedSink(output, "out"),
-        FramedSink(output, "err"),
-        **options,
-    )
-    output.write(encode_terminal_frame(outcome))
-    output.flush()
 
 
 class StreamProtocolError(RuntimeError):

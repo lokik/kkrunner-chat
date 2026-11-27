@@ -15,7 +15,7 @@ class BackendConfig:
             raise ValueError("Backend name must be a nonempty string")
         options = dict(self.options)
         if self.available:
-            options = backend_class(self.name)(**options).options
+            options = backend_class(self.name).validate_options(**options)
         object.__setattr__(self, "options", tuple(sorted(options.items())))
 
     @property
@@ -23,6 +23,20 @@ class BackendConfig:
         """Unknown implementations remain readable history, but cannot execute."""
         from kkrunner.backends import available_backend_names
         return self.name in available_backend_names()
+
+    @property
+    def supports(self):
+        """Capabilities of this configuration without constructing a backend."""
+        from kkrunner.backends import backend_class
+        if not self.available:
+            return frozenset()
+        return backend_class(self.name).supports_options(dict(self.options))
+
+    @property
+    def execution_mode(self):
+        """Execution semantics of the configured implementation, without an instance."""
+        from kkrunner.backends import backend_class
+        return backend_class(self.name).execution_mode
 
     def create(self):
         from kkrunner.backends import backend_class

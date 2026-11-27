@@ -43,4 +43,5 @@ class RunParts:
         self.job.configure_observation(**self.files.observation())
 
     def close(self):
+        """Release the file resources of this execution bundle."""
         self.files.close()

@@ -28,20 +28,9 @@ class ClientPool:
             return client
 
     def for_config(self, transport, backend):
-        from kkrunner.backends.config import BackendConfig
-        from kkrunner.client.execution_client import ExecutionClient
-        from kkrunner.targets import (
-            require_persistable_target,
-            target_from_dict,
-        )
-        if isinstance(transport, dict):
-            transport = target_from_dict(transport)
-        require_persistable_target(transport)
-        if isinstance(backend, dict):
-            backend = BackendConfig(**backend)
-        if not transport.available or not backend.available:
-            raise ValueError("Unsupported backend or transport; only local history is available")
-        return self.get((transport, backend), lambda: ExecutionClient.from_config(transport, backend))
+        from kkrunner.client.execution_client import ExecutionClient, normalize_config
+        transport, backend = normalize_config(transport, backend)
+        return self.get((transport, backend), lambda: ExecutionClient(backend.create(), target=transport))
 
     def for_profile(self, profile):
         """Return the shared provider suitable for *profile*."""

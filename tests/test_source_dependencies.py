@@ -76,8 +76,9 @@ def test_source_extraction_does_not_validate_undeclared_globals():
 
 def test_dependency_cycles_are_rejected(monkeypatch):
     monkeypatch.setattr(increment, "__source_dependencies__", (twice_increment,))
-    with pytest.raises(TypeError, match="Cyclic"):
-        function_definition(dependent_operation)
+    for assemble in (function_definition, portable_bundle):
+        with pytest.raises(TypeError, match="Cyclic"):
+            assemble(dependent_operation)
 
 
 def test_conflicting_dependency_names_are_rejected():

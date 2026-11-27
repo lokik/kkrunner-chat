@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
+from kkrunner.client.run_parts import RunParts
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.client import ExecutionClient
 from kkrunner.client.job import Job
@@ -168,7 +169,7 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
         job.result.return_code = 0
 
     monkeypatch.setattr(job, "_monitor", finished)
-    run = Run(job, client=client, file_session=files)
+    run = Run(RunParts(job, files), client=client)
     run.start()
     with pytest.raises(OSError, match="cannot close output"):
         run.wait()

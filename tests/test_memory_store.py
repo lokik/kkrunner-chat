@@ -80,7 +80,7 @@ def test_conflict_recovery_refreshes_foreign_store(tmp_path, monkeypatch, first_
         assert record.store is first.store
         return second.transition(record, state=RunState.FAILED)
     monkeypatch.setattr(second, "recover_submitting", recover)
-    new = second.reserve(second.new_record(directory=tmp_path, files=files))
+    new = second.reserve(second.new_record(directory=tmp_path, files=files), recover_conflicts=True)
     assert new.store is second.store
     assert first.store.get(old.id).state == RunState.FAILED
     assert second.store.get(new.id).state == RunState.SUBMITTING

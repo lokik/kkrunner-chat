@@ -33,6 +33,7 @@ class BackendCapability(str, Enum):
     STATUS = "status"
     CANCEL = "cancel"
     SUBMIT_AND_FOLLOW = "submit_and_follow"
+    ACKNOWLEDGE = "acknowledge"
 
 
 class SubmissionNotStarted(RuntimeError):
@@ -209,7 +210,7 @@ class DirectOperations(Protocol):
 
     @staticmethod
     async def follow(
-        job_ref: str, stdout: ByteSink, stderr: ByteSink, **options: Unpack[FollowOptions],
+        job_ref: str, stdout: Union[ByteSink, AsyncByteSink], stderr: Union[ByteSink, AsyncByteSink], **options: Unpack[FollowOptions],
     ) -> StatusReply: ...
 
     @staticmethod
@@ -257,15 +258,11 @@ class ManagedOperations(Protocol):
 
     @staticmethod
     async def follow(
-        job_ref: str, stdout: ByteSink, stderr: ByteSink, **options: Unpack[FollowOptions],
+        job_ref: str, stdout: Union[ByteSink, AsyncByteSink], stderr: Union[ByteSink, AsyncByteSink], **options: Unpack[FollowOptions],
     ) -> StatusReply: ...
 
     @staticmethod
     async def stream(job_ref: str, **options: Unpack[FollowOptions]) -> StatusReply: ...
-
-    @staticmethod
-    async def follow_framed(job_ref: str, **options: Unpack[FollowOptions]) -> None: ...
-
 
 class Backend:
     """Configured native backend with a class-level static-operation interface.
@@ -289,6 +286,7 @@ class Backend:
     default_options: ClassVar[Tuple[Tuple[str, Optional[str]], ...]] = ()
     resolves_mpi_launcher = False
     execution_mode = "direct"
+    _supports: ClassVar[frozenset[BackendCapability]] = frozenset()
     supports: frozenset[BackendCapability]
     options: Mapping[str, object]
     default_detached = False
@@ -307,10 +305,15 @@ class Backend:
         json.dumps(defaults, allow_nan=False)
         return defaults
 
+    @classmethod
+    def supports_options(cls, options):
+        """Capabilities for validated options, without creating an execution backend."""
+        return cls._supports
+
     def __init__(self, **options):
         """Keep backend configuration in one immutable, instance-owned place."""
         self.options = MappingProxyType(self.validate_options(**options))
-        self.supports = frozenset()
+        self.supports = self.supports_options(self.options)
 
 
 

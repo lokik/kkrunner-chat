@@ -32,6 +32,11 @@ def class_helper(backend):
     return type(name + "Ssh", (), members)
 
 
-def ssh_helper(backend):
-    """Use direct portable operations or imported managed operations."""
-    return backend if backend.execution_mode == 'direct' else class_helper(backend)
+def ssh_function(operation):
+    """Deliver the operation itself if portable, otherwise import its backend."""
+    if operation.function is not None:
+        return operation.function
+    function = getattr(operation.backend, operation.method)
+    if getattr(function, "__kkrunner_portable__", False):
+        return function
+    return getattr(class_helper(operation.backend), operation.method)
