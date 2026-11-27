@@ -90,6 +90,8 @@ to submit remotely.
 For example, to run an MPI application through the remote scheduler:
 
 ```python
+from kkrunner import submit
+
 job = submit(
     "my_mpi_program",
     target="user@cluster",
@@ -126,8 +128,7 @@ print(manager.store.directory)
 ```
 
 Reuse the same project ID for subsequent calculations, including from
-other Python sessions. A project groups their run history and associated
-files.
+other Python sessions. A project groups their run history and file records.
 
 ## Monitor jobs from the command line
 
@@ -139,7 +140,7 @@ kkrunner --store /path/to/runs status RUN_ID
 kkrunner --store /path/to/runs cancel RUN_ID
 ```
 
-The same commands work for local jobs, SSH jobs and scheduler jobs.
+The same commands work for saved local, SSH and scheduler jobs.
 
 ## Installation
 
