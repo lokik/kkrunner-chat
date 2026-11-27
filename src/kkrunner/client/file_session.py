@@ -735,19 +735,21 @@ class FileSession:
             raise SubmissionNotStarted(str(exc)) from exc
 
     @classmethod
-    async def from_attachment(cls, context, attachment):
-        """Restore file declarations without opening or creating output files."""
+    def from_attachment(cls, target, attachment):
+        """Restore file declarations and their mapping without target I/O."""
+        from kkrunner.client.file_context import FileContext
         from kkrunner.client.staging import StagingSpec
         from kkrunner.runs.base import ExecutionSpec
 
         execution, files = attachment.execution, attachment.files
-        if not context.target.is_local and execution.directory.remote is None:
+        if not target.is_local and execution.directory.remote is None:
             raise ValueError("Remote run lacks working directory")
         spec = ExecutionSpec(
             argv=None, directory=execution.directory.local, input_file=files.input_file,
             output_file=files.output_file, error_file=None if files.stderr is None else files.stderr.local_path,
             staging=StagingSpec.from_mapping(files.mapping),
         )
+        context = FileContext(target, spec.staging)
         return cls(context, spec, files=files, remote_directory=execution.directory.target)
 
     @property
