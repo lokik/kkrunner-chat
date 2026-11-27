@@ -69,7 +69,9 @@ captured in the result versions, listed as an artifact, or available for
 ``snapshot_file``. This does not protect old results of *finished* runs:
 reservations only cover active runs. ``collect=False`` is only valid in
 ``output_files``; it does not mean the producer will refrain from writing the
-file. The default is ``collect=True``.
+file. The default is ``collect=True``. Output wildcards also exclude declared
+inputs and caches (including the contents of declared input/cache directories):
+these retain their own role instead of becoming result artifacts.
 
 Reservations
 --------------

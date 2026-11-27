@@ -269,13 +269,22 @@ class FileManifest:
         return self.mapping is not None and self.mapping.shared_filesystem
 
     def output_excluded(self, path, *, remote=False):
-        """Whether a concrete path is excluded from wildcard output collection."""
-        from kkrunner.files.paths import path_matches
-        return any(
-            not entry.collect and declared is not None and path_matches(path, declared)
-            for entry in self.outputs
-            for declared in (entry.remote_path if remote else entry.local_path,)
+        """Exclude input/cache namespaces and uncollected outputs from output globs."""
+        from kkrunner.files.paths import declaration_paths, path_matches
+
+        entries = (
+            *self.input_entries, *(cache.file for cache in self.caches),
+            *(entry for entry in self.outputs if not entry.collect),
         )
+        for entry in entries:
+            declared = entry.remote_path if remote else entry.local_path
+            if declared is None:
+                continue
+            directory = entry.kind == "directory"
+            if any(path_matches(path, pattern, include_hidden=directory)
+                   for pattern in declaration_paths(declared, directory=directory)):
+                return True
+        return False
 
     @property
     def artifacts(self):
