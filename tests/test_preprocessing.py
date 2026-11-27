@@ -107,31 +107,34 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
     assert memory.get(run.id).state == RunState.FINISHED
 
 
-def test_save_only_reservation_is_memory_only(tmp_path):
+@pytest.mark.parametrize("memory_manager", [False, True])
+def test_save_only_reservation_is_memory_only(tmp_path, memory_manager):
     from kkrunner import MemoryRunStore
 
     disk = RunStore(tmp_path / "runs")
     memory = MemoryRunStore()
-    save = RunManager(memory, conflict_stores=(disk,))
-    disk_manager = RunManager(disk, conflict_stores=(memory,))
+    save = RunManager(memory, conflict_stores=(disk,)) if memory_manager else RunManager(disk)
+    other = RunManager(RunStore(tmp_path / "independent"))
     spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
-    reader = disk_manager.new_record(directory=tmp_path, files=FileManifest.from_spec(
+    reader = other.new_record(directory=tmp_path, files=FileManifest.from_spec(
         ExecutionSpec(argv=(), directory=tmp_path, input_file="input")))
     with save.preprocessing_reservation(spec):
-        assert memory.runs()[0].state == RunState.PREPROCESSING
+        assert not memory.runs()
         assert not disk.runs()
         with pytest.raises(DuplicateSubmissionError):
-            disk_manager.reserve(reader)
+            other.reserve(reader, recover_conflicts=True)
+        with pytest.raises(DuplicateSubmissionError):
+            with other.preprocessing_reservation(spec):
+                pytest.fail("Conflicting save-only operation entered")
         (tmp_path / "input").write_text("prepared")
+    assert not other.conflicts(reader)
     assert not memory.runs()
     assert not disk.runs()
     with pytest.raises(ValueError, match="bad input"):
         with save.preprocessing_reservation(spec):
             raise ValueError("bad input")
-    assert not memory.runs()
-    with pytest.raises(TypeError, match="MemoryRunStore"):
-        with disk_manager.preprocessing_reservation(spec):
-            pass
+    assert not other.conflicts(reader)
+    other.reserve(reader)
 
 
 def test_staging_of_preprocessed_run_does_not_appear_as_native_submission(tmp_path, monkeypatch):
@@ -156,9 +159,11 @@ def test_save_only_refresh_tolerates_completed_reservation(tmp_path):
     from kkrunner import MemoryRunStore
     manager = RunManager(MemoryRunStore())
     spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
+    proposed = manager.new_record(directory=tmp_path, files=FileManifest.from_spec(spec))
     with manager.preprocessing_reservation(spec):
-        active = manager.store.runs(active=True)
+        active = manager.conflicts(proposed)
         assert manager.refresh(active)[0].state == RunState.PREPROCESSING
+        assert manager.refresh() == ()
     assert manager.refresh(active) == ()
 
 
@@ -190,14 +195,15 @@ def test_scoped_save_does_not_accumulate_history_or_locks(tmp_path):
     store = MemoryRunStore()
     manager = RunManager(store)
     spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
+    proposed = manager.new_record(directory=tmp_path, files=FileManifest.from_spec(spec))
     for _ in range(10):
         with manager.preprocessing_reservation(spec):
-            active = store.runs()[0]
+            assert not store.runs()
+            (active,) = manager.conflicts(proposed)
+        assert not manager.conflicts(proposed)
         with pytest.raises(FileNotFoundError):
-            store.update(active, lambda record: record)
+            active.store.get(active.id)
     assert not store.runs()
-    assert not store._forgotten
-    assert not store._observation
 
 
 def test_staging_failure_is_preprocessing_even_without_callback(tmp_path, monkeypatch):
@@ -383,6 +389,18 @@ def test_rejected_run_does_not_flush_or_close_borrowed_file(tmp_path, role):
             assert not stream.closed
             assert path.read_text() == "original"
             manager.complete(reserved, state=RunState.FAILED)
+
+
+def test_unbound_project_manager_can_reserve_save_only_files(tmp_path):
+    from kkrunner.projects import ProjectRepository, ProjectRunManager
+
+    store = RunStore(tmp_path / "runs")
+    manager = ProjectRunManager(project_repository=ProjectRepository(tmp_path / "projects", run_store=store))
+    spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
+    with manager.preprocessing_reservation(spec):
+        assert not store.runs()
+        (tmp_path / "input").write_text("prepared")
+    assert not store.runs()
 
 
 def test_save_only_does_not_recover_conflicting_abandoned_preprocessing(tmp_path):
