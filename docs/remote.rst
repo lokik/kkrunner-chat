@@ -60,6 +60,10 @@ mapping belongs to each run's ``StagingSpec``. The target directory and complete
 file footprint are resolved before reservation; uploads, output opening and
 submission start after reservation. Declare every read, write and cache;
 undeclared executable side effects cannot be protected by file reservations.
+For a workspace shared with the client (e.g. NFS), select ``input_sync="never"``
+and ``output_sync="never"``. Live FOLLOW is observation only. The backend
+writes stdout/stderr, and all output files are synchronized together at
+completion, never from streamed chunks.
 
 By default, the SSH transport pools up to four SSH sessions, each with a
 persistent remote Python interpreter. Portable functions and their transitive

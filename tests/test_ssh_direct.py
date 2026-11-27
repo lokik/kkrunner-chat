@@ -21,7 +21,7 @@ from kkrunner.targets.rpc import operation_result
 _ARCHIVE_SOURCES = tuple(function_definition(function) for function in (send_archive, receive_archive))
 _QUERY_SOURCE = operation_command(Operation.standalone(query_files), python=(sys.executable,))[-1]
 WORKER_SOURCE = operation_command(
-    Operation.for_backend(DirectBackend, "stream"), python=(sys.executable,), streaming=True,
+    Operation.for_backend(DirectBackend, "stream"), python=(sys.executable,), framed="execute",
 )[-1]
 
 

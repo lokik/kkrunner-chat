@@ -34,10 +34,6 @@ class _Runner:
     def wait(self):
         return self.result
 
-    @property
-    def requires_stream_retrieval(self):
-        return False
-
     def configure_detached(self, detached):
         pass
 

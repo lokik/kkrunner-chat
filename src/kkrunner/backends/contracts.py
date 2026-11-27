@@ -36,6 +36,7 @@ class BackendCapability(str, Enum):
     CANCEL = "cancel"
     SUBMIT_AND_FOLLOW = "submit_and_follow"
     ACKNOWLEDGE = "acknowledge"
+    FLEXIBLE_DETACHMENT = "flexible_detachment"
 
 
 class SubmissionNotStarted(RuntimeError):
@@ -218,9 +219,9 @@ class DirectOperations(Protocol):
     @staticmethod
     async def stream(
         request: ExecutionRequest, *,
-        stdout: Optional[Union[ByteSink, AsyncByteSink]] = None,
-        stderr: Optional[Union[ByteSink, AsyncByteSink]] = None,
-        control: Optional[ControlReader] = None,
+        stdout: Union[ByteSink, AsyncByteSink],
+        stderr: Union[ByteSink, AsyncByteSink],
+        control: ControlReader,
         files: Optional[Mapping[str, BinaryIO]] = None,
         started: Optional[Callable[[ExecutionReply], Union[None, Awaitable[None]]]] = None,
         stdin: Optional[BinaryIO] = None,

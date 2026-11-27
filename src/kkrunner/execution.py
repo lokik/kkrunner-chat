@@ -20,6 +20,7 @@ class RunState(str, Enum):
     SUBMITTING = "submitting"
     QUEUED = "queued"
     RUNNING = "running"
+    FINISHING = "finishing"
     DOWNLOADING = "downloading"
     POSTPROCESSING = "postprocessing"
     FINISHED = "finished"

@@ -24,7 +24,7 @@ class DirectBackend(Backend, DirectOperations):
     prepare_mpi = staticmethod(prepare_mpi)
     prepare_target_outputs = staticmethod(prepare_target_outputs)
 
-    _supports = frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH})
+    _supports = frozenset({BackendCapability.CANCEL, BackendCapability.STATUS, BackendCapability.REATTACH, BackendCapability.FLEXIBLE_DETACHMENT})
 
     @staticmethod
     @portable
@@ -185,14 +185,14 @@ class DirectBackend(Backend, DirectOperations):
     @portable
     async def stream(
         request: ExecutionRequest, *,
-        stdout: Optional[Union[ByteSink, AsyncByteSink]] = None,
-        stderr: Optional[Union[ByteSink, AsyncByteSink]] = None,
-        control: Optional[ControlReader] = None,
+        stdout: Union[ByteSink, AsyncByteSink],
+        stderr: Union[ByteSink, AsyncByteSink],
+        control: ControlReader,
         files: Optional[Mapping[str, BinaryIO]] = None,
         started: Optional[Callable[[ExecutionReply], Union[None, Awaitable[None]]]] = None,
         stdin: Optional[BinaryIO] = None,
     ) -> ExecutionReply:
-        """Run a process with explicit local streams or SSH standard streams.
+        """Run a process with streams and control supplied by its caller.
 
         The operation owns the child, its pipe readers and group termination.
         Borrowed sinks may implement synchronous or asynchronous write(). The
@@ -221,44 +221,10 @@ class DirectBackend(Backend, DirectOperations):
             }
 
         async def execute():
-            nonlocal identity, cancelled, control
-            child = control_transport = stopping = None
+            nonlocal identity, cancelled
+            child = stopping = None
             tasks = []
             with ExitStack() as resources:
-                # A blocking SSH stdout write must not stall the control reader.
-                # Borrow the interpreter descriptors only when no explicit local
-                # sink was supplied; restore their flags when this operation ends.
-                descriptors = {}
-                if not detached:
-                    for kind, sink, stream in (("out", stdout, sys.stdout), ("err", stderr, sys.stderr)):
-                        if sink is None:
-                            fd = stream.fileno()
-                            resources.callback(os.set_blocking, fd, os.get_blocking(fd))
-                            os.set_blocking(fd, False)
-                            descriptors[kind] = fd
-
-                async def write_pipe(fd, data):
-                    loop = asyncio.get_running_loop()
-                    remaining = memoryview(data)
-                    while remaining:
-                        try:
-                            written = os.write(fd, remaining)
-                        except BlockingIOError:
-                            writable = loop.create_future()
-
-                            def ready():
-                                loop.remove_writer(fd)
-                                if not writable.done():
-                                    writable.set_result(None)
-
-                            loop.add_writer(fd, ready)
-                            try:
-                                await writable
-                            finally:
-                                loop.remove_writer(fd)
-                        else:
-                            remaining = remaining[written:]
-
                 stdin_path = request.get("stdin")
                 input_stream = stdin if stdin is not None else (
                     resources.enter_context(open(stdin_path, "rb")) if stdin_path else asyncio.subprocess.DEVNULL
@@ -314,13 +280,10 @@ class DirectBackend(Backend, DirectOperations):
                         if target is not None:
                             target.write(data)
                             target.flush()
-                        if sink is None:
-                            await write_pipe(descriptors[kind], data)
-                        else:
-                            pending = sink.write(data)
-                            if inspect.isawaitable(pending):
-                                await pending
-                            sink.flush()
+                        pending = sink.write(data)
+                        if inspect.isawaitable(pending):
+                            await pending
+                        sink.flush()
 
                 async def feed_input():
                     try:
@@ -391,11 +354,6 @@ class DirectBackend(Backend, DirectOperations):
                         notification = started(outcome("running"))
                         if inspect.isawaitable(notification):
                             await notification
-                    if control is None:
-                        control = asyncio.StreamReader()
-                        protocol = asyncio.StreamReaderProtocol(control)
-                        pipe = resources.enter_context(os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0))
-                        control_transport, _ = await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, pipe)
                     tasks.append(asyncio.create_task(read_control()))
                     input_task = None
                     if forwarded_input is not None:
@@ -429,8 +387,6 @@ class DirectBackend(Backend, DirectOperations):
                     if stopping is not None and child is not None:
                         await stopping
                         await child.wait()
-                    if control_transport is not None:
-                        control_transport.close()
 
         try:
             code = await execute()

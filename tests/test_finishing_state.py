@@ -36,7 +36,8 @@ class _Executor(ExecutionClient):
             RunStatus(
                 backend_id=run.execution.backend_id,
                 state=self.status_value,
-                return_code=0 if self.status_value == RunState.FINISHED else 1,
+                return_code=(0 if self.status_value == RunState.FINISHED else
+                             1 if self.status_value in (RunState.FAILED, RunState.CANCELLED) else None),
                 failure_phase=self.failure_phase if self.status_value == RunState.FAILED else None,
             )
             for run in runs
@@ -218,3 +219,58 @@ def test_update_reserves_local_diagnostics_until_refresh(tmp_path, state):
     assert refreshed.files.captured_at is not None
     assert len(refreshed.files.output_versions) == 1
     assert refreshed in manager.store.runs(active=False)
+
+
+def test_lost_supervisor_during_finishing_can_become_unknown(tmp_path):
+    executor = _Executor(RunState.UNKNOWN)
+    manager, record = _record(tmp_path, executor, state=RunState.FINISHING)
+    (refreshed,) = manager.refresh((record,))
+    assert refreshed.state == RunState.UNKNOWN
+    assert refreshed in manager.store.runs(active=True)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Direct status requires a verifiable process identity")
+@pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend))
+@pytest.mark.parametrize("tracked", (False, True))
+def test_refresh_observes_native_exit_while_listener_is_stalled(tmp_path, monkeypatch, backend, tracked):
+    import time
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "state"))
+    gate = tmp_path / "start"
+    entered = Event()
+    release = Event()
+
+    def listener(text, kind):
+        if "ready" in text:
+            entered.set()
+            assert release.wait(10), "Output listener was not released"
+
+    client = ExecutionClient(backend)
+    manager = RunManager(RunStore(tmp_path / "runs")) if tracked else None
+    run = client.create_run(
+        ExecutionSpec((sys.executable, "-c",
+                       "from pathlib import Path; import time, sys\n"
+                       "while not Path('start').exists(): time.sleep(.01)\n"
+                       "print('ready', flush=True); sys.exit(7)"),
+                      directory=tmp_path, output_file="stdout"),
+        tracked=manager if tracked else False, detached=False, output_listener=listener,
+    )
+    run.submit()
+    try:
+        assert run.refresh() == RunState.RUNNING
+        gate.touch()
+        assert entered.wait(5)
+        deadline = time.monotonic() + 5
+        while run.refresh() != RunState.FINISHING:
+            assert time.monotonic() < deadline, "Native process exit was not observable"
+            time.sleep(.01)
+        assert run.state == RunState.FINISHING
+        if tracked:
+            assert run.record.state == RunState.FINISHING
+    finally:
+        gate.touch()
+        release.set()
+        outcome = run.wait()
+    assert outcome.return_code == 7
+    assert run.state == RunState.FAILED
+    assert run.refresh() == RunState.FAILED

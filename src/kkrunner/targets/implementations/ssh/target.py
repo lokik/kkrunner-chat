@@ -37,8 +37,7 @@ class SshTarget(Target):
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
                         tail_paths=None, observe_only=False):
         from .call import SshCall
-        command = operation_command(operation, python=self.python_command, framed=True,
-                                    observe_only=observe_only)
+        command = operation_command(operation, python=self.python_command, framed="submit" if observe_only else "execute")
         process = await self.start(
             (*command, operation_payload((request,), {})), stdin=asyncio.subprocess.PIPE,
         )
@@ -46,8 +45,7 @@ class SshTarget(Target):
 
     async def follow(self, operation, identity, on_output, **options):
         from .follow import follow_framed_command
-        command = operation_command(operation, python=self.python_command, framed=True,
-                                    observe_only=True, submission=False)
+        command = operation_command(operation, python=self.python_command, framed="follow")
         process = await self.start(
             (*command, operation_payload((identity,), options)),
             stdin=asyncio.subprocess.PIPE,

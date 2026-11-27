@@ -18,8 +18,8 @@ MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, Back
 
 
 def test_capabilities_are_immutable_and_instance_specific():
-    assert DirectBackend().supports == frozenset({BackendCapability.STATUS, BackendCapability.CANCEL, BackendCapability.REATTACH})
-    assert SupervisedBackend().supports == MANAGED | {BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE}
+    assert DirectBackend().supports == frozenset({BackendCapability.STATUS, BackendCapability.CANCEL, BackendCapability.REATTACH, BackendCapability.FLEXIBLE_DETACHMENT})
+    assert SupervisedBackend().supports == MANAGED | {BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE, BackendCapability.FLEXIBLE_DETACHMENT}
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
@@ -97,8 +97,8 @@ def test_package_layout_and_ssh_operation_are_class_based():
         backend_type = backend_class(kind)
         assert backend_type.__module__.endswith(".backend")
         assert static_methods(backend_type)
-        operation = Operation.for_backend(backend_type, "stream")
-        command = operation_command(operation, streaming=True)
+        operation = Operation.for_backend(backend_type, "stream" if kind == "direct" else "follow")
+        command = operation_command(operation, framed="execute" if kind == "direct" else "follow")
         assert "-c" in command
         compile(command[-1], "<SSH backend operation>", "exec")
 

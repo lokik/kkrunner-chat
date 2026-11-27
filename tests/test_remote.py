@@ -43,8 +43,10 @@ def _processed_run(executor, spec):
     """Add test-only result processing above the raw remote runner."""
 
     def process(outcome):
-        output = b"" if outcome.output_file is None else Path(outcome.output_file).read_bytes()
-        error = b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes()
+        output = (b"" if outcome.output_file is None or not Path(outcome.output_file).exists()
+                  else Path(outcome.output_file).read_bytes())
+        error = (b"" if outcome.error_file is None or not Path(outcome.error_file).exists()
+                 else Path(outcome.error_file).read_bytes())
         return SimpleNamespace(return_code=outcome.return_code, output=output, error=error)
 
     return executor.create_run(spec, tracked=False, process_result=process)
@@ -77,7 +79,7 @@ def _text_run(
     input_file = (workdir / "input.txt").open("w+b")
     input_file.write(b"hello")
     input_file.seek(0)
-    output_file = (workdir / "output.txt").open("wb")
+    output_file = workdir / "output.txt"
     remote_root = tmp_path / "remote"
     executor = _executor(target=target, **executor_kwargs)
     spec = ExecutionSpec(
@@ -187,7 +189,6 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
         assert [destination for _, destination in transport.uploads] == [target]
     finally:
         spec.input_file.close()
-        spec.output_file.close()
 
 
 def test_remote_executor_stages_declared_input_files(tmp_path):
@@ -356,10 +357,14 @@ def test_remote_output_file_policies(tmp_path, policy, case, local_value, genera
         assert not artifact.exists()
     else:
         assert artifact.read_text() == expected_local
-    assert transport.downloads == ([(remote_artifact, artifact)] if download else [])
+    primary = (remote_root / "calculation" / "output.txt", workdir / "output.txt")
+    expected_downloads = ([] if policy == FileSyncPolicy.NEVER else [primary])
+    if download:
+        expected_downloads.append((remote_artifact, artifact))
+    assert transport.downloads == expected_downloads
 
     state = (
-        "available" if generated_value is not None and policy != FileSyncPolicy.NEVER
+        "available" if generated_value is not None
         and (download or local_value == generated_value) else "skipped"
     )
     entry = next(x for x in runner.files.outputs if x.local_path == str(artifact))
@@ -568,37 +573,10 @@ def test_remote_none_stream_files_are_live_only(tmp_path):
     assert outcome.return_code == 0
     assert outcome.output_file is None
     assert outcome.error_file is None
-    # A detached run without named streams can finish before FOLLOW attaches.
-    # Bytes sent before that connection are live-only and cannot be replayed.
-    assert all((kind, text) in {("out", "out\n"), ("err", "err\n")} for kind, text in observed)
+    assert {kind: "".join(text for channel, text in observed if channel == kind)
+            for kind in ("out", "err")} == {"out": "out\n", "err": "err\n"}
     assert list((tmp_path / "remote").rglob("stdout")) == []
     assert list((tmp_path / "remote").rglob("stderr")) == []
-
-
-def test_supervisor_live_only_streams_reach_connected_followers():
-    """Once attached, unnamed stdout/stderr must still be delivered live."""
-    from kkrunner.backends.implementations.supervised.streams import SupervisorStreams, follow_socket
-
-    async def verify():
-        streams = SupervisorStreams(None, None, detached=False)
-        await streams.start()
-        received = []
-        follower = asyncio.create_task(follow_socket(
-            streams.socket_path, {"out": 0, "err": 0},
-            lambda kind, _offset, data: received.append((kind, data)),
-        ))
-        try:
-            await asyncio.wait_for(streams.connected.wait(), timeout=5)
-            streams.publish("out", b"out\n")
-            streams.publish("err", b"err\n")
-            streams.terminal({"state": "finished", "return_code": 0})
-            terminal = await asyncio.wait_for(follower, timeout=5)
-            assert terminal["state"] == "finished"
-            assert received == [("out", b"out\n"), ("err", b"err\n")]
-        finally:
-            await streams.finish()
-
-    asyncio.run(verify())
 
 
 @pytest.mark.parametrize(

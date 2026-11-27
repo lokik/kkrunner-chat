@@ -134,13 +134,11 @@ def test_home_relative_remote_root_still_resolves_home_once(tmp_path, monkeypatc
     assert calls == ["home"]
 
 
-def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
-    """A failed second open must release the first stream immediately."""
-    import builtins
+def test_attach_does_not_open_or_create_output_paths(tmp_path):
+    """Observation does not need writable client output paths."""
 
     from kkrunner import RunState
     from kkrunner.files.manifest import FileEntry, FileManifest, FileMapping
-    import kkrunner.client.file_session as remote_files
     from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
     from kkrunner.runs.records import RunRecord
 
@@ -166,25 +164,12 @@ def test_attach_closes_stdout_if_opening_stderr_fails(tmp_path, monkeypatch):
         processing_required=True,
     )
 
-    async def status(*args, **kwargs):
-        return {"state": "running"}
-
-    opened = []
-    actual_open = builtins.open
-
-    def failing_open(path, *args, **kwargs):
-        if str(path) == str(stderr):
-            raise PermissionError("stderr not writable")
-        stream = actual_open(path, *args, **kwargs)
-        if str(path) == str(stdout):
-            opened.append(stream)
-        return stream
-
-    monkeypatch.setattr(remote_files, "open", failing_open, raising=False)
-    with pytest.raises(PermissionError, match="stderr not writable"):
-        asyncio.run(FileSession.from_attachment(context, JobAttachment(run.execution, run.files)))
-    assert len(opened) == 1
-    assert opened[0].closed
+    session = asyncio.run(FileSession.from_attachment(context, JobAttachment(run.execution, run.files)))
+    try:
+        assert not stdout.exists()
+        assert not stderr.exists()
+    finally:
+        session.close()
 
 
 def test_unmap_rejects_symlink_parent_outside_local_root(tmp_path):

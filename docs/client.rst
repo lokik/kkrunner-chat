@@ -45,7 +45,9 @@ processes and stream handles.
 
 A single FileSession handles local and remote files. It owns live client file
 handles and finalizes the sole FileManifest. Local execution needs no copying;
-SSH execution stages inputs, relays streams and retrieves results. After
+SSH execution stages inputs, relays live output only to observers and
+synchronizes all declared result files (including stdout/stderr) after native
+completion. The local copies are not written during observation. After
 staging, transfer selections and cache baselines come from the manifest rather
 than independently maintained lists. Snapshots and manual retrieval are in the
 file-access layer, with the client delegating those requests.
@@ -53,6 +55,13 @@ file-access layer, with the client delegating those requests.
 ``Job.state`` and ``Job.status()`` expose cached native facts without I/O.
 ``Job.refresh_status()`` asks the backend binding for its status, using an
 independent query when supported or the live call's last facts otherwise.
+``Run.refresh()`` refreshes and returns the current RunState, whether or not
+the Run is tracked. Use ``run.record`` for the optional durable record.
+A terminal native status while output observation is active means FINISHING;
+the observer still owns completion. After an untracked observer has stopped,
+refresh reports the backend's current progress, or DOWNLOADING if execution
+has ended and result collection is still pending. It does not retrieve
+results, resume observation or invoke postprocessing.
 Job identities are opaque backend references; Job never reads or serializes
 a PID. STATUS, REATTACH and RECOVER are explicit capabilities. Recording a
 direct process identity allows output-only reattachment from saved files,

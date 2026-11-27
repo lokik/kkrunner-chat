@@ -370,3 +370,20 @@ def test_wildcard_sync_uses_one_exact_batch_in_each_direction(tmp_path):
     assert {tuple(map(Path, pair)) for pair in batches[0][1]} == expected
     assert {tuple(map(Path, pair)) for pair in batches[1][1]} == {(remote, local) for local, remote in expected}
     assert all((workdir / name).read_text() == "updated" for name in names)
+
+
+def test_never_policy_does_not_claim_missing_wildcard_copies_are_available(tmp_path):
+    from .test_remote import _SpyTransport
+
+    transport = _SpyTransport()
+    workdir = tmp_path / "local" / "calculation"
+    pattern = workdir / "result-*.dat"
+    executor, spec, _, _ = _text_run(
+        tmp_path, transport, declared_output_files=(pattern,), output_files="never",
+        code="from pathlib import Path; Path('result-a.dat').write_text('remote')",
+    )
+    runner = _processed_run(executor, spec)
+    assert runner.run().return_code == 0
+    assert not (workdir / "result-a.dat").exists()
+    assert transport.downloads == []
+    assert all(entry.availability_state == "skipped" for entry in runner.files.outputs)

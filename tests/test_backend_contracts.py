@@ -113,12 +113,12 @@ def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):
     assert local.execution.backend.name == remote.execution.backend.name == "kkrunner"
 
 
-def test_managed_job_rejects_direct_detached_configuration(tmp_path):
-    from kkrunner.backends import SupervisedBackend
+def test_scheduler_rejects_attached_configuration(tmp_path):
+    from kkrunner.backends import PsijBackend
     from kkrunner.client import ExecutionClient
     from kkrunner.runs.base import ExecutionSpec
 
-    parts = ExecutionClient(SupervisedBackend).create_run_parts(
+    parts = ExecutionClient(PsijBackend).create_run_parts(
         ExecutionSpec(("true",), directory=str(tmp_path))
     )
     parts.configure_detached(True)

@@ -253,7 +253,10 @@ def test_non_slurm_follow_uses_psij_terminal_without_slurm_queries(
 
 
 def test_cancel_requests_supervisor_without_inventing_terminal_state(tmp_path, monkeypatch):
-    _, remote_id, outcome = _process_handle(tmp_path)
+    handle, _, outcome = _process_handle(tmp_path)
+    handle["socket_path"] = str(tmp_path / "socket")
+    remote_id = encode_handle(handle)
+    (tmp_path / "active").write_text("running")
     monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(process_operations.ProcessIdentity, "is_running", lambda self: True)
     sent = []
@@ -269,7 +272,7 @@ def test_cancel_requests_supervisor_without_inventing_terminal_state(tmp_path, m
             pass
 
         def connect(self, path):
-            assert path == "/tmp/test-supervisor.sock"
+            assert path == handle["socket_path"]
 
         def sendall(self, data):
             sent.append(data)

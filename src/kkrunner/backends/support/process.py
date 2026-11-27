@@ -114,10 +114,14 @@ def resolve_mpi_command(spec: MpiSpec):
 
 
 async def pump_stream(source, sink, *, eof=None):
-    """Forward one subprocess byte stream to a synchronous chunk consumer."""
+    """Forward subprocess bytes, allowing an asynchronous consumer to drain."""
+    import inspect
+
     try:
         while data := await source.read(65536):
-            sink(data)
+            result = sink(data)
+            if inspect.isawaitable(result):
+                await result
     finally:
         if eof is not None:
             eof()

@@ -6,7 +6,7 @@ from .bootstrap import _json_call, _stream_call, _framed_call
 from .helpers import ssh_function
 
 def operation_command(operation: Operation, *, python=("python3",), streaming=False,
-                      framed=False, observe_only=False, submission=True):
+                      framed=None):
     """Compile the selected source and its invocation protocol into Python argv."""
     import ast
 
@@ -30,7 +30,7 @@ def operation_command(operation: Operation, *, python=("python3",), streaming=Fa
         from kkrunner.remote.stream import stream_protocol
         protocol_name = unused_name("_kkrunner_protocol")
         definition += function_definition(stream_protocol, name=protocol_name)
-        options = f", {protocol_name}, {observe_only!r}, {submission!r}"
+        options = f", {protocol_name}, {framed!r}"
     script = (
         definition + function_definition(bootstrap, name=bootstrap_name)
         + f"{bootstrap_name}({entrypoint}{options})\n"

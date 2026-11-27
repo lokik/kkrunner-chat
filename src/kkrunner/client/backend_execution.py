@@ -24,6 +24,8 @@ class _Execution:
         self.backend = backend
         self.target = transport
         self.ref = ref
+        # An observer of an existing job does not own its lifetime.
+        self._detached = ref is not None or backend.default_detached
         self.snapshot = JobStatus(RunState.NEW)
         if status is not None:
             self._record(status)
@@ -41,12 +43,15 @@ class _Execution:
         return self.snapshot
 
     def configure_detached(self, detached):
-        if detached != self.backend.default_detached:
+        if (detached != self.backend.default_detached
+                and BackendCapability.FLEXIBLE_DETACHMENT not in self.backend.supports):
             raise ValueError("Detached policy is fixed by the selected backend")
+        self._detached = detached
 
     @property
-    def requires_stream_retrieval(self):
-        return False
+    def can_stop_observation(self):
+        # Attached calls must continue draining their output.
+        return self._detached
 
     def configure_observation(self, *, stream_offsets, stream_paths):
         self._follow_options = {
@@ -71,6 +76,15 @@ class _Execution:
             self._record({"state": "unknown", "error": str(exc)})
             raise
 
+    async def status(self):
+        """Query native facts without replacing the live call's outcome."""
+        if (self.ref is None or self.snapshot.state.is_terminal
+                or BackendCapability.STATUS not in self.backend.supports):
+            return self.snapshot
+        status = decode_job_status(await self.target.call(self._operation("status"), self.ref.token))
+        # A concurrent live terminal reply is stronger than a liveness probe.
+        return self.snapshot if self.snapshot.state.is_terminal else status
+
     async def close(self):
         if self._call is not None:
             await self._call.close()
@@ -82,14 +96,6 @@ class DirectExecution(_Execution):
     def __init__(self, backend, transport, *, local_io=None):
         super().__init__(backend, transport)
         self._local_io = local_io
-        self._detached = backend.default_detached
-
-    def configure_detached(self, detached):
-        self._detached = detached
-
-    @property
-    def requires_stream_retrieval(self):
-        return self._detached
 
     def configure_observation(self, *, stream_offsets, stream_paths):
         if any(offset not in (None, 0) for offset in stream_offsets.values()):
@@ -125,21 +131,6 @@ class DirectExecution(_Execution):
             raise ObservationUnavailable("Execution call ended without acceptance confirmation")
         return status
 
-    @property
-    def can_stop_observation(self):
-        # Attached calls must keep draining their pipes. Detached processes
-        # own their output files and survive closing the observation.
-        return self._detached
-
-    async def status(self):
-        # Preserve confirmed live-call facts. Only a lost observer requires
-        # querying the original process by its durable identity.
-        if self.ref is None or self.snapshot.state != RunState.UNKNOWN:
-            return self.snapshot
-        return self._record(
-            await self.target.call(self._operation("status"), self.ref.token)
-        )
-
     async def cancel(self):
         await self._call.cancel()
 
@@ -147,9 +138,8 @@ class DirectExecution(_Execution):
 class ManagedExecution(_Execution):
     """Backend binding for independently observable supervisor/scheduler jobs."""
 
-    can_stop_observation = True
-
     async def submit(self, request, on_output):
+        request = dict(request, detached=self._detached)
         try:
             if BackendCapability.SUBMIT_AND_FOLLOW in self.backend.supports:
                 facts = await self._open_call(
@@ -172,11 +162,6 @@ class ManagedExecution(_Execution):
             self._record({"state": "unknown", "error": "Backend accepted no execution identity"})
             raise ObservationUnavailable(self.snapshot.message)
         return status
-
-    async def status(self):
-        if self.ref is None:
-            return self.snapshot
-        return self._record(await self.target.call(self._operation("status"), self.ref.token))
 
     async def cancel(self):
         return self._record(await self.target.call(self._operation("cancel"), self.ref.token))

@@ -168,3 +168,26 @@ def test_tracked_run_publishes_finalization_after_native_exit(tmp_path, monkeypa
         release.set()
     run.wait()
     assert manager.store.get(run.id).state == terminal
+
+
+def test_refresh_is_authoritative_while_original_observer_is_running(tmp_path, monkeypatch):
+    from kkrunner.runs import RunStatus
+
+    run, job, manager, client = _run(tmp_path)
+    run.start()
+    try:
+        for state in (RunState.FINISHING, RunState.UNKNOWN, RunState.FINISHING, RunState.FINISHED):
+            monkeypatch.setattr(client, "status", lambda *records: tuple(
+                RunStatus(state, backend_id=record.execution.backend_id,
+                          return_code=0 if state == RunState.FINISHED else None)
+                for record in records
+            ))
+            expected = RunState.FINISHING if state == RunState.FINISHED else state
+            assert run.refresh() == expected
+            assert run.record.state == expected
+            assert run.state == expected
+            assert not run.record.state.is_terminal
+    finally:
+        job.finish(RunState.FINISHED)
+        run.wait()
+    assert run.state == RunState.FINISHED

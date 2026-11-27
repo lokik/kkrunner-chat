@@ -121,10 +121,6 @@ class _NotStartedRunner:
     def configure_submission(self, request, **options):
         pass
 
-    @property
-    def requires_stream_retrieval(self):
-        return False
-
     def configure_detached(self, detached):
         pass
 

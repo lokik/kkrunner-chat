@@ -77,7 +77,9 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
     input_file = (workdir / "run.inp").open("w+b")
     input_file.write(b"input")
     input_file.seek(0)
-    output_file = (workdir / "run.out").open("wb")
+    output_file = workdir / "run.out"
+    from threading import Event
+    original_ready, attached_ready = Event(), Event()
     generated = workdir / "generated.dat"
     cache = workdir / "cache.dat"
     cache.write_text("before")
@@ -86,7 +88,7 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
         argv=(
             sys.executable,
             "-c",
-            "import pathlib,time\nrelease=pathlib.Path('release')\nwhile not release.exists():\n    time.sleep(0.01)\npathlib.Path('generated.dat').write_text('generated')\npathlib.Path('cache.dat').write_text('after')\nprint('done')\n",
+            "import pathlib,time\nrelease=pathlib.Path('release')\nprint('ready', flush=True)\nwhile not release.exists():\n    time.sleep(0.01)\npathlib.Path('generated.dat').write_text('generated')\npathlib.Path('cache.dat').write_text('after')\nprint('done')\n",
         ),
         input_file=input_file,
         output_file=output_file,
@@ -97,24 +99,38 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
         cache_files=(cache,),
         staging=_launch(local_root, remote_root),
     )
-    original = first_executor.create_run(spec, tracked=False, process_result=lambda outcome: outcome)
+    original = first_executor.create_run(
+        spec, tracked=False, process_result=lambda outcome: outcome,
+        output_listener=lambda text, kind: original_ready.set() if "ready" in text else None,
+    )
     original.submit()
+    assert original_ready.wait(5)
     _wait_for_state(original, RunState.RUNNING)
     run = _record(original)
     assert run.execution.backend_id is not None
     executor = _executor()
-    attached_parts = executor.open_run_parts(JobAttachment(run.execution, run.files))
+    attached_parts = executor.open_run_parts(
+        JobAttachment(run.execution, run.files),
+        output_listener=lambda text, kind: attached_ready.set() if "ready" in text else None,
+    )
     attached = _processed(attached_parts, executor)
-    (remote_root / "calculation" / "release").write_text("go")
+    try:
+        assert attached_ready.wait(5)
+        assert not output_file.exists()
+        original.stop_observation()
+        original.wait()
+        assert original.state == RunState.UNKNOWN
+        assert not output_file.exists()
+    finally:
+        (remote_root / "calculation" / "release").write_text("go")
     assert attached.backend_id == run.execution.backend_id
     result = attached.wait()
     assert attached.state == RunState.FINISHED
     assert result.return_code == 0
-    assert result.output == b"done\n"
-    assert (workdir / "run.out").read_bytes() == b"done\n"
+    assert result.output == b"ready\ndone\n"
+    assert (workdir / "run.out").read_bytes() == b"ready\ndone\n"
     assert (workdir / "generated.dat").read_text() == "generated"
     assert (workdir / "cache.dat").read_text() == "after"
-    assert original.wait().return_code == 0
     executor = _executor()
     finished_parts = executor.open_run_parts(JobAttachment(run.execution, run.files))
     finished_attached = _processed(finished_parts, executor)
@@ -122,8 +138,8 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
     assert finished_attached.state == RunState.FINISHED
     assert finished_attached.backend_id == run.execution.backend_id
     assert finished_result.return_code == 0
-    assert finished_result.output == b"done\n"
-    assert (workdir / "run.out").read_bytes() == b"done\n"
+    assert finished_result.output == b"ready\ndone\n"
+    assert (workdir / "run.out").read_bytes() == b"ready\ndone\n"
 
 
 def test_remote_executor_first_attach_after_completion_replays_finished_run(tmp_path):
@@ -181,7 +197,7 @@ def test_remote_executor_attach_rejects_reference_for_other_backend(tmp_path):
         executor.open_run_parts(JobAttachment(run.execution, run.files))
 
 
-def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
+def test_remote_attach_does_not_use_existing_local_file_as_observation_offset(tmp_path, monkeypatch):
     from kkrunner.files.manifest import FileEntry
 
     local_root = tmp_path / "local"
@@ -217,6 +233,6 @@ def test_remote_attach_preserves_existing_partial_stream(tmp_path, monkeypatch):
     assert parts.files.spec.is_partial
     assert parts.files.spec.argv is None
     assert parts.files.spec.output_file == str(local_output)
-    assert parts.files._streams.output_file.tell() == len(b"partial")
+    assert parts.files.observation()["stream_offsets"]["out"] == 0
     parts.files.close()
     assert local_output.read_bytes() == b"partial"
