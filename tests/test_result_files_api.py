@@ -24,7 +24,7 @@ def test_result_file_retrieval_is_owned_by_shared_client():
 def test_capture_excludes_skipped_local_copies_and_unmatched_glob_files(tmp_path):
     """An old local match is not an output version of the new remote run."""
     from kkrunner.files import FileEntry
-    from kkrunner.runs.files import capture_result_files
+    from kkrunner.files.availability import capture_result_files
 
     stale = tmp_path / "artifact-old.dat"
     current = tmp_path / "artifact-new.dat"
@@ -44,7 +44,7 @@ def test_capture_excludes_skipped_local_copies_and_unmatched_glob_files(tmp_path
 
 def test_capture_still_discovers_pending_local_outputs(tmp_path):
     from kkrunner.files import FileEntry
-    from kkrunner.runs.files import capture_result_files
+    from kkrunner.files.availability import capture_result_files
 
     output = tmp_path / "locally-generated.out"
     output.write_text("current")

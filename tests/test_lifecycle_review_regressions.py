@@ -1,4 +1,4 @@
-import kkrunner.runs.files as files_module
+import kkrunner.files.availability as files_module
 from kkrunner.files import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.runs import FailurePhase
 from kkrunner import RunState, RunStore

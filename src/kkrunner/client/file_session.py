@@ -403,6 +403,7 @@ class FileSession:
         primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
         seen_remote = {entry.remote_path for entry in self._files.outputs
                        if entry.source_pattern is None and entry.remote_path is not None
+                       and entry.local_path is not None
                        and not has_file_magic(entry.remote_path)}
         for entry in declarations:
             if has_file_magic(entry.remote_path):

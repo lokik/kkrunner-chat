@@ -10,15 +10,11 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 
-from kkrunner.files.availability import (
-    capture_result_files, file_is_current, snapshot_file_entries, sync_result_files,
-)
+from kkrunner.files.availability import file_is_current
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
-from kkrunner.files.versions import FileState, FileVersion, file_digest
-from kkrunner.support.durability import sync_file
+from kkrunner.files.versions import FileState, file_digest
 from kkrunner.runs.stores import resolve_record, store_for
 
 

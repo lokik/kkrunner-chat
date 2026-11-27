@@ -742,7 +742,7 @@ class RunManager:
                             availability_state="failed",
                             availability_message=capture_error,
                         )
-                        if item.availability_state in (None, "pending", "available")
+                        if item.availability_state in (None, "pending")
                         else item
                     )
                 )

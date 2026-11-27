@@ -7,6 +7,7 @@ import pytest
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client.run_parts import RunParts
 from kkrunner.backends import DirectBackend, SupervisedBackend
+from kkrunner.backends.contracts import JobStatus
 from kkrunner.client import ExecutionClient
 from kkrunner.client.job import Job
 from kkrunner.files.streams import close_output_files
@@ -110,8 +111,7 @@ def test_managed_job_cleanup_attempts_all_stages(tmp_path, monkeypatch, monitor_
         calls.append("monitor")
         if monitor_fails:
             raise errors[0]
-        job._state = RunState.FINISHED
-        job.result.return_code = 0
+        job._apply_status(JobStatus(RunState.FINISHED, return_code=0))
 
     def finish_bytes():
         calls.append("finish")
@@ -138,8 +138,7 @@ def test_confirmed_native_completion_survives_client_cleanup_error(tmp_path, mon
     job = _managed_job(ExecutionSpec(("true",), directory=tmp_path))
 
     async def finished():
-        job._state = RunState.FINISHED
-        job.result.return_code = 0
+        job._apply_status(JobStatus(RunState.FINISHED, return_code=0))
 
     def close_decoder():
         raise error
@@ -165,8 +164,7 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     job = _managed_job(spec)
 
     async def finished():
-        job._state = RunState.FINISHED
-        job.result.return_code = 0
+        job._apply_status(JobStatus(RunState.FINISHED, return_code=0))
 
     monkeypatch.setattr(job, "_monitor", finished)
     run = Run(RunParts(job, files), client=client)
