@@ -931,13 +931,12 @@ class RunManager:
         # operations or retain a second, process-local history of completions.
         try:
             client = self.client_for(record)
-            client.acknowledge(record)
+            return client.acknowledge(record)
         except (OSError, SubprocessError, RuntimeError, ValueError):
             return False
-        return True
 
     def reconcile_acknowledgements(self, *, on_error=None):
-        """Explicitly retry receipt ACKs; return IDs with acknowledged outcomes."""
+        """Explicitly retry receipt ACKs; return IDs whose outcome receipts were removed."""
         options = {} if on_error is None else {"on_error": on_error}
         acknowledged = []
         for record in self.store.runs(**options):

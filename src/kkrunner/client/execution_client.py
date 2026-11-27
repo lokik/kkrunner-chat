@@ -155,17 +155,17 @@ class ExecutionClient:
     def acknowledge_submission(self, run):
         """Release the submission receipt after the manager persisted acceptance."""
         if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
-            return None
+            return False
         self._validate_run(run)
         key = run.execution.submission_key or run.id
-        return _run_sync(self._invoke("acknowledge_submission", key))
+        return _run_sync(self._invoke("acknowledge_submission", key))["acknowledged"]
 
     def acknowledge(self, run):
         """Release a delivered receipt after the manager persisted completion."""
         if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
-            return None
+            return False
         self._validate_run(run)
-        return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
+        return _run_sync(self._invoke("acknowledge", run.execution.backend_id))["acknowledged"]
 
     def status(self, *runs):
         """Query each native job; a failed connection leaves only that observation unknown."""
