@@ -139,3 +139,68 @@ def test_collect_false_rejected_for_inputs_caches_and_primary_stream(tmp_path):
             ["python"], directory=tmp_path,
             output_file=TaskFile("stdout", collect=False),
         ))
+
+
+@pytest.mark.parametrize("excluded", ("scratch.dat", "scratch*.dat"))
+def test_output_glob_does_not_collect_excluded_files(tmp_path, excluded):
+    ignored = tmp_path / "scratch.dat"
+    result = tmp_path / "result.dat"
+    ignored.write_text("temporary")
+    result.write_text("result")
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        output_files=(TaskFile(excluded, collect=False), "*.dat"),
+    )
+    files = capture_result_files(FileManifest.from_spec(spec))
+    assert {version.path for version in files.output_versions} == {result}
+    assert ignored not in {Path(entry.local_path) for entry in files.artifacts}
+    assert matching_file(files, ignored) is None
+    assert matching_file(files, result) is not None
+
+
+def test_output_glob_only_matching_excluded_files_is_not_an_artifact_failure(tmp_path):
+    (tmp_path / "scratch.dat").write_text("temporary")
+    files = FileManifest.from_spec(ExecutionSpec(
+        ("true",), directory=tmp_path,
+        output_files=(TaskFile("scratch.dat", collect=False), "*.dat"),
+    ))
+    files = capture_result_files(files)
+    assert not files.failed_artifacts
+    assert not files.output_versions
+    assert files.outputs[1].availability_state == "skipped"
+
+
+@pytest.mark.parametrize("excluded", ("scratch.dat", "scratch*.dat"))
+def test_remote_output_glob_does_not_download_excluded_files(tmp_path, excluded):
+    from .test_remote import _text_run, _processed_run
+
+    executor, spec, workdir, remote_root = _text_run(
+        tmp_path, declared_output_files=(TaskFile(excluded, collect=False), "*.dat"),
+        code="from pathlib import Path; Path('scratch.dat').write_text('temporary'); Path('result.dat').write_text('result')",
+    )
+    runner = _processed_run(executor, spec)
+    runner.run()
+    assert (remote_root / "calculation" / "scratch.dat").read_text() == "temporary"
+    assert not (workdir / "scratch.dat").exists()
+    assert (workdir / "result.dat").read_text() == "result"
+    assert matching_file(runner.files, workdir / "scratch.dat") is None
+
+
+def test_remote_output_glob_exclusion_uses_mapped_path(tmp_path):
+    from .test_remote import _text_run, _processed_run
+
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    (workdir / "alias").symlink_to(workdir, target_is_directory=True)
+    executor, spec, workdir, remote_root = _text_run(
+        tmp_path, declared_output_files=(
+            TaskFile(workdir / "alias" / "scratch*.dat", collect=False),
+            "*.dat",
+        ),
+        code="from pathlib import Path; Path('scratch.dat').write_text('temporary'); Path('result.dat').write_text('result')",
+    )
+    runner = _processed_run(executor, spec)
+    runner.run()
+    assert (remote_root / "calculation" / "scratch.dat").exists()
+    assert not (workdir / "scratch.dat").exists()
+    assert (workdir / "result.dat").exists()

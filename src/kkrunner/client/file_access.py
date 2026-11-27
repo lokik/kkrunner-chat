@@ -76,6 +76,9 @@ class FileAccess:
             for matched in await self.client.target.expand_files(remote, remote_root):
                 destination = os.fspath(context._unmap_path(matched, remote_root)) if glob.has_magic(remote) else local
                 _relative_local_path(destination, context.local_root)
+                if (entry is not None and entry in run.files.outputs and glob.has_magic(remote)
+                        and run.files.output_excluded(matched, remote=True)):
+                    continue
                 # Retain exact historical file identities. A wildcard is
                 # expanded in the persisted mapped namespace, not today's alias.
                 # Resolve the parent, but never follow or replace a final
