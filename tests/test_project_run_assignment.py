@@ -109,3 +109,30 @@ def test_project_must_exist_before_backend_is_created(tmp_path, explicit):
             metadata={"test": {"task": "DOS"}},
         )
     assert not hasattr(executor, "runner")
+
+
+@pytest.mark.parametrize("create_before_delete", [True, False])
+def test_deleted_project_cannot_reserve_a_new_run(tmp_path, create_before_delete):
+    projects = ProjectRepository(tmp_path / "projects")
+    root = projects.create("Root")
+    project = projects.create("Child", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects, project=project)
+    executor = _Executor()
+
+    def create_run():
+        return executor.create_run(
+            ExecutionSpec(("unused",), directory=str(tmp_path)), tracked=manager,
+        )
+
+    if create_before_delete:
+        run = create_run()
+    # A separate repository instance represents another application client.
+    ProjectRepository(projects.directory).delete(
+        project.id, expected_generation=project.generation,
+    )
+    if not create_before_delete:
+        run = create_run()
+    with pytest.raises(KeyError):
+        run.submit()
+    assert executor.runner.submit_calls == 0
+    assert manager.store.runs() == ()
