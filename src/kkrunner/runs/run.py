@@ -761,16 +761,12 @@ class Run:
         return self._job.stop_observation()
 
     def close(self):
-        """Release an unstarted or terminal Run's resources; active work must settle first."""
+        """Close the client handle after its own work settles, without cancelling the job."""
         with self._lock:
             if self._closed:
                 return
             unstarted = not self._started and self._job.state in (RunState.NEW, RunState.CANCELLED)
-            completed = (
-                self._settled and self.state.is_terminal
-                and (self.manager is None or self._record.state.is_terminal)
-            )
-            if not completed and (self._submitting or not unstarted):
+            if self._submitting or not (unstarted or self._settled):
                 raise RuntimeError(f"Cannot close resources while Run is {self.state.value}")
             self._closed = True
         from kkrunner.files.streams import _close_distinct

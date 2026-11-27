@@ -198,7 +198,8 @@ def test_detached_local_delivers_named_output_on_request(tmp_path):
     assert (tmp_path / "err.txt").read_text() == "second\n"
 
 
-def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
+@pytest.mark.parametrize("tracked", [False, True])
+def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path, tracked):
     from kkrunner import MemoryRunStore
     marker = tmp_path / "completed"
     gate = tmp_path / "continue"
@@ -210,14 +211,24 @@ def test_detached_direct_can_stop_observing_without_stopping_process(tmp_path):
          "pathlib.Path(%r).write_text('done')" % (str(gate), str(marker))),
         directory=str(tmp_path), output_file=str(tmp_path / "out.txt"),
     )
-    manager = RunManager(MemoryRunStore())
+    manager = RunManager(MemoryRunStore()) if tracked else False
     run = ExecutionClient(DirectBackend).create_run(spec, tracked=manager, detached=True)
     run.submit()
     try:
+        with pytest.raises(RuntimeError, match="Cannot close resources"):
+            run.close()
         run.stop_observation()
         assert run.wait().return_code is None
         assert run.state == RunState.UNKNOWN
-        assert manager.store.get(run.id).execution.backend_id
+        if tracked:
+            before = manager.store.get(run.id)
+            assert before.execution.backend_id
+        run.close()
+        run.close()
+        if tracked:
+            assert manager.store.get(run.id) == before
+        with pytest.raises(RuntimeError, match="Run is closed"):
+            run.start()
         assert not marker.exists()
     finally:
         gate.touch()
