@@ -183,3 +183,37 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
     assert (workdir / "output.err").read_bytes() == b"stderr\n"
     assert b"Permanently added" not in (workdir / "output.txt").read_bytes()
     assert b"Permanently added" not in (workdir / "output.err").read_bytes()
+
+
+def test_ssh_supervised_observer_attaches_before_live_only_program_launch(tmp_path, monkeypatch):
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "backend-state"))
+    local_root, remote_root = tmp_path / "local", tmp_path / "remote"
+    workdir = local_root / "calculation"
+    workdir.mkdir(parents=True)
+    remote_root.mkdir()
+    marker = remote_root / "calculation" / "started"
+
+    class DelayedObserver(_DiagnosticTransport):
+        async def follow(self, operation, identity, on_output, **options):
+            # Leave time for the very short command to complete without the
+            # start barrier. The SSH FOLLOW uses the ordinary framed transport.
+            await asyncio.sleep(.2)
+            assert not marker.exists()
+            return await super().follow(operation, identity, on_output, **options)
+
+    client = ExecutionClient(SupervisedBackend, target=DelayedObserver())
+    spec = ExecutionSpec(
+        argv=(sys.executable, "-c",
+              "from pathlib import Path; import sys; Path('started').touch(); "
+              "print('first'); print('warning', file=sys.stderr)"),
+        directory=workdir,
+        staging=StagingSpec(local_root=local_root, remote_root=remote_root),
+    )
+    seen = {"out": [], "err": []}
+    run = client.create_run(spec, persistent=False,
+                            output_listener=lambda text, kind: seen[kind].append(text))
+    assert run.run().return_code == 0
+    assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {
+        "out": "first\n", "err": "warning\n",
+    }
+    assert marker.exists()

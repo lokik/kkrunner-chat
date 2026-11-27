@@ -139,7 +139,9 @@ class ManagedExecution(_Execution):
 
     async def submit(self, request, on_output):
         try:
-            facts = await self.target.call(self._operation("submit"), request)
+            # A new managed Job immediately follows its accepted reference.
+            # Backends with non-replayable streams may synchronize launch with FOLLOW.
+            facts = await self.target.call(self._operation("submit"), dict(request, wait_for_observer=True))
         except SubmissionNotStarted as exc:
             self._record({"state": "failed", "failure_phase": "submission", "error": str(exc)})
             raise

@@ -15,6 +15,7 @@ from kkrunner.execution import FailurePhase, RunState
 _SPEC_ENV = "KKRunner_REMOTE_PROCESS_SPEC"
 _START_FD_ENV = "KKRunner_REMOTE_PROCESS_START_FD"
 _LAUNCH_FAILURE_RETURN_CODE = 127
+_OBSERVER_START_TIMEOUT = 30
 
 
 def _exception_message(exc):
@@ -57,12 +58,13 @@ async def _run(spec):
             # Closing the handshake FD also wakes a waiting parent when the
             # supervisor cannot create its FOLLOW socket.
             os.close(int(spec["socket_fd"]))
-        if not streams.detached:
-            try:
-                await asyncio.wait_for(streams.connected.wait(), timeout=30)
-            except asyncio.TimeoutError:
+        if not streams.detached or spec.get("wait_for_observer", False):
+            connected = await streams.wait_for_observer(_OBSERVER_START_TIMEOUT)
+            if not connected and not streams.detached and not streams.cancelled.is_set():
                 message = "Client never connected to attached supervisor"
                 return return_code
+            # A detached submission must still launch when its original client
+            # disappears before FOLLOW. Late observers can request future bytes.
         if streams.cancelled.is_set() or (not streams.detached and streams.disconnected.is_set()):
             state, phase, return_code = RunState.CANCELLED, None, -signal.SIGTERM
             return return_code

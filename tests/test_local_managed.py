@@ -191,12 +191,26 @@ def test_failed_execution_replaces_stale_stdout(tmp_path):
     assert out.read_bytes() == b""
 
 
-def test_none_stream_paths_are_live_only(tmp_path):
-    runner = _managed_job(_spec(tmp_path, out=None, err=None), submission_key=RUN_ID)
+def test_none_stream_paths_are_live_only(tmp_path, monkeypatch):
+    import asyncio
+
+    follow = LocalTarget.follow
+
+    async def delayed_follow(self, *args, **kwargs):
+        await asyncio.sleep(.2)
+        assert not (tmp_path / "started").exists()
+        return await follow(self, *args, **kwargs)
+
+    monkeypatch.setattr(LocalTarget, "follow", delayed_follow)
+    spec = _spec(tmp_path, (sys.executable, "-c",
+                "from pathlib import Path; Path('started').touch(); print('output')"),
+                out=None, err=None)
+    runner = _managed_job(spec, submission_key=RUN_ID)
     seen = []
     runner.add_output_listener(lambda text, kind: seen.append((text, kind)))
     runner.submit()
     assert runner.wait().return_code == 0
+    assert "".join(text for text, kind in seen if kind == "out") == "output\n"
     assert not (tmp_path / "out.txt").exists()
     assert not (tmp_path / "err.txt").exists()
     attached = open_job(ExecutionClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False)

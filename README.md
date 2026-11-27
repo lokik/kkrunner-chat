@@ -36,8 +36,10 @@ backend is the default in either case. To prepare a run without submitting it,
 use `Run.create(command, target=..., backend=...)` or reuse a configured
 `ExecutionClient` with `client.create_run(command)`. Both accept an
 `ExecutionSpec` instead of a command for file declarations and staging.
-Named output files preserve output; the blocking convenience displays only
-available, unredirected live output.
+The blocking convenience displays unredirected live output. Supervised
+execution synchronizes the initial observer with launch when a stream is
+not saved. Named output files are needed for replay after disconnect and
+for capturing scheduler-owned or detached direct streams.
 
 Before local or SSH process backends launch a process, they check the selected
 serial or MPI executable on the execution host using its working directory and

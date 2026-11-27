@@ -843,7 +843,10 @@ class FileSession:
 
     def _observation_offsets(self):
         if self.is_local:
-            return {"out": 0, "err": 0}
+            return {
+                "out": None if self.spec.is_partial and self.spec.output_file is None else 0,
+                "err": None if self.spec.is_partial and self.spec.error_file is None else 0,
+            }
         offsets = {}
         streams = self._streams
         for kind, target in (
@@ -851,7 +854,7 @@ class FileSession:
             ("err", None if streams is None else streams.error_file),
         ):
             if target is None:
-                offsets[kind] = None
+                offsets[kind] = None if self.spec.is_partial else 0
             elif kind == "err" and target is streams.output_file:
                 offsets[kind] = offsets["out"]
             else:

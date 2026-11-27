@@ -109,7 +109,8 @@ class SupervisedBackend(Backend, ManagedOperations):
                 "error_file": error_path,
                 "receipt_id": receipt_id,
                 "socket_dir": socket_dir,
-                "detached": bool(request.get("detached", True)),
+                "detached": request["detached"],
+                "wait_for_observer": request["wait_for_observer"] and (output_path is None or error_path is None),
             }
             env = os.environ.copy()
             env["KKRunner_RUN_ID"] = run_id
@@ -282,7 +283,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         # A merged stream has only one logical channel.
         def on_chunk(kind, offset, data):
             previous = offsets[kind]
-            if previous is not None and offset != previous and paths[kind] is not None:
+            if previous is not None and offset != previous:
                 raise ValueError("Supervisor FOLLOW offset mismatch")
             offsets[kind] = offset + len(data)
             streams[kind].write(data)
@@ -310,6 +311,10 @@ class SupervisedBackend(Backend, ManagedOperations):
             facts = SupervisedBackend.status(remote_id)
             if not RunState(facts["state"]).is_terminal:
                 raise
+            # A numeric cursor requests exact delivery. A disconnected live-only
+            # stream cannot be reconstructed, even if the other channel has a spool.
+            if any(paths[kind] is None and offset is not None for kind, offset in requested.items()):
+                raise ValueError("Live-only output cannot be recovered after observation was lost")
             if not any(path is not None for path in paths.values()):
                 raise ValueError("Output was live-only and cannot be reattached")
             seen = set()

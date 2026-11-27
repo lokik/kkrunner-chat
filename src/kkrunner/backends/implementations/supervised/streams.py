@@ -119,6 +119,17 @@ class SupervisorStreams:
                 raise startup_error from cleanup_error
             raise
 
+    async def wait_for_observer(self, timeout):
+        """Wait for a validated FOLLOW connection or cancellation, with a deadline."""
+        tasks = [asyncio.create_task(event.wait()) for event in (self.connected, self.cancelled)]
+        try:
+            await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            return self.connected.is_set()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     def publish(self, kind, data):
         if self._terminal is not None:
             raise RuntimeError("Output published after termination")
@@ -197,17 +208,14 @@ class SupervisorStreams:
                     raise ValueError("Invalid stream offset")
                 if self.paths[kind] is not None and offset > self._sizes[kind]:
                     raise ValueError("Offset is beyond the spool")
-                if self.paths[kind] is None:
-                    if offset != 0:
-                        raise ValueError("Live-only output cannot be replayed")
-                    offsets[kind] = self._sizes[kind]
+                if self.paths[kind] is None and offset != self._sizes[kind]:
+                    raise ValueError("Requested live-only output is no longer available")
             writer.transport.set_write_buffer_limits(high=_HIGH, low=_LOW)
             follower = _Follower(writer, offsets.copy())
             if not self.detached:
                 if self._session_follower is not None:
                     raise ValueError("Attached execution already has a client")
                 self._session_follower = follower
-                self.connected.set()
             self._followers.add(follower)
             # Detached clients can disconnect while a calculation is silent.
             # Observe EOF for *every* follower so an idle socket does not
@@ -223,6 +231,9 @@ class SupervisorStreams:
 
             disconnect_watch.add_done_callback(on_disconnect)
             writer.write(MAGIC)
+            # Release the program only after the follower is installed and its
+            # greeting is queued. No suspension can race the first output here.
+            self.connected.set()
             while True:
                 if disconnect_watch is not None and disconnect_watch.done():
                     return

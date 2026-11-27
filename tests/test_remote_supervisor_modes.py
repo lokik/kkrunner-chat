@@ -45,7 +45,8 @@ def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch):
     asyncio.run(check())
 
 
-def test_detached_run_survives_follow_disconnect(tmp_path, monkeypatch):
+@pytest.mark.parametrize("live_only", [False, True])
+def test_detached_run_survives_follow_disconnect(tmp_path, monkeypatch, live_only):
 
     async def check():
         captured = []
@@ -60,9 +61,12 @@ def test_detached_run_survives_follow_disconnect(tmp_path, monkeypatch):
             argv=[
                 sys.executable,
                 "-c",
-                "import time; print('first', flush=True); time.sleep(.2); print('last', flush=True)",
+                "import time; from pathlib import Path; print('first', flush=True); "
+                "time.sleep(.2); print('last', flush=True); Path('completed').touch()",
             ],
         )
+        if live_only:
+            spec.update(wait_for_observer=True, output_file=None, error_file=None)
         task = asyncio.create_task(remote_process_worker._run(spec))
         with os.fdopen(rd, "rb") as pipe:
             path = (await asyncio.to_thread(pipe.readline)).decode().strip()
@@ -73,7 +77,11 @@ def test_detached_run_survives_follow_disconnect(tmp_path, monkeypatch):
         writer.close()
         await writer.wait_closed()
         assert await asyncio.wait_for(task, timeout=5) == 0
-        assert (tmp_path / "stdout").read_bytes() == b"first\nlast\n"
+        assert (tmp_path / "completed").exists()
+        if live_only:
+            assert not (tmp_path / "stdout").exists()
+        else:
+            assert (tmp_path / "stdout").read_bytes() == b"first\nlast\n"
         assert captured[0][0][1].value == "finished"
         assert captured[0][1] == {"error": None}
 
@@ -259,3 +267,75 @@ def test_unexpected_child_spawn_failure_is_classified_as_launch(tmp_path, monkey
     assert args[2] == 127
     assert args[3] == FailurePhase.LAUNCH
     assert kwargs["error"] == "failed to prepare child subprocess"
+
+
+@pytest.mark.parametrize("named_stderr", [False, True])
+def test_detached_program_waits_for_first_observer_and_delivers_initial_bytes(tmp_path, monkeypatch, named_stderr):
+    from kkrunner.backends.implementations.supervised.streams import follow_socket
+
+    async def check():
+        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
+        rd, wr = os.pipe()
+        marker = tmp_path / "started"
+        spec = _spec(tmp_path, wr, detached=True, argv=[
+            sys.executable, "-c",
+            "from pathlib import Path; import sys; Path('started').touch(); "
+            "print('first'); print('warning', file=sys.stderr)",
+        ])
+        spec.update(wait_for_observer=True, output_file=None)
+        if not named_stderr:
+            spec["error_file"] = None
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
+            await asyncio.sleep(.1)
+            assert not marker.exists()
+            received = {"out": bytearray(), "err": bytearray()}
+            result = await asyncio.wait_for(follow_socket(
+                path, {"out": 0, "err": 0},
+                lambda kind, offset, data: received[kind].extend(data),
+            ), 5)
+            assert result["return_code"] == 0
+            assert await asyncio.wait_for(task, 5) == 0
+            assert received == {"out": b"first\n", "err": b"warning\n"}
+            assert marker.exists()
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_detached_start_barrier_has_bounded_wait_and_accepts_cancellation(tmp_path, monkeypatch, cancel):
+    async def check():
+        captured = []
+        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: captured.append(args))
+        monkeypatch.setattr(remote_process_worker, "_OBSERVER_START_TIMEOUT", 5 if cancel else .05)
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=True, argv=[
+            sys.executable, "-c", "from pathlib import Path; Path('started').touch()",
+        ])
+        spec.update(wait_for_observer=True, output_file=None, error_file=None)
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                path = (await asyncio.to_thread(pipe.readline)).decode().strip()
+            if cancel:
+                reader, writer = await asyncio.open_unix_connection(path)
+                writer.write(b'{"command":"cancel"}\n')
+                await writer.drain()
+                assert b'"accepted":true' in await reader.readline()
+                writer.close()
+                await writer.wait_closed()
+            await asyncio.wait_for(task, 3)
+            assert (tmp_path / "started").exists() is not cancel
+            assert captured[0][1].value == ("cancelled" if cancel else "finished")
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())

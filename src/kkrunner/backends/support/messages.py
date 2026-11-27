@@ -43,6 +43,7 @@ class _CommandRequest(RecoveryRequest):
 class ExecutionRequest(_CommandRequest, total=False):
     submission_key: Optional[str]
     detached: bool
+    wait_for_observer: bool
     mpi_argv: Optional[List[str]]
     mpi_uses_stdin: bool
     mpi: MpiOptions
@@ -131,7 +132,7 @@ def normalize_request(request: ExecutionRequest) -> ExecutionRequest:
     result["argv"] = command(request["argv"])
     result["mpi_argv"] = None if request.get("mpi_argv") is None else command(request["mpi_argv"])
     result["mpi"] = asdict(MpiSpec(**request.get("mpi", {})))
-    for name, default in (("mpi_uses_stdin", True), ("detached", True)):
+    for name, default in (("mpi_uses_stdin", True), ("detached", True), ("wait_for_observer", False)):
         value = request.get(name, default)
         if type(value) is not bool:
             raise TypeError(f"{name} must be bool")

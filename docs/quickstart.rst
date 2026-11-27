@@ -18,7 +18,11 @@ For a blocking local command, import :func:`kkrunner.run`.
 
 Commands are argument sequences, or a single executable pathname. Shell
 expansion is never performed. The function displays available unredirected
-output; for complete managed or detached output, declare named stream files.
+output. The supervised backend waits for its first observer when a stream
+has no named file. It can start without an observer after a bounded grace
+period if the client disappears; missed live-only bytes cannot be replayed.
+For PSI/J or detached direct execution, declare named output files to capture
+their streams. Named files are also necessary for replay after disconnect.
 
 Use a target address to run on another computer, and select the backend
 independently. The default is direct execution, local or over SSH.

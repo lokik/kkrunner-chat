@@ -187,7 +187,7 @@ def test_live_only_stream_does_not_replay_earlier_bytes(tmp_path):
             streams.publish("out", b"old")
             seen = []
             follower = asyncio.create_task(
-                follow_socket(streams.socket_path, {"out": 0, "err": 0}, lambda *args: seen.append(args))
+                follow_socket(streams.socket_path, {"out": None, "err": None}, lambda *args: seen.append(args))
             )
             await asyncio.sleep(0.05)
             streams.publish("out", b"new")
@@ -447,3 +447,17 @@ def test_supervisor_start_preserves_failure_when_cleanup_also_fails(tmp_path, mo
         assert not os.path.exists(streams._socket_dir)
 
     asyncio.run(check())
+
+
+def test_live_only_numeric_offset_cannot_silently_skip_previous_bytes():
+    async def run():
+        streams = SupervisorStreams()
+        await streams.start()
+        try:
+            streams.publish("out", b"already gone")
+            with pytest.raises((asyncio.IncompleteReadError, ConnectionError)):
+                await follow_socket(streams.socket_path, {"out": 0, "err": 0}, lambda *_: None)
+        finally:
+            await streams.finish()
+
+    asyncio.run(run())

@@ -389,13 +389,14 @@ def test_direct_follow_without_stream_files_is_live_only(tmp_path, monkeypatch):
         monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
         rd, wr = os.pipe()
         spec = {
-            "argv": [sys.executable, "-c", "import time; time.sleep(.15); print('live', flush=True); time.sleep(.1)"],
+            "argv": [sys.executable, "-c", "print('live', flush=True)"],
             "directory": str(tmp_path),
             "output_file": None,
             "error_file": None,
             "receipt_id": "b" * 32,
             "socket_fd": wr,
             "detached": True,
+            "wait_for_observer": True,
         }
         worker = asyncio.create_task(remote_process_worker._run(spec))
         with os.fdopen(rd, "rb") as source:
