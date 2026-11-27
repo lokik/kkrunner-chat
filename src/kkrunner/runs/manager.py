@@ -391,6 +391,7 @@ class RunManager:
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
             attached = self.transition(record, execution=execution, files=files)
+            self._acknowledge_submission(attached, client=client)
             return self._record_observation(
                 attached,
                 client.status(JobAttachment(attached.execution, attached.files))[0],
@@ -690,7 +691,6 @@ class RunManager:
         else:
             updated = self.transition(record, **changes)
             self._acknowledge_result(updated)
-        self._acknowledge_submission(updated)
         return updated
 
     def completion_fields(
@@ -934,12 +934,16 @@ class RunManager:
             return True
 
     def reconcile_acknowledgements(self, *, on_error=None):
-        """Explicitly retry idempotent result ACKs for durable terminal records."""
+        """Explicitly retry receipt ACKs; return IDs with acknowledged outcomes."""
         options = {} if on_error is None else {"on_error": on_error}
-        return tuple(
-            record.id for record in self.store.runs(active=False, **options)
-            if self._acknowledge_result(record)
-        )
+        acknowledged = []
+        for record in self.store.runs(**options):
+            if not record.execution.available:
+                continue
+            self._acknowledge_submission(record)
+            if record.state.is_terminal and self._acknowledge_result(record):
+                acknowledged.append(record.id)
+        return tuple(acknowledged)
 
     def _acknowledge_submission(self, record, *, client=None):
         """Discard the submission receipt only after RunStore is durable."""
@@ -951,7 +955,7 @@ class RunManager:
                 client = self.client_for(record)
             client.acknowledge_submission(record)
         except (OSError, SubprocessError, RuntimeError):
-            # The receipt remains recoverable until a subsequent refresh.
+            # Explicit receipt reconciliation can retry this cleanup.
             pass
 
     def refresh(self, records=None, *, on_error=None, retrieve_ended=False):
