@@ -29,7 +29,7 @@ from kkrunner.runs.files import RunFiles
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
-from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, project_run_state
+from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, NO_EXECUTION_FAILURES, project_run_state
 from kkrunner.runs.stores import resolve_record, store_for
 
 _STATE_RANK = {
@@ -408,6 +408,7 @@ class RunManager:
                 finished_at=now,
                 message="Stale submission was not found by its execution backend",
                 failure_phase=FailurePhase.SUBMISSION,
+                files=latest.files.skip_pending_artifacts(),
             )
 
         return self._store_for(record).update(record, mark_absent)
@@ -593,10 +594,13 @@ class RunManager:
                 )
             elif execution.submission_key != record.execution.submission_key:
                 raise ValueError("Backend status returned another submission key")
+        files = status.files
+        if phase in NO_EXECUTION_FAILURES:
+            files = (record.files if files is None else files).skip_pending_artifacts()
         return dict(
             state=state,
             execution=execution,
-            files=status.files if status.files is not None else _UNCHANGED,
+            files=files if files is not None else _UNCHANGED,
             return_code=return_code,
             message=status.message,
             failure_phase=phase,
@@ -706,6 +710,9 @@ class RunManager:
         state = RunState(state)
         phase = _failure_phase(failure_phase)
         result_files = self._merged_result_files(record, files)
+        if phase in NO_EXECUTION_FAILURES:
+            result_files = result_files.skip_pending_artifacts()
+            artifacts_available = False
 
         if result_files.failed_artifacts and (state == RunState.FINISHED or phase == FailurePhase.POSTPROCESSING):
             artifacts_available = False

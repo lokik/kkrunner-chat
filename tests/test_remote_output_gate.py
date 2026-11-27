@@ -188,3 +188,36 @@ def test_untracked_refresh_after_observation_loss_reports_pending_download(tmp_p
     assert run.return_code == (0 if terminal == RunState.FINISHED else 17 if terminal == RunState.FAILED else None)
     assert run.refresh() == RunState.DOWNLOADING
     assert transport.follow_calls == 1
+
+
+@pytest.mark.parametrize("storage", ("local", "remote", "shared"))
+@pytest.mark.parametrize("phase", (FailurePhase.LAUNCH, FailurePhase.SUBMISSION))
+def test_no_execution_does_not_finalize_stale_outputs(tmp_path, storage, phase, monkeypatch):
+    from kkrunner.runs.base import RunStatus
+
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for path in (local / "out", local / "result.dat", remote / "out", remote / "result.dat"):
+        path.write_text("not produced by this run")
+    spec = ExecutionSpec(
+        argv=(), directory=local, output_file="out", output_files=("result.dat",),
+    )
+    client = ExecutionClient(target=LocalTarget() if storage == "local" else _Transport())
+    context = FileContext(client, StagingSpec(
+        local_root=local, remote_root=remote, shared_filesystem=storage == "shared",
+    ))
+    files = asyncio.run(context.map_manifest(FileManifest.from_spec(spec))).initialize_availability()
+    session = FileSession(context, spec, files=files)
+
+    async def unexpected_transfer(*args, **kwargs):
+        pytest.fail("A failed launch must not synchronize result files")
+
+    monkeypatch.setattr(session, "_synchronize", unexpected_transfer)
+    final = session.finalize(RunStatus(RunState.FAILED, return_code=127, failure_phase=phase))
+    assert final.captured_at is None
+    assert not final.output_versions
+    assert not final.cache_versions
+    assert all(entry.availability_state == "skipped" for entry in final.artifacts)
+    assert (local / "result.dat").read_text() == "not produced by this run"

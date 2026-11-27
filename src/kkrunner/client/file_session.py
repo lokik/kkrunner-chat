@@ -739,15 +739,19 @@ class FileSession:
         """Finalize owned files on the existing event loop, if any."""
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
+        from kkrunner.runs.states import NO_EXECUTION_FAILURES
+
+        self.close()
+        if status.failure_phase in NO_EXECUTION_FAILURES:
+            self._files = self._files.skip_pending_artifacts()
+            return self._files
         required = status.state == RunState.FINISHED and status.return_code == 0
         if self.files_are_local:
             from kkrunner.files.availability import local_manifest
-            self.close()
             self._files = local_manifest(self._files, status)
             if required and self._files.failed_artifacts:
                 raise FileNotFoundError(self._files.availability_message)
         else:
-            self.close()
             await self._synchronize(required=required)
         from kkrunner.files.availability import capture_result_files
 

@@ -61,6 +61,7 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     record = manager.store.get(run.id)
     assert record.failure_phase == FailurePhase.PREPROCESSING
     assert record.files.captured_at is None
+    assert record.files.stdout.availability_state == "skipped"
     assert not (tmp_path / "out").exists()
     replacement = client.create_run(replace(spec, input_files=()), tracked=manager)
     replacement.run()

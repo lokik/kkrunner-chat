@@ -19,7 +19,7 @@ from kkrunner.runs.base import (
     wait_for_monitor,
 )
 from kkrunner.runs.processing import ProcessingPending
-from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, project_run_state
+from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, NO_EXECUTION_FAILURES, project_run_state
 from kkrunner.runs.stores import resolve_record, store_for
 
 
@@ -271,15 +271,18 @@ class Run:
             outcome.return_code = self._job.return_code
             self.result = outcome
             if raw_state.is_terminal:
-                self._state = RunState.DOWNLOADING
-                if self.manager is not None:
-                    with self._completion_lock:
-                        self._record = self.manager.transition(
-                            self._record, state=self._state, return_code=self.return_code,
-                        )
+                status = self._job.status()
+                if status.failure_phase not in NO_EXECUTION_FAILURES:
+                    self._state = RunState.DOWNLOADING
+                    if self.manager is not None:
+                        with self._completion_lock:
+                            self._record = self.manager.transition(
+                                self._record, state=self._state, return_code=self.return_code,
+                            )
                 try:
-                    # FileSession finalizes and closes its streams before processing.
-                    self._file_session.finalize(self._job.status())
+                    # FileSession closes its streams and only collects files
+                    # when the backend actually launched the program.
+                    self._file_session.finalize(status)
                 except Exception as exc:
                     self._file_session.mark_transfer_failed(str(exc))
                     if raw_state == RunState.FINISHED:

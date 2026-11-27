@@ -16,6 +16,7 @@ from kkrunner.files.manifest import ArtifactAvailabilityState
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import file_digest
 from kkrunner.runs.stores import resolve_record, store_for
+from kkrunner.runs.states import NO_EXECUTION_FAILURES
 
 
 class HistoricalFileMismatchError(OSError):
@@ -26,12 +27,15 @@ def _unique(values):
     return tuple(dict.fromkeys(value for value in values if value is not None))
 
 
-def _missing_result_files(result_files):
+def _missing_result_files(result_files, *, include_outputs=True):
     if result_files.captured_at is not None:
         # Retrieval needs existence, not content identity. Only verify the
         # contents of files actually being restored.
         missing = []
-        for version in (*result_files.input_versions, *result_files.output_versions):
+        versions = result_files.input_versions
+        if include_outputs:
+            versions += result_files.output_versions
+        for version in versions:
             if version.kind != "file":
                 continue
             try:
@@ -42,10 +46,12 @@ def _missing_result_files(result_files):
                 continue
         return _unique(missing)
 
-    entries = (
-        *result_files.input_entries, result_files.stdout, result_files.stderr,
-        *(entry for entry in result_files.outputs if entry.collect),
-    )
+    entries = result_files.input_entries
+    if include_outputs:
+        entries = (
+            *entries, result_files.stdout, result_files.stderr,
+            *(entry for entry in result_files.outputs if entry.collect),
+        )
     return _unique(
         entry.local_path for entry in entries
         if entry is not None and entry.kind == "file" and entry.local_path is not None
@@ -76,6 +82,8 @@ class RunFiles:
 
     def output_file_is_current(self, run):
         record = resolve_record(run, self.store)
+        if record.failure_phase in NO_EXECUTION_FAILURES:
+            return False
         files = record.files
         return file_is_current(files, files.output_file, files.output_versions)
 
@@ -119,7 +127,9 @@ class RunFiles:
             return record  # There is no separate target copy to restore.
         if record.execution.backend_id is None or not record.execution.available:
             return record
-        missing = _missing_result_files(record.files)
+        missing = _missing_result_files(
+            record.files, include_outputs=record.failure_phase not in NO_EXECUTION_FAILURES,
+        )
         if not missing:
             return record
 
