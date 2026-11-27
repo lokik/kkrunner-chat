@@ -15,6 +15,12 @@ from kkrunner.client.staging import StagingSpec
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
+def _destination_path(path):
+    """Canonicalize the parent without following the final directory entry."""
+    path = os.fspath(path)
+    return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+
 class FileAccess:
     def __init__(self, client):
         self.client = client
@@ -70,8 +76,7 @@ class FileAccess:
                 # expanded in the persisted mapped namespace, not today's alias.
                 # Resolve the parent, but never follow or replace a final
                 # symlink at the destination (including a dangling one).
-                target = os.path.join(os.path.realpath(os.path.dirname(destination)),
-                                      os.path.basename(destination))
+                target = _destination_path(destination)
                 pair = FileEntry(local_path=target, remote_path=matched)
                 previous = pairs.setdefault(target, pair)
                 if previous.remote_path != matched:
@@ -108,14 +113,17 @@ class FileAccess:
 
         entries = self.resolve_result_files(run, files)
         if destinations is not None:
-            targets = {
-                os.path.join(os.path.realpath(os.path.dirname(os.fspath(path))),
-                             os.path.basename(os.fspath(path))): os.fspath(target)
-                for path, target in destinations.items()
-            }
-            originals = {targets.get(entry.local_path, entry.local_path): entry.local_path for entry in entries}
-            entries = tuple(replace(entry, local_path=targets.get(entry.local_path, entry.local_path))
-                            for entry in entries)
+            targets = {_destination_path(path): _destination_path(target)
+                       for path, target in destinations.items()}
+            originals = {}
+            staged = []
+            for entry in entries:
+                target = targets.get(entry.local_path, entry.local_path)
+                if target in originals:
+                    raise ValueError(f"Different historical sources map to {target}")
+                originals[target] = entry.local_path
+                staged.append(replace(entry, local_path=target))
+            entries = tuple(staged)
             if verify is not None:
                 original_verify = verify
                 verify = lambda target, temporary: original_verify(originals[target], temporary)
