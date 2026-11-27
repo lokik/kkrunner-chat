@@ -376,3 +376,24 @@ def test_retry_does_not_publish_disappeared_wildcard_child(tmp_path):
         assert (local / "result-new.dat").read_text() == "current result"
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("kind", ["output", "cache"])
+def test_mapped_wildcard_retains_original_declaration(tmp_path, kind):
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    (workdir / "alias").symlink_to(workdir, target_is_directory=True)
+    pattern = workdir / "alias" / "part-*.dat"
+    executor, spec, _, _ = _text_run(
+        tmp_path, **{f"declared_{kind}_files": (pattern,)},
+        code="from pathlib import Path; Path('part-one.dat').write_text('result')",
+    )
+    run = _processed_run(executor, spec)
+    assert run.run().return_code == 0
+    entries = run.files.outputs if kind == "output" else tuple(cache.file for cache in run.files.caches)
+    declared = {entry.local_path: entry for entry in entries if entry.local_path is not None}
+    assert declared[str(pattern)].availability_state == "available"
+    assert str(workdir / "part-*.dat") not in declared
+    concrete = workdir / "part-one.dat"
+    assert declared[str(concrete)].source_pattern == str(pattern)
+    assert concrete.read_text() == "result"
