@@ -187,7 +187,7 @@ def test_file_operations_follow_record_owner(tmp_path):
 
 def test_foreign_postprocessing_retry_keeps_owner(tmp_path):
     from kkrunner.runs import FailurePhase
-    from kkrunner.runs.files import capture_result_files
+    from kkrunner.files.availability import capture_result_files
     disk, memory = RunStore(tmp_path / "runs"), MemoryRunStore()
     a, b = RunManager(disk), RunManager(memory)
     disk.save(a.new_record(directory=tmp_path, run_id="same"))

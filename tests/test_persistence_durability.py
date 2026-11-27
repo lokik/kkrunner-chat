@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import kkrunner.runs.files as run_files_module
+import kkrunner.files.availability as run_files_module
 import kkrunner.runs.records as records_module
 import kkrunner.support.durability as durability
 from kkrunner.client import LocalTarget
