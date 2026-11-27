@@ -42,7 +42,9 @@ Persistent unsupported custom targets are rejected before a Run is created.
 ClientPool caches clients by transport/backend pair; discarding a client or
 clearing the cache does not close connections. The SSH transport reuses a
 bounded pool of persistent SSH/Python sessions for short RPC calls, shared
-by all clients with equal SSH configurations. Sessions expire when idle.
+by all clients with equal SSH configurations. Each idle session expires at
+its own deadline, managed by one process-wide sleeping timeout thread.
+Empty pools and their executors are removed automatically.
 Explicit ``SshTarget.close()`` closes that configuration's shared sessions;
 it is not a client shutdown operation. Streaming operations and file
 transfers keep their own processes and stream handles.

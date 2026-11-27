@@ -54,8 +54,8 @@ class SshTarget(Target):
 
     async def call(self, operation: Operation, *args, **kwargs):
         if self.pool_size and type(self) is SshTarget:
-            from .sessions import pool_for
-            return await pool_for(self).call(operation, *args, **kwargs)
+            from .sessions import call_pooled
+            return await call_pooled(self, operation, *args, **kwargs)
         # Custom transport subclasses and pool_size=0 retain one-shot SSH.
         payload = operation_payload(args, kwargs).encode("utf-8")
         command = operation_command(operation, python=self.python_command)

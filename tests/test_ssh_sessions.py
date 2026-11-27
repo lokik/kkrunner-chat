@@ -9,7 +9,8 @@ import pytest
 
 from kkrunner.client.contracts import Operation
 from kkrunner.targets.implementations.ssh.source import portable_bundle
-from kkrunner.targets.implementations.ssh.sessions import SshSessionPool
+from kkrunner.targets import SshTarget
+from kkrunner.targets.implementations.ssh import sessions
 from kkrunner.support.decorators import depends_on, portable
 
 
@@ -78,8 +79,15 @@ def test_portable_identity_depends_on_module_and_qualname_only():
     assert portable_bundle(other)[0] == symbol
 
 
-def test_reuse_install_once_and_isolate_application_errors():
-    pool = SshSessionPool(LoopbackTransport())
+@pytest.fixture
+def loopback(monkeypatch):
+    monkeypatch.setattr(SshTarget, "_command", staticmethod(LoopbackTransport._command))
+    return SshTarget("loopback", python_command=(sys.executable,),
+                     pool_size=2, pool_idle_seconds=2)
+
+
+def test_reuse_install_once_and_isolate_application_errors(loopback):
+    pool = loopback
 
     async def run():
         first = await pool.call(Operation.standalone(_remote_pid))
@@ -94,16 +102,16 @@ def test_reuse_install_once_and_isolate_application_errors():
 
     try:
         asyncio.run(run())
-        with pool._lock:
-            sessions = list(pool._idle)
-        assert len(sessions) == 1
-        assert len(sessions[0].loaded) == 5
+        with sessions._CHANGED:
+            idle = list(sessions._POOLS[pool]._idle)
+        assert len(idle) == 1
+        assert len(idle[0][1].loaded) == 5
     finally:
         pool.close()
 
 
-def test_pool_scales_to_simultaneous_requests():
-    pool = SshSessionPool(LoopbackTransport())
+def test_pool_scales_to_simultaneous_requests(loopback):
+    pool = loopback
 
     async def run():
         pids = await asyncio.gather(
@@ -114,19 +122,19 @@ def test_pool_scales_to_simultaneous_requests():
 
     try:
         asyncio.run(run())
-        with pool._lock:
-            assert len(pool._sessions) == 2
+        with sessions._CHANGED:
+            assert len(sessions._POOLS[pool]._idle) == 2
     finally:
         pool.close()
 
 
-def test_worker_failure_is_not_automatically_retried():
-    pool = SshSessionPool(LoopbackTransport())
+def test_worker_failure_is_not_automatically_retried(loopback):
+    pool = loopback
 
     async def run():
         first = await pool.call(Operation.standalone(_remote_pid))
-        with pool._lock:
-            session = pool._idle[0]
+        with sessions._CHANGED:
+            _, session = sessions._POOLS[pool]._idle[0]
         session.process.kill()
         session.process.wait()
         with pytest.raises(ConnectionError):
@@ -146,14 +154,15 @@ def _slow_operation():
     return 1
 
 
-def test_cancelled_call_retires_worker_without_retry():
-    pool = SshSessionPool(LoopbackTransport())
+def test_cancelled_call_retires_worker_without_retry(loopback):
+    pool = loopback
 
     async def run():
         task = asyncio.create_task(pool.call(Operation.standalone(_slow_operation)))
         for _ in range(100):
-            with pool._lock:
-                started = bool(pool._inflight)
+            with sessions._CHANGED:
+                current = sessions._POOLS.get(pool)
+                started = current is not None and any(current._pending.values())
             if started:
                 break
             await asyncio.sleep(0.01)
@@ -164,8 +173,8 @@ def test_cancelled_call_retires_worker_without_retry():
             await task
         # The interrupted session is never returned to the reusable pool.
         for _ in range(100):
-            with pool._lock:
-                finished = not pool._inflight and not pool._sessions
+            with sessions._CHANGED:
+                finished = pool not in sessions._POOLS
             if finished:
                 break
             await asyncio.sleep(0.02)
@@ -178,22 +187,109 @@ def test_cancelled_call_retires_worker_without_retry():
         pool.close()
 
 
-def test_idle_workers_exit():
-    transport = LoopbackTransport()
-    transport.pool_idle_seconds = 1
-    pool = SshSessionPool(transport)
-    try:
-        asyncio.run(pool.call(Operation.standalone(_remote_pid)))
-        deadline = time.monotonic() + 4
-        while time.monotonic() < deadline:
-            with pool._lock:
-                if not pool._sessions:
-                    break
-            time.sleep(0.1)
-        with pool._lock:
-            assert not pool._sessions
-    finally:
-        pool.close()
+async def _until(predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for SSH pool state")
+        await asyncio.sleep(.02)
+
+
+def _registered(target):
+    with sessions._CHANGED:
+        return sessions._POOLS.get(target)
+
+
+def test_idle_workers_and_empty_pool_exit(loopback):
+    from dataclasses import replace
+    target = replace(loopback, pool_idle_seconds=1)
+
+    async def run():
+        first = await target.call(Operation.standalone(_remote_pid))
+        old = _registered(target)
+        await _until(lambda: _registered(target) is None)
+        assert old is not None
+        assert await target.call(Operation.standalone(_remote_pid)) != first
+        assert _registered(target) is not old
+
+    asyncio.run(run())
+
+
+def test_individual_session_expires_while_other_request_is_active(loopback, tmp_path):
+    from dataclasses import replace
+    target = replace(loopback, pool_idle_seconds=1)
+    operation = Operation.standalone(_wait_for_file)
+    started, release = tmp_path / "started", tmp_path / "release"
+
+    async def run():
+        task = asyncio.create_task(target.call(operation, str(started), str(release)))
+        try:
+            await _until(started.exists)
+            idle_pid = await target.call(Operation.standalone(_remote_pid))
+            original = _registered(target)
+            with sessions._CHANGED:
+                idle_session = original._idle[0][1]
+            await _until(lambda: idle_session.process.poll() is not None)
+            assert not task.done()
+            assert _registered(target) is original
+            assert await target.call(Operation.standalone(_remote_pid)) != idle_pid
+        finally:
+            release.touch()
+            assert await asyncio.wait_for(task, 5) == 42
+
+    asyncio.run(run())
+
+
+@portable
+def _wait_for_file(started, release):
+    import time
+    from pathlib import Path
+    Path(started).touch()
+    deadline = time.monotonic() + 15
+    while not Path(release).exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError("Test did not release remote operation")
+        time.sleep(.02)
+    return 42
+
+
+def test_queued_requests_keep_pool_alive(loopback, tmp_path):
+    from dataclasses import replace
+    target = replace(loopback, pool_size=1, pool_idle_seconds=1)
+    started, release = tmp_path / "started", tmp_path / "release"
+
+    async def run():
+        first = asyncio.create_task(target.call(
+            Operation.standalone(_wait_for_file), str(started), str(release),
+        ))
+        await _until(started.exists)
+        old = _registered(target)
+        queued = asyncio.create_task(target.call(Operation.standalone(_remote_pid)))
+        try:
+            await asyncio.sleep(1.2)
+            assert _registered(target) is old
+            assert not queued.done()
+        finally:
+            release.touch()
+            assert await asyncio.wait_for(first, 5) == 42
+            assert isinstance(await asyncio.wait_for(queued, 5), int)
+        await _until(lambda: _registered(target) is None)
+
+    asyncio.run(run())
+
+
+def test_pool_removed_after_failed_session_start(loopback, monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError("SSH unavailable")
+
+    monkeypatch.setattr(sessions.subprocess, "Popen", fail)
+
+    async def run():
+        with pytest.raises(OSError, match="SSH unavailable"):
+            await loopback.call(Operation.standalone(_remote_pid))
+        await _until(lambda: _registered(loopback) is None)
+
+    asyncio.run(run())
 
 
 def test_evicting_client_does_not_close_shared_target_sessions(monkeypatch):
@@ -223,3 +319,81 @@ def test_evicting_client_does_not_close_shared_target_sessions(monkeypatch):
         assert asyncio.run(pid(second)) != initial
     finally:
         equivalent.close()
+
+
+def test_expiring_pool_does_not_block_new_request(loopback, monkeypatch):
+    from dataclasses import replace
+    from threading import Event
+
+    target = replace(loopback, pool_idle_seconds=1)
+    entered, release = Event(), Event()
+    original_close = sessions._Session.close
+
+    async def run():
+        first_pid = await target.call(Operation.standalone(_remote_pid))
+        with sessions._CHANGED:
+            old_pool = sessions._POOLS[target]
+            old_session = old_pool._idle[0][1]
+
+        def close(session):
+            if session is old_session:
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("Test did not release expired session")
+            original_close(session)
+
+        monkeypatch.setattr(sessions._Session, "close", close)
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            # The registry has already dropped the old pool, even though
+            # closing its interpreter is still in progress.
+            assert await asyncio.wait_for(
+                target.call(Operation.standalone(_remote_pid)), 3,
+            ) != first_pid
+            assert _registered(target) is not old_pool
+        finally:
+            release.set()
+        await _until(lambda: old_session.process.poll() is not None)
+
+    asyncio.run(run())
+
+
+def test_close_target_cancels_pending_calls_without_closing_other_target(loopback, tmp_path):
+    from dataclasses import replace
+    target = replace(loopback, pool_size=1)
+    other = replace(loopback, host="other-loopback", pool_idle_seconds=30)
+    started, release = tmp_path / "started", tmp_path / "release"
+
+    async def run():
+        other_pid = await other.call(Operation.standalone(_remote_pid))
+        first = asyncio.create_task(target.call(
+            Operation.standalone(_wait_for_file), str(started), str(release),
+        ))
+        queued = None
+        try:
+            await _until(started.exists)
+            old_pool = _registered(target)
+            queued = asyncio.create_task(target.call(Operation.standalone(_remote_pid)))
+
+            def enqueued():
+                with sessions._CHANGED:
+                    return len(old_pool._pending) == 2
+
+            await _until(enqueued)
+            target.close()
+            results = await asyncio.wait_for(
+                asyncio.gather(first, queued, return_exceptions=True), 5,
+            )
+            assert isinstance(results[0], ConnectionError)
+            assert isinstance(results[1], asyncio.CancelledError)
+            assert await other.call(Operation.standalone(_remote_pid)) == other_pid
+            assert isinstance(await target.call(Operation.standalone(_remote_pid)), int)
+            assert _registered(target) is not old_pool
+        finally:
+            release.touch()
+            await asyncio.gather(
+                first, *(task for task in (queued,) if task is not None),
+                return_exceptions=True,
+            )
+
+    asyncio.run(run())
