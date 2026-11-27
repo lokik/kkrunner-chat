@@ -21,7 +21,7 @@ from kkrunner.files.paths import file_path, has_file_magic
 from kkrunner.files.queries import directory_digest, local_file_signature
 from kkrunner.files.streams import OutputStreams
 from kkrunner.files.versions import FileVersion, file_digest
-from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
+from kkrunner.runs.base import RunState, SubmissionNotStarted
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 from kkrunner.targets.contracts import Operation
 
@@ -40,11 +40,9 @@ class FileSession:
         self._prepared = None
         self._streams = None
         self._closed = False
-        self.result = ExecutionOutcome(
-            output_file=self._local_path(spec.output_file),
-            input_file=self._local_path(spec.input_file),
-            error_file=self._local_path(spec.error_file),
-        )
+        self.input_file = self._local_path(spec.input_file)
+        self.output_file = self._local_path(spec.output_file)
+        self.error_file = self._local_path(spec.error_file)
 
     @property
     def files(self):
@@ -384,7 +382,7 @@ class FileSession:
                 kind=entry.kind,
             )
 
-        primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
+        primary = {path for path in (self.output_file, self.error_file) if path is not None}
         # Even uncollected exact declarations must not be collected via a glob.
         seen_remote.update(entry.remote_path for entry in self._files.outputs
                            if entry.source_pattern is None and entry.remote_path is not None
@@ -532,7 +530,7 @@ class FileSession:
     async def _prepare_request(self, remote_directory, manifest):
         used = {}
         primary = next((entry for entry in manifest.inputs
-                        if entry.local_path == self.result.input_file), None)
+                        if entry.local_path == self.input_file), None)
         input_target = await self._stage_file(primary, used)
         stdin_target = await self._stage_file(manifest.stdin, used)
         for entry in manifest.inputs:

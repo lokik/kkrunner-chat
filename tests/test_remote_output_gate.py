@@ -93,7 +93,11 @@ def _run(tmp_path, state=RunState.FINISHED):
 def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
     run, transport, destination = _run(tmp_path)
     run.start()
-    assert run.wait().return_code == 0
+    outcome = run.wait()
+    assert outcome.return_code == 0
+    assert outcome.output_file == str(destination)
+    assert outcome.input_file is None
+    assert outcome.error_file is None
     assert run.state == RunState.FINISHED
     assert destination.read_bytes() == b"streamed\n"
     assert run.files.availability_state == "available"
