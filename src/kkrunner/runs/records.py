@@ -283,6 +283,8 @@ class RunStore:
             try:
                 latest = self.get(record.id)
             except FileNotFoundError:
+                if record.state != RunState.NEW:
+                    raise
                 latest = replace(record, store=self)
                 exists = False
             else:
