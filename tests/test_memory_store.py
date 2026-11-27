@@ -266,6 +266,26 @@ def test_foreign_attach_observes_and_completes_in_own_store(tmp_path):
         gate.touch()
 
 
+
+def test_attach_does_not_create_client_until_observation_is_claimed(store, tmp_path, monkeypatch):
+    manager = RunManager(store)
+    record = manager.new_record(directory=tmp_path)
+    stale = manager.transition(record, state=RunState.RUNNING,
+                               execution=record.execution.submitted("native"))
+    monkeypatch.setattr(manager, "client_for",
+                        lambda _: pytest.fail("No observer can be opened"))
+    with store.observation_lock(stale):
+        with pytest.raises(RuntimeError, match="A live client owns this run"):
+            manager.attach(stale)
+
+    manager.transition(stale, state=RunState.FINISHED, return_code=0)
+    with pytest.raises(RuntimeError, match="already terminal"):
+        manager.attach(stale)
+    owner = store.observation_lock(stale)
+    assert owner.acquire(blocking=False)
+    owner.release()
+
+
 @pytest.mark.parametrize("memory", [False, True])
 def test_failed_direct_attach_releases_observation_claim(tmp_path, monkeypatch, memory):
     from kkrunner.backends import DirectBackend
