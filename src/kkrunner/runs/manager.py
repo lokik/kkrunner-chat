@@ -187,7 +187,6 @@ class RunManager:
                     mapping=mapping,
                 ),
             )
-            scope = replace(scope, store=_TEMPORARY_RESERVATIONS)
             with self._scoped_reservation(scope, conflict_stores=(self._store_for(record),)):
                 yield
 
@@ -443,14 +442,10 @@ class RunManager:
 
     @contextmanager
     def preprocessing_reservation(self, spec):
-        """Protect save-only preprocessing using a caller-owned memory store.
-
-        This deliberately never creates a record or tombstone on disk.
-        Other stores participate only in conflict detection.
-        """
-        if not isinstance(self.store, MemoryRunStore):
-            raise TypeError("Save-only preprocessing requires MemoryRunStore")
-        record = self.new_record(directory=spec.directory, files=FileManifest.from_spec(spec))
+        """Protect save-only preprocessing without creating a history entry."""
+        record = RunManager.new_record(
+            self, directory=spec.directory, files=FileManifest.from_spec(spec),
+        )
         with self._scoped_reservation(record) as reserved:
             yield
             sync_result_files((*reserved.files.output_files, *(
@@ -460,8 +455,9 @@ class RunManager:
 
     @contextmanager
     def _scoped_reservation(self, record, *, conflict_stores=()):
-        """Reserve a synchronous scope without recovering other runs."""
-        store = self._store_for(record)
+        """Reserve a synchronous scope in the internal store, never in run history."""
+        store = _TEMPORARY_RESERVATIONS
+        record = replace(record, store=store)
         with store.observation_lock(record):
             reserved = self._reserve(record, lambda: store.save(
                 replace(record, state=RunState.PREPROCESSING, updated_at=_now()),
@@ -528,7 +524,8 @@ class RunManager:
             except DuplicateSubmissionError as exc:
                 refreshable = tuple(
                     conflict for conflict in exc.conflicts
-                    if self._record_key(conflict) not in attempted_refresh
+                    if conflict.store is not _TEMPORARY_RESERVATIONS
+                    and self._record_key(conflict) not in attempted_refresh
                     and (
                         conflict.state == RunState.PREPROCESSING
                         or conflict.execution.available and (
