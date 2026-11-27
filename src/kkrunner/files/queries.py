@@ -154,9 +154,9 @@ def expand_local_files(sources, root):
 
 
 def local_file_signature(path):
-    """Return ``(size, mtime_ns)`` or None for a missing local path."""
+    """Return (size, mtime_ns) for a local regular file, or None."""
     item = checked_files(query_files([path]))[0]
-    return None if item["status"] == "missing" else (item["size"], item["mtime_ns"])
+    return None if item["status"] == "missing" or item["type"] != "file" else (item["size"], item["mtime_ns"])
 
 
 @portable

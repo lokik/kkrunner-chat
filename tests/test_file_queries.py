@@ -128,6 +128,11 @@ def test_query_batch_and_discovery_unusual_names(tmp_path, factory):
         assert matches == tuple(sorted(map(str, [*paths, tmp_path / "nested" / "deep.dat"])))
         assert await transport.expand_files(["missing", "empty*.dat"], tmp_path) == ()
         assert await transport.file_signature(tmp_path / "missing") is None
+        assert await transport.file_signature(tmp_path / "directory.dat") is None
+        assert await transport.file_digest(tmp_path / "directory.dat") is None
+        assert await transport.file_digest(tmp_path / "missing") is None
+        assert await transport.file_signature(paths[0]) == (4, paths[0].stat().st_mtime_ns)
+        assert await transport.file_digest(paths[0]) == hashlib.sha256(b"data").hexdigest()
 
     asyncio.run(check())
 
