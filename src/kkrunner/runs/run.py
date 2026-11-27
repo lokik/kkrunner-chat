@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from threading import Event, Lock, Thread
 
-from kkrunner.backends.contracts import BackendCapability
 from kkrunner.runs.base import (
     ExecutionOutcome,
     ExecutionResources,
@@ -530,12 +529,6 @@ class Run:
             submitted = True
             self._job.submit()
             if manager is not None:
-                if self.backend_id is None and BackendCapability.REATTACH in self.client.backend.supports:
-                    # An attached-only direct Job may have no durable ID.
-                    # Every other tracked backend must confirm an identity
-                    # before the completion monitor can claim its resources.
-                    raise RuntimeError("Backend submit returned without a job identity")
-
                 # Commit accepted identity and observed state before giving
                 # the completion monitor ownership. ACK follows this commit.
                 self._record = manager.transition(
@@ -605,7 +598,8 @@ class Run:
             raise RuntimeError("Run is closed")
         if self._started:
             return
-        if self._record is not None and self._record.state == RunState.NEW:
+        if (self._record is None and self.backend_id is None
+                or self._record is not None and self._record.state == RunState.NEW):
             return self.submit()
         try:
             if self._settled:
@@ -735,10 +729,7 @@ class Run:
 
     def run(self):
         if not self._started:
-            if self._record is None or self._record.state == RunState.NEW:
-                self.submit()
-            else:
-                self.start()
+            self.start()
         return self.wait()
 
     async def run_async(self):
