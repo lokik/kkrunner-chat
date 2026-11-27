@@ -145,6 +145,19 @@ manager.retry_postprocessing(sys.argv[2], lambda outcome: os._exit(17))
     assert completed.state == RunState.FINISHED
 
 
+
+def test_retry_uses_current_processing_eligibility_not_supplied_snapshot(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    current = pending(manager, tmp_path)
+    stale = replace(current, state=RunState.RUNNING, return_code=None)
+    assert manager.retry_postprocessing(stale, lambda outcome: "parsed") == "parsed"
+    completed = manager.store.get(current.id)
+    assert completed.state == RunState.FINISHED
+    with pytest.raises(ValueError, match="Only postprocessing failures"):
+        manager.retry_postprocessing(current, lambda outcome: pytest.fail("Already processed"))
+    assert manager.store.get(current.id) == completed
+
+
 def test_modified_artifacts_are_not_reprocessed(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = pending(manager, tmp_path)
