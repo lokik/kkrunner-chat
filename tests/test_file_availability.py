@@ -253,3 +253,23 @@ def test_output_glob_does_not_republish_failed_stdout(tmp_path):
     assert found.outputs[0].availability_state == "available"
     assert any(entry.local_path == str(result) and entry.availability_state == "available"
                for entry in found.outputs)
+
+
+def test_captured_pattern_members_are_literal_names(tmp_path):
+    from dataclasses import replace
+    from kkrunner.files.availability import capture_result_files
+
+    literal = tmp_path / "result[1].dat"
+    literal.write_text("literal")
+    pattern = str(tmp_path / "result*.dat")
+    declared = FileManifest(outputs=(FileEntry(pattern),)).initialize_availability()
+    discovered = discover_local_files(declared)
+
+    # This later file would match an erroneous second expansion of the
+    # already discovered name, but is not part of the discovered result.
+    unrelated = tmp_path / "result1.dat"
+    unrelated.write_text("unrelated")
+    for manifest in (discovered, replace(discovered, remote_patterns_resolved=True)):
+        captured = capture_result_files(manifest)
+        assert tuple(version.path for version in captured.output_versions) == (literal,)
+        assert captured.output_versions[0].is_current()
