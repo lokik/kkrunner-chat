@@ -69,6 +69,21 @@ def test_relative_repository_keeps_projects_and_run_store_in_same_namespace(tmp_
     assert not (other / "projects").exists()
 
 
+
+def test_create_project_reads_only_its_parent(tmp_path, monkeypatch):
+    repository = ProjectRepository(tmp_path / "projects")
+    parent = repository.create("Parent")
+    def unexpected():
+        pytest.fail("Creating a new project cannot introduce a hierarchy cycle")
+    monkeypatch.setattr(repository, "_read_projects", unexpected)
+    root = repository.create("Another root")
+    child = repository.create("Child", parent_id=parent.id)
+    assert repository.project(root.id) == root
+    assert repository.project(child.id).parent_id == parent.id
+    with pytest.raises(KeyError):
+        repository.create("Orphan", parent_id="123456781234123412341234567890ab")
+
+
 def test_repository_uses_one_generation_checked_json_per_project(tmp_path):
     repository = ProjectRepository(tmp_path / "projects")
     parent = repository.create("Parent")
