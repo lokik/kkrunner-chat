@@ -933,7 +933,7 @@ class RunManager:
             try:
                 client = self.client_for(record)
                 client.acknowledge(record)
-            except (OSError, RuntimeError, ValueError, NotImplementedError):
+            except (OSError, SubprocessError, RuntimeError, ValueError):
                 return False
             self._acknowledged_results.add(key)
             return True
@@ -955,7 +955,7 @@ class RunManager:
             if client is None:
                 client = self.client_for(record)
             client.acknowledge_submission(record)
-        except (OSError, RuntimeError):
+        except (OSError, SubprocessError, RuntimeError):
             # The receipt remains recoverable until a subsequent refresh.
             pass
 
