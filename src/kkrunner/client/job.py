@@ -39,7 +39,6 @@ class Job:
         self._failure_message = None
         self._loop = None
         self._request = None
-        self._cancel_requested = Event()
         self._cancel_future = None
         self._cancel_task = None
         self._observer = None
@@ -203,8 +202,9 @@ class Job:
                     raise
                 self._apply_status(status)
                 self._submitted.set()
-            if self._cancel_requested.is_set():
-                self._ensure_cancel_task()
+            # A cancellation queued during submission must survive a request
+            # to detach observation before the observer is created.
+            self._ensure_cancel_task(starting=True)
             with self._lock:
                 if self._observation_stopped.is_set() and self.execution.can_stop_observation:
                     self._observation_lost("Observation detached")
@@ -212,6 +212,7 @@ class Job:
                 self._observer = asyncio.create_task(self.execution.observe(
                     self._observed_output, output_requested=self._output_requested,
                 ))
+            self._ensure_cancel_task()
             try:
                 status = await self._observer
             except asyncio.CancelledError:
@@ -238,9 +239,10 @@ class Job:
             with self._lock:
                 self._observer = None
                 self._output_requested = None
+                cancel_task = self._cancel_task
             try:
-                if self._cancel_task is not None:
-                    await asyncio.gather(self._cancel_task, return_exceptions=True)
+                if isinstance(cancel_task, asyncio.Task):
+                    await asyncio.gather(cancel_task, return_exceptions=True)
                 try:
                     await self.execution.close()
                 except BaseException as exc:
@@ -248,10 +250,18 @@ class Job:
                     if not self._state.is_terminal:
                         self._observation_lost(str(exc))
             finally:
-                self._loop = None
+                with self._lock:
+                    self._loop = None
+                    future = self._cancel_future if self._cancel_task is None else None
+                    terminal = self._state.is_terminal
                 self._submitted.set()
-                if self._cancel_future is not None and not self._cancel_future.done():
-                    self._cancel_future.set_result(None)
+                if future is not None and not future.done():
+                    if terminal:
+                        future.set_result(None)
+                    else:
+                        future.set_exception(RuntimeError(
+                            "Observation ended before cancellation was dispatched"
+                        ))
 
     def _thread_main(self):
         try:
@@ -270,42 +280,57 @@ class Job:
                     self._observation_lost(str(exc))
             finish_monitor(self)
 
-    def _ensure_cancel_task(self):
-        if self._cancel_task is not None or self.ref is None:
-            return
-        self._cancel_task = asyncio.create_task(self.execution.cancel())
-        self._cancel_task.add_done_callback(self._cancel_completed)
+    def _ensure_cancel_task(self, *, starting=False):
+        with self._lock:
+            future = self._cancel_future
+            if (future is None or future.done() or self._cancel_task is not None
+                    or self.ref is None or (not starting and self._observer is None)):
+                return
+            if not self._state.is_terminal:
+                task = asyncio.create_task(self.execution.cancel())
+                self._cancel_task = task
+                task.add_done_callback(lambda task: self._cancel_completed(task, future))
+                return
+        future.set_result(None)
 
-    def _cancel_completed(self, task):
-        if self._cancel_future.done():
-            return
+    @staticmethod
+    def _cancel_completed(task, future):
+        # Resolve the particular request, not whichever request is current
+        # when this callback runs. A caller may immediately submit another.
         try:
-            self._cancel_future.set_result(task.result())
+            result = task.result()
         except BaseException as exc:
-            self._cancel_future.set_exception(exc)
+            future.set_exception(exc)
+        else:
+            future.set_result(result)
 
     def cancel(self):
+        """Share an in-flight cancellation; a completed request is retryable."""
         with self._lock:
-            if (
-                self._cancel_future is None and self._loop is None
-                and self.ref is not None and not self._state.is_terminal
-            ):
-                self._cancel_future = dispatch_cancellation(lambda: _run_sync(self.execution.cancel()))
-                return self._cancel_future
-            if self._cancel_future is None:
-                self._cancel_future = Future()
-                self._cancel_future.set_running_or_notify_cancel()
+            future = self._cancel_future
+            if future is not None and not future.done():
+                return future
             if self._state.is_terminal:
-                if not self._cancel_future.done():
-                    self._cancel_future.set_result(None)
-                return self._cancel_future
-            self._cancel_requested.set()
+                future = Future()
+                future.set_result(None)
+                return future
+            if self._loop is None and self.ref is not None:
+                future = dispatch_cancellation(lambda: _run_sync(self.execution.cancel()))
+                self._cancel_future = self._cancel_task = future
+                return future
+
+            future = Future()
+            future.set_running_or_notify_cancel()
+            self._cancel_future = future
+            self._cancel_task = None
             if self._state == RunState.NEW:
                 self._state = RunState.CANCELLED
-                self._cancel_future.set_result(None)
+                future.set_result(None)
             elif self._loop is not None:
                 self._schedule(self._ensure_cancel_task)
-            return self._cancel_future
+            elif self._state != RunState.SUBMITTING:
+                future.set_exception(RuntimeError("No execution reference available for cancellation"))
+            return future
 
     def _schedule(self, action):
         loop = self._loop

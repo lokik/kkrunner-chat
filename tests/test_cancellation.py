@@ -119,7 +119,7 @@ def test_cancel_during_submit_is_dispatched_after_submission():
     assert future.result(timeout=5) is None
     job.wait()
     assert job.state is RunState.CANCELLED
-    assert job.cancel() is future
+    assert job.cancel().result(timeout=5) is None
     assert execution.cancel_calls == 1
 
 
@@ -153,9 +153,111 @@ def test_attached_job_can_start_after_thread_creation_failure(monkeypatch):
         job.start()
         future = job.cancel()
         future.result(timeout=5)
-        assert job.cancel() is future
         assert job.wait().state == RunState.CANCELLED
+        assert job.cancel().result(timeout=5) is None
         assert execution.observation_calls == 1
         assert execution.cancel_calls == 1
     finally:
         execution.cancelled.set()
+
+
+@pytest.mark.parametrize("observe", [False, True])
+@pytest.mark.parametrize("first_fails", [False, True])
+def test_cancel_can_be_retried_while_job_remains_active(observe, first_fails):
+    job, execution = _controlled_job(already_running=True)
+    entered, release = Event(), Event()
+
+    async def cancel():
+        execution.cancel_calls += 1
+        if execution.cancel_calls == 1:
+            entered.set()
+            if not await asyncio.to_thread(release.wait, 5):
+                raise TimeoutError("test did not release cancellation")
+            if first_fails:
+                raise OSError("connection lost")
+            return JobStatus(RunState.RUNNING)
+        execution.cancelled.set()
+        return JobStatus(RunState.CANCELLED)
+
+    execution.cancel = cancel
+    if observe:
+        job.start()
+    try:
+        first = job.cancel()
+        assert entered.wait(5)
+        assert job.cancel() is first
+        release.set()
+        if first_fails:
+            with pytest.raises(OSError, match="connection lost"):
+                first.result(timeout=5)
+        else:
+            assert first.result(timeout=5).state == RunState.RUNNING
+        second = job.cancel()
+        assert second is not first
+        assert second.result(timeout=5).state == RunState.CANCELLED
+        assert execution.cancel_calls == 2
+        if observe:
+            assert job.wait().state == RunState.CANCELLED
+            job.cancel().result(timeout=5)
+            assert execution.cancel_calls == 2
+    finally:
+        release.set()
+        execution.cancelled.set()
+
+
+def test_cancel_while_observation_closes_reports_undispatched_request():
+    job, execution = _controlled_job(already_running=True)
+    closing, release_close = Event(), Event()
+
+    async def observe(on_output, *, output_requested=None):
+        return JobStatus(RunState.UNKNOWN)
+
+    async def close():
+        closing.set()
+        if not await asyncio.to_thread(release_close.wait, 5):
+            raise TimeoutError("test did not release close")
+
+    execution.observe = observe
+    execution.close = close
+    job.start()
+    try:
+        assert closing.wait(5)
+        future = job.cancel()
+        release_close.set()
+        with pytest.raises(RuntimeError, match="before cancellation was dispatched"):
+            future.result(timeout=5)
+        assert job.wait().state == RunState.UNKNOWN
+        assert execution.cancel_calls == 0
+        job.cancel().result(timeout=5)
+        assert execution.cancel_calls == 1
+    finally:
+        release_close.set()
+
+
+def test_cancel_without_execution_reference_does_not_leave_unresolved_future():
+    execution = _ControlledExecution()
+    execution.snapshot = JobStatus(RunState.UNKNOWN)
+    job = Job(execution, ExecutionSpec(("program",)))
+    with pytest.raises(RuntimeError, match="No execution reference"):
+        job.cancel().result(timeout=5)
+    assert execution.cancel_calls == 0
+
+
+def test_cancel_during_submission_survives_detaching_observation():
+    job, execution = _controlled_job()
+    execution.can_stop_observation = True
+    thread = Thread(target=job.submit, daemon=True)
+    thread.start()
+    try:
+        assert execution.entered.wait(5)
+        future = job.cancel()
+        job.stop_observation()
+        execution.release.set()
+        future.result(timeout=5)
+        assert job.wait().state == RunState.UNKNOWN
+        assert execution.cancel_calls == 1
+        assert execution.observation_calls == 0
+    finally:
+        execution.release.set()
+        execution.cancelled.set()
+        thread.join(5)
