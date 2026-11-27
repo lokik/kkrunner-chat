@@ -49,6 +49,20 @@ class ProjectRunManager(RunManager):
             raise ValueError("A tracked run must belong to an existing project")
         return super().new_record(project_id=self._project_id, **kwargs)
 
+    def _reserve(self, record, activate, *, conflict_stores=()):
+        # Project deletion uses the same submission lock. Check the owning
+        # project inside the existing atomic reservation, not when a manager
+        # or a Run is constructed. Temporary scopes have no project identity.
+        if (record.project_id is not None
+                and self._store_for(record).lock_key == self.store.lock_key):
+            def activate_project_run():
+                self.projects.project(record.project_id)
+                return activate()
+            return super()._reserve(
+                record, activate_project_run, conflict_stores=conflict_stores,
+            )
+        return super()._reserve(record, activate, conflict_stores=conflict_stores)
+
     def for_project(self, project):
         identity = project.id if isinstance(project, Project) else str(project)
         if self._project_id is not None:
