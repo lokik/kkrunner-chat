@@ -153,11 +153,8 @@ class PsijBackend(Backend, ManagedOperations):
                 "native_id": native_id,
             }
         )
-        state = facts["state"]
         return {
             "remote_id": remote_id,
-            **status_reply(state, facts["return_code"],
-                           failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None),
             "directory": facts["directory"],
             "output_file": facts["stdout"],
             "error_file": facts["stderr"],

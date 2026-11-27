@@ -79,7 +79,7 @@ def _attachment(record):
     return JobAttachment(record.execution, record.files)
 
 
-def test_project_launch_reconnect_and_shared_ticket(tmp_path):
+def test_project_launch_reconnect_and_shared_ticket(tmp_path, monkeypatch):
     executor = ExecutionClient(SupervisedBackend)
     runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
@@ -91,7 +91,17 @@ def test_project_launch_reconnect_and_shared_ticket(tmp_path):
     assert not ProcessIdentity.from_dict({"pid": 1, "start_time": 0, "time_basis": "epoch"}).is_running()
     assert (tmp_path / "out.txt").read_text() == "output\n"
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED
-    assert executor.recover_submission(RUN_ID, SubmissionContext(_record(tmp_path, None).execution)).ref.token == handle
+    with monkeypatch.context() as patch:
+        def unexpected_status(*args, **kwargs):
+            pytest.fail("Recovering a submission receipt must not observe the process")
+
+        patch.setattr(SupervisedBackend, "status", staticmethod(unexpected_status))
+        # The receipt, not the recovery request, identifies the launched directory.
+        recovered = executor.recover_submission(
+            RUN_ID, SubmissionContext(_record(tmp_path / "other", None).execution),
+        )
+        assert recovered.ref.token == handle
+        assert recovered.directory == str(tmp_path)
     executor.acknowledge_submission(_record(tmp_path, handle))
     assert recover_submission(RUN_ID) is None
     assert executor.status(_attachment(_record(tmp_path, handle)))[0].state == RunState.FINISHED

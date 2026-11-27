@@ -80,14 +80,14 @@ class ExecutionReply(ObservationReply):
     remote_id: Optional[str]
 
 
-class RecoveryReceipt(StatusReply):
+class RecoveryReceipt(TypedDict):
     remote_id: str
     directory: str
     output_file: Optional[str]
     error_file: Optional[str]
 
 
-class SubmissionReply(RecoveryReceipt):
+class SubmissionReply(RecoveryReceipt, StatusReply):
     input_file: Optional[str]
 
 
