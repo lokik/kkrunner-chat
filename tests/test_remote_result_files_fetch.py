@@ -547,3 +547,56 @@ def test_historical_retrieval_never_replaces_existing_destination(tmp_path, exis
         assert not (local / "missing").exists()
     else:
         assert destination.read_text() == "current"
+
+
+@pytest.mark.parametrize("local_directory_exists", [False, True])
+def test_uncaptured_history_only_restores_regular_file_declarations(
+    tmp_path, monkeypatch, local_directory_exists,
+):
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("input-tree", "output-tree"):
+        (remote / name).mkdir()
+        if local_directory_exists:
+            (local / name).mkdir()
+    # A directory matching a file wildcard is not a restored result.
+    (local / "part-directory.dat").mkdir()
+    (remote / "part-result.dat").write_text("result")
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=client.backend_config,
+        files=FileManifest(
+            inputs=(FileEntry(str(local / "input-tree"), str(remote / "input-tree"),
+                              kind="directory"),),
+            outputs=(
+                FileEntry(str(local / "output-tree"), str(remote / "output-tree"),
+                          kind="directory", availability_state="pending"),
+                FileEntry(str(local / "part-*.dat"), str(remote / "part-*.dat")),
+            ),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.complete(record, state=RunState.FAILED,
+                              execution=record.execution.submitted("historical"),
+                              artifacts_available=False)
+    expanded = []
+    original = LocalTarget.expand_files
+
+    async def expand(self, sources, root):
+        expanded.append(sources)
+        return await original(self, sources, root)
+
+    monkeypatch.setattr(SshTarget, "expand_files", expand)
+    restored = manager.retrieve_result_files(record)
+    assert expanded == [str(remote / "part-*.dat")]
+    assert (local / "part-result.dat").read_text() == "result"
+    assert restored.files.outputs[0] == record.files.outputs[0]
+    assert restored.files.inputs == record.files.inputs
+    assert (local / "output-tree").exists() == local_directory_exists

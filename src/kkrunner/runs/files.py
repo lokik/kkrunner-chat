@@ -36,14 +36,15 @@ def _missing_result_files(result_files):
             if item.kind == "file" and item.state() is FileState.MISSING
         )
 
-    missing = []
-    for manifest in result_files.manifests:
-        if has_file_magic(manifest):
-            if not expand_local_candidates(manifest):
-                missing.append(manifest)
-        elif not os.path.isfile(manifest):
-            missing.append(manifest)
-    return _unique(missing)
+    entries = (
+        *result_files.input_entries, result_files.stdout, result_files.stderr,
+        *(entry for entry in result_files.outputs if entry.collect),
+    )
+    return _unique(
+        entry.local_path for entry in entries
+        if entry is not None and entry.kind == "file" and entry.local_path is not None
+        and not any(os.path.isfile(path) for path in expand_local_candidates(entry.local_path))
+    )
 
 
 class RunFiles:
