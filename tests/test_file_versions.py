@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from kkrunner.files.versions import FileState, FileVersion
 
 
@@ -69,3 +71,25 @@ def test_metadata_only_capture_cannot_validate_directory_as_regular_file(tmp_pat
     proper = FileVersion.capture(directory, digest=False, kind="directory")
     # A directory metadata-only identity does not claim verified contents.
     assert not proper.available
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_strict_capture_rejects_wrong_filesystem_object(tmp_path, kind):
+    from kkrunner.files.versions import FileVersionCaptureError
+
+    path = tmp_path / "data"
+    if kind == "file":
+        path.mkdir()
+    else:
+        path.write_bytes(b"not a directory")
+    with pytest.raises(FileVersionCaptureError, match=f"Expected {kind}"):
+        FileVersion.capture(path, kind=kind, require_digest=True)
+    assert not FileVersion.capture(path, kind=kind).available
+
+
+def test_strict_capture_cannot_disable_digest(tmp_path):
+    path = tmp_path / "data"
+    path.write_bytes(b"contents")
+    with pytest.raises(ValueError, match="require_digest"):
+        FileVersion.capture(path, digest=False, require_digest=True)
+    assert FileVersion.capture(path, require_digest=True).available

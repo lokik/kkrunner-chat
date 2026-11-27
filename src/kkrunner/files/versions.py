@@ -92,6 +92,8 @@ class FileVersion:
         concurrent rewrite. Strict callers such as persistent-history capture
         retry once and then fail instead of degrading to metadata-only identity.
         """
+        if require_digest and not digest:
+            raise ValueError("require_digest requires digest=True")
         resolved = Path(path).expanduser().absolute()
         try:
             fingerprint = file_fingerprint(resolved)
@@ -100,7 +102,11 @@ class FileVersion:
                 raise
             return cls(path=resolved, fingerprint=None, kind=kind)
 
-        if not digest or not _matches_kind(fingerprint, kind):
+        if not _matches_kind(fingerprint, kind):
+            if require_digest:
+                raise FileVersionCaptureError(f"Expected {kind} at {resolved}")
+            return cls(path=resolved, fingerprint=fingerprint, kind=kind)
+        if not digest:
             return cls(path=resolved, fingerprint=fingerprint, kind=kind)
 
         digest_file = directory_digest if kind == "directory" else file_digest
@@ -123,6 +129,8 @@ class FileVersion:
                     kind=kind,
                 )
             fingerprint = after
+            if not _matches_kind(fingerprint, kind):
+                break
 
         if require_digest:
             message = f"Cannot capture stable contents of {resolved}"
