@@ -1417,3 +1417,70 @@ def test_failed_pattern_discovery_never_starts_or_retries_transfer(tmp_path, mon
     assert retry == files
     assert len(queries) == 2
     assert not tuple(local.iterdir())
+
+
+def test_manager_persists_complete_pattern_plan_before_first_download(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager, RunStatus
+    from kkrunner.client.pool import ClientPool
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("stdout", "first.dat", "second.dat"):
+        (remote / name).write_text(name)
+    target = SshTarget("loopback")
+    client = ExecutionClient(target=target)
+    manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=target,
+        backend=client.backend_config,
+        files=FileManifest(
+            stdout=FileEntry(local / "stdout", remote / "stdout"),
+            outputs=(
+                FileEntry(local / "first*.dat", remote / "first*.dat"),
+                FileEntry(local / "second*.dat", remote / "second*.dat"),
+                FileEntry(local / "empty*.dat", remote / "empty*.dat", optional=True),
+            ),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("native-job"))
+    monkeypatch.setattr(client, "status", lambda *runs: (
+        RunStatus(RunState.FINISHED, backend_id="native-job"),
+    ))
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+
+    async def fail_first(self, source, destination, **kwargs):
+        saved = manager.store.get(record.id)
+        assert saved.files.remote_patterns_resolved is True
+        assert {entry.local_path for entry in saved.files.outputs if entry.source_pattern} == {
+            str(local / "first.dat"), str(local / "second.dat"),
+        }
+        raise OSError("connection lost")
+
+    monkeypatch.setattr(SshTarget, "get_file", fail_first)
+    pending = manager.refresh((record,), retrieve_ended=True)[0]
+    assert pending.state == RunState.DOWNLOADING
+    assert not tuple(local.iterdir())
+    (remote / "empty-new.dat").write_text("unrelated file")
+
+    async def exact_queries_only(self, sources, *, root=None, digest=False):
+        assert root is None, "A persisted plan is not rediscovered"
+        return await LocalTarget.query_files(self, sources, digest=digest)
+
+    async def download(self, pairs, source_directory, destination_directory):
+        for source, destination in pairs:
+            await LoopbackFileTransfer.get_file(self, source, destination)
+
+    monkeypatch.setattr(SshTarget, "query_files", exact_queries_only)
+    monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
+    monkeypatch.setattr(SshTarget, "get_files", download)
+    finished = manager.refresh((pending,), retrieve_ended=True)[0]
+    assert finished.state == RunState.FINISHED
+    assert {version.path.name for version in finished.files.output_versions} == {
+        "stdout", "first.dat", "second.dat",
+    }
+    assert not (local / "empty-new.dat").exists()
