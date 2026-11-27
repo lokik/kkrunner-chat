@@ -18,12 +18,11 @@ def test_file_conflict_details_include_access_and_path(tmp_path):
     )
     details = conflicting_files(first, second)
     assert submission_conflicts(first, second)
-    assert any(
-        item.first_path == str(tmp_path / "shared.out")
-        and item.second_path == str(tmp_path / "shared.out")
-        and item.first_access == item.second_access == "write"
-        for item in details
-    )
+    assert len(details) == 1
+    item = details[0]
+    assert item.namespace == "local"
+    assert item.first_path == item.second_path == str(tmp_path / "shared.out")
+    assert item.first_access == item.second_access == "write"
 
 
 def test_unrelated_output_files_have_no_conflict_details(tmp_path):
@@ -73,3 +72,28 @@ def test_directory_reservation_covers_hidden_descendants(tmp_path):
     second = manager.new_record(directory=tmp_path, files=FileManifest(
         stdout=FileEntry(str(tmp_path / "tree/.hidden/deep.dat"))))
     assert submission_conflicts(first, second)
+
+
+def test_distinct_local_paths_conflict_on_same_target_path(tmp_path):
+    from kkrunner.files import FileMapping
+    from kkrunner.targets import SshTarget
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+
+    def record(name):
+        local = tmp_path / name
+        return manager.new_record(
+            directory=local, remote_directory="/work", target=SshTarget("cluster"),
+            files=FileManifest(
+                stdout=FileEntry(str(local / "result"), "/work/result"),
+                mapping=FileMapping(str(local), "/work"),
+            ),
+        )
+
+    first, second = record("first"), record("second")
+    assert submission_conflicts(first, second)
+    details = conflicting_files(first, second)
+    assert len(details) == 1
+    assert details[0].namespace == "target"
+    assert details[0].first_path == details[0].second_path == "/work/result"
+    assert details[0].first_access == details[0].second_access == "write"

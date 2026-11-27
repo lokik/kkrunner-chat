@@ -74,11 +74,11 @@ class FileAccess:
             entry = declared.get(local)
             remote = entry.remote_path if entry is not None else None
             if remote is None:
-                remote = await context.map_path(local)
+                remote = context._map_path(local, remote_root)
+            wildcard = glob.has_magic(remote)
             for matched in await self.client.target.expand_files(remote, remote_root):
-                destination = os.fspath(context._unmap_path(matched, remote_root)) if glob.has_magic(remote) else local
-                relative_local_path(destination, context.local_root)
-                if (entry is not None and entry in run.files.outputs and glob.has_magic(remote)
+                destination = os.fspath(context._unmap_path(matched, remote_root)) if wildcard else local
+                if (entry is not None and entry in run.files.outputs and wildcard
                         and run.files.output_excluded(matched, remote=True)):
                     continue
                 # Retain exact historical file identities. A wildcard is
