@@ -805,7 +805,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
         reader.feed_data(wire)
         reader.feed_eof()
         async for kind, offset, data in supervisor.receive(reader):
-            on_chunk(kind, offset, data)
+            await on_chunk(kind, offset, data)
 
     monkeypatch.setattr(process_operations, "follow_socket", closed_socket)
     out = io.BytesIO()

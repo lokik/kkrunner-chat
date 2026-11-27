@@ -231,7 +231,8 @@ class ManagedOperations(Protocol):
     facts. Cancelling follow closes only its observer, while cancel requests
     calculation termination. recover never starts a second calculation.
     SUBMIT_AND_FOLLOW additionally declares a streaming submission operation
-    with the same acceptance and output hooks as a direct execution call.
+    with the same acceptance and output hooks as a direct execution call,
+    but cancellation remains a separate native operation.
     """
 
     @staticmethod
@@ -292,18 +293,23 @@ class Backend:
     options: Mapping[str, object]
     default_detached = False
 
-    def __init__(self, **options):
-        """Keep backend configuration in one immutable, instance-owned place."""
-        defaults = dict(self.default_options)
+    @classmethod
+    def validate_options(cls, **options):
+        """Normalize and validate option values without constructing a backend."""
+        defaults = dict(cls.default_options)
         unexpected = options.keys() - defaults.keys()
         if unexpected:
-            raise ValueError(f"Unknown {self.name} backend options: {sorted(unexpected)}")
+            raise ValueError(f"Unknown {cls.name} backend options: {sorted(unexpected)}")
         defaults.update(options)
         if any(not isinstance(key, str) or not isinstance(value, (str, int, float, bool, type(None)))
                for key, value in defaults.items()):
             raise TypeError("Backend options require string keys and scalar JSON values")
         json.dumps(defaults, allow_nan=False)
-        self.options = MappingProxyType(defaults)
+        return defaults
+
+    def __init__(self, **options):
+        """Keep backend configuration in one immutable, instance-owned place."""
+        self.options = MappingProxyType(self.validate_options(**options))
         self.supports = frozenset()
 
 

@@ -1,6 +1,7 @@
 """Framed FOLLOW streams and transient sockets."""
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -320,22 +321,44 @@ class SupervisorStreams:
             shutil.rmtree(self._socket_dir, ignore_errors=True)
 
 
-async def follow_socket(path, offsets, on_chunk):
+def output_callback(stdout, stderr, offsets):
+    """Validate byte positions and deliver to synchronous or asynchronous sinks."""
+    streams = {"out": stdout, "err": stderr}
+
+    async def on_chunk(kind, offset, data):
+        previous = offsets[kind]
+        if previous is not None and offset != previous:
+            raise ValueError("Supervisor FOLLOW offset mismatch")
+        offsets[kind] = offset + len(data)
+        sink = streams[kind]
+        result = sink.write(data)
+        if inspect.isawaitable(result):
+            await result
+        sink.flush()
+
+    return on_chunk
+
+
+async def follow_socket(path, offsets, on_chunk, *, connection=None):
+    """Read an initial inherited connection or request FOLLOW on a named socket."""
     try:
-        reader, writer = await asyncio.open_unix_connection(path)
+        reader, writer = await asyncio.open_unix_connection(path, sock=connection)
     except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError,
             ConnectionAbortedError, BrokenPipeError) as exc:
         raise SupervisorConnectionError(str(exc)) from exc
     try:
-        try:
-            writer.write(json.dumps({"command": "follow", "offsets": offsets}).encode() + b"\n")
-            await writer.drain()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
-            raise SupervisorConnectionError(str(exc)) from exc
+        if connection is None:
+            try:
+                writer.write(json.dumps({"command": "follow", "offsets": offsets}).encode() + b"\n")
+                await writer.drain()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+                raise SupervisorConnectionError(str(exc)) from exc
         async for kind, offset, data in receive(reader):
             if kind == "terminal":
                 return data
-            on_chunk(kind, offset, data)
+            result = on_chunk(kind, offset, data)
+            if inspect.isawaitable(result):
+                await result
         raise ConnectionError("Supervisor ended without terminal outcome")
     finally:
         writer.close()

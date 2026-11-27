@@ -34,13 +34,15 @@ from .source import function_definition
 class SshTarget(Target):
     """Target using the system ``ssh`` client."""
 
-    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
+    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
+                        tail_paths=None, observe_only=False):
         from .call import SshCall
-        command = operation_command(operation, python=self.python_command, framed=True)
+        command = operation_command(operation, python=self.python_command, framed=True,
+                                    observe_only=observe_only)
         process = await self.start(
             (*command, operation_payload((request,), {})), stdin=asyncio.subprocess.PIPE,
         )
-        return SshCall(process, on_output)
+        return SshCall(process, on_output, observe_only=observe_only)
 
     async def follow(self, operation, identity, on_output, **options):
         from .follow import follow_framed_command

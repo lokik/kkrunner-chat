@@ -229,3 +229,66 @@ def test_ssh_supervised_preflight_failure_reports_no_submission(tmp_path, monkey
     with pytest.raises(SubmissionNotStarted, match="Executable not found"):
         run.submit()
     assert run.backend_id is None
+
+
+def test_ssh_observer_eof_closes_helper_without_cancelling_detached_job(tmp_path, monkeypatch):
+    """EOF alone, without terminating SSH, must release a silent observation."""
+    from kkrunner.client.contracts import Operation
+    from kkrunner.targets.implementations.ssh.rpc import operation_command
+    from kkrunner.targets.rpc import operation_payload
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "backend-state"))
+    gate = tmp_path / "release"
+    output = tmp_path / "stdout"
+    error = tmp_path / "stderr"
+
+    async def exercise():
+        request = {
+            "argv": [sys.executable, "-c",
+                     "import time; from pathlib import Path\n"
+                     "while not Path('release').exists(): time.sleep(.01)\n"
+                     "print('finished')"],
+            "directory": str(tmp_path), "detached": True,
+            "output_file": str(output), "error_file": str(error),
+        }
+        command = operation_command(
+            Operation.for_backend(SupervisedBackend, "submit_and_follow"),
+            python=(sys.executable,), framed=True, observe_only=True,
+        )
+        process = await asyncio.create_subprocess_exec(
+            *command, operation_payload((request,), {}),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        remote_id = None
+        frames = read_stream_frames(process.stdout)
+        try:
+            kind, facts = await asyncio.wait_for(anext(frames), 10)
+            assert kind == "started"
+            remote_id = facts["remote_id"]
+            process.stdin.close()
+            # No signal to the helper: closing stdin alone must be sufficient.
+            assert await asyncio.wait_for(process.wait(), 5) == 0
+            assert SupervisedBackend.status(remote_id)["state"] == "running"
+            gate.touch()
+
+            async def finished():
+                while True:
+                    facts = SupervisedBackend.status(remote_id)
+                    if RunState(facts["state"]).is_terminal:
+                        return facts
+                    await asyncio.sleep(.01)
+
+            facts = await asyncio.wait_for(finished(), 5)
+            assert facts["return_code"] == 0
+            assert output.read_bytes() == b"finished\n"
+        finally:
+            gate.touch()
+            await frames.aclose()
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            if remote_id is not None:
+                SupervisedBackend.cancel(remote_id)
+
+    asyncio.run(exercise())

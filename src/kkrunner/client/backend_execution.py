@@ -9,6 +9,7 @@ or file synchronization.
 from __future__ import annotations
 
 import warnings
+from functools import partial
 
 from kkrunner.backends.contracts import (
     BackendCapability, JobFailurePhase, JobRef, JobStatus, ObservationUnavailable,
@@ -27,6 +28,7 @@ class _Execution:
         if status is not None:
             self._record(status)
         self._follow_options = {}
+        self._call = None
 
     def _operation(self, name):
         return Operation.for_backend(type(self.backend), name)
@@ -52,8 +54,26 @@ class _Execution:
             "stdout_path": stream_paths[0], "stderr_path": stream_paths[1],
         }
 
+    async def _open_call(self, operation, request, on_output, **options):
+        self._call = await self.target.open_call(
+            self._operation(operation), request, on_output, **options,
+        )
+        return await self._call.submission()
+
+    async def observe(self, on_output):
+        if self._call is None:
+            return self._record(await self.target.follow(
+                self._operation("follow"), self.ref.token, on_output, **self._follow_options,
+            ))
+        try:
+            return self._record(await self._call.wait())
+        except BaseException as exc:
+            self._record({"state": "unknown", "error": str(exc)})
+            raise
+
     async def close(self):
-        pass
+        if self._call is not None:
+            await self._call.close()
 
 
 class DirectExecution(_Execution):
@@ -63,7 +83,6 @@ class DirectExecution(_Execution):
         super().__init__(backend, transport)
         self._local_io = local_io
         self._detached = backend.default_detached
-        self._call = None
 
     def configure_detached(self, detached):
         self._detached = detached
@@ -84,21 +103,23 @@ class DirectExecution(_Execution):
                 warnings.warn(prepared["warning"], MpiNotFoundWarning, stacklevel=2)
             request = prepared["request"]
             await self.target.call(self._operation("prepare_target_outputs"), request)
-            self._call = await self.target.open_call(
-                self._operation("stream"), request, on_output,
-                local_io=self._local_io, use_stdin=prepared["use_stdin"],
+            tail_paths = {
+                kind: request[key] for kind, key in (("out", "output_file"), ("err", "error_file"))
+                if request.get(key) is not None
+            } if self._detached else None
+            facts = await self._open_call(
+                "stream", request, on_output, tail_paths=tail_paths,
+                local_io=None if self._local_io is None else partial(self._local_io, self._detached),
+                use_stdin=prepared["use_stdin"],
             )
-        except Exception as exc:
-            self._record({"state": "failed", "failure_phase": "launch", "error": str(exc)})
-            raise SubmissionNotStarted(str(exc)) from exc
-        try:
-            status = self._record(await self._call.submission())
         except BaseException as exc:
+            if self._call is None and isinstance(exc, Exception):
+                self._record({"state": "failed", "failure_phase": "launch", "error": str(exc)})
+                raise SubmissionNotStarted(str(exc)) from exc
             self._record({"state": "unknown", "error": str(exc)})
-            await self.close()
             raise
+        status = self._record(facts)
         if self.ref is None:
-            await self.close()
             if status.state == RunState.FAILED:
                 raise SubmissionNotStarted(status.message or "Backend rejected execution")
             raise ObservationUnavailable("Execution call ended without acceptance confirmation")
@@ -109,13 +130,6 @@ class DirectExecution(_Execution):
         # Attached calls must keep draining their pipes. Detached processes
         # own their output files and survive closing the observation.
         return self._detached
-
-    async def observe(self, on_output):
-        try:
-            return self._record(await self._call.wait())
-        except BaseException as exc:
-            self._record({"state": "unknown", "error": str(exc)})
-            raise
 
     async def status(self):
         # Preserve confirmed live-call facts. Only a lost observer requires
@@ -129,27 +143,18 @@ class DirectExecution(_Execution):
     async def cancel(self):
         await self._call.cancel()
 
-    async def close(self):
-        if self._call is not None:
-            await self._call.close()
-
 
 class ManagedExecution(_Execution):
     """Backend binding for independently observable supervisor/scheduler jobs."""
 
     can_stop_observation = True
 
-    def __init__(self, backend, transport, *, ref=None, status=None):
-        super().__init__(backend, transport, ref=ref, status=status)
-        self._call = None
-
     async def submit(self, request, on_output):
         try:
             if BackendCapability.SUBMIT_AND_FOLLOW in self.backend.supports:
-                self._call = await self.target.open_call(
-                    self._operation("submit_and_follow"), request, on_output,
+                facts = await self._open_call(
+                    "submit_and_follow", request, on_output, observe_only=True,
                 )
-                facts = await self._call.submission()
                 if (facts.get("remote_id") is None
                         and facts.get("failure_phase") == JobFailurePhase.SUBMISSION.value
                         and facts.get("state") == RunState.FAILED.value):
@@ -168,13 +173,6 @@ class ManagedExecution(_Execution):
             raise ObservationUnavailable(self.snapshot.message)
         return status
 
-    async def observe(self, on_output):
-        if self._call is not None:
-            return self._record(await self._call.wait())
-        return self._record(await self.target.follow(
-            self._operation("follow"), self.ref.token, on_output, **self._follow_options,
-        ))
-
     async def status(self):
         if self.ref is None:
             return self.snapshot
@@ -182,10 +180,6 @@ class ManagedExecution(_Execution):
 
     async def cancel(self):
         return self._record(await self.target.call(self._operation("cancel"), self.ref.token))
-
-    async def close(self):
-        if self._call is not None:
-            await self._call.close()
 
 
 def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):

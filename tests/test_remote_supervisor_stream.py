@@ -461,3 +461,43 @@ def test_live_only_numeric_offset_cannot_silently_skip_previous_bytes():
             await streams.finish()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("initial", [False, True])
+def test_follow_supports_async_output_sinks_on_both_connections(tmp_path, initial):
+    import io
+    import socket
+    from kkrunner.backends.implementations.supervised.streams import output_callback
+
+    class AsyncSink(io.BytesIO):
+        async def write(self, data):
+            await asyncio.sleep(0)
+            return super().write(data)
+
+    async def exercise():
+        streams = SupervisorStreams(tmp_path / "stdout", tmp_path / "stderr")
+        await streams.start()
+        connection = None
+        try:
+            if initial:
+                connection, supervisor = socket.socketpair()
+                await streams.attach_initial(supervisor)
+            streams.publish("out", b"first")
+            streams.publish("err", b"warning")
+            streams.terminal({"state": "finished", "return_code": 0})
+            offsets = {"out": 0, "err": 0}
+            out, err = AsyncSink(), AsyncSink()
+            terminal = await asyncio.wait_for(follow_socket(
+                None if initial else streams.socket_path, dict(offsets),
+                output_callback(out, err, offsets), connection=connection,
+            ), 5)
+            assert terminal["return_code"] == 0
+            assert out.getvalue() == b"first"
+            assert err.getvalue() == b"warning"
+            assert offsets == {"out": 5, "err": 7}
+        finally:
+            if connection is not None:
+                connection.close()
+            await streams.finish()
+
+    asyncio.run(exercise())

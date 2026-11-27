@@ -27,7 +27,7 @@ from kkrunner.backends.implementations.supervised.streams import (
     SupervisorClosedBeforeFollow,
     SupervisorConnectionError,
     follow_socket,
-    receive,
+    output_callback,
 )
 from kkrunner.backends.implementations.supervised.worker import _SPEC_ENV, _START_FD_ENV
 from kkrunner.backends.support.messages import (
@@ -69,7 +69,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         return _submit(request)
 
     @staticmethod
-    async def submit_and_follow(request, *, stdout, stderr, started, control=None):
+    async def submit_and_follow(request, *, stdout, stderr, started):
         """Launch with an inherited FOLLOW connection; no later attach is needed."""
         try:
             client, supervisor = socket.socketpair()
@@ -88,7 +88,9 @@ class SupervisedBackend(Backend, ManagedOperations):
             notification = started(reply)
             if inspect.isawaitable(notification):
                 await notification
-            return await _observe_initial(client, reply["remote_id"], stdout, stderr, control)
+            offsets = {"out": 0, "err": 0}
+            return await follow_socket(None, offsets, output_callback(stdout, stderr, offsets),
+                                       connection=client)
 
     @staticmethod
     def status(remote_id: str) -> StatusReply:
@@ -160,7 +162,6 @@ class SupervisedBackend(Backend, ManagedOperations):
         """Observe one supervisor; cancellation closes only the follower socket."""
         handle = decode_handle(remote_id)
         offsets = {"out": stdout_offset, "err": stderr_offset}
-        streams = {"out": stdout, "err": stderr}
         paths = {
             "out": stdout_path,
             "err": stderr_path,
@@ -173,15 +174,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         if path is None:
             raise RuntimeError("Backend handle contains no follow socket")
 
-        # Use the same frame decoder for the local socket and the remote CLI.
-        # A merged stream has only one logical channel.
-        def on_chunk(kind, offset, data):
-            previous = offsets[kind]
-            if previous is not None and offset != previous:
-                raise ValueError("Supervisor FOLLOW offset mismatch")
-            offsets[kind] = offset + len(data)
-            streams[kind].write(data)
-            streams[kind].flush()
+        on_chunk = output_callback(stdout, stderr, offsets)
 
         requested = dict(offsets)
         if stdout_path is not None and stdout_path == stderr_path:
@@ -226,8 +219,7 @@ class SupervisedBackend(Backend, ManagedOperations):
                         data = source.read(65536)
                         if not data:
                             break
-                        streams[kind].write(data)
-                        streams[kind].flush()
+                        await on_chunk(kind, source.tell() - len(data), data)
                         await asyncio.sleep(0)
             return facts
 
@@ -252,7 +244,7 @@ def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionRe
     # filesystem setup proves that submission never started, unlike a lost
     # reply after Popen.
     try:
-        SupervisedBackend(**dict(request.get("backend_options") or {}))
+        SupervisedBackend.validate_options(**dict(request.get("backend_options") or {}))
         request = normalize_request(request)
         if not request["detached"] and initial_follower is None:
             raise ValueError("Attached supervisor requires an initial observer")
@@ -381,62 +373,3 @@ def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionRe
         "error_file": error_path,
     }
     return reply
-
-
-async def _observe_initial(connection, remote_id, stdout, stderr, control):
-    """Relay the preconnected supervisor stream using the ordinary call protocol."""
-    reader, writer = await asyncio.open_unix_connection(sock=connection)
-    streams = {"out": stdout, "err": stderr}
-    offsets = {"out": 0, "err": 0}
-    control_transport = None
-    tasks = []
-    try:
-        if control is None:
-            control = asyncio.StreamReader()
-            protocol = asyncio.StreamReaderProtocol(control)
-            pipe = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
-            try:
-                control_transport, _ = await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, pipe)
-            except BaseException:
-                pipe.close()
-                raise
-
-        async def relay():
-            async for kind, offset, data in receive(reader):
-                if kind == "terminal":
-                    return data
-                if offset != offsets[kind]:
-                    raise ValueError("Supervisor FOLLOW offset mismatch")
-                offsets[kind] += len(data)
-                result = streams[kind].write(data)
-                if inspect.isawaitable(result):
-                    await result
-                streams[kind].flush()
-            raise ConnectionError("Supervisor ended without terminal outcome")
-
-        async def read_control():
-            while line := await control.readline():
-                if line.strip() != b"cancel":
-                    raise ValueError("Unknown execution control command")
-                await asyncio.to_thread(SupervisedBackend.cancel, remote_id)
-
-        observation = asyncio.create_task(relay())
-        control_task = asyncio.create_task(read_control())
-        tasks = [observation, control_task]
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        if observation in done:
-            return observation.result()
-        control_task.result()
-        # EOF releases the observation connection, not the independent job.
-        return status_reply(RunState.UNKNOWN, error="Observation disconnected")
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if control_transport is not None:
-            control_transport.close()
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass

@@ -32,8 +32,13 @@ class Target:
         from . import require_persistable_target
         return asdict(require_persistable_target(self))
 
-    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True):
-        """Start an execution call with backend acceptance/completion messages."""
+    async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
+                        tail_paths=None, observe_only=False):
+        """Open an invocation; local I/O and file tails are explicitly requested.
+
+        An observation-only invocation has no in-band cancellation commands;
+        closing its connection releases the observation.
+        """
         raise NotImplementedError
 
     async def follow(self, operation, identity, on_output, **options):
