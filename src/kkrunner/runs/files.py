@@ -113,8 +113,8 @@ class RunFiles:
             raise RuntimeError(f"Run {record.id} has not been submitted")
         return FileAccess(record.execution.target).snapshot_file(record, file, destination=destination)
 
-    def retrieve_result_files(self, run, *, reserve):
-        record = resolve_record(run, self.store)
+    def retrieve_result_files(self, record, *, reserve):
+        """Restore files of the current record under its caller's history ownership."""
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 

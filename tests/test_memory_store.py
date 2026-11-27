@@ -185,6 +185,27 @@ def test_file_operations_follow_record_owner(tmp_path):
     assert not a.input_file_is_current("same")
 
 
+
+def test_history_retrieval_reads_current_bound_record_under_ownership(store, tmp_path, monkeypatch):
+    manager = RunManager(store)
+    record = manager.new_record(directory=tmp_path)
+    stale = manager.transition(record, state=RunState.RUNNING,
+                               execution=record.execution.submitted("native"))
+    current = manager.transition(stale, state=RunState.FINISHED, return_code=0)
+    original_get = store.get
+    owner = store.observation_lock(stale)
+    reads = []
+
+    def get(run_id):
+        assert not owner.acquire(blocking=False), "Read must be under observation ownership"
+        reads.append(run_id)
+        return original_get(run_id)
+
+    monkeypatch.setattr(store, "get", get)
+    assert manager.retrieve_result_files(stale) == current
+    assert reads == [stale.id]
+
+
 def test_foreign_postprocessing_retry_keeps_owner(tmp_path):
     from kkrunner.runs import FailurePhase
     from kkrunner.files.availability import capture_result_files
