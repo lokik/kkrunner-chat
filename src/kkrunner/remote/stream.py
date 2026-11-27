@@ -43,6 +43,20 @@ _HEADER = _PROTOCOL.header
 _CODE_TO_KIND = {value: key for key, value in _PROTOCOL.codes.items()}
 
 
+class FramedSink:
+    """Synchronous framed stream sink for the installed command-line agent."""
+
+    def __init__(self, stream, kind):
+        self.stream = stream
+        self.kind = kind
+
+    def write(self, data):
+        self.stream.write(encode_stream_frame(self.kind, data))
+
+    def flush(self):
+        self.stream.flush()
+
+
 class StreamProtocolError(RuntimeError):
     """Malformed or unsupported remote stream protocol data."""
 

@@ -377,7 +377,7 @@ class Run:
             self._failure_message = self._job.failure_message or str(exc)
         finally:
             try:
-                self._file_session.close()
+                self._parts.close()
             except BaseException as exc:
                 # File cleanup must never prevent finish_monitor from
                 # waking waiters. For a successful Job, an unflushed
@@ -447,7 +447,7 @@ class Run:
     def _close_files_after_failed_submission(self):
         """Cleanup must not replace the submission error or skip its record."""
         try:
-            self._file_session.close()
+            self._parts.close()
         except BaseException as cleanup_error:
             import logging
             logging.getLogger(__name__).warning(
@@ -640,7 +640,7 @@ class Run:
         except BaseException:
             if not self._started:
                 try:
-                    self._file_session.close()
+                    self._parts.close()
                 finally:
                     try:
                         self._release_resources(preserve=True, suppress_errors=True)
@@ -788,7 +788,7 @@ class Run:
             self._closed = True
         from kkrunner.files.streams import _close_distinct
         resources, self._owned_resources = self._owned_resources, None
-        _close_distinct((self._file_session, resources))
+        _close_distinct((self._parts, resources))
 
     def cancel(self):
         try:

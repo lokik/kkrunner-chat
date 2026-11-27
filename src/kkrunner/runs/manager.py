@@ -1120,7 +1120,7 @@ class RunManager:
         except BaseException:
             try:
                 if parts is not None:
-                    parts.files.close()
+                    parts.close()
             finally:
                 owner.release()
             raise
