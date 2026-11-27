@@ -760,18 +760,11 @@ class FileSession:
 
     async def _synchronize(self, *, required):
         """Synchronize target-side artifacts for a remote session."""
-        try:
-            await self._sync_output_files(required=required)
-            await self._sync_cache_files()
-        except Exception as exc:
-            self.mark_transfer_failed(str(exc))
-            raise
+        await self._sync_output_files(required=required)
+        await self._sync_cache_files()
         for entry in self._files.artifacts:
             if entry.availability_state == "pending":
                 self._set_file_availability(entry.local_path, "available")
-
-    def mark_transfer_failed(self, message):
-        self._files = self._files.fail_pending_artifacts(message)
 
     async def finalize_async(self, status):
         """Finalize owned files on the existing event loop, if any."""
@@ -779,26 +772,30 @@ class FileSession:
             raise RuntimeError("Cannot finalize files before terminal backend status")
         from kkrunner.runs.states import NO_EXECUTION_FAILURES
 
-        self.close()
-        if status.failure_phase in NO_EXECUTION_FAILURES:
-            self._files = self._files.skip_pending_artifacts()
-            return self._files
-        required = status.state == RunState.FINISHED and status.return_code == 0
-        if self.files_are_local:
-            from kkrunner.files.availability import local_manifest
-            self._files = local_manifest(self._files, status)
-            if required and self._files.failed_artifacts:
-                raise FileNotFoundError(self._files.availability_message)
-        else:
-            await self._synchronize(required=required)
-        from kkrunner.files.availability import capture_result_files
+        try:
+            self.close()
+            if status.failure_phase in NO_EXECUTION_FAILURES:
+                self._files = self._files.skip_pending_artifacts()
+                return self._files
+            required = status.state == RunState.FINISHED and status.return_code == 0
+            if self.files_are_local:
+                from kkrunner.files.availability import local_manifest
+                self._files = local_manifest(self._files, status)
+                if required and self._files.failed_artifacts:
+                    raise FileNotFoundError(self._files.availability_message)
+            else:
+                await self._synchronize(required=required)
+            from kkrunner.files.availability import capture_result_files
 
-        if self._files.captured_at is None:
-            self._files = capture_result_files(
-                self._files, require_outputs=required,
-                cache_versions=None if self.files_are_local else await self._target_cache_versions(),
-            )
-        return self._files
+            if self._files.captured_at is None:
+                self._files = capture_result_files(
+                    self._files, require_outputs=required,
+                    cache_versions=None if self.files_are_local else await self._target_cache_versions(),
+                )
+            return self._files
+        except Exception as exc:
+            self._files = self._files.fail_pending_artifacts(str(exc))
+            raise
 
     def finalize(self, status):
         """Synchronously finalize using the same file authority as SSH recovery."""

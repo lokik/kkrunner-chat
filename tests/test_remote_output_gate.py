@@ -138,6 +138,20 @@ def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, ex
         run.wait()
         assert run.state == state
     assert run.failure_phase == expected_phase
+    assert run.files.stdout.availability_state == "failed"
+    assert run.files.stdout.availability_message == "download unavailable"
+
+
+def test_file_finalization_owns_pending_artifact_failures(tmp_path):
+    from kkrunner.runs.base import RunStatus
+
+    run, _, destination = _run(tmp_path)
+    session = run._file_session
+    (tmp_path / "authoritative.out").unlink()
+    with pytest.raises(FileNotFoundError, match="was not created"):
+        session.finalize(RunStatus(RunState.FINISHED, return_code=0))
+    assert session.files.stdout.availability_state == "failed"
+    assert destination.read_bytes() == b"old local output"
 
 
 @pytest.mark.parametrize("kind", ("follow", "status"))
