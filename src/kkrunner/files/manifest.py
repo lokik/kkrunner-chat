@@ -329,7 +329,7 @@ class FileManifest:
         )
 
     def skip_pending_artifacts(self):
-        """No program was launched, so no new result artifacts can be collected."""
+        """Skip unresolved artifacts without retracting already published files."""
         return self._map_artifacts(
             lambda item: replace(item, availability_state="skipped", availability_message=None)
             if item.availability_state in (None, "pending") else item
