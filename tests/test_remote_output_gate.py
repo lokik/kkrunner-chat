@@ -65,7 +65,7 @@ class _Transport(LoopbackFileTransfer):
 def _session(tmp_path, transport, spec, *, files=None):
     client = ExecutionClient(SupervisedBackend, target=transport)
     context = FileContext(
-        client, StagingSpec(local_root=tmp_path, remote_root=tmp_path,
+        client.target, StagingSpec(local_root=tmp_path, remote_root=tmp_path,
                             output_sync=FileSyncPolicy.CHANGED),
     )
     return client, FileSession(
@@ -207,7 +207,7 @@ def test_no_execution_does_not_finalize_stale_outputs(tmp_path, storage, phase, 
         argv=(), directory=local, output_file="out", output_files=("result.dat",),
     )
     client = ExecutionClient(target=LocalTarget() if storage == "local" else _Transport())
-    context = FileContext(client, StagingSpec(
+    context = FileContext(client.target, StagingSpec(
         local_root=local, remote_root=remote, shared_filesystem=storage == "shared",
     ))
     files = asyncio.run(context.map_manifest(FileManifest.from_spec(spec))).initialize_availability()

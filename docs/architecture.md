@@ -434,9 +434,11 @@ and finalizes the FileManifest after native execution. Local finalization does
 not copy files. Transfer indexes are derived from the staged manifest; temporary
 staging data is discarded when ownership moves to that manifest.
 
-RunManager composes a RunFiles service with the same RunStore and client pool.
+RunManager composes a RunFiles service with the same RunStore.
 The service checks captured versions, reads live snapshots, restores missing
 historical files with digest verification, and persists artifact availability.
+FileAccess and FileContext operate directly on a Target, without constructing
+an execution backend. Target home-directory lookup belongs to the target.
 It neither changes run lifecycle state nor calls back into RunManager. Stateless
 manifest capture and file checks are module functions in runs/files.py;
 RunManager retains its public file methods as explicit delegates.

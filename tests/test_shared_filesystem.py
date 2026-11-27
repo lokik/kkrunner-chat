@@ -143,7 +143,8 @@ def test_shared_finished_status_uses_local_artifacts_and_snapshot(tmp_path, monk
 
     # No separate copy is available if a shared result is later deleted.
     output.unlink()
-    monkeypatch.setattr(client, "resolve_result_files",
+    from kkrunner.client.file_access import FileAccess
+    monkeypatch.setattr(FileAccess, "resolve_result_files",
                         lambda *args: pytest.fail("No separate shared file copy"))
     assert manager.retrieve_result_files(finished) == finished
 

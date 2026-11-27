@@ -118,7 +118,7 @@ class RunManager:
         self.store = store
         self.conflict_stores = tuple(conflict_stores)
         self.client_pool = client_pool if client_pool is not None else default_client_pool()
-        self._files = RunFiles(store=self.store, client_pool=self.client_pool)
+        self._files = RunFiles(store=self.store)
         self.submitting_grace = float(submitting_grace)
 
     def _store_for(self, record):

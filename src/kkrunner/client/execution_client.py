@@ -9,7 +9,7 @@ from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, JobRef, decode_job_status
 from kkrunner.client.backend_execution import bind_execution
 from kkrunner.client.contracts import Operation
-from kkrunner.client.file_context import FileContext, query_remote_home
+from kkrunner.client.file_context import FileContext
 from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
@@ -48,7 +48,6 @@ class ExecutionClient:
         self.target = target
         if not self.target.available:
             raise ValueError(f"Unsupported transport {self.target.kind!r}; only local history is available")
-        self._remote_home_cache = None
 
     def create_run(
         self, spec, *, tracked=False, detached=None, process_result=None,
@@ -129,11 +128,6 @@ class ExecutionClient:
     def default_detached(self):
         return self.backend.default_detached
 
-    async def _remote_home(self):
-        if self._remote_home_cache is None:
-            self._remote_home_cache = await query_remote_home(self.target)
-        return self._remote_home_cache
-
     def submission_request(self, prepared_files, *, submission_key=None):
         """Add backend configuration to a request prepared by the file service."""
         return {
@@ -152,7 +146,7 @@ class ExecutionClient:
 
     def submission_directory(self, spec):
         """Preview the file service's target mapping without contacting the target."""
-        return FileContext(self, spec.staging).preview_path(spec.directory)
+        return FileContext(self.target, spec.staging).preview_path(spec.directory)
 
     def acknowledge_submission(self, run):
         """Release the submission receipt after the manager persisted acceptance."""
@@ -218,7 +212,7 @@ class ExecutionClient:
         return _run_sync(request())
 
     async def _recover_submission(self, submission_key, submission, *, submitted_at=None):
-        context = FileContext(self, StagingSpec())
+        context = FileContext(self.target, StagingSpec())
         directory = await context.resolve_target_path(submission.execution.directory.target)
         state = await self._invoke(
             "recover", submission_key,
@@ -246,7 +240,7 @@ class ExecutionClient:
         return _run_sync(self._recover_submission(submission_key, submission, submitted_at=submitted_at))
 
     def file_session(self, spec):
-        return FileSession(FileContext(self, spec.staging), spec,
+        return FileSession(FileContext(self.target, spec.staging), spec,
                            allow_live_streams=self.backend.execution_mode == "direct")
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
@@ -261,19 +255,17 @@ class ExecutionClient:
 
     def snapshot_file(self, run, file, *, destination=None):
         from kkrunner.client.file_access import FileAccess
-        self._validate_run(run)
-        return FileAccess(self).snapshot_file(run, file, destination=destination)
+        return FileAccess(self.target).snapshot_file(run, file, destination=destination)
 
     def resolve_result_files(self, run, files):
         """Resolve concrete transfer pairs without writing any files."""
         from kkrunner.client.file_access import FileAccess
-        self._validate_run(run)
-        return FileAccess(self).resolve_result_files(run, files)
+        return FileAccess(self.target).resolve_result_files(run, files)
 
     def download_result_files(self, entries, *, verify=None):
         """Download exact, already coordinated source/destination pairs."""
         from kkrunner.client.file_access import FileAccess
-        return FileAccess(self).download_result_files(entries, verify=verify)
+        return FileAccess(self.target).download_result_files(entries, verify=verify)
 
     def fetch_result_files(self, run, files, *, destinations=None, verify=None):
         """Fetch declared files, optionally mapping each concrete local path.
@@ -283,20 +275,17 @@ class ExecutionClient:
         it without replacement. Returns the concrete destinations retrieved.
         """
         from kkrunner.client.file_access import FileAccess
-        self._validate_run(run)
-        return FileAccess(self).fetch_result_files(run, files, destinations=destinations, verify=verify)
+        return FileAccess(self.target).fetch_result_files(run, files, destinations=destinations, verify=verify)
 
     def inspect_remote_files(self, run, paths):
         """Inspect declared target files for an optional cleanup preview."""
         from kkrunner.client.file_access import FileAccess
-        self._validate_run(run)
-        return FileAccess(self).inspect_remote_files(run, paths)
+        return FileAccess(self.target).inspect_remote_files(run, paths)
 
     def delete_remote_files(self, run, expected):
         """Best-effort per-file remote deletion using approved file identities."""
         from kkrunner.client.file_access import FileAccess
-        self._validate_run(run)
-        return FileAccess(self).delete_remote_files(run, expected)
+        return FileAccess(self.target).delete_remote_files(run, expected)
 
     async def _open_run_parts(self, attachment, *, callback=None, output_listener=None):
         self._validate_run(attachment)
@@ -304,7 +293,7 @@ class ExecutionClient:
         if execution.backend_id is None:
             raise ValueError("Run lacks a backend identity")
         status = await self._invoke("status", execution.backend_id)
-        context = FileContext(self, StagingSpec.from_mapping(attachment.files.mapping))
+        context = FileContext(self.target, StagingSpec.from_mapping(attachment.files.mapping))
         files = await FileSession.from_attachment(context, attachment)
         try:
             binding = bind_execution(
@@ -326,7 +315,7 @@ class ExecutionClient:
         self._validate_run(record)
 
         async def collect():
-            context = FileContext(self, StagingSpec.from_mapping(record.files.mapping))
+            context = FileContext(self.target, StagingSpec.from_mapping(record.files.mapping))
             session = await FileSession.from_attachment(
                 context, JobAttachment(record.execution, record.files),
             )
