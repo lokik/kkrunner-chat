@@ -99,7 +99,7 @@ def test_unknown_raw_state_is_preserved_and_not_postprocessed():
     spec = ExecutionSpec(argv=("unused",), directory=".")
     parts = client.create_run_parts(spec)
     parts.job = raw
-    runner = Run(raw, client=client, parts=parts,
+    runner = Run(parts, client=client,
                  process_result=lambda outcome: processed.append(outcome))
     runner.submit()
     outcome = runner.wait()
@@ -153,7 +153,7 @@ def _project_wrapper(tmp_path, runner):
         directory=tmp_path, target=client.target, backend=client.backend_config,
         metadata={"test": {"task": "SCF"}}, processing_required=True,
     )
-    return manager, Run(runner, client=client, manager=manager, record=record, parts=parts)
+    return manager, Run(parts, client=client, manager=manager, record=record)
 
 
 def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):

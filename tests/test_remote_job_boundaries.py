@@ -182,10 +182,20 @@ class _Files:
         self.events.append("close")
 
 
+def _run_with_job(job, files=None, **options):
+    from kkrunner.client import ExecutionClient
+    from kkrunner.client.run_parts import RunParts
+
+    client = ExecutionClient()
+    if files is None:
+        files = client.file_session(job.spec)
+    return Run(RunParts(job, files), client=client, **options)
+
+
 def test_run_synchronizes_before_postprocessing(tmp_path):
     events = []
     files = _Files(tmp_path, events)
-    run = Run(_FinishedJob(events), file_session=files, process_result=lambda outcome: (
+    run = _run_with_job(_FinishedJob(events), files, process_result=lambda outcome: (
         events.append("process") or outcome.return_code
     ))
     assert run.run() == 0
@@ -198,7 +208,7 @@ def test_download_failure_does_not_change_successful_job_state(tmp_path):
     events = []
     job = _FinishedJob(events)
     files = _Files(tmp_path, events, error=OSError("download unavailable"))
-    run = Run(job, file_session=files)
+    run = _run_with_job(job, files)
     with pytest.raises(OSError, match="download unavailable"):
         run.run()
     assert job.state == RunState.FINISHED
@@ -216,7 +226,7 @@ def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
         raise ValueError("invalid mapped files")
     files.prepare_job = fail_preparation
     job = _FinishedJob(events)
-    run = Run(job, file_session=files)
+    run = _run_with_job(job, files)
     with pytest.raises(SubmissionNotStarted, match="invalid mapped files"):
         run.submit()
     assert run.state == RunState.FAILED
@@ -242,7 +252,7 @@ def test_local_run_keeps_backend_outcome_but_accounts_for_observation_failure(
     job.failure_phase = FailurePhase.EXECUTION if backend_state is RunState.FAILED else None
     delivery_error = OSError("local FOLLOW stream interrupted")
     job.output_error = delivery_error
-    run = Run(job)
+    run = _run_with_job(job)
     run._finish()
     assert job.state is backend_state
     assert run.state is expected_state
@@ -258,7 +268,7 @@ def test_untracked_run_does_not_postprocess_after_failed_local_follow():
     job = _FinishedJob(observed)
     job.state = RunState.FINISHED
     job.output_error = RuntimeError("FOLLOW decoder failed")
-    run = Run(job, process_result=lambda outcome: observed.append("processed"))
+    run = _run_with_job(job, process_result=lambda outcome: observed.append("processed"))
     run._finish()
     assert run.state is RunState.FAILED
     assert run.failure_phase is FailurePhase.OUTPUT
@@ -281,7 +291,7 @@ def test_incomplete_local_follow_marks_pending_declared_files_failed(tmp_path):
     job.output_error = OSError("FOLLOW stream truncated")
     files = ExecutionClient(DirectBackend).file_session(spec)
     files._files = FileManifest.from_spec(spec).initialize_availability()
-    run = Run(job, file_session=files)
+    run = _run_with_job(job, files)
     run._finish()
 
     assert run.state is RunState.FAILED

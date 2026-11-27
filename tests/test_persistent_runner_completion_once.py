@@ -58,8 +58,7 @@ def _run(tmp_path, *, manager=None, client=None, record=None, callback=None):
     job.wait = wait_for_backend
     job.finish = finish
     run = Run(
-        job, client=client, manager=manager, record=record,
-        parts=parts, callback=callback,
+        parts, client=client, manager=manager, record=record, callback=callback,
     )
     return run, job, manager, client
 

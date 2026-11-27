@@ -1118,8 +1118,8 @@ class RunManager:
                 output_listener=output_listener,
             )
             attached = Run(
-                parts.job, client=client, manager=self, record=record,
-                process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
+                parts, client=client, manager=self, record=record,
+                process_result=process_result, callback=callback, owned_resources=owned_resources,
                 observation_lock=owner,
             )
         except BaseException:

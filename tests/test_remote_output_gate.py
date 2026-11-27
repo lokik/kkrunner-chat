@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
+from kkrunner.client.run_parts import RunParts
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobRef
 from kkrunner.client import ExecutionClient, StagingSpec
@@ -88,7 +89,7 @@ def _run(tmp_path, state=RunState.FINISHED):
         status={"state": "running", "remote_id": "opaque-handle"},
     )
     job = Job(execution, spec)
-    return Run(job, client=client, file_session=session), transport, destination, output
+    return Run(RunParts(job, session), client=client), transport, destination, output
 
 
 def test_terminal_backend_state_triggers_file_synchronization(tmp_path):

@@ -759,32 +759,22 @@ class FileSession:
             streams.pop_all()  # Explicitly transfer stream ownership.
             return session
 
-    def _working_directory(self, target):
+    @property
+    def working_directory(self):
         from kkrunner.runs.model import WorkingDirectory
-        return WorkingDirectory(os.path.abspath(self.spec.directory), None if self.is_local else target)
+        return WorkingDirectory(os.path.abspath(self.spec.directory),
+                                None if self.is_local else self._remote_directory)
 
     async def _resolve_footprint(self):
         if self._remote_directory is None:
             target = await self.context.map_directory(self.spec.directory)
             self._files = await self.context.map_manifest(self._files)
             self._remote_directory = target
-        return self._working_directory(self._remote_directory), self._files
+        return self.working_directory, self._files
 
     def submission_footprint(self):
         """Resolve names once, without creating or transferring files."""
         return _run_sync(self._resolve_footprint())
-
-    def execution(self, backend_id):
-        if backend_id is None and self._remote_directory is None:
-            return None
-        from kkrunner.targets import require_persistable_target
-        from kkrunner.runs.model import ExecutionMetadata
-        return ExecutionMetadata(
-            require_persistable_target(self.context.target),
-            self._working_directory(self._remote_directory),
-            backend=self.context.client.backend_config,
-            backend_id=backend_id,
-        )
 
     def prepare_submission(self):
         """Stage files before backend submit; persistent Run records the manifest."""
