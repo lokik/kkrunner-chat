@@ -159,12 +159,17 @@ class FileSession:
             raise ValueError(f"Directory input is not a regular directory: {source}")
         local_exists = os.path.isdir(source)
         transport = self.context.target
-        observed = (await transport.query_files([target]))[0]
-        remote_exists = observed["status"] == "ok" and observed["type"] == "directory"
-        if observed["status"] == "ok" and not remote_exists:
-            raise ValueError(f"Target directory input is not a directory: {target}")
-        if required and policy == FileSyncPolicy.ALWAYS and not local_exists:
-            raise FileNotFoundError(f"Local input directory does not exist: {source}")
+        if policy == FileSyncPolicy.ALWAYS and local_exists:
+            # Publication validates the destination; no preliminary query
+            # can change an unconditional upload decision.
+            remote_exists = False
+        else:
+            if required and policy == FileSyncPolicy.ALWAYS:
+                raise FileNotFoundError(f"Local input directory does not exist: {source}")
+            observed = (await transport.query_files([target]))[0]
+            remote_exists = observed["status"] == "ok" and observed["type"] == "directory"
+            if observed["status"] == "ok" and not remote_exists:
+                raise ValueError(f"Target directory input is not a directory: {target}")
         if local_exists:
             # ALWAYS/MISSING depend only on existence; CHANGED also needs
             # content identity when both trees exist.
