@@ -256,9 +256,9 @@ class Run:
         return self._job.add_output_error_listener(callback)
 
     def snapshot_file(self, file, *, destination=None):
-        if self.manager is None:
-            raise RuntimeError("Snapshot of an untracked Run requires a workspace")
-        return self.manager.snapshot_file(self._record, file, destination=destination)
+        if self.backend_id is None:
+            raise RuntimeError("Run has not been submitted")
+        return self.client.snapshot_file(self, file, destination=destination)
 
     def _file_failure_phase(self):
         return FailurePhase.ARTIFACTS if self._file_session.files_are_local else FailurePhase.DOWNLOAD

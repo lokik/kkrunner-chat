@@ -136,8 +136,9 @@ Read files during a running calculation
 
 ``RunManager.snapshot_file(run, file)`` reads the currently visible contents
 of a declared output, saved stdout/stderr stream, or cache. It works while the
-calculation is running and after completion. A tracked ``Run`` also offers
-``run.snapshot_file(file)``.
+calculation is running and after completion. A submitted ``Run`` with a
+supported local or SSH target also offers ``run.snapshot_file(file)``,
+independently of whether it is tracked.
 
 .. code-block:: python
 
