@@ -378,6 +378,13 @@ class FileSession:
             if has_file_magic(entry.remote_path) or entry.remote_path in seen_remote:
                 continue
             seen_remote.add(entry.remote_path)
+            # A completed transfer belongs to this run even if its remote
+            # source is no longer available on a later collection attempt.
+            if entry.availability_state == "available" and (
+                os.path.isdir(entry.local_path) if entry.kind == "directory"
+                else os.path.isfile(entry.local_path)
+            ):
+                continue
             await self._sync_output_entry(
                 entry.local_path, entry.remote_path, required and not entry.optional,
                 kind=entry.kind,
