@@ -96,7 +96,10 @@ def referenced_paths(record):
     return reads | writes
 
 
-def _possibly_same_filesystem(left, right):
+def _compare_target_filesystems(left, right):
+    """Compare target paths only when they add a namespace beyond local paths."""
+    if left.execution.directory.remote is None and right.execution.directory.remote is None:
+        return False
     first, second = filesystem_namespace(left), filesystem_namespace(right)
     return first == second or ("unknown",) in (first, second)
 
@@ -155,7 +158,7 @@ def conflicting_files(left: RunRecord, right: RunRecord) -> tuple[FileConflict, 
         _manifest_accesses(right, remote=False),
         "local",
     )
-    if _possibly_same_filesystem(left, right):
+    if _compare_target_filesystems(left, right):
         collisions.extend(matches(
             _manifest_accesses(left), _manifest_accesses(right),
             "target",
@@ -175,4 +178,4 @@ def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
     if overlaps(_manifest_accesses(left, remote=False), _manifest_accesses(right, remote=False)):
         return True
 
-    return _possibly_same_filesystem(left, right) and overlaps(_manifest_accesses(left), _manifest_accesses(right))
+    return _compare_target_filesystems(left, right) and overlaps(_manifest_accesses(left), _manifest_accesses(right))
