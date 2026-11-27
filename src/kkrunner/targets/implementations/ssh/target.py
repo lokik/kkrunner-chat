@@ -10,6 +10,7 @@ import os
 import posixpath
 import shlex
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, Tuple
@@ -28,6 +29,19 @@ from ...base import Target, _completed_process
 from ...rpc import operation_payload, operation_result
 from .rpc import operation_command
 from .source import function_definition
+
+
+@contextmanager
+def _transport_errors(operation):
+    """Expose command failures as I/O errors, retaining their diagnostic cause."""
+    try:
+        yield
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        message = f"SSH {operation} failed (exit status {exc.returncode})"
+        if detail:
+            message += f": {detail}"
+        raise OSError(message) from exc
 
 
 @dataclass(frozen=True)
@@ -73,7 +87,8 @@ class SshTarget(Target):
         # Custom transport subclasses and pool_size=0 retain one-shot SSH.
         payload = operation_payload(args, kwargs).encode("utf-8")
         command = operation_command(operation, python=self.python_command)
-        result = await self.run(command, input=payload)
+        with _transport_errors("operation"):
+            result = await self.run(command, input=payload)
         return operation_result(result.stdout)
 
     async def start_operation(self, operation: Operation, *args, **kwargs):
@@ -124,7 +139,8 @@ class SshTarget(Target):
 
     async def home_directory(self):
         if self._home_directory_cache is None:
-            object.__setattr__(self, "_home_directory_cache", await super().home_directory())
+            with _transport_errors("home directory lookup"):
+                object.__setattr__(self, "_home_directory_cache", await super().home_directory())
         return self._home_directory_cache
 
     async def _archive_compression(self):
@@ -199,7 +215,8 @@ class SshTarget(Target):
                     stdout=destination_file,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                await _completed_process(process, command)
+                with _transport_errors(f"download {source}"):
+                    await _completed_process(process, command)
             if await self.file_signature(source) != signature:
                 raise RuntimeError(f"Remote file changed while downloading: {source}")
             stat = temporary.stat()
@@ -218,7 +235,8 @@ class SshTarget(Target):
         compression = await self._archive_compression()
         producer = self._archive_command(send_archive, source, compression, remote=not upload, tree=True)
         consumer = self._archive_command(receive_archive, destination, compression, remote=upload, tree=True)
-        await self._transfer_tar(producer, consumer)
+        with _transport_errors("directory transfer"):
+            await self._transfer_tar(producer, consumer)
 
     async def snapshot_file(self, source, *, destination=None):
         if destination is None:
@@ -228,7 +246,8 @@ class SshTarget(Target):
             process = await asyncio.create_subprocess_exec(
                 *command, stdout=out, stderr=asyncio.subprocess.PIPE
             )
-            await _completed_process(process, command)
+            with _transport_errors(f"snapshot {source}"):
+                await _completed_process(process, command)
         return Path(destination)
 
     async def query_files(self, sources, *, root=None, digest=False):
@@ -363,7 +382,8 @@ class SshTarget(Target):
             manifest.write(json.dumps([source if source == target else (source, target)
                                        for source, target in pairs]).encode("utf-8"))
             manifest.seek(0)
-            await self._transfer_tar(producer, consumer, producer_input=manifest)
+            with _transport_errors("file transfer"):
+                await self._transfer_tar(producer, consumer, producer_input=manifest)
         return tuple((os.fspath(source_path(source_root).joinpath(*PurePosixPath(source).parts)),
                       os.fspath(destination_path(destination_root).joinpath(*PurePosixPath(target).parts)))
                      for source, target in pairs)
@@ -375,5 +395,6 @@ class SshTarget(Target):
         return await self._transfer_files(files, source_directory, destination_directory, upload=False)
 
     async def read_file(self, path):
-        return (await self.run(("cat", "--", os.fspath(path)))).stdout
+        with _transport_errors(f"read {path}"):
+            return (await self.run(("cat", "--", os.fspath(path)))).stdout
 

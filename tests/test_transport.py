@@ -352,7 +352,7 @@ def test_ssh_get_file_cancellation_reaps_process_and_removes_temp(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX shell tools")
-def test_ssh_get_file_preserves_subprocess_failure(tmp_path):
+def test_ssh_get_file_reports_transport_io_failure(tmp_path):
     source = tmp_path / "source"
     source.write_bytes(b"source bytes")
     destination = tmp_path / "downloaded"
@@ -363,10 +363,9 @@ def test_ssh_get_file_preserves_subprocess_failure(tmp_path):
                 return (sys.executable, "-c", "import sys; sys.stderr.write('download failed'); sys.exit(17)")
             return super()._command(argv, cwd)
 
-    with pytest.raises(subprocess.CalledProcessError) as failure:
+    with pytest.raises(OSError, match="exit status 17.*download failed") as failure:
         asyncio.run(FailingDownloadTransport().get_file(source, destination))
-    assert failure.value.returncode == 17
-    assert b"download failed" in failure.value.stderr
+    assert isinstance(failure.value.__cause__, subprocess.CalledProcessError)
     assert not destination.exists()
     assert not tuple(tmp_path.glob(".downloaded.*.tmp"))
 
@@ -405,17 +404,16 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
     }
     assert checked is True
 
-def test_ssh_file_query_preserves_command_errors():
+def test_ssh_file_query_reports_transport_io_failure():
     class Failed(SshTarget):
         async def start(self, argv, *, cwd=None, stdin=None):
             return await LocalTarget().start(
                 (sys.executable, "-c", "import sys; sys.stderr.write('connection failed'); sys.exit(255)"), stdin=stdin
             )
 
-    with pytest.raises(subprocess.CalledProcessError) as error:
+    with pytest.raises(OSError, match="exit status 255.*connection failed") as error:
         asyncio.run(Failed("host").expand_files("*.dat", "/root"))
-    assert error.value.returncode == 255
-    assert error.value.stderr == b"connection failed"
+    assert isinstance(error.value.__cause__, subprocess.CalledProcessError)
 
 
 @pytest.mark.parametrize("compression", (None, "auto", "gz", "bz2", "xz", "zstd"))
@@ -449,7 +447,7 @@ def test_ssh_batch_incomplete_archive_does_not_publish(tmp_path):
     remote.mkdir()
     (source / "first").write_text("new")
     (remote / "first").write_text("old")
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(OSError, match="file transfer failed"):
         asyncio.run(_LoopbackSshTransport().put_files(
             ["first", "missing"], source, remote,
         ))
@@ -890,3 +888,55 @@ def test_archive_sender_propagates_directory_read_error(tmp_path, monkeypatch):
     # Inject a real traversal error even when the tests run as root.
     with pytest.raises(PermissionError, match="cannot read nested directory"):
         send_archive(source, tree=True)
+
+
+@pytest.mark.parametrize("failure_phase", ["discovery", "download"])
+def test_historical_retrieval_continues_after_ssh_command_failure(tmp_path, monkeypatch, failure_phase):
+    from kkrunner import RunManager, RunState, RunStore
+    from kkrunner.files import FileEntry, FileManifest
+    from kkrunner.files.manifest import FileMapping
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    bad, good = local / "bad.dat", local / "good.dat"
+    for path in (bad, good):
+        (remote / path.name).write_text(path.name)
+
+    def command(self, argv, cwd=None):
+        assert cwd is None
+        if argv[0] == "cat" and os.fspath(argv[-1]) == str(remote / bad.name):
+            if failure_phase == "download":
+                return (sys.executable, "-c",
+                        "import sys; sys.stderr.write('connection lost'); sys.exit(255)")
+        return tuple(os.fspath(part) for part in argv)
+
+    monkeypatch.setattr(SshTarget, "_command", command)
+    if failure_phase == "discovery":
+        original = SshTarget.run
+
+        async def run(self, argv, *, cwd=None, input=None, check=True):
+            if input is not None and json.loads(input)["args"][0] == [str(remote / bad.name)]:
+                raise subprocess.CalledProcessError(255, argv, stderr=b"connection lost")
+            return await original(self, argv, cwd=cwd, input=input, check=check)
+
+        monkeypatch.setattr(SshTarget, "run", run)
+
+    target = SshTarget("loopback", pool_size=0, python_command=(sys.executable,))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            outputs=tuple(FileEntry(str(path), str(remote / path.name)) for path in (bad, good)),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert not bad.exists()
+    assert good.read_text() == good.name
+    failed, available = restored.files.outputs
+    assert failed.availability_state == "failed"
+    assert "connection lost" in failed.availability_message
+    assert available.availability_state == "available"
