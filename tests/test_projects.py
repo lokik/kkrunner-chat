@@ -53,6 +53,22 @@ def test_project_rejects_invalid_local_edits():
         project.modify(parent_id=project.id)
 
 
+
+def test_relative_repository_keeps_projects_and_run_store_in_same_namespace(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repository = ProjectRepository("projects")
+    project = repository.create("Original")
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+
+    assert repository.project(project.id) == project
+    saved = repository.save(project.modify(name="Updated"), expected_generation=project.generation)
+    assert ProjectRepository(tmp_path / "projects").project(project.id) == saved
+    assert repository.run_store.directory == tmp_path.resolve() / "projects_runs"
+    assert not (other / "projects").exists()
+
+
 def test_repository_uses_one_generation_checked_json_per_project(tmp_path):
     repository = ProjectRepository(tmp_path / "projects")
     parent = repository.create("Parent")

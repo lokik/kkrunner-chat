@@ -174,7 +174,7 @@ class ProjectRepository:
     def __init__(self, directory: str | Path | None = None, *, run_store=None) -> None:
         from kkrunner.runs.records import RunStore
 
-        self.directory = Path(directory) if directory is not None else default_projects_directory()
+        self.directory = (Path(directory) if directory is not None else default_projects_directory()).expanduser().resolve()
         self._run_store = (RunStore(self.directory.parent / "projects_runs")
                            if run_store is None else run_store)
         self._state_lock = RLock()
