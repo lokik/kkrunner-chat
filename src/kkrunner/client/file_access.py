@@ -32,8 +32,8 @@ class FileAccess:
         )
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         _relative_local_path(file, context.local_root)
-        if context.shared_filesystem:
-            return local_snapshot(file, destination=destination)
+        if self.client.target.is_local or context.shared_filesystem:
+            return await asyncio.to_thread(local_snapshot, file, destination=destination)
         remote = entry.remote_path if os.path.abspath(entry.local_path) == file else None
         if remote is None:
             remote = await context.map_path(file)

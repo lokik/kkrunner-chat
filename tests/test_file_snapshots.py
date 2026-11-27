@@ -190,3 +190,16 @@ def test_client_snapshot_respects_manifest_and_preserves_run_files(tmp_path, rem
     destination = tmp_path / "copy.dat"
     assert client.snapshot_file(run, "result.dat", destination=destination) == destination
     assert destination.read_bytes() == b"result"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_snapshot_rejects_nonregular_source(tmp_path, remote):
+    manager, run, _, source_root = running_run(tmp_path, remote)
+    client = ExecutionClient(SupervisedBackend, target=run.execution.target)
+    (source_root / "result.dat").mkdir()
+    destination = tmp_path / "copy.dat"
+    destination.write_bytes(b"previous")
+    for snapshot in (manager.snapshot_file, client.snapshot_file):
+        with pytest.raises(ValueError, match="not a regular file"):
+            snapshot(run, "result.dat", destination=destination)
+    assert destination.read_bytes() == b"previous"
