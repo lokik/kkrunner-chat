@@ -34,6 +34,14 @@ def prepare_target_outputs(request):
         request.get("input_file"),
         *request.get("cache_files", ()),
     ]
+    def directory_entry(path):
+        # Resolve parent aliases but retain the name of the directory entry.
+        path = os.path.abspath(path)
+        return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+    def contains(directory, path):
+        return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
+
     protected = set()
     protected_inodes = set()
     protected_directories = set()
@@ -42,7 +50,7 @@ def prepare_target_outputs(request):
             continue
         matches = glob.glob(declaration, recursive=True) if glob.has_magic(declaration) else [declaration]
         for candidate in matches:
-            protected.add(os.path.realpath(candidate))
+            protected.update((os.path.realpath(candidate), directory_entry(candidate)))
             if os.path.exists(candidate):
                 info = os.stat(candidate)
                 protected_inodes.add((info.st_dev, info.st_ino))
@@ -52,10 +60,10 @@ def prepare_target_outputs(request):
     def is_protected(path):
         real = os.path.realpath(path)
         # Also protect the directory entry itself if it is a symlink.
-        entry = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+        entry = directory_entry(path)
         if real in protected or entry in protected:
             return True
-        if any(os.path.commonpath((root, name)) == root
+        if any(contains(root, name)
                for root in protected_directories for name in (real, entry)):
             return True
         if os.path.exists(path):
@@ -87,9 +95,8 @@ def prepare_target_outputs(request):
                 cursor = os.path.dirname(cursor)
             if os.path.lexists(normalized) and not os.path.isdir(normalized):
                 raise ValueError("Declared directory output is not a directory: " + declaration)
-            prefix = os.path.realpath(normalized) + os.sep
-            if any(candidate.startswith(prefix) or candidate == os.path.realpath(normalized)
-                   for candidate in protected):
+            root = os.path.realpath(normalized)
+            if any(contains(root, candidate) for candidate in protected):
                 raise ValueError("Directory output contains input/cache: " + declaration)
         wildcard = glob.has_magic(declaration)
         matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]

@@ -215,3 +215,24 @@ def test_cleanup_preserves_contents_of_protected_directory(tmp_path):
     _prepare_outputs((tmp_path / "**" / "*.txt",), protected_paths=(directory,))
     assert protected.read_text() == "input"
     assert not unrelated.exists()
+
+
+
+def test_directory_output_cannot_remove_declared_input_symlink(tmp_path):
+    import pytest
+
+    data = tmp_path / "source.txt"
+    data.write_text("source")
+    output = tmp_path / "results"
+    output.mkdir()
+    alias = output / "input.txt"
+    alias.symlink_to(data)
+    with pytest.raises(ValueError, match="Directory output contains input/cache"):
+        prepare_target_outputs({
+            "directory": str(tmp_path),
+            "input_files": [str(alias)],
+            "output_files": [str(output)],
+            "output_directories": [str(output)],
+        })
+    assert alias.is_symlink()
+    assert alias.read_text() == "source"
