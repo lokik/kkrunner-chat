@@ -29,8 +29,14 @@ def test_project_manager_cannot_be_rebound(tmp_path):
     manager = _manager(tmp_path)
     first = manager.projects.create("First")
     second = manager.projects.create("Second")
+    bound = manager.for_project(first)
+    assert bound.project_id == first.id
+    assert bound.for_project(first.id) is bound
+    assert manager.for_project(first.id).project_id == first.id
     with pytest.raises(ValueError, match="Cannot replace"):
-        manager.for_project(first).for_project(second)
+        bound.for_project(second)
+    with pytest.raises(KeyError):
+        manager.for_project("00000000000000000000000000000000")
 
 
 def test_explicit_run_manager_does_not_require_a_project():

@@ -329,3 +329,27 @@ def test_execution_identity_is_enforced_by_store(store, tmp_path, field, message
     with pytest.raises(ValueError, match=message):
         manager.transition(record, execution=invalid)
     assert store.get(record.id) == record
+
+
+def test_unchanged_artifact_availability_keeps_history_timestamp(store, tmp_path):
+    manager = RunManager(store)
+    output = str(tmp_path / "output")
+    record = store.save(manager.new_record(
+        directory=tmp_path,
+        files=FileManifest(stdout=FileEntry(output, availability_state="pending")),
+    ))
+    failed = manager.update_artifact_availability(record, output, "failed", "missing")
+    assert failed.files.stdout.availability_state == "failed"
+    assert manager.update_artifact_availability(failed, output, "failed", "missing") == failed
+    assert store.get(record.id) == failed
+    restored = manager.update_artifact_availability(failed, output, "available")
+    assert restored.files.stdout.availability_state == "available"
+    assert restored.files.stdout.availability_message is None
+    assert store.get(record.id) == restored
+
+
+def test_first_unchanged_update_creates_record_in_either_store(store, tmp_path):
+    record = RunManager(store).new_record(directory=tmp_path)
+    assert store.update(record, lambda current: current) == record
+    assert store.get(record.id) == record
+    assert store.update(record, lambda current: current) == record

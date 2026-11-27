@@ -84,11 +84,10 @@ class RunFiles:
         state = ArtifactAvailabilityState(state)
 
         def update(latest):
-            return replace(
-                latest,
-                updated_at=datetime.now(timezone.utc).isoformat(),
-                files=latest.files.with_file_availability(path, state.value, message),
-            )
+            files = latest.files.with_file_availability(path, state.value, message)
+            if files == latest.files:
+                return latest
+            return replace(latest, updated_at=datetime.now(timezone.utc).isoformat(), files=files)
 
         return store_for(record, self.store).update(record, update)
 

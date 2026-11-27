@@ -51,15 +51,15 @@ class ProjectRunManager(RunManager):
 
     def for_project(self, project):
         identity = project.id if isinstance(project, Project) else str(project)
-        current = self.projects.project(identity)
-        if self._project_id is not None and current.id != self._project_id:
-            raise ValueError("Cannot replace the project of a project-bound execution manager")
-        if self._project_id == current.id:
+        if self._project_id is not None:
+            current = self.projects.project(identity)
+            if current.id != self._project_id:
+                raise ValueError("Cannot replace the project of a project-bound execution manager")
             return self
         return type(self)(
             client_pool=self.client_pool,
             submitting_grace=self.submitting_grace,
             conflict_stores=self.conflict_stores,
             project_repository=self.projects,
-            project=current,
+            project=identity,
         )
