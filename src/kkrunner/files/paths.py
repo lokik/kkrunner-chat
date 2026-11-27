@@ -4,7 +4,7 @@ import glob
 import os
 from fnmatch import fnmatchcase
 from functools import lru_cache
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from kkrunner.files.task_file import TaskFile
 
@@ -28,6 +28,18 @@ def file_path(value, directory=None, *, required=False):
     if directory is not None and not os.path.isabs(path):
         path = os.path.join(directory, path)
     return os.path.abspath(path)
+
+
+def relative_local_path(path, local_root):
+    """Resolve a local path and enforce the run's mapped root boundary."""
+    path = Path(path).expanduser().resolve()
+    root = Path(local_root).expanduser().resolve()
+    try:
+        return path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Local path {path} is outside mapped root {root}; specify local_root/remote_root explicitly"
+        ) from exc
 
 
 def declared_file_paths(values, directory, *, excluded=()):

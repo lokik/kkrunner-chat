@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from kkrunner.files.manifest import FileMapping, FileSyncPolicy
+from kkrunner.files.paths import relative_local_path
 from kkrunner.files.queries import checked_files, query_files
 from kkrunner.client.staging import StagingSpec
 
@@ -19,18 +20,6 @@ async def query_remote_home(transport):
     if not home or not posixpath.isabs(home):
         raise RuntimeError("Could not determine absolute remote home directory")
     return posixpath.normpath(home)
-
-
-def _relative_local_path(path, local_root):
-    """Resolve a local path and enforce the run's mapped root boundary."""
-    path = Path(path).expanduser().resolve()
-    root = Path(local_root).expanduser().resolve()
-    try:
-        return path.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(
-            f"Local path {path} is outside mapped root {root}; specify local_root/remote_root explicitly"
-        ) from exc
 
 
 class FileContext:
@@ -77,7 +66,7 @@ class FileContext:
     def _map_path(self, path, remote_root):
         if self.target.is_local:
             return os.path.abspath(os.fspath(path))
-        relative = _relative_local_path(path, self.local_root)
+        relative = relative_local_path(path, self.local_root)
         if not relative.parts:
             return remote_root
         return posixpath.join(remote_root, *relative.parts)
@@ -141,7 +130,7 @@ class FileContext:
         if relative == ".":
             return self.local_root
         local = self.local_root.joinpath(*PurePosixPath(relative).parts)
-        _relative_local_path(local, self.local_root)
+        relative_local_path(local, self.local_root)
         return local
 
     async def unmap_path(self, path):

@@ -209,3 +209,21 @@ def test_snapshot_rejects_nonregular_source(tmp_path, remote):
         with pytest.raises(ValueError, match="not a regular file"):
             snapshot(run, "result.dat", destination=destination)
     assert destination.read_bytes() == b"previous"
+
+
+def test_shared_snapshot_respects_mapped_root_for_both_apis(tmp_path):
+    manager, run, local, _ = running_run(tmp_path, remote=True)
+    client = ExecutionClient(SupervisedBackend, target=run.execution.target)
+    outside = tmp_path / "outside.dat"
+    outside.write_bytes(b"outside")
+    source = local / "result.dat"
+    source.symlink_to(outside)
+    files = replace(run.files, mapping=replace(run.files.mapping, shared_filesystem=True))
+    run = manager.store.update(run, lambda latest: replace(latest, files=files))
+    for snapshot in (manager.snapshot_file, client.snapshot_file):
+        with pytest.raises(ValueError, match="outside mapped root"):
+            snapshot(run, "result.dat")
+    source.unlink()
+    source.write_bytes(b"shared result")
+    for snapshot in (manager.snapshot_file, client.snapshot_file):
+        assert snapshot(run, "result.dat") == b"shared result"

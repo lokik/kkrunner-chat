@@ -6,7 +6,8 @@ import os
 import posixpath
 from functools import partial
 
-from kkrunner.client.file_context import FileContext, _relative_local_path
+from kkrunner.client.file_context import FileContext
+from kkrunner.files.paths import relative_local_path
 from kkrunner.client.contracts import Operation
 from kkrunner.files.manifest import FileEntry
 from kkrunner.files.queries import remote_file_cleanup
@@ -30,14 +31,15 @@ class FileAccess:
         file, entry, destination = snapshot_request(
             run.files, run.execution.directory.local, file, destination,
         )
-        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
-        _relative_local_path(file, context.local_root)
-        if self.client.target.is_local or context.shared_filesystem:
+        if self.client.target.is_local or run.files.shared_filesystem:
             return await asyncio.to_thread(local_snapshot, file, destination=destination)
+        context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
+        if run.files.mapping is None:
+            relative_local_path(file, context.local_root)
+        root = await context._resolved_remote_root()
         remote = entry.remote_path if os.path.abspath(entry.local_path) == file else None
         if remote is None:
-            remote = await context.map_path(file)
-        root = await context._resolved_remote_root()
+            remote = context._map_path(file, root)
         normalized = posixpath.normpath(remote)
         if not posixpath.isabs(normalized) or posixpath.commonpath((root, normalized)) != root:
             raise ValueError(f"Remote snapshot path is outside mapped root: {remote}")
@@ -68,14 +70,14 @@ class FileAccess:
         pairs = {}
         for value in files:
             local = os.path.abspath(os.fspath(value))
-            _relative_local_path(local, context.local_root)
+            relative_local_path(local, context.local_root)
             entry = declared.get(local)
             remote = entry.remote_path if entry is not None else None
             if remote is None:
                 remote = await context.map_path(local)
             for matched in await self.client.target.expand_files(remote, remote_root):
                 destination = os.fspath(context._unmap_path(matched, remote_root)) if glob.has_magic(remote) else local
-                _relative_local_path(destination, context.local_root)
+                relative_local_path(destination, context.local_root)
                 if (entry is not None and entry in run.files.outputs and glob.has_magic(remote)
                         and run.files.output_excluded(matched, remote=True)):
                     continue
