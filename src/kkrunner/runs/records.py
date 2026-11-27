@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
@@ -376,7 +377,8 @@ class RunStore:
     def _day_directories(self, *, newest):
         if not self.directory.is_dir():
             return ()
-        days = [path for path in self.directory.iterdir() if path.is_dir()]
+        days = [path for path in self.directory.iterdir()
+                if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", path.name) and path.is_dir()]
         return tuple(sorted(days, key=lambda path: path.name, reverse=newest))
 
     def _records_in_directory(self, directory, *, newest, on_error=None):
