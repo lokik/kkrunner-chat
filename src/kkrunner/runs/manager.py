@@ -296,7 +296,8 @@ class RunManager:
                     return latest
                 if state == RunState.FINISHED and latest.files.failed_artifacts:
                     raise OSError(latest.files.availability_message or "Artifacts became unavailable during processing")
-            if expected_record is not None and latest != expected_record:
+            # Project reassignment is administrative, not a lifecycle update.
+            if expected_record is not None and latest != replace(expected_record, project_id=latest.project_id):
                 raise RuntimeError("Run changed during postprocessing retry")
             if expected_updated_at is not _UNCHANGED and latest.updated_at != expected_updated_at:
                 # An independent refresh has superseded this observation.
@@ -823,7 +824,7 @@ class RunManager:
             raise RuntimeError("Run is already terminal")
 
         def activate(current):
-            if current.state.is_terminal and current != latest:
+            if current.state.is_terminal and current != replace(latest, project_id=current.project_id):
                 raise ProcessingPending("Run changed before processing claim")
             return replace(
                 current, state=RunState.POSTPROCESSING,

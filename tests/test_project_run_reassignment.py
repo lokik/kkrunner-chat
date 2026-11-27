@@ -117,3 +117,55 @@ def test_move_missing_run_reports_missing_record_and_releases_lock(tmp_path):
     assert store.get(original.id).project_id == first.id
     moved, = projects.reassign_runs((original.id,), second.id)
     assert moved.project_id == second.id
+
+
+def test_project_move_during_preprocessing_does_not_invalidate_submission(tmp_path):
+    projects = ProjectRepository(tmp_path / "projects")
+    first = projects.create("First")
+    second = projects.create("Second")
+    manager = RunManager(projects.run_store)
+    record = manager.new_record(directory=tmp_path, project_id=first.id)
+    preparing = manager.reserve(record, preprocessing=True)
+    projects.reassign_runs((preparing.id,), second.id)
+
+    submitting = manager.begin_submission(preparing)
+    assert submitting.state == RunState.SUBMITTING
+    assert submitting.project_id == second.id
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_project_move_during_result_processing_preserves_outcome(tmp_path, fails):
+    from kkrunner.files import FileEntry, FileManifest
+    from kkrunner.runs import FailurePhase
+
+    projects = ProjectRepository(tmp_path / "projects")
+    first = projects.create("First")
+    second = projects.create("Second")
+    manager = RunManager(projects.run_store)
+    output = tmp_path / "stdout"
+    output.write_text("answer")
+    record = manager.new_record(
+        directory=tmp_path, project_id=first.id, processing_required=True,
+        files=FileManifest(stdout=FileEntry(local_path=str(output))),
+    )
+    pending = manager.complete(
+        record, state=RunState.POSTPROCESSING, return_code=0,
+        execution=record.execution.submitted("native"), artifacts_available=True,
+    )
+
+    def process(outcome):
+        projects.reassign_runs((pending.id,), second.id)
+        if fails:
+            raise ValueError("parser error")
+        return "parsed"
+
+    if fails:
+        with pytest.raises(ValueError, match="parser error"):
+            manager.retry_postprocessing(pending, process)
+    else:
+        assert manager.retry_postprocessing(pending, process) == "parsed"
+    current = manager.store.get(pending.id)
+    assert current.project_id == second.id
+    assert current.state == (RunState.FAILED if fails else RunState.FINISHED)
+    assert current.failure_phase == (FailurePhase.POSTPROCESSING if fails else None)
+    assert current.return_code == 0
