@@ -284,7 +284,6 @@ class Run:
                     # when the backend actually launched the program.
                     self._file_session.finalize(status)
                 except Exception as exc:
-                    self._file_session.mark_transfer_failed(str(exc))
                     if raw_state == RunState.FINISHED:
                         self._exception = exc
                         self._state = RunState.FAILED
