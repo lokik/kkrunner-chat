@@ -172,8 +172,11 @@ def test_refresh_batches_status_queries(tmp_path):
         )
         record = manager.transition(record, state=RunState.QUEUED, execution=record.execution.submitted(str(index)))
         records.append(record)
-    refreshed = manager.refresh(records)
-    assert [record.state for record in refreshed] == [RunState.RUNNING, RunState.RUNNING]
+    # Duplicate input occurrences retain their positions in the result, but
+    # must not trigger repeated queries or completion of the same execution.
+    refreshed = manager.refresh((*records, records[0]))
+    assert [record.state for record in refreshed] == [RunState.RUNNING] * 3
+    assert refreshed[0] == refreshed[2]
     assert executor.status_calls == [tuple(JobAttachment(record.execution, record.files) for record in records)]
 
 
