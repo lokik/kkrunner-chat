@@ -870,6 +870,50 @@ def test_restore_results_without_original_execution_backend(tmp_path, monkeypatc
     assert restored.files.stdout.availability_state == "available"
 
 
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_restore_captured_result_without_backend_identity(tmp_path, monkeypatch, changed):
+    from kkrunner import RunStore
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.runs.manager import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    path = local / "result.dat"
+    source = remote / path.name
+    path.write_text("original result")
+    version = FileVersion.capture(path, require_digest=True)
+    path.unlink()
+    source.write_text("another result" if changed else "original result")
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        backend=BackendConfig("removed-backend"),
+        files=FileManifest(
+            stdout=FileEntry(path, source, availability_state="available"),
+            output_versions=(version,),
+            captured_at="2026-10-13T08:00:00+00:00",
+            mapping=FileMapping(local, remote),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FINISHED, return_code=0)
+    assert record.execution.backend_id is None
+    monkeypatch.setattr(manager.client_pool, "for_config",
+                        lambda *args: pytest.fail("File retrieval must not reconstruct a backend"))
+    restored = manager.retrieve_result_files(record)
+    assert restored.files.output_versions == (version,)
+    if changed:
+        assert not path.exists()
+        assert restored.files.stdout.availability_state == "failed"
+        assert "overwritten" in restored.files.stdout.availability_message
+    else:
+        assert path.read_text() == "original result"
+        assert version.is_current()
+        assert restored.files.stdout.availability_state == "available"
+
+
 def test_historical_output_glob_excludes_input_and_cache_namespaces(tmp_path):
     from kkrunner.files.manifest import CacheEntry
 

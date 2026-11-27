@@ -120,7 +120,11 @@ class RunFiles:
 
         if not record.execution.target.transfers_files(shared_filesystem=record.files.shared_filesystem):
             return record  # There is no separate target copy to restore.
-        if record.execution.backend_id is None or not record.execution.target.available:
+        if not record.execution.target.available:
+            return record
+        # A captured result has its own file identity, independent of any
+        # native job handle. Keep the existing guard for uncaptured history.
+        if record.files.captured_at is None and record.execution.backend_id is None:
             return record
         missing = _missing_result_files(
             record.files, include_outputs=record.failure_phase not in NO_EXECUTION_FAILURES,
