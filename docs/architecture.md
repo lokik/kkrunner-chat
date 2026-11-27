@@ -77,8 +77,11 @@ be published directly as a terminal client Run before these phases settle.
 
 Backend facts and durable submission/outcome receipts are not a second run
 record. RunRecord remains the authority for end-to-end completion. All completion paths share the same durable commit and result ACK.
-RunManager.refresh also reconciles terminal receipts; the explicit
-reconcile_acknowledgements() method retries lost ACKs without changing outcomes.
+Submission receipts are acknowledged when their backend identity has been
+persisted, including after explicit submission recovery. Status polling does
+not repeat submission ACKs or reconcile historical receipts. The explicit
+reconcile_acknowledgements() method retries lost submission and outcome ACKs
+without changing recorded outcomes.
 Recoverable download failures retain their backend outcome receipt until retry
 finishes; otherwise a later attach would lose authoritative backend completion. JSON writes use atomic replacement, file and directory
 fsync on POSIX; portable Windows directory durability is weaker as documented
