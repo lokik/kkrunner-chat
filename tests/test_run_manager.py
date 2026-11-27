@@ -1,4 +1,3 @@
-from subprocess import CalledProcessError
 from threading import Event
 import pytest
 
@@ -195,8 +194,7 @@ def test_duplicate_submission_is_blocked_by_persisted_namespace(tmp_path):
         second.submit()
 
 
-@pytest.mark.parametrize("error", [OSError("unreachable"), CalledProcessError(255, ["ssh"])])
-def test_refresh_preserves_successful_statuses_when_one_query_fails(tmp_path, monkeypatch, error):
+def test_refresh_preserves_successful_statuses_when_one_job_is_unknown(tmp_path, monkeypatch):
     manager = _manager(tmp_path)
     client = ExecutionClient("psij")
     manager.register_client(client)
@@ -209,12 +207,14 @@ def test_refresh_preserves_successful_statuses_when_one_query_fails(tmp_path, mo
             record, state=RunState.QUEUED, execution=record.execution.submitted(identity),
         ))
 
-    async def invoke(operation, identity):
+    async def invoke(operation, identities):
         assert operation == "status"
-        if identity == "unreachable":
-            raise error
-        return {"state": "running" if identity == "first" else "finished",
-                "return_code": None if identity == "first" else 0}
+        assert identities == ["first", "unreachable", "last"]
+        return [
+            {"state": "running"},
+            {"state": "unknown", "error": "Cannot query execution status: unreachable"},
+            {"state": "finished", "return_code": 0},
+        ]
 
     monkeypatch.setattr(client, "_invoke", invoke)
     refreshed = manager.refresh(records)

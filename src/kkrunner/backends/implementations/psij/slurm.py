@@ -135,44 +135,7 @@ def _slurm_accounting_matches(run_id, submitted_at):
     return tuple(matches)
 
 
-def status(native_id: str) -> JobStatus:
-    """Read scheduler facts for a local Slurm job without initializing PSI/J."""
-    native_id = str(native_id)
-    # A PSI/J attach initially reports NEW; short-lived remote commands
-    # cannot wait for an asynchronous update or retain the Job cache.
-    # Query the same scheduler facts for local and SSH PSI/J runs.
-    try:
-        details = _slurm_details(native_id)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        details = {}
-
-    if details:
-        state = _slurm_state(details.get("JobState"))
-        return_code = _slurm_exit_code(details.get("ExitCode"))
-    else:
-        try:
-            output = _scheduler_output(
-                (
-                    "sacct",
-                    "-X",
-                    "-n",
-                    "-P",
-                    "-j",
-                    native_id,
-                    "--format=JobIDRaw,State,ExitCode",
-                )
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            output = ""
-        state = RunState.UNKNOWN
-        return_code = None
-        for line in output.splitlines():
-            fields = line.rstrip("|").split("|")
-            if len(fields) == 3 and fields[0].strip() == native_id:
-                state = _slurm_state(fields[1])
-                return_code = _slurm_exit_code(fields[2].strip())
-                break
-
+def _job_status(state, return_code):
     if not state.is_terminal:
         return_code = None
     elif state == RunState.FINISHED and return_code is None:
@@ -180,10 +143,91 @@ def status(native_id: str) -> JobStatus:
     elif state == RunState.FINISHED and return_code != 0:
         state = RunState.FAILED
     return JobStatus(
-        state=state,
-        return_code=return_code,
+        state=state, return_code=return_code,
         failure_phase=JobFailurePhase.EXECUTION if state == RunState.FAILED else None,
     )
+
+
+def _controller_status(native_id):
+    try:
+        details = _slurm_details(native_id)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    if not details:
+        return None
+    return _job_status(_slurm_state(details.get("JobState")), _slurm_exit_code(details.get("ExitCode")))
+
+
+def _accounting_statuses(native_ids):
+    if not native_ids:
+        return {}
+    try:
+        output = _scheduler_output((
+            "sacct", "-X", "-n", "-P", "-j", ",".join(native_ids),
+            "--format=JobIDRaw,State,ExitCode",
+        ))
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    requested = set(native_ids)
+    result = {}
+    for line in output.splitlines():
+        fields = line.rstrip("|").split("|")
+        if len(fields) == 3 and fields[0].strip() in requested:
+            native_id, state, code = (field.strip() for field in fields)
+            result.setdefault(native_id, _job_status(_slurm_state(state), _slurm_exit_code(code)))
+    return result
+
+
+def status(native_id: str) -> JobStatus:
+    """Read scheduler facts for one local Slurm job without initializing PSI/J."""
+    native_id = str(native_id)
+    try:
+        facts = _controller_status(native_id)
+        if facts is not None:
+            return facts
+        return _accounting_statuses((native_id,)).get(native_id, JobStatus(RunState.UNKNOWN))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return JobStatus(RunState.UNKNOWN, message=f"Cannot query execution status: {exc}")
+
+
+def statuses(native_ids):
+    """Query requested jobs together; preserve controller fallback if accounting lags."""
+    ids = tuple(dict.fromkeys(map(str, native_ids)))
+    if len(ids) <= 1:
+        return {native_id: status(native_id) for native_id in ids}
+    try:
+        output = _scheduler_output((
+            "squeue", "--noheader", "--jobs=" + ",".join(ids),
+            "--states=all", "--format=%i|%T",
+        ))
+    except (OSError, subprocess.SubprocessError):
+        # If the queue query itself failed, retain the authoritative per-job
+        # controller query rather than treating stale accounting as live facts.
+        return {native_id: status(native_id) for native_id in ids}
+    requested = set(ids)
+    result = {}
+    for line in output.splitlines():
+        fields = line.split("|")
+        if len(fields) != 2:
+            continue
+        native_id, raw_state = (field.strip() for field in fields)
+        state = _slurm_state(raw_state)
+        if native_id in requested and state != RunState.UNKNOWN and not state.is_terminal:
+            result[native_id] = _job_status(state, None)
+
+    missing = tuple(native_id for native_id in ids if native_id not in result)
+    accounting = _accounting_statuses(missing)
+    for native_id in missing:
+        facts = accounting.get(native_id)
+        if facts is None or not facts.state.is_terminal:
+            # Recently completed jobs may still be in the controller but not
+            # in sacct (including clusters without accounting configured).
+            try:
+                facts = _controller_status(native_id) or facts
+            except (OSError, subprocess.SubprocessError) as exc:
+                facts = JobStatus(RunState.UNKNOWN, message=f"Cannot query execution status: {exc}")
+        result[native_id] = facts if facts is not None else JobStatus(RunState.UNKNOWN)
+    return result
 
 
 def recover(run_id, directory, *, submitted_at=None):

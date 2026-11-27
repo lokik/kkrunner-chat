@@ -200,10 +200,10 @@ def test_refresh_captures_local_diagnostics(tmp_path, monkeypatch, state, code, 
         files=FileManifest(stdout=FileEntry(local_path=str(path), availability_state="pending")))
     record = manager.transition(record, state=RunState.RUNNING,
         execution=record.execution.submitted("native-job"))
-    monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda token: {
+    monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda tokens: [{
         "state": state.value, "return_code": code,
         "failure_phase": None if phase is None else phase.value,
-    }))
+    } for token in tokens]))
     monkeypatch.setattr(SupervisedBackend, "acknowledge", staticmethod(lambda token: None))
     monkeypatch.setattr(SupervisedBackend, "acknowledge_submission", staticmethod(lambda token: None))
     (saved,) = manager.refresh((record,))

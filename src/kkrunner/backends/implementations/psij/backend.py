@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from subprocess import SubprocessError
 from uuid import uuid4
 
 from kkrunner.backends.contracts import (
@@ -30,6 +31,7 @@ from .support import (
     _attach_job,
     _create_executor,
     _follow_scheduler,
+    _local_slurm,
     job_status,
     psij_state,
     supports_recovery,
@@ -104,15 +106,25 @@ class PsijBackend(Backend, ManagedOperations):
         }
 
     @staticmethod
-    def status(remote_id: str) -> StatusReply:
-        handle = decode_handle(remote_id)
-        if handle["kind"] != "psij":
+    def status(remote_ids: list[str]) -> list[StatusReply]:
+        handles = [decode_handle(remote_id) for remote_id in remote_ids]
+        if any(handle["kind"] != "psij" for handle in handles):
             raise ValueError("Not a PSI/J job reference")
-        facts = job_status(handle, attached=True)
-        return status_reply(
-            facts.state, facts.return_code,
-            failure_phase=facts.failure_phase, error=facts.message,
-        )
+        native_ids = [str(handle["native_id"]) for handle in handles if _local_slurm(handle)]
+        slurm_facts = slurm.statuses(native_ids)
+        result = []
+        for handle in handles:
+            try:
+                facts = (slurm_facts[str(handle["native_id"])] if _local_slurm(handle)
+                         else job_status(handle, attached=True))
+            except (OSError, SubprocessError) as exc:
+                result.append(status_reply(RunState.UNKNOWN, error=f"Cannot query execution status: {exc}"))
+            else:
+                result.append(status_reply(
+                    facts.state, facts.return_code,
+                    failure_phase=facts.failure_phase, error=facts.message,
+                ))
+        return result
 
     @staticmethod
     def cancel(remote_id: str) -> StatusReply:
@@ -121,7 +133,7 @@ class PsijBackend(Backend, ManagedOperations):
             raise ValueError("Not a PSI/J job reference")
         job = _attach_job(handle)
         job.cancel()
-        return PsijBackend.status(remote_id)
+        return PsijBackend.status([remote_id])[0]
 
     @staticmethod
     def acknowledge(remote_id: str) -> AcknowledgeReply:

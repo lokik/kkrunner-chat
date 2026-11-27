@@ -209,7 +209,7 @@ class DirectOperations(Protocol):
     def prepare_target_outputs(request: ExecutionRequest) -> None: ...
 
     @staticmethod
-    def status(job_ref: str) -> StatusReply: ...
+    def status(job_refs: list[str]) -> list[StatusReply]: ...
 
     @staticmethod
     async def follow(
@@ -233,7 +233,8 @@ class ManagedOperations(Protocol):
     """Static namespace interface for durable execution and observation.
 
     submit returns an opaque identity. status/cancel/follow return native
-    facts. Cancelling follow closes only its observer, while cancel requests
+    facts. Status accepts a batch of references and returns one reply per
+    reference in input order. Cancelling follow closes only its observer, while cancel requests
     calculation termination. recover never starts a second calculation.
     SUBMIT_AND_FOLLOW additionally declares a streaming submission operation
     with the same acceptance and output hooks as a direct execution call,
@@ -244,7 +245,7 @@ class ManagedOperations(Protocol):
     def submit(request: ExecutionRequest) -> SubmissionReply: ...
 
     @staticmethod
-    def status(job_ref: str) -> StatusReply: ...
+    def status(job_refs: list[str]) -> list[StatusReply]: ...
 
     @staticmethod
     def cancel(job_ref: str) -> StatusReply: ...

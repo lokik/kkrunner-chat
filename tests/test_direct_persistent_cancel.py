@@ -90,7 +90,7 @@ def test_cancellation_terminates_descendant_ignoring_term(tmp_path, remote, lead
         if leader_already_exited:
             leader.terminate()
             leader.wait(timeout=5)
-        assert DirectBackend.status(identity)["state"] == "running"
+        assert DirectBackend.status([identity])[0]["state"] == "running"
         if remote:
             command = operation_command(Operation.for_backend(DirectBackend, "cancel"),
                                         python=(sys.executable, "-I", "-S"))
@@ -101,9 +101,9 @@ def test_cancellation_terminates_descendant_ignoring_term(tmp_path, remote, lead
             outcome = DirectBackend.cancel(identity, timeout=0.05)
         assert outcome["state"] in ("cancelled", "running")
         deadline = time.monotonic() + 5
-        while DirectBackend.status(identity)["state"] == "running" and time.monotonic() < deadline:
+        while DirectBackend.status([identity])[0]["state"] == "running" and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert DirectBackend.status(identity)["state"] == "finished"
+        assert DirectBackend.status([identity])[0]["state"] == "finished"
         try:
             with open(f"/proc/{descendant_pid}/stat") as source:
                 state = source.read().rsplit(")", 1)[1].split()[0]

@@ -48,6 +48,27 @@ from kkrunner.support.process_identity import ProcessIdentity
 from .support import _process_outcome
 
 
+def _status(remote_id: str) -> StatusReply:
+    handle = decode_handle(remote_id)
+    if handle["kind"] != "kkrunner":
+        raise ValueError("Not a KKRunner supervisor job reference")
+    outcome = _process_outcome(handle["receipt_id"])
+    if outcome is None:
+        active = Path(handle["socket_path"]).with_name("active")
+        try:
+            state = RunState(active.read_text())
+        except FileNotFoundError:
+            state = None
+        if state is not None and ProcessIdentity.from_dict(handle["identity"]).is_running():
+            return status_reply(state)
+        # Completion may have been published while checking liveness.
+        outcome = _process_outcome(handle["receipt_id"])
+        if outcome is None:
+            return status_reply(RunState.UNKNOWN)
+    state, return_code, failure_phase, error = outcome
+    return status_reply(state, return_code, failure_phase=failure_phase, error=error)
+
+
 class SupervisedBackend(Backend, ManagedOperations):
     """Native target operations, independent of endpoints and transport."""
 
@@ -100,25 +121,14 @@ class SupervisedBackend(Backend, ManagedOperations):
             )
 
     @staticmethod
-    def status(remote_id: str) -> StatusReply:
-        handle = decode_handle(remote_id)
-        if handle["kind"] != "kkrunner":
-            raise ValueError("Not a KKRunner supervisor job reference")
-        outcome = _process_outcome(handle["receipt_id"])
-        if outcome is None:
-            active = Path(handle["socket_path"]).with_name("active")
+    def status(remote_ids: list[str]) -> list[StatusReply]:
+        result = []
+        for remote_id in remote_ids:
             try:
-                state = RunState(active.read_text())
-            except FileNotFoundError:
-                state = None
-            if state is not None and ProcessIdentity.from_dict(handle["identity"]).is_running():
-                return status_reply(state)
-            # Completion may have been published while checking liveness.
-            outcome = _process_outcome(handle["receipt_id"])
-            if outcome is None:
-                return status_reply(RunState.UNKNOWN)
-        state, return_code, failure_phase, error = outcome
-        return status_reply(state, return_code, failure_phase=failure_phase, error=error)
+                result.append(_status(remote_id))
+            except OSError as exc:
+                result.append(status_reply(RunState.UNKNOWN, error=f"Cannot query execution status: {exc}"))
+        return result
 
     @staticmethod
     def cancel(remote_id: str, timeout: float = 1.0) -> StatusReply:
@@ -127,7 +137,7 @@ class SupervisedBackend(Backend, ManagedOperations):
             raise ValueError("Not a KKRunner supervisor job reference")
         outcome = _process_outcome(handle["receipt_id"])
         if outcome is not None:
-            return SupervisedBackend.status(remote_id)
+            return SupervisedBackend.status([remote_id])[0]
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
                 conn.settimeout(timeout)
@@ -137,8 +147,8 @@ class SupervisedBackend(Backend, ManagedOperations):
                 if b'"accepted":true' not in reply:
                     raise RuntimeError("Supervisor rejected cancellation")
         except (FileNotFoundError, ConnectionRefusedError):
-            return SupervisedBackend.status(remote_id)
-        return SupervisedBackend.status(remote_id)
+            return SupervisedBackend.status([remote_id])[0]
+        return SupervisedBackend.status([remote_id])[0]
 
     @staticmethod
     def acknowledge(remote_id: str) -> AcknowledgeReply:
@@ -159,7 +169,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         if reply is None:
             return None
         return {
-            **SupervisedBackend.status(reply["remote_id"]),
+            **SupervisedBackend.status([reply["remote_id"]])[0],
             "remote_id": reply["remote_id"], "directory": request["directory"],
             "output_file": reply.get("output_file"), "error_file": reply.get("error_file"),
         }
@@ -206,7 +216,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         except (SupervisorClosedBeforeFollow, SupervisorConnectionError) as exc:
             # A completed supervisor has removed its transient socket. Replay
             # declared spools once, without the historical polling lifecycle.
-            facts = SupervisedBackend.status(remote_id)
+            facts = SupervisedBackend.status([remote_id])[0]
             if not RunState(facts["state"]).is_terminal:
                 raise
             if not output:

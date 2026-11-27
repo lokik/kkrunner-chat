@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -57,12 +58,12 @@ def process():
 def test_direct_status_is_independent_of_live_session(process):
     ref = _linux_ref(process.pid)
     assert BackendCapability.STATUS in DirectBackend().supports
-    running = DirectBackend.status(ref)
+    running = DirectBackend.status([ref])[0]
     assert running["state"] == "running"
     assert running["return_code"] is None
     process.terminate()
     process.wait(timeout=5)
-    finished = DirectBackend.status(ref)
+    finished = DirectBackend.status([ref])[0]
     assert finished["state"] == "finished"
     assert finished["return_code"] is None
     assert "exit code unavailable" in finished["error"]
@@ -73,8 +74,8 @@ def test_recycled_pid_does_not_make_old_direct_job_run_again(process):
     ref = _linux_ref(process.pid)
     kind, pid, tick, boot = ref.split(":")
     recycled = f"{kind}:{pid}:{int(tick) + 1}:{boot}"
-    assert DirectBackend.status(recycled)["state"] == "finished"
-    assert DirectBackend.status("old-session-uuid")["state"] == "unknown"
+    assert DirectBackend.status([recycled])[0]["state"] == "finished"
+    assert DirectBackend.status(["old-session-uuid"])[0]["state"] == "unknown"
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux procfs identity")
@@ -88,7 +89,10 @@ def test_ssh_status_uses_portable_operation_and_no_supervisor(process, tmp_path,
         ),
         FileManifest(),
     )
-    assert endpoint.status(attachment)[0].state == RunState.RUNNING
+    unknown = replace(attachment, execution=replace(attachment.execution, backend_id="old-session"))
+    assert [status.state for status in endpoint.status(attachment, unknown, attachment)] == [
+        RunState.RUNNING, RunState.UNKNOWN, RunState.RUNNING,
+    ]
     process.terminate()
     process.wait(timeout=5)
     result = endpoint.status(attachment)[0]

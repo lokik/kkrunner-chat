@@ -136,7 +136,7 @@ def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
     assert time.monotonic() - started < 2
     runner.wait()
     assert runner.state == RunState.CANCELLED
-    assert SupervisedBackend.status(runner.backend_id)["state"] == "cancelled"
+    assert SupervisedBackend.status([runner.backend_id])[0]["state"] == "cancelled"
 
 
 def test_missing_ticket_keeps_submission_uncertain(tmp_path):
@@ -226,7 +226,7 @@ def test_untracked_supervised_run_retains_backend_outcome_without_submission_tic
     assert job.id is None
     assert job.wait().return_code == 0
     assert not list((state / "remote-submissions").glob("*.json"))
-    assert SupervisedBackend.status(job.backend_id)["return_code"] == 0
+    assert SupervisedBackend.status([job.backend_id])[0]["return_code"] == 0
 
 
 def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
