@@ -140,3 +140,28 @@ def test_slow_receipt_ack_does_not_block_another_run_completion(tmp_path, monkey
         finally:
             release.set()
         assert first.result(timeout=5).state == RunState.FINISHED
+
+
+@pytest.mark.parametrize("mismatch", ["target", "backend"])
+def test_submission_receipt_operations_reject_another_clients_run(tmp_path, monkeypatch, mismatch):
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.client.contracts import SubmissionContext
+    from kkrunner.targets import SshTarget
+
+    client = ExecutionClient(SupervisedBackend)
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=tmp_path,
+        target=SshTarget("other-host") if mismatch == "target" else client.target,
+        backend=BackendConfig("direct") if mismatch == "backend" else client.backend_config,
+        submission_key="submission",
+    )
+
+    async def invoke(*args, **kwargs):
+        pytest.fail("A receipt operation must not contact the wrong backend")
+
+    monkeypatch.setattr(client, "_invoke", invoke)
+    with pytest.raises(ValueError, match="different transport or backend"):
+        client.recover_submission("submission", SubmissionContext(record.execution))
+    with pytest.raises(ValueError, match="different transport or backend"):
+        client.acknowledge_submission(record)

@@ -164,6 +164,7 @@ class ExecutionClient:
         """Release the submission receipt after the manager persisted acceptance."""
         if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return None
+        self._validate_run(run)
         key = run.execution.submission_key or run.id
         return _run_sync(self._invoke("acknowledge_submission", key))
 
@@ -247,6 +248,7 @@ class ExecutionClient:
         if BackendCapability.RECOVER not in self.backend.supports:
             from kkrunner.backends.contracts import RecoveryResult
             return RecoveryResult.unsupported("The selected backend has no submission recovery")
+        self._validate_run(submission)
         return _run_sync(self._recover_submission(submission_key, submission, submitted_at=submitted_at))
 
     def file_session(self, spec):
