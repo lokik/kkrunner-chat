@@ -83,11 +83,17 @@ def test_cancel_after_native_exit_does_not_contact_backend(tmp_path, monkeypatch
     assert manager.store.get(record.id) == record
 
 
-def test_direct_job_cannot_cancel_after_restart(tmp_path):
+@pytest.mark.parametrize("entrypoint", ["manager", "client"])
+def test_direct_job_cannot_cancel_after_restart(tmp_path, entrypoint):
+    from kkrunner.client.contracts import JobAttachment
+
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = stored(manager, tmp_path, backend="direct")
     with pytest.raises(UnsupportedCapability, match="cannot cancel"):
-        manager.cancel(record.id)
+        if entrypoint == "manager":
+            manager.cancel(record.id)
+        else:
+            ExecutionClient("direct").cancel(JobAttachment(record.execution, record.files))
     assert manager.store.get(record.id) == record
 
 
