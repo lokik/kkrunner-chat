@@ -291,7 +291,8 @@ class FileSession:
         self, patterns, *, kind, required=False, excluded_remote=(), excluded_local=(), seen_remote=None
     ):
         """Expand and inspect a pattern in one query, then transfer exact pairs."""
-        remote_root = await self.context._resolved_remote_root()
+        mapping = self._files.mapping
+        remote_root = mapping.remote_root if mapping is not None else await self.context._resolved_remote_root()
         selected = seen_remote if seen_remote is not None else set()
         selected.update(excluded_remote)
         cache_before = ({cache.file.remote_path: cache.before for cache in self._files.caches
@@ -614,7 +615,8 @@ class FileSession:
         }
         root = None
         if any(has_file_magic(target) for target, (_, kind) in paths.items() if kind == "file"):
-            root = await self.context._resolved_remote_root()
+            mapping = self._files.mapping
+            root = mapping.remote_root if mapping is not None else await self.context._resolved_remote_root()
         return await self._target_versions(paths, root=root)
 
     def _flush_declared_handles(self):
@@ -686,9 +688,14 @@ class FileSession:
 
     async def _resolve_footprint(self):
         if self._remote_directory is None:
-            target = await self.context.map_directory(self.spec.directory)
-            self._files = await self.context.map_manifest(self._files)
-            self._remote_directory = target
+            if self.is_local:
+                self._remote_directory = os.path.abspath(self.spec.directory)
+            else:
+                manifest = await self.context.map_manifest(self._files)
+                self._remote_directory = self.context._map_path(
+                    self.spec.directory, manifest.mapping.remote_root,
+                )
+                self._files = manifest
         return self.working_directory, self._files
 
     def submission_footprint(self):
