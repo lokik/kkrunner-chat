@@ -16,8 +16,8 @@ class TaskFile(os.PathLike):
     Clients resolve their own templates and callbacks before execution.
     ``type`` and ``info`` are opaque client-owned descriptive strings.
     ``kind`` is a filesystem contract: a directory is never inferred from a suffix.
-    ``collect=False`` retains write reservations and preflight cleanup but
-    excludes the file from artifact collection and transfer.
+    ``collect=False`` retains producer-side write reservations and preflight cleanup
+    but excludes the file from artifact collection and transfer.
     A pathname may be a template or callback; a callback returning None means
     the file is not declared for that parameter set.  An optional declared
     file may be absent even after successful execution.

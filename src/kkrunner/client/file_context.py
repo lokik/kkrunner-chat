@@ -42,6 +42,7 @@ class FileContext:
         self.client = client
         self.target = client.target
         self.filesystem_id = staging.filesystem_id
+        self.shared_filesystem = staging.shared_filesystem
         self.local_root = Path(staging.local_root or (Path("/") if self.target.is_local else Path.home())).expanduser().resolve()
         self.remote_root = None if staging.remote_root is None else os.fspath(staging.remote_root)
         self.input_files = FileSyncPolicy(staging.input_sync)
@@ -112,7 +113,7 @@ class FileContext:
         mapping = FileMapping(
             local_root=os.fspath(self.local_root), remote_root=remote_root,
             input_sync=self.input_files.value, output_sync=self.output_files.value,
-            filesystem_id=self.filesystem_id,
+            filesystem_id=self.filesystem_id, shared_filesystem=self.shared_filesystem,
         )
         return replace(
             manifest,

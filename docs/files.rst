@@ -100,6 +100,18 @@ For host aliases or shared mounts, supply the same ``filesystem_id`` to
 does not partition connection identity. KKRunner does not infer shared mounts
 from different hostnames. Distinct IDs declare distinct target filesystems.
 
+Shared filesystem
+-----------------
+
+Set ``StagingSpec(shared_filesystem=True, local_root=..., remote_root=...)``
+when both roots refer to the same mounted files. Both transfer policies are
+forced to ``never``; input and result versions are captured locally, without
+remote digest comparisons. Reservations include producer reads and writes in
+the mapped local namespace, including uncollected outputs. The backend still
+runs on the remote host. There is no separate copy for historical retrieval
+or remote-only cleanup. The caller declares the mount identity; KKRunner does
+not try to detect it. Ordinary ``never`` does not imply a shared filesystem.
+
 Transfers and captured contents
 ---------------------------------
 

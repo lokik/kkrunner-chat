@@ -261,7 +261,7 @@ class Run:
         return self.manager.snapshot_file(self._record, file, destination=destination)
 
     def _file_failure_phase(self):
-        return FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD
+        return FailurePhase.ARTIFACTS if self._file_session.files_are_local else FailurePhase.DOWNLOAD
 
     def _finish(self):
         try:

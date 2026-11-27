@@ -77,6 +77,10 @@ class FileSession:
     def is_local(self):
         return self.context.target.is_local
 
+    @property
+    def files_are_local(self):
+        return self.is_local or self.context.shared_filesystem
+
     def _local_path(self, value):
         if value is None:
             return None
@@ -95,6 +99,10 @@ class FileSession:
         if previous is not None:
             return target
 
+        if self.context.shared_filesystem and not os.path.isfile(source):
+            if required:
+                raise FileNotFoundError(f"Shared input file does not exist: {source}")
+            return None
         policy = self.context.input_files
         if policy == FileSyncPolicy.NEVER:
             used[target] = source
@@ -129,6 +137,10 @@ class FileSession:
             if previous != source:
                 raise ValueError(f"Remote input target collision: {target}")
             return target
+        if self.context.shared_filesystem and not os.path.isdir(source):
+            if required:
+                raise FileNotFoundError(f"Shared input directory does not exist: {source}")
+            return None
         policy = self.context.input_files
         if policy == FileSyncPolicy.NEVER:
             used[target] = source
@@ -530,10 +542,12 @@ class FileSession:
         ]
         caches.extend(CacheEntry(FileEntry(remote_path=remote), before)
                       for remote, before in cache_before.items())
-        return request, replace(
-            manifest, caches=tuple(caches),
-            input_versions=await self._target_input_versions(manifest, inputs),
-        )
+        if self.context.shared_filesystem:
+            from kkrunner.files.availability import snapshot_file_entries
+            versions = snapshot_file_entries(manifest.input_entries)
+        else:
+            versions = await self._target_input_versions(manifest, inputs)
+        return request, replace(manifest, caches=tuple(caches), input_versions=versions)
 
     async def _target_versions(self, paths):
         transport = self.context.target
@@ -724,7 +738,7 @@ class FileSession:
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
         required = status.state == RunState.FINISHED and status.return_code == 0
-        if self.is_local:
+        if self.files_are_local:
             from kkrunner.files.availability import local_manifest
             self.close()
             self._files = local_manifest(self._files, status)
@@ -738,7 +752,7 @@ class FileSession:
         if self._files.captured_at is None:
             self._files = capture_result_files(
                 self._files, require_outputs=required,
-                cache_versions=None if self.is_local else await self._target_cache_versions(),
+                cache_versions=None if self.files_are_local else await self._target_cache_versions(),
             )
         return self._files
 

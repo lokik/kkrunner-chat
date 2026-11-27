@@ -17,6 +17,7 @@ class StagingSpec:
     input_sync: str = FileSyncPolicy.CHANGED.value
     output_sync: str = FileSyncPolicy.CHANGED.value
     filesystem_id: str | None = None
+    shared_filesystem: bool = False
 
     @classmethod
     def from_mapping(cls, mapping):
@@ -26,10 +27,12 @@ class StagingSpec:
         return cls(
             local_root=mapping.local_root, remote_root=mapping.remote_root,
             input_sync=mapping.input_sync, output_sync=mapping.output_sync,
-            filesystem_id=mapping.filesystem_id,
+            filesystem_id=mapping.filesystem_id, shared_filesystem=mapping.shared_filesystem,
         )
 
     def __post_init__(self):
+        if type(self.shared_filesystem) is not bool:
+            raise TypeError("shared_filesystem must be a bool")
         if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
             raise ValueError("filesystem_id must be a nonempty string or None")
         for name in ("local_root", "remote_root"):
@@ -41,4 +44,4 @@ class StagingSpec:
                 value = FileSyncPolicy(getattr(self, name))
             except ValueError as exc:
                 raise ValueError(f"Invalid {name} file synchronization policy") from exc
-            object.__setattr__(self, name, value.value)
+            object.__setattr__(self, name, (FileSyncPolicy.NEVER if self.shared_filesystem else value).value)

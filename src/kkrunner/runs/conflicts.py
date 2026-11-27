@@ -49,11 +49,23 @@ def _manifest_accesses(record, *, remote=None):
                 result.update(declaration_paths(identity, directory=entry.kind == "directory"))
         return result
 
-    reads = accesses((*files.inputs, files.stdin, *(x.file for x in files.caches)))
-    writes = accesses((files.stdout, files.stderr, *files.outputs,
-                       *(x.file for x in files.caches)))
+    caches = tuple(cache.file for cache in files.caches)
+    outputs = tuple(entry for entry in (files.stdout, files.stderr, *files.outputs)
+                    if entry is not None)
+    reads = accesses((*files.input_entries, *caches))
+    if (not remote and directory.remote is not None and files.mapping is not None
+            and not files.shared_filesystem):
+        # Only collected artifacts can write a separate client filesystem.
+        writes = accesses((*(entry for entry in outputs if entry.collect), *caches))
+        if files.mapping.output_sync == FileSyncPolicy.NEVER:
+            reads |= writes
+            writes = set()
+    else:
+        # A local or shared producer writes the local paths themselves.
+        writes = accesses((*outputs, *caches))
     if not remote:
-        writes |= accesses(entry for entry in files.input_entries if entry.write)
+        writes |= accesses(entry for entry in (*files.input_entries, *outputs, *caches)
+                           if entry.write)
     elif files.mapping is not None and files.mapping.input_sync != FileSyncPolicy.NEVER:
         # Uploads may replace target inputs even when the local source is read-only.
         writes |= accesses(files.input_entries)
@@ -159,8 +171,7 @@ def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
         right_reads, right_writes = second
         return _paths_overlap(left_writes, right_reads | right_writes) or _paths_overlap(right_writes, left_reads)
 
-    # Every client also reads/uploads and publishes/streams in its local
-    # filesystem, regardless of which backend performs the calculation.
+    # Shared target files are also represented by their mapped local paths.
     if overlaps(_manifest_accesses(left, remote=False), _manifest_accesses(right, remote=False)):
         return True
 
