@@ -418,3 +418,119 @@ def test_late_subscription_replays_only_if_terminal_output_was_not_drained(tmp_p
         assert calls == (["native wait"] if drained else ["native wait", "file replay"])
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("reply", [None, {"state": "unknown"}, {"state": "finished", "return_code": None}])
+def test_reattached_terminal_result_survives_output_observation_failure(tmp_path, reply):
+    from kkrunner.backends import DirectBackend
+    from kkrunner.client.backend_execution import bind_execution
+
+    class Transport:
+        async def follow(self, *args, **kwargs):
+            if reply is None:
+                raise OSError("output connection lost")
+            return reply
+
+        async def call(self, *args, **kwargs):
+            pytest.fail("A known terminal outcome requires no new status query")
+
+    execution = bind_execution(
+        DirectBackend(), Transport(), ref=JobRef("direct", "existing"),
+        status={"state": "finished", "return_code": 0},
+    )
+    job = _job(execution, tmp_path)
+    job.start()
+    result = job.wait()
+    assert result.state == RunState.FINISHED
+    assert result.return_code == 0
+    if reply is None:
+        assert isinstance(job.output_error, OSError)
+
+
+def test_late_cancel_reply_does_not_replace_observed_outcome():
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.client.backend_execution import bind_execution
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class Transport:
+            async def call(self, operation, token):
+                entered.set()
+                await release.wait()
+                return {"state": "running"}
+
+            async def follow(self, *args, **kwargs):
+                return {"state": "finished", "return_code": 0}
+
+        backend = SupervisedBackend()
+        execution = bind_execution(backend, Transport(), ref=JobRef(backend.name, "existing"),
+                                   status={"state": "running"})
+        cancellation = asyncio.create_task(execution.cancel())
+        await entered.wait()
+        result = await execution.observe(lambda *_: None)
+        release.set()
+        assert (await cancellation).state == RunState.RUNNING
+        assert (await execution.status()) == result
+        assert result.return_code == 0
+
+    asyncio.run(scenario())
+
+
+def test_direct_cancel_after_observation_close_uses_native_identity():
+    from kkrunner.backends import DirectBackend
+    from kkrunner.client.backend_execution import DirectExecution
+
+    async def scenario():
+        calls = []
+
+        class Call:
+            async def close(self):
+                calls.append("close")
+
+            async def cancel(self):
+                pytest.fail("Closed control channel must not be used")
+
+        class Transport:
+            async def call(self, operation, token):
+                calls.append(token)
+                return {"state": "cancelled"}
+
+        execution = DirectExecution(DirectBackend(), Transport())
+        execution.configure_detached(True)
+        execution.ref = JobRef("direct", "native-job")
+        execution._call = Call()
+        await execution.close()
+        await execution.close()
+        assert (await execution.cancel()).state == RunState.CANCELLED
+        assert calls == ["close", "native-job"]
+
+    asyncio.run(scenario())
+
+
+def test_confirmed_terminal_status_survives_weaker_observer_reply(tmp_path):
+    from threading import Event
+
+    execution = _BackendExecution()
+    execution.ref = JobRef("kkrunner", "existing")
+    execution.snapshot = JobStatus(RunState.RUNNING)
+    entered, release = Event(), Event()
+
+    async def observe(on_output, *, output_requested=None):
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        return JobStatus(RunState.UNKNOWN)
+
+    async def status():
+        return JobStatus(RunState.FINISHED, return_code=0)
+
+    execution.observe = observe
+    execution.status = status
+    job = _job(execution, tmp_path)
+    job.start()
+    try:
+        assert entered.wait(5)
+        assert job.refresh_status() == JobStatus(RunState.FINISHED, return_code=0)
+    finally:
+        release.set()
+    assert job.wait() == JobStatus(RunState.FINISHED, return_code=0)

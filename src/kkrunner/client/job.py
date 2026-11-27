@@ -107,7 +107,9 @@ class Job:
             # A status query may return after the stream has delivered the
             # authoritative terminal outcome. Only the observer can refine
             # such an outcome, e.g. supply the Direct process's exit code.
-            if refresh and self._state.is_terminal:
+            if self._state.is_terminal and (
+                refresh or not status.state.is_terminal or self._return_code is not None
+            ):
                 return
             self._state = status.state
             self._return_code = status.return_code
@@ -116,9 +118,11 @@ class Job:
             self._failure_message = status.message
 
     def _observation_lost(self, message):
-        self._state = RunState.UNKNOWN
-        self._failure_phase = None
-        self._failure_message = message
+        with self._lock:
+            if not self._state.is_terminal:
+                self._state = RunState.UNKNOWN
+                self._failure_phase = None
+                self._failure_message = message
 
     def add_output_listener(self, callback):
         self._output_observers.add(callback)
@@ -206,12 +210,14 @@ class Job:
             # to detach observation before the observer is created.
             self._ensure_cancel_task(starting=True)
             with self._lock:
-                if self._observation_stopped.is_set() and self.execution.can_stop_observation:
-                    self._observation_lost("Observation detached")
-                    return
-                self._observer = asyncio.create_task(self.execution.observe(
-                    self._observed_output, output_requested=self._output_requested,
-                ))
+                detached = self._observation_stopped.is_set() and self.execution.can_stop_observation
+                if not detached:
+                    self._observer = asyncio.create_task(self.execution.observe(
+                        self._observed_output, output_requested=self._output_requested,
+                    ))
+            if detached:
+                self._observation_lost("Observation detached")
+                return
             self._ensure_cancel_task()
             try:
                 status = await self._observer
