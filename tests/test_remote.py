@@ -701,6 +701,11 @@ def test_remote_directory_input_policy(tmp_path, policy, remote_value, expected,
             super().__init__()
             self.directory_uploads = []
 
+        async def query_files(self, sources, *, root=None, digest=False):
+            if policy == "always":
+                assert remote not in map(Path, sources), "ALWAYS does not inspect the destination before upload"
+            return await super().query_files(sources, root=root, digest=digest)
+
         async def put_directory(self, source, destination):
             self.directory_uploads.append((Path(source), Path(destination)))
             await super().put_directory(source, destination)
