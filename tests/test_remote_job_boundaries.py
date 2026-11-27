@@ -24,6 +24,7 @@ class _BackendExecution:
         self.ref = None
         self.snapshot = JobStatus(RunState.NEW)
         self.can_stop_observation = True
+        self.output_error = None
 
     def configure_detached(self, detached):
         pass
@@ -32,7 +33,7 @@ class _BackendExecution:
         if not isinstance(stream_offsets, dict):
             raise TypeError("stream offsets must be a mapping")
 
-    async def submit(self, request, on_output):
+    async def submit(self, request, on_output, *, output_requested=None):
         self.submit_calls += 1
         if self.submit_error is not None:
             # A lost reply is not a proof of non-submission.
@@ -42,7 +43,7 @@ class _BackendExecution:
         self.snapshot = JobStatus(RunState.QUEUED)
         return self.snapshot
 
-    async def observe(self, on_output):
+    async def observe(self, on_output, *, output_requested=None):
         self.snapshot = JobStatus(RunState.FINISHED, return_code=0)
         return self.snapshot
 
@@ -355,7 +356,7 @@ def test_late_status_query_does_not_replace_stream_completion(tmp_path):
         assert await asyncio.to_thread(release_query.wait, 5)
         return JobStatus(RunState.RUNNING)
 
-    async def observe(on_output):
+    async def observe(on_output, *, output_requested=None):
         assert await asyncio.to_thread(finish.wait, 5)
         return JobStatus(RunState.FAILED, return_code=7)
 
@@ -376,3 +377,44 @@ def test_late_status_query_does_not_replace_stream_completion(tmp_path):
     assert not query.is_alive()
     assert refreshed == [JobStatus(RunState.FAILED, return_code=7)]
     assert job.state == RunState.FAILED
+
+
+@pytest.mark.parametrize("drained", [False, True])
+def test_late_subscription_replays_only_if_terminal_output_was_not_drained(tmp_path, drained):
+    import asyncio
+    from kkrunner.backends import PsijBackend
+    from kkrunner.backends.contracts import JobRef
+    from kkrunner.client.backend_execution import ManagedExecution
+    from kkrunner.client.contracts import OutputSubscription
+    from kkrunner.targets import LocalTarget
+
+    path = tmp_path / "out"
+    path.write_bytes(b"saved\n")
+    calls = []
+
+    class Target(LocalTarget):
+        async def follow(self, operation, identity, on_output, *, subscription=None, **options):
+            if operation.backend is not None:
+                calls.append("native wait")
+                assert not subscription.enabled
+                subscription.set(True)
+                if drained:
+                    on_output(b"saved\n", "out")
+                return {"state": "finished", "return_code": 0, "output_drained": drained}
+            calls.append("file replay")
+            return await super().follow(
+                operation, identity, on_output, subscription=subscription, **options,
+            )
+
+    async def exercise():
+        binding = ManagedExecution(PsijBackend(), Target(), ref=JobRef("psij", "test"))
+        binding.configure_observation(stream_offsets={"out": 0, "err": None},
+                                      stream_paths=(str(path), None))
+        seen = []
+        status = await binding.observe(lambda data, kind: seen.append((kind, data)),
+                                       output_requested=OutputSubscription(False))
+        assert status.return_code == 0
+        assert seen == [("out", b"saved\n")]
+        assert calls == (["native wait"] if drained else ["native wait", "file replay"])
+
+    asyncio.run(exercise())

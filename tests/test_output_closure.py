@@ -83,7 +83,7 @@ def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path,
     files.prepare_submission()
     job = _managed_job(spec)
 
-    async def disconnected(_on_output):
+    async def disconnected(_on_output, *, output_requested=None):
         raise ConnectionError("remote FOLLOW interrupted")
 
     async def unavailable():
@@ -197,3 +197,40 @@ def test_staging_failure_closes_acquired_outputs_once(tmp_path, backend, monkeyp
     parts.close()
     parts.close()
     assert output.close_calls == 1
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_new_output_is_a_new_artifact_without_truncating_previous_reader(tmp_path, symlink):
+    from kkrunner.files.streams import open_new_output
+
+    original = tmp_path / "out"
+    original.write_bytes(b"old")
+    path = original
+    if symlink:
+        path = tmp_path / "alias"
+        path.symlink_to(original)
+    with path.open("rb") as previous, open_new_output(path, "w+b", buffering=0) as current:
+        current.write(b"new")
+        current.seek(0)
+        assert current.read() == b"new"
+        assert path.read_bytes() == b"new"
+        assert previous.read() == b"old"
+    assert path.is_symlink() is symlink
+    assert original.read_bytes() == b"new"
+
+
+def test_failed_new_output_replacement_leaves_original_artifact(tmp_path, monkeypatch):
+    import os
+    from kkrunner.files.streams import open_new_output
+
+    path = tmp_path / "out"
+    path.write_bytes(b"old")
+
+    def denied(*args):
+        raise PermissionError("cannot publish new output")
+
+    monkeypatch.setattr(os, "replace", denied)
+    with pytest.raises(PermissionError, match="cannot publish new output"):
+        open_new_output(path)
+    assert path.read_bytes() == b"old"
+    assert list(tmp_path.iterdir()) == [path]

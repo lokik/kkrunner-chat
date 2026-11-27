@@ -70,7 +70,13 @@ class StatusReply(TypedDict):
     error: Optional[str]
 
 
-class ExecutionReply(StatusReply):
+class ObservationReply(StatusReply, total=False):
+    # Per invocation, never part of a native status or durable receipt.
+    output_drained: bool
+    output_error: str
+
+
+class ExecutionReply(ObservationReply):
     remote_id: Optional[str]
 
 
@@ -105,6 +111,7 @@ class FollowOptions(TypedDict, total=False):
     poll_interval: float
     stdout_path: Optional[str]
     stderr_path: Optional[str]
+    output: bool
 
 
 def normalize_request(request: ExecutionRequest) -> ExecutionRequest:

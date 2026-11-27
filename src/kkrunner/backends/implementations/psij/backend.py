@@ -166,7 +166,7 @@ class PsijBackend(Backend, ManagedOperations):
     @staticmethod
     async def follow(
         remote_id, stdout, stderr, *, stdout_offset=0, stderr_offset=0,
-        poll_interval=0.1, stdout_path=None, stderr_path=None,
+        poll_interval=0.1, stdout_path=None, stderr_path=None, output=True, control=None,
     ):
         handle = decode_handle(remote_id)
         if handle["kind"] != "psij":
@@ -174,7 +174,9 @@ class PsijBackend(Backend, ManagedOperations):
         offsets = {"out": stdout_offset, "err": stderr_offset}
         paths = {"out": stdout_path, "err": stderr_path}
         streams = {"out": stdout, "err": stderr}
-        return await _follow_scheduler(remote_id, streams, paths, offsets, poll_interval)
+        return await _follow_scheduler(
+            remote_id, streams, paths, offsets, poll_interval, output=output, control=control,
+        )
 
     @staticmethod
     async def stream(job_ref: str, **options):

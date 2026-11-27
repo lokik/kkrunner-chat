@@ -71,7 +71,7 @@ class ExecutionClient:
         mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
         tracked=False, detached=None, process_result=None, output_listener=None,
     ):
-        """Run a command and wait, displaying available unredirected output."""
+        """Run a command and wait; Direct attached displays unredirected output."""
         return self.submit(
             argv, directory=directory, input_file=input_file, output_file=output_file,
             stdin=stdin, error_file=error_file, input_files=input_files,
@@ -87,7 +87,7 @@ class ExecutionClient:
         mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
         tracked=False, detached=None, process_result=None, output_listener=None,
     ):
-        """Submit a command and return its Run, displaying available unredirected output."""
+        """Submit a command and return its Run; managed output requires a listener."""
         import sys
 
         from kkrunner.runs.base import ExecutionSpec
@@ -98,7 +98,11 @@ class ExecutionClient:
             output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
             mpi=mpi, staging=StagingSpec() if staging is None else staging, mpi_uses_stdin=mpi_uses_stdin,
         )
-        if output_listener is None:
+        # Managed jobs and detached Direct do not implicitly subscribe to
+        # files. Only a native attached Direct session has console streams.
+        effective_detached = self.backend.default_detached if detached is None else detached
+        if (output_listener is None and self.backend.execution_mode == "direct"
+                and not effective_detached and (spec.output_file is None or spec.error_file is None)):
             def output_listener(text, kind):
                 if kind == "out" and spec.output_file is None:
                     sys.stdout.write(text)

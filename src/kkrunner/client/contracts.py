@@ -31,6 +31,27 @@ class SubmissionContext:
     execution: ExecutionMetadata
 
 
+class OutputSubscription:
+    """The desired output subscription on one Job's asyncio loop."""
+
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.enabled_late = False
+        self._changed = asyncio.Event()
+
+    def set(self, enabled):
+        if enabled != self.enabled:
+            self.enabled = enabled
+            self.enabled_late |= enabled
+            self._changed.set()
+
+    async def wait_for_change(self, previous):
+        while self.enabled == previous:
+            self._changed.clear()
+            await self._changed.wait()
+        return self.enabled
+
+
 class BackendExecution(Protocol):
     """One backend execution bound to a location, without client persistence.
 
@@ -41,12 +62,13 @@ class BackendExecution(Protocol):
 
     ref: Optional[JobRef]
     snapshot: JobStatus
+    output_error: Optional[BaseException]
 
     def configure_detached(self, detached: bool) -> None: ...
     def configure_observation(self, *, stream_offsets, stream_paths) -> None: ...
 
-    async def submit(self, request, on_output) -> JobStatus: ...
-    async def observe(self, on_output) -> JobStatus: ...
+    async def submit(self, request, on_output, *, output_requested=None) -> JobStatus: ...
+    async def observe(self, on_output, *, output_requested=None) -> JobStatus: ...
     async def status(self) -> JobStatus: ...
     async def cancel(self): ...
     @property
@@ -93,6 +115,8 @@ class JobProtocol(Protocol):
     def configure_submission(self, request, **observation) -> None: ...
 
     def add_output_listener(self, callback) -> None: ...
+
+    def remove_output_listener(self, callback) -> None: ...
 
     def add_output_error_listener(self, callback) -> None: ...
 

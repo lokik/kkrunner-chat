@@ -428,17 +428,26 @@ def test_slurm_status_nonzero_completion_is_failed(monkeypatch):
     assert facts.failure_phase is JobFailurePhase.EXECUTION
 
 
-def test_target_follow_writes_output_from_scheduler_owned_file(monkeypatch, tmp_path):
+@pytest.mark.parametrize("output", [False, True])
+def test_target_follow_reads_scheduler_files_only_on_request(monkeypatch, tmp_path, output):
     stdout = tmp_path / "stdout.txt"
     stdout.write_bytes(b"hello\n")
     native = NativeJob()
     native.update("COMPLETED", 0)
     monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", lambda identity: native)
     out, err = io.BytesIO(), io.BytesIO()
-    facts = asyncio.run(PsijBackend.follow(
-        handle(executor_name="pbs"), out, err, stdout_path=str(stdout), stderr_path=None,
-    ))
-    assert out.getvalue() == b"hello\n"
+    if not output:
+        def unexpected(*args, **kwargs):
+            pytest.fail("A status-only wait must not open a file tail")
+        monkeypatch.setattr("kkrunner.backends.implementations.psij.support.follow_growing_files", unexpected)
+    async def observe():
+        return await PsijBackend.follow(
+            handle(executor_name="pbs"), out, err, stdout_path=str(stdout),
+            stderr_path=None, output=output, control=asyncio.StreamReader(),
+        )
+    facts = asyncio.run(observe())
+    assert facts["output_drained"] is output
+    assert out.getvalue() == (b"hello\n" if output else b"")
     assert err.getvalue() == b""
     assert facts["state"] == "finished"
 
@@ -520,3 +529,123 @@ def test_slurm_status_uses_same_authority_as_follow(monkeypatch):
 def test_psij_backend_is_not_a_client_session():
     assert not hasattr(PsijBackend, "create_job")
     assert not hasattr(PsijBackend, "create_run_parts")
+
+
+def test_psij_subscription_changes_do_not_attach_to_scheduler_again(monkeypatch, tmp_path):
+    from kkrunner.backends.implementations.psij import support
+
+    async def exercise():
+        native = NativeJob()
+        native.update("ACTIVE")
+        attachments = []
+        attached = asyncio.Event()
+        stopped = asyncio.Event()
+        received = asyncio.Event()
+        stdout = tmp_path / "stdout"
+        stdout.write_bytes(b"first\n")
+        control = asyncio.StreamReader()
+        original = support.follow_growing_files
+
+        def attach(identity):
+            attachments.append(identity)
+            attached.set()
+            return native
+
+        async def tail(*args, **kwargs):
+            try:
+                return await original(*args, **kwargs)
+            finally:
+                stopped.set()
+
+        class Sink(io.BytesIO):
+            def write(self, data):
+                count = super().write(data)
+                received.set()
+                return count
+
+        monkeypatch.setattr(support, "_attach_job", attach)
+        monkeypatch.setattr(support, "follow_growing_files", tail)
+        out = Sink()
+        task = asyncio.create_task(PsijBackend.follow(
+            handle(executor_name="pbs"), out, io.BytesIO(), stdout_path=str(stdout),
+            output=False, control=control,
+        ))
+        try:
+            await asyncio.wait_for(attached.wait(), 2)
+            assert out.getvalue() == b""
+            control.feed_data(b"follow\n")
+            await asyncio.wait_for(received.wait(), 2)
+            assert out.getvalue() == b"first\n"
+            control.feed_data(b"unfollow\n")
+            await asyncio.wait_for(stopped.wait(), 2)
+            stdout.write_bytes(b"first\nsecond\n")
+            native.update("COMPLETED", 0)
+            facts = await asyncio.wait_for(task, 2)
+            assert facts["return_code"] == 0
+            assert facts["output_drained"] is False
+            assert out.getvalue() == b"first\n"
+            assert len(attachments) == 1
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+
+def test_failed_optional_psij_tail_can_be_restarted_without_reattaching(monkeypatch, tmp_path):
+    from kkrunner.backends.implementations.psij import support
+
+    async def check():
+        native = NativeJob()
+        native.update("ACTIVE")
+        failed = asyncio.Event()
+        received = asyncio.Event()
+        attempts = []
+        attachments = []
+        original = support.follow_growing_files
+        path = tmp_path / "out"
+        path.write_bytes(b"output")
+
+        def attach(identity):
+            attachments.append(identity)
+            return native
+
+        async def tail(*args, **kwargs):
+            attempts.append(True)
+            if len(attempts) == 1:
+                failed.set()
+                raise PermissionError("cannot read output")
+            return await original(*args, **kwargs)
+
+        class Sink(io.BytesIO):
+            def write(self, data):
+                count = super().write(data)
+                received.set()
+                return count
+
+        monkeypatch.setattr(support, "_attach_job", attach)
+        monkeypatch.setattr(support, "follow_growing_files", tail)
+        control = asyncio.StreamReader()
+        out = Sink()
+        task = asyncio.create_task(PsijBackend.follow(
+            handle(executor_name="pbs"), out, io.BytesIO(), stdout_path=str(path), control=control,
+        ))
+        try:
+            await asyncio.wait_for(failed.wait(), 2)
+            assert not task.done()
+            control.feed_data(b"unfollow\nfollow\n")
+            await asyncio.wait_for(received.wait(), 2)
+            native.update("COMPLETED", 0)
+            facts = await asyncio.wait_for(task, 2)
+            assert facts["state"] == "finished"
+            assert facts["return_code"] == 0
+            assert facts["output_error"] == "cannot read output"
+            assert out.getvalue() == b"output"
+            assert len(attachments) == 1
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())

@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING
 from kkrunner.backends.contracts import Backend, BackendCapability, DirectOperations
 from kkrunner.backends.support.process import prepare_mpi
 from kkrunner.files.availability import prepare_target_outputs
+from kkrunner.files.streams import open_new_output
 from kkrunner.support.decorators import depends_on, portable
+from kkrunner.support.growing_file_tail import controlled_named_files, observe_file_subscription
 
 from .process import observe_process
 
@@ -37,11 +39,11 @@ class DirectBackend(Backend, DirectOperations):
 
     @staticmethod
     @portable
-    @depends_on(observe_process)
+    @depends_on(observe_process, controlled_named_files)
     async def follow(
         remote_id, stdout, stderr, *,
         stdout_offset=0, stderr_offset=0, poll_interval=0.2,
-        stdout_path=None, stderr_path=None, started=None,
+        stdout_path=None, stderr_path=None, started=None, output=True, control=None,
     ):
         """Observe saved direct output without owning or restarting the job.
 
@@ -49,9 +51,6 @@ class DirectBackend(Backend, DirectOperations):
         legacy opaque ID can be observed but cannot prove termination.
         Cancelling this observer never signals the calculation.
         """
-        import asyncio
-        import inspect
-        import os
         if type(poll_interval) not in (int, float) or not 0.05 <= poll_interval <= 10:
             raise ValueError("Invalid follow interval")
         offsets = {"out": stdout_offset, "err": stderr_offset}
@@ -60,45 +59,15 @@ class DirectBackend(Backend, DirectOperations):
         for kind, offset in offsets.items():
             if offset is not None and (type(offset) is not int or offset < 0):
                 raise ValueError(f"Invalid {kind} output offset")
-        if paths["out"] is not None and paths["out"] == paths["err"]:
-            # Independent offsets cannot reconstruct an interleaved file.
-            paths["err"] = None
-
-        async def copy_available():
-            copied = False
-            for kind, path in paths.items():
-                offset = offsets[kind]
-                if path is None or offset is None:
-                    continue
-                try:
-                    with open(path, "rb") as stream:
-                        stream.seek(0, os.SEEK_END)
-                        size = stream.tell()
-                        if size < offset:
-                            raise RuntimeError(f"Observed output was truncated: {path}")
-                        stream.seek(offset)
-                        data = stream.read(65536)
-                except FileNotFoundError:
-                    continue  # The calculation may not have written it yet.
-                if data:
-                    pending = sinks[kind].write(data)
-                    if inspect.isawaitable(pending):
-                        await pending
-                    sinks[kind].flush()
-                    offsets[kind] += len(data)
-                    copied = True
-            return copied
-
-        while True:
-            copied = await copy_available()
+        def terminal():
             if observe_process(remote_id)[0] == "finished":
-                while await copy_available():
-                    pass  # Deliver final bytes already on disk.
                 return {"state": "finished", "return_code": None,
                         "failure_phase": None,
                         "error": "Direct process ended; exit code unavailable"}
-            if not copied:
-                await asyncio.sleep(poll_interval)
+
+        return await controlled_named_files(
+            paths, sinks, offsets, terminal, poll_interval, output=output, control=control,
+        )
 
     @staticmethod
     @portable
@@ -183,6 +152,7 @@ class DirectBackend(Backend, DirectOperations):
 
     @staticmethod
     @portable
+    @depends_on(observe_file_subscription, open_new_output)
     async def stream(
         request: ExecutionRequest, *,
         stdout: Union[ByteSink, AsyncByteSink],
@@ -191,13 +161,16 @@ class DirectBackend(Backend, DirectOperations):
         files: Optional[Mapping[str, BinaryIO]] = None,
         started: Optional[Callable[[ExecutionReply], Union[None, Awaitable[None]]]] = None,
         stdin: Optional[BinaryIO] = None,
+        output: bool = True,
     ) -> ExecutionReply:
         """Run a process with streams and control supplied by its caller.
 
         The operation owns the child, its pipe readers and group termination.
         Borrowed sinks may implement synchronous or asynchronous write(). The
         control reader supplies lines: ``cancel`` terminates the process group;
-        EOF does so only for attached execution. Calculation stdin is separate.
+        EOF does so only for attached execution. For a detached execution
+        "follow" starts optional observation of its named files.
+        Calculation stdin is separate.
         Acceptance and completion carry a session identity and native status.
         On Linux, the identity includes PID/start ticks/boot ID for safe later
         cancellation; elsewhere it stays opaque and cannot be used to kill.
@@ -213,6 +186,8 @@ class DirectBackend(Backend, DirectOperations):
         detached = bool(request.get("detached", False))
         identity = None
         cancelled = False
+        observation_error = None
+        output_drained = False
 
         def outcome(state, code=None, *, phase=None, error=None):
             return {
@@ -221,8 +196,9 @@ class DirectBackend(Backend, DirectOperations):
             }
 
         async def execute():
-            nonlocal identity, cancelled
+            nonlocal identity, cancelled, observation_error, output_drained
             child = stopping = None
+            completed = False
             tasks = []
             with ExitStack() as resources:
                 stdin_path = request.get("stdin")
@@ -241,7 +217,7 @@ class DirectBackend(Backend, DirectOperations):
                     if kind not in outputs and path is not None:
                         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
                         if path not in opened:
-                            opened[path] = resources.enter_context(open(path, "wb", buffering=0))
+                            opened[path] = resources.enter_context(open_new_output(path, buffering=0))
                         outputs[kind] = opened[path]
 
                 async def terminate_group():
@@ -262,17 +238,29 @@ class DirectBackend(Backend, DirectOperations):
                     if stopping is None:
                         stopping = asyncio.create_task(terminate_group())
 
-                async def read_control():
+                def cancel():
                     nonlocal cancelled
+                    cancelled = True
+                    stop()
+
+                async def read_control():
+                    # Only attached Direct owns native pipes and lifetime.
                     try:
                         while line := await control.readline():
                             if line.strip() == b"cancel":
-                                cancelled = True
-                                stop()
+                                cancel()
                                 return
                     finally:
-                        if not detached and child.returncode is None:
+                        if child.returncode is None:
                             stop()
+
+                async def wait_native():
+                    nonlocal completed
+                    code = await child.wait()
+                    if stopping is not None:
+                        await stopping
+                    completed = True
+                    return code
 
                 async def pump(source, sink, kind):
                     while data := await source.read(65536):
@@ -354,23 +342,31 @@ class DirectBackend(Backend, DirectOperations):
                         notification = started(outcome("running"))
                         if inspect.isawaitable(notification):
                             await notification
-                    tasks.append(asyncio.create_task(read_control()))
-                    input_task = None
+                    input_task = control_task = None
                     if forwarded_input is not None:
                         input_task = asyncio.create_task(feed_input())
                         tasks.append(input_task)
-                    output_tasks = []
-                    if not detached:
+                    if detached:
+                        code, output_drained, observation_error = await observe_file_subscription(
+                            wait_native(),
+                            {"out": request.get("output_file"), "err": request.get("error_file")},
+                            {"out": stdout, "err": stderr}, {"out": 0, "err": 0}, control,
+                            output=output, poll_interval=0.2, cancel=cancel,
+                            disconnect_on_eof=False,
+                        )
+                    else:
+                        control_task = asyncio.create_task(read_control())
                         output_tasks = [
                             asyncio.create_task(pump(child.stdout, stdout, "out")),
                             asyncio.create_task(pump(child.stderr, stderr, "err")),
                         ]
-                        tasks.extend(output_tasks)
-                    # Control may stay open after completion. It is not part of
-                    # the completion barrier; output pipes are drained before return.
-                    code, *_ = await asyncio.gather(child.wait(), *output_tasks)
-                    if tasks[0].done():
-                        tasks[0].result()
+                        tasks.extend((control_task, *output_tasks))
+                        # Native attached pipes must be drained before returning.
+                        code, *_ = await asyncio.gather(wait_native(), *output_tasks)
+                        if stopping is not None:
+                            await stopping
+                        if control_task.done():
+                            control_task.result()
                     if input_task is not None and input_task.done():
                         input_task.result()
                     return code
@@ -384,7 +380,7 @@ class DirectBackend(Backend, DirectOperations):
                     await asyncio.gather(*tasks, return_exceptions=True)
                     if child is not None and child.returncode is None and not detached:
                         stop()
-                    if stopping is not None and child is not None:
+                    if stopping is not None and child is not None and not completed:
                         await stopping
                         await child.wait()
 
@@ -395,7 +391,13 @@ class DirectBackend(Backend, DirectOperations):
                 return outcome("unknown", error=str(exc))
             return outcome("failed", phase="launch" if identity is None else "execution", error=str(exc))
         if cancelled:
-            return outcome("cancelled", code)
-        if code == 0:
-            return outcome("finished", code)
-        return outcome("failed", code, phase="execution", error=f"Process exited with status {code}")
+            facts = outcome("cancelled", code)
+        elif code == 0:
+            facts = outcome("finished", code)
+        else:
+            facts = outcome("failed", code, phase="execution", error=f"Process exited with status {code}")
+        if detached:
+            facts["output_drained"] = output_drained
+            if observation_error is not None:
+                facts["output_error"] = observation_error
+        return facts

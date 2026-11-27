@@ -53,7 +53,33 @@ A single FileSession handles local and remote files. It owns live client file
 handles and finalizes the sole FileManifest. Local execution needs no copying;
 SSH execution stages inputs, relays live output only to observers and
 synchronizes all declared result files (including stdout/stderr) after native
-completion. The local copies are not written during observation. After
+completion. The local copies are not written during observation.
+Managed backends wait for terminal status without following stdout/stderr
+unless an output listener is registered. An initial supervised attached
+connection can own the execution lifetime without subscribing to output.
+Use ``add_output_listener(callback)`` and ``remove_output_listener(callback)``
+on a Job or Run to change its listeners. Adding the first or removing the
+last listener changes the output subscription on the existing connection.
+Removing an absent listener is harmless; a callback already in progress
+may finish. Waiting for native completion continues independently.
+Named streams resume from their previous byte cursor; live-only bytes
+emitted without a subscriber cannot be recovered.
+Each new calculation creates fresh named output artifacts. A previous
+reader holding an open file descriptor can continue reading its original
+file after the pathname has been reused. A file observer opens a stream
+on demand and retains that descriptor across subscription pauses until
+observation ends; it does not read or watch the file while unsubscribed.
+Already-open handles supplied by the caller retain their existing semantics. A late subscription that
+crosses the terminal reply completes its named-stream replay without another
+backend status query, but only if the existing terminal message does not
+confirm that the output subscription was drained.
+Only Direct attached convenience calls display unredirected console
+streams automatically. For managed and detached Direct calls, an explicit
+output listener requests live output.
+Direct attached retains the native stream semantics of a session-owned
+process. Direct detached writes its named files independently; the same
+portable backend tails those files for local and SSH calls only when a
+listener requests output, including during an already running execution. After
 staging, transfer selections and cache baselines come from the manifest rather
 than independently maintained lists. Snapshots and manual retrieval are in the
 file-access layer, with the client delegating those requests.

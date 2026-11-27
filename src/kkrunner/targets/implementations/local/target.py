@@ -34,20 +34,31 @@ class LocalTarget(Target):
             raise ValueError("LocalTarget.kind must be 'local'")
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
-                        tail_paths=None, observe_only=False):
+                        observe_only=False, output=True):
         from .call import LocalCall
         files, stdin = (None, None) if local_io is None else local_io()
         return LocalCall(
             getattr(operation.backend, operation.method), request, on_output,
-            files=files, stdin=stdin if use_stdin else None, tail_paths=tail_paths,
-            observe_only=observe_only,
+            files=files, stdin=stdin if use_stdin else None,
+            observe_only=observe_only, output=output,
         )
 
-    async def follow(self, operation, identity, on_output, **options):
+    async def follow(self, operation, identity, on_output, *, subscription=None, **options):
         from ...calls import OutputSink
-        return await getattr(operation.backend, operation.method)(
-            identity, OutputSink(on_output, "out"), OutputSink(on_output, "err"), **options,
-        )
+        function = (operation.function if operation.function is not None
+                    else getattr(operation.backend, operation.method))
+        if subscription is None:
+            return await function(
+                identity, OutputSink(on_output, "out"), OutputSink(on_output, "err"), **options,
+            )
+        from .call import LocalCall
+        enabled = subscription.enabled
+        call = LocalCall(function, identity, on_output, observe_only=True,
+                         output=enabled, follow_options=options)
+        try:
+            return await call.wait_with_output(subscription, enabled)
+        finally:
+            await call.close()
 
     async def call(self, operation: Operation, *args, **kwargs):
         # Local calls execute directly; argument payloads must still

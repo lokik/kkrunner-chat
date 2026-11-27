@@ -49,3 +49,29 @@ class _Call:
         return await asyncio.shield(self._task)
 
 
+    async def wait_with_output(self, subscription, enabled):
+        """Forward subscription changes on the existing invocation."""
+        waiting = asyncio.create_task(self.wait())
+        changed = None
+        try:
+            while not waiting.done():
+                changed = asyncio.create_task(subscription.wait_for_change(enabled))
+                done, _ = await asyncio.wait(
+                    (waiting, changed), return_when=asyncio.FIRST_COMPLETED,
+                )
+                if waiting in done:
+                    break
+                enabled = changed.result()
+                try:
+                    await self.set_output(enabled)
+                except (ConnectionError, OSError):
+                    # An execution can finish concurrently with a control write.
+                    # Its terminal reply, rather than that write, owns the result.
+                    break
+            return await waiting
+        finally:
+            tasks = [waiting] + ([] if changed is None else [changed])
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

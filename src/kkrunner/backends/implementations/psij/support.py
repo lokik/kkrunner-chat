@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 
 from kkrunner.backends.contracts import JobFailurePhase, JobStatus
@@ -12,7 +11,7 @@ from kkrunner.backends.support.messages import (
 )
 from kkrunner.remote.handles import decode_handle
 from kkrunner.execution import RunState
-from kkrunner.support.growing_file_tail import follow_growing_files
+from kkrunner.support.growing_file_tail import follow_growing_files, observe_file_subscription
 
 from . import slurm
 
@@ -95,17 +94,11 @@ def job_status(handle, *, native=None, attached=False):
     )
 
 
-async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
+async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval, *, output=True, control=None):
     """Follow scheduler-owned files while PSI/J waits for terminal completion."""
 
     handle = decode_handle(remote_id)
     job = _attach_job(handle)
-
-    async def emit(kind, data):
-        pending = streams[kind].write(data)
-        if inspect.isawaitable(pending):
-            await pending
-        streams[kind].flush()
 
     loop = asyncio.get_running_loop()
     finished = loop.create_future()
@@ -137,14 +130,24 @@ async def _follow_scheduler(remote_id, streams, paths, offsets, poll_interval):
             failure_phase=facts.failure_phase, error=facts.message,
         )
 
+    async def wait_terminal():
+        await finished
+        while (facts := await terminal()) is None:
+            await asyncio.sleep(max(poll_interval, 1.0))
+        return facts
+
     try:
         job.set_job_status_callback(status_changed)
-        # Completion can race with callback registration.
         status_changed(job, job.status)
-        return await follow_growing_files(
-            paths, emit, terminal, offsets=offsets,
-            poll_interval=max(poll_interval, 1.0), wakeup=finished,
+        facts, drained, error = await observe_file_subscription(
+            wait_terminal(), paths, streams, offsets, control, output=output,
+            poll_interval=max(poll_interval, 1.0), reader=follow_growing_files,
         )
+        if control is not None:
+            facts = dict(facts, output_drained=drained)
+        if error is not None:
+            facts = dict(facts, output_error=error)
+        return facts
     finally:
         finished.cancel()
         # PSI/J versions that wrap None as a callback require a callable.

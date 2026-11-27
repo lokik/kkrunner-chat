@@ -16,18 +16,24 @@ class SshCall(_Call):
             process, on_output, on_started=self._started, close_input=True,
         ))
 
-    async def cancel(self):
-        if self._observe_only:
-            raise RuntimeError("Observation-only calls do not accept cancellation commands")
+    async def _send_control(self, command):
         writer = self._process.stdin
         if writer is None or writer.is_closing():
             raise ConnectionError("Execution control channel is closed")
+        writer.write(command + b"\n")
+        await writer.drain()
+
+    async def cancel(self):
+        if self._observe_only:
+            raise RuntimeError("Observation-only calls do not accept cancellation commands")
         try:
-            writer.write(b"cancel\n")
-            await writer.drain()
+            await self._send_control(b"cancel")
         except (OSError, ConnectionError):
             await self.close()
             raise
+
+    async def set_output(self, enabled):
+        await self._send_control(b"follow" if enabled else b"unfollow")
 
     async def close(self):
         writer = self._process.stdin

@@ -92,7 +92,7 @@ async def _run(spec):
             active = Path(streams.socket_path).with_name("active")
             _set_active_state(active, RunState.RUNNING)
             if initial_socket is not None:
-                await streams.attach_initial(initial_socket)
+                await streams.attach_initial(initial_socket, output=spec.get("initial_output", True))
                 initial_socket = None  # The asyncio stream now owns the socket.
             os.write(int(spec["socket_fd"]), (streams.socket_path + "\n").encode())
         finally:
