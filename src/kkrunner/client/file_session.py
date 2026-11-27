@@ -365,6 +365,14 @@ class FileSession:
                 self._set_file_availability(local_pattern, "failed", str(exc), kind=kind)
                 raise
 
+    @staticmethod
+    def _published_locally(entry):
+        """A previous collection already published this concrete artifact."""
+        return entry.availability_state == "available" and (
+            os.path.isdir(entry.local_path) if entry.kind == "directory"
+            else os.path.isfile(entry.local_path)
+        )
+
     async def _sync_output_files(self, required):
         # Primary streams are ordinary output files, not a reconstruction
         # of the live FOLLOW stream. NEVER disables transfers for all outputs;
@@ -380,10 +388,7 @@ class FileSession:
             seen_remote.add(entry.remote_path)
             # A completed transfer belongs to this run even if its remote
             # source is no longer available on a later collection attempt.
-            if entry.availability_state == "available" and (
-                os.path.isdir(entry.local_path) if entry.kind == "directory"
-                else os.path.isfile(entry.local_path)
-            ):
+            if self._published_locally(entry):
                 continue
             await self._sync_output_entry(
                 entry.local_path, entry.remote_path, required and not entry.optional,
@@ -514,6 +519,8 @@ class FileSession:
                 patterns.append(entry)
             else:
                 exact.add(entry.remote_path)
+                if self._published_locally(entry):
+                    continue
                 await self._sync_cache_entry(
                     entry.local_path, entry.remote_path, cache.before, kind=entry.kind,
                 )
