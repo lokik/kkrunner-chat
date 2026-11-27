@@ -43,6 +43,8 @@ class FileAccess:
         self._validate_target(run)
         if not status.state.is_terminal:
             raise ValueError("File collection requires terminal execution status")
+        if run.files.captured_at is not None:
+            return run.files, None
 
         async def collect():
             session = None

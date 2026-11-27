@@ -1165,3 +1165,61 @@ def test_ended_collection_retry_rechecks_failed_pattern_members(tmp_path, monkey
     assert error is None
     assert all(entry.availability_state == "skipped" for entry in files.outputs)
     assert files.captured_at is not None
+
+
+@pytest.mark.parametrize("via_client", [False, True])
+def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatch, via_client):
+    import asyncio
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager, RunStatus
+    from kkrunner.client.file_context import FileContext
+    from kkrunner.client.file_session import FileSession
+    from kkrunner.client.staging import StagingSpec
+    from kkrunner.files.availability import capture_result_files
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    output = local / "result.dat"
+    output.write_text("original result")
+    (remote / output.name).write_text("another run's result")
+    (remote / "new.dat").write_text("another run's new output")
+    pattern = local / "*.dat"
+    files = capture_result_files(FileManifest(
+        stdout=FileEntry(local / "stdout", remote / "stdout",
+                         availability_state="failed", availability_message="original failure"),
+        outputs=(
+            FileEntry(pattern, remote / "*.dat", availability_state="available"),
+            FileEntry(output, remote / output.name, source_pattern=pattern,
+                      availability_state="available"),
+        ),
+        mapping=FileMapping(local, remote),
+    ), require_outputs=False)
+    target = SshTarget("loopback")
+    client = ExecutionClient(target=target)
+    record = RunManager(RunStore(tmp_path / "runs")).new_record(
+        directory=local, remote_directory=remote, target=target, files=files,
+    )
+    status = RunStatus(RunState.CANCELLED)
+
+    async def unexpected_io(*args, **kwargs):
+        pytest.fail("Captured results must not query or transfer remote files")
+
+    monkeypatch.setattr(SshTarget, "query_files", unexpected_io)
+    monkeypatch.setattr(SshTarget, "get_file", unexpected_io)
+    monkeypatch.setattr(SshTarget, "get_files", unexpected_io)
+
+    if via_client:
+        finalized, error = client.collect_ended_files(record, status)
+        assert error is None
+    else:
+        context = FileContext(target, StagingSpec.from_mapping(files.mapping))
+        session = asyncio.run(FileSession.from_attachment(context, record))
+        finalized = session.finalize(status)
+
+    assert finalized == files
+    assert output.read_text() == "original result"
+    assert not (local / "new.dat").exists()
+    assert files.output_versions[0].is_current()
+    assert finalized.stdout.availability_state == "failed"
+    assert finalized.stdout.availability_message == "original failure"
