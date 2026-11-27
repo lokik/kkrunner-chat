@@ -156,15 +156,14 @@ class ExecutionClient:
 
     def acknowledge_submission(self, run):
         """Release the submission receipt after the manager persisted acceptance."""
-        if self.backend.execution_mode != "managed":
-            # Output-only reattachment has no durable supervisor receipt.
+        if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return None
         key = run.execution.submission_key or run.id
         return _run_sync(self._invoke("acknowledge_submission", key))
 
     def acknowledge(self, run):
         """Release a delivered receipt after the manager persisted completion."""
-        if self.backend.execution_mode != "managed":
+        if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return None
         self._validate_run(run)
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))

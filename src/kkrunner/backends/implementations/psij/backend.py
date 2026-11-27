@@ -43,14 +43,19 @@ class PsijBackend(Backend, ManagedOperations):
     default_options = (("executor_name", "slurm"), ("url", None))
     execution_mode = "managed"
     default_detached = True
-    def __init__(self, **options):
-        super().__init__(**options)
-        executor_name = self.options["executor_name"]
-        url = self.options["url"]
+    @classmethod
+    def validate_options(cls, **options):
+        options = super().validate_options(**options)
+        executor_name = options["executor_name"]
+        url = options["url"]
         if not isinstance(executor_name, str) or not executor_name.strip():
             raise ValueError("PSI/J executor_name must be a nonempty string")
         if url is not None and (not isinstance(url, str) or not url):
             raise ValueError("PSI/J url must be a nonempty string or None")
+        return options
+
+    def __init__(self, **options):
+        super().__init__(**options)
         supports = {BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL}
         if supports_recovery(self.options):
             supports.add(BackendCapability.RECOVER)
@@ -59,7 +64,7 @@ class PsijBackend(Backend, ManagedOperations):
     @staticmethod
     def submit(request: ExecutionRequest) -> SubmissionReply:
         try:
-            options = PsijBackend(**dict(request.get("backend_options") or {})).options
+            options = PsijBackend.validate_options(**dict(request.get("backend_options") or {}))
             request = normalize_request(request)
             psij, executor = _create_executor(options)
             job = prepare_job(psij, request, executor_name=options["executor_name"],
@@ -128,7 +133,7 @@ class PsijBackend(Backend, ManagedOperations):
         run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
     ) -> RecoveryReply:
         try:
-            options = PsijBackend(**dict(request.get("backend_options") or {})).options
+            options = PsijBackend.validate_options(**dict(request.get("backend_options") or {}))
             if not supports_recovery(options):
                 raise NotImplementedError("Submission recovery requires a local Slurm executor")
             facts = slurm.recover(run_id, request["directory"], submitted_at=submitted_at)

@@ -57,7 +57,7 @@ class SupervisedBackend(Backend, ManagedOperations):
     default_detached = True
     def __init__(self, **options):
         super().__init__(**options)
-        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER, BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW})
+        self.supports = frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER, BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE})
 
     @staticmethod
     def acknowledge_submission(run_id: str) -> AcknowledgeReply:

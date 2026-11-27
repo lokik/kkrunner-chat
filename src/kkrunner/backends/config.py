@@ -15,7 +15,7 @@ class BackendConfig:
             raise ValueError("Backend name must be a nonempty string")
         options = dict(self.options)
         if self.available:
-            options = backend_class(self.name)(**options).options
+            options = backend_class(self.name).validate_options(**options)
         object.__setattr__(self, "options", tuple(sorted(options.items())))
 
     @property

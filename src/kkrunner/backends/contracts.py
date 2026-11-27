@@ -33,6 +33,7 @@ class BackendCapability(str, Enum):
     STATUS = "status"
     CANCEL = "cancel"
     SUBMIT_AND_FOLLOW = "submit_and_follow"
+    ACKNOWLEDGE = "acknowledge"
 
 
 class SubmissionNotStarted(RuntimeError):

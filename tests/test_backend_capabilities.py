@@ -18,7 +18,7 @@ MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, Back
 
 def test_capabilities_are_immutable_and_instance_specific():
     assert DirectBackend().supports == frozenset({BackendCapability.STATUS, BackendCapability.CANCEL, BackendCapability.REATTACH})
-    assert SupervisedBackend().supports == MANAGED | {BackendCapability.SUBMIT_AND_FOLLOW}
+    assert SupervisedBackend().supports == MANAGED | {BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE}
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
@@ -118,3 +118,31 @@ def test_psij_constructor_validates_options():
         PsijBackend(executor_name="")
     with pytest.raises(ValueError, match="nonempty"):
         PsijBackend(url="")
+
+
+@pytest.mark.parametrize("backend", (DirectBackend, SupervisedBackend, PsijBackend))
+def test_backend_configuration_does_not_construct_backend(backend, monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("configuration must not construct a backend")
+
+    monkeypatch.setattr(backend, "__init__", unexpected)
+    config = BackendConfig(backend.name)
+    assert dict(config.options) == backend.validate_options()
+
+
+@pytest.mark.parametrize("backend", (DirectBackend, PsijBackend))
+def test_backends_without_receipts_do_not_invoke_acknowledgements(backend, monkeypatch):
+    client = ExecutionClient(backend, target=SshTarget("invalid.invalid"))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("no receipt to acknowledge")
+
+    monkeypatch.setattr(client, "_invoke", unexpected)
+    client.acknowledge(None)
+    client.acknowledge_submission(None)
+
+
+@pytest.mark.parametrize("options", ({"executor_name": ""}, {"url": ""}))
+def test_saved_psij_options_are_validated(options):
+    with pytest.raises(ValueError, match="nonempty"):
+        BackendConfig("psij", options)
