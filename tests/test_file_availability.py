@@ -196,3 +196,22 @@ def test_collision_expands_protected_wildcard_once_for_multiple_outputs(tmp_path
         _prepare_outputs((harmless_output, alias_output), protected_paths=(pattern,))
     assert expanded == [os.path.abspath(pattern)]
     assert protected_file.read_bytes() == b"restart"
+
+
+
+def test_cleanup_preserves_contents_of_protected_directory(tmp_path):
+    import pytest
+
+    directory = tmp_path / "inputs"
+    directory.mkdir()
+    protected = directory / "data.txt"
+    protected.write_text("input")
+    unrelated = tmp_path / "old.txt"
+    unrelated.write_text("old")
+    with pytest.raises(ValueError, match="conflicts with input/cache"):
+        _prepare_outputs((unrelated, protected), protected_paths=(directory,))
+    assert protected.read_text() == "input"
+    assert unrelated.read_text() == "old"
+    _prepare_outputs((tmp_path / "**" / "*.txt",), protected_paths=(directory,))
+    assert protected.read_text() == "input"
+    assert not unrelated.exists()

@@ -11,7 +11,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
-from kkrunner.client.execution_request import command_request
+from kkrunner.client.execution_request import target_request
 from kkrunner.files.manifest import (
     CacheEntry,
     FileEntry,
@@ -434,31 +434,27 @@ class FileSession:
         # The persisted manifest is the sole authority for which declared
         # outputs may be absent. This also works on historical attach, whose
         # reconstructed ExecutionSpec has no output declarations.
-        collected = {entry.remote_path: entry for entry in self._files.outputs if entry.collect}
-        for local, remote in self._output_targets.items():
-            if remote not in collected:
-                continue
-            await self._sync_output_entry(
-                local,
-                remote,
-                required and not collected[remote].optional,
-                kind=collected[remote].kind,
-            )
+        declarations = tuple(entry for entry in self._files.outputs
+                             if entry.collect and entry.source_pattern is None
+                             and entry.remote_path is not None)
+        exact = tuple(entry for entry in declarations if not has_file_magic(entry.remote_path))
+        for entry in exact:
+            if entry.local_path is not None:
+                await self._sync_output_entry(
+                    entry.local_path, entry.remote_path, required and not entry.optional,
+                    kind=entry.kind,
+                )
 
-        if self._output_patterns:
-            primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
-            # All output patterns share one transfer set, even when their
-            # required/optional policies differ. Exact outputs seed it.
-            seen_remote = set(self._output_targets.values())
-            for pattern in self._output_patterns:
-                if pattern not in collected:
-                    continue
+        primary = {path for path in (self.result.output_file, self.result.error_file) if path is not None}
+        seen_remote = {entry.remote_path for entry in self._files.outputs
+                       if entry.source_pattern is None and entry.remote_path is not None
+                       and not has_file_magic(entry.remote_path)}
+        for entry in declarations:
+            if has_file_magic(entry.remote_path):
                 await self._sync_patterns(
-                    (pattern,),
-                    kind="output",
-                    required=required and not collected[pattern].optional,
-                    excluded_local=primary,
-                    seen_remote=seen_remote,
+                    (entry.remote_path,), kind="output",
+                    required=required and not entry.optional,
+                    excluded_local=primary, seen_remote=seen_remote,
                 )
 
     async def _sync_one_output(self, local, remote, required, *, kind="file"):
@@ -609,18 +605,16 @@ class FileSession:
         output_target = None if manifest.stdout is None else manifest.stdout.remote_path
         error_target = None if manifest.stderr is None else manifest.stderr.remote_path
 
-        request = {
-            "directory": remote_directory,
-            **command_request(self.spec, lambda args: self._remote_argv(args, staged)),
-            "input_file": input_target,
-            "stdin": stdin_target,
-            "output_file": output_target,
-            "error_file": error_target,
-            "output_files": [*output_targets, *output_patterns],
-            "output_directories": [entry.remote_path for entry in manifest.outputs if entry.kind == "directory"],
-            "cache_files": [*(remote for remote, _ in cache_targets.values()), *cache_patterns],
-            "input_files": list(used.keys()),
-        }
+        request = target_request(
+            self.spec, remote_directory,
+            transform=lambda args: self._remote_argv(args, staged),
+            input_file=input_target, stdin=stdin_target,
+            output_file=output_target, error_file=error_target,
+            output_files=(*output_targets, *output_patterns),
+            output_directories=(entry.remote_path for entry in manifest.outputs if entry.kind == "directory"),
+            cache_files=(*(remote for remote, _ in cache_targets.values()), *cache_patterns),
+            input_files=used,
+        )
         caches = [
             replace(cache, before=cache_targets[cache.file.local_path][1])
             if cache.file.local_path in cache_targets else cache
@@ -680,7 +674,7 @@ class FileSession:
             value.flush()
 
     async def _prepare_async(self):
-        from kkrunner.runs.files import snapshot_file_entries, sync_result_files
+        from kkrunner.files.availability import snapshot_file_entries, sync_result_files
 
         self.spec.require_complete()
         if self.is_local:
@@ -941,7 +935,7 @@ class FileSession:
                 await self._synchronize(required=required)
             finally:
                 self.close()
-        from kkrunner.runs.files import capture_result_files
+        from kkrunner.files.availability import capture_result_files
 
         if self._files.captured_at is None:
             self._files = capture_result_files(

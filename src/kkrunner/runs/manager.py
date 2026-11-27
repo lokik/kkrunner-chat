@@ -681,7 +681,11 @@ class RunManager:
             # Uncertainty must not replace a more recent observation or cause
             # further receipt requests over a possibly unavailable transport.
             return self.transition(record, expected_updated_at=observed_at, **changes)
-        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
+        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING) or (
+            status.state.is_terminal and changes["state"].is_terminal
+            and status.files is not None
+            and changes["failure_phase"] not in _NO_ARTIFACTS_FAILURES
+        ):
             changes["files"] = status.files if status.files is not None else record.files
             updated = self.complete(record, **changes, artifacts_available=True)
         else:
