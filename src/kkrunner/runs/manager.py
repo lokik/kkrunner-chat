@@ -265,6 +265,10 @@ class RunManager:
             # Immutable historical evidence: an old runner must not replace
             # the captured digests with its uncaptured in-memory manifest.
             return current
+        if current.remote_patterns_resolved is not None and requested.remote_patterns_resolved is None:
+            # Backend observations may carry the pre-discovery manifest.
+            # They cannot discard an already decided result file set.
+            return current
         if current.input_versions:
             return replace(requested, input_versions=current.input_versions)
         return requested
@@ -910,7 +914,8 @@ class RunManager:
         if (not record.state.is_terminal or record.execution.backend_id is None
                 or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return False
-        if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0:
+        if (record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0
+                and record.files.remote_patterns_resolved is not False):
             # Retry will reattach to download preserved output. Retain the
             # terminal backend receipt until that end-to-end attempt settles.
             return False

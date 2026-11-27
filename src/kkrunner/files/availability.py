@@ -232,7 +232,7 @@ def _concrete_result_files(manifests):
     return tuple(paths)
 
 
-def _capturable_entries(entries):
+def _capturable_entries(entries, *, frozen=False):
     """Only versions actually delivered for this run enter its provenance.
 
     A skipped auxiliary output can still exist locally from an earlier run.
@@ -245,9 +245,10 @@ def _capturable_entries(entries):
         if entry is not None and entry.local_path is not None
         and entry.collect
         and entry.availability_state not in ("skipped", "failed")
+        and (not frozen or entry.availability_state == "available")
         and (
             not has_file_magic(entry.local_path)
-            or entry.availability_state in (None, "pending")
+            or (not frozen and entry.availability_state in (None, "pending"))
         )
     )
 
@@ -294,13 +295,15 @@ def capture_result_files(result_files, *, require_outputs=True, cache_versions=N
     """Capture published outputs and caches, retaining submission-time inputs."""
     if result_files is None or result_files.captured_at is not None:
         return result_files
-    result_files = discover_local_files(result_files, require_outputs=require_outputs)
+    frozen = result_files.remote_patterns_resolved is not None
+    if not frozen:
+        result_files = discover_local_files(result_files, require_outputs=require_outputs)
     output_entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
     cache_entries = tuple(item.file for item in result_files.caches)
     return replace(
         result_files,
-        output_versions=snapshot_file_entries(_capturable_entries(output_entries), sync=True),
-        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries))
+        output_versions=snapshot_file_entries(_capturable_entries(output_entries, frozen=frozen), sync=True),
+        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries, frozen=frozen))
                         if cache_versions is None else cache_versions),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )

@@ -1484,3 +1484,43 @@ def test_manager_persists_complete_pattern_plan_before_first_download(tmp_path, 
         "stdout", "first.dat", "second.dat",
     }
     assert not (local / "empty-new.dat").exists()
+
+
+def test_frozen_plan_survives_stale_status_and_local_capture(tmp_path):
+    from dataclasses import replace
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager, RunStatus
+    from kkrunner.files.availability import capture_result_files
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    pattern = local / "*.dat"
+    declared = FileManifest(
+        outputs=(FileEntry(pattern, remote / "*.dat"),),
+        mapping=FileMapping(local, remote),
+    ).initialize_availability()
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        files=declared,
+    )
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("native-job"))
+    concrete = local / "original.dat"
+    frozen = replace(declared.with_file_availability(
+        concrete, "pending", remote_path=remote / concrete.name,
+        source_pattern=pattern,
+    ), remote_patterns_resolved=True)
+    record = manager.transition(record, state=RunState.DOWNLOADING, files=frozen)
+
+    observed = manager.update(record, RunStatus(RunState.RUNNING, files=declared))
+    assert observed.files == frozen
+
+    # Neither a new local match nor an unconfirmed concrete copy can become
+    # historical evidence merely because it exists during capture.
+    concrete.write_text("unconfirmed copy")
+    (local / "later.dat").write_text("unrelated")
+    captured = capture_result_files(observed.files)
+    assert captured.outputs == frozen.outputs
+    assert captured.output_versions == ()
