@@ -477,11 +477,15 @@ class ProjectRepository:
 
     @contextmanager
     def _file_lock(self, path: Path) -> Iterator[None]:
+        lock = FileLock(path)
         try:
-            with FileLock(path):
-                yield
+            lock.acquire()
         except OSError as exc:
             raise ProjectRepositoryError(f"Cannot lock project repository at {path}: {exc}") from exc
+        try:
+            yield
+        finally:
+            lock.release()
 
     def _project_lock(self, project_id: str):
         return self._file_lock(self._lock_path(project_id))
