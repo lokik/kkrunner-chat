@@ -827,3 +827,44 @@ def test_existence_based_staging_only_hashes_final_target_inputs(tmp_path, monke
             assert version.digest == file_digest(remote / name)
     finally:
         session.close()
+
+
+def test_always_output_sync_does_not_hash_before_transfer(tmp_path, monkeypatch):
+    from kkrunner.client import file_session
+    from kkrunner.files.versions import file_digest
+    from kkrunner.runs.base import RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+
+    class Target(_OperationLoopbackTransport):
+        async def query_files(self, sources, *, root=None, digest=False):
+            assert not digest, "ALWAYS does not compare output digests"
+            return await super().query_files(sources, root=root, digest=digest)
+
+    client = _executor(Target())
+    spec = ExecutionSpec(
+        argv=("unused",), directory=local, output_files=("exact.dat", "part-*.dat"),
+        staging=_launch(local, remote, output_files=FileSyncPolicy.ALWAYS),
+    )
+    session = client.file_session(spec)
+    try:
+        session.prepare_submission()
+        for name in ("exact.dat", "part-1.dat", "part-2.dat"):
+            (local / name).write_text("old")
+            (remote / name).write_text("new " + name)
+
+        def unexpected_hash(*args, **kwargs):
+            pytest.fail("ALWAYS output staging must not compare local contents")
+
+        monkeypatch.setattr(file_session, "file_digest", unexpected_hash)
+        files = session.finalize(RunStatus(RunState.FINISHED, return_code=0))
+        assert {version.path.name for version in files.output_versions} == {
+            "exact.dat", "part-1.dat", "part-2.dat",
+        }
+        for version in files.output_versions:
+            assert version.path.read_text() == "new " + version.path.name
+            assert version.digest == file_digest(version.path)
+    finally:
+        session.close()

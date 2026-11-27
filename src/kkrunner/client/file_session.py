@@ -298,11 +298,13 @@ class FileSession:
             pending = []
             downloads = []
             try:
-                # Without transfers, matching local copies can still be
-                # available (in particular on a shared filesystem).
-                compare = kind == "output" or self.context.output_files == FileSyncPolicy.NEVER
+                # Outputs use the ordinary transfer policy; caches normally
+                # compare pre-run signatures instead of content digests.
+                output_policy = self.context.output_files
+                compare = kind == "output" or output_policy == FileSyncPolicy.NEVER
                 observed = await transport.query_files(
-                    [pattern], root=remote_root, digest=compare,
+                    [pattern], root=remote_root,
+                    digest=compare and output_policy != FileSyncPolicy.ALWAYS,
                 )
                 matches = [item for item in observed
                            if item["status"] == "ok" and item["type"] == "file"]
@@ -332,7 +334,7 @@ class FileSession:
                         available = transfer
                     else:
                         available, transfer = self._output_file_action(
-                            local, remote, required, item.get("digest"),
+                            local, remote, required, item,
                         )
                     if transfer:
                         downloads.append((remote, local))
@@ -402,8 +404,10 @@ class FileSession:
             if entry["status"] != "ok" or entry["type"] != "directory":
                 raise ValueError(f"Declared directory output is not a directory: {remote}")
             return await self._sync_directory_output(local, remote)
-        remote_digest = await self.context.target.file_digest(remote)
-        available, transfer = self._output_file_action(local, remote, required, remote_digest)
+        entry = (await self.context.target.query_files(
+            [remote], digest=policy != FileSyncPolicy.ALWAYS,
+        ))[0]
+        available, transfer = self._output_file_action(local, remote, required, entry)
         if transfer:
             await self.context.target.get_file(remote, local)
         return available
@@ -429,14 +433,18 @@ class FileSession:
         await self.context.target.get_directory(remote, local)
         return True
 
-    def _output_file_action(self, local, remote, required, remote_digest):
+    def _output_file_action(self, local, remote, required, entry):
         """Decide availability and transfer using the same exact/pattern policy."""
-        if remote_digest is None:
+        if entry["status"] != "ok" or entry["type"] != "file":
             if required:
                 raise FileNotFoundError(f"Declared remote output file was not created: {remote}")
             return False, False
+        policy = self.context.output_files
+        if policy == FileSyncPolicy.ALWAYS:
+            return True, True
+        remote_digest = entry["digest"]
         local_digest = file_digest(local, missing_ok=True)
-        if self.context.output_files.should_transfer(remote_digest, local_digest):
+        if policy.should_transfer(remote_digest, local_digest):
             return True, True
         # MISSING can preserve a stale copy which must not become an artifact.
         return local_digest is not None and local_digest == remote_digest, False
@@ -588,14 +596,16 @@ class FileSession:
 
     async def _target_cache_versions(self):
         paths = {}
+        root = None
         for cache in self._files.caches:
             entry = cache.file
             if entry.remote_path is None or entry.local_path is None:
                 continue
             if has_file_magic(entry.remote_path):
-                root = await self.context._resolved_remote_root()
+                if root is None:
+                    root = await self.context._resolved_remote_root()
                 for target in await self.context.target.expand_files(entry.remote_path, root):
-                    paths[target] = (await self.context.unmap_path(target), entry.kind)
+                    paths[target] = (self.context._unmap_path(target, root), entry.kind)
             else:
                 paths[entry.remote_path] = (entry.local_path, entry.kind)
         return await self._target_versions(paths)
