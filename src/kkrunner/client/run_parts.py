@@ -41,6 +41,3 @@ class RunParts:
 
     def configure_observation(self):
         self.job.configure_observation(**self.files.observation())
-
-    def close(self):
-        self.files.close()

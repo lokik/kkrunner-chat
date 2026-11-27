@@ -269,6 +269,11 @@ class Run:
             raise RuntimeError("Snapshot of an untracked Run requires a workspace")
         return self.manager.snapshot_file(self._record, file, destination=destination)
 
+    def _file_failure_phase(self):
+        if self._job.output_error is not None:
+            return FailurePhase.OUTPUT
+        return FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD
+
     def _finish(self):
         try:
             self._job.wait()
@@ -289,17 +294,14 @@ class Run:
                         # delivered every byte. Re-read target-owned streams.
                         if not self._file_session.is_local:
                             self._file_session.configure_stream_retrieval(True)
+                    # FileSession finalizes and closes its streams before processing.
                     self._file_session.finalize(self._job.status())
-                    # Flush and close the client-owned streams *before*
-                    # postprocessing can durably publish a finished Run.
-                    self._parts.close()
                 except Exception as exc:
                     if raw_state == RunState.FINISHED:
                         self._file_session.mark_transfer_failed(str(exc))
                         self._exception = exc
                         self._state = RunState.FAILED
-                        self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
-                                               FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
+                        self._failure_phase = self._file_failure_phase()
                         self._failure_message = str(exc)
                         return
                     # Diagnostic transfer errors cannot replace a failed or
@@ -375,7 +377,7 @@ class Run:
             self._failure_message = self._job.failure_message or str(exc)
         finally:
             try:
-                self._parts.close()
+                self._file_session.close()
             except BaseException as exc:
                 # File cleanup must never prevent finish_monitor from
                 # waking waiters. For a successful Job, an unflushed
@@ -384,8 +386,7 @@ class Run:
                     self._exception = exc
                 if self._state == RunState.FINISHED:
                     self._state = RunState.FAILED
-                    self._failure_phase = (FailurePhase.OUTPUT if self._job.output_error is not None else
-                                           FailurePhase.ARTIFACTS if self._file_session.is_local else FailurePhase.DOWNLOAD)
+                    self._failure_phase = self._file_failure_phase()
                     self._failure_message = str(exc)
             try:
                 if self.manager is not None:
@@ -446,7 +447,7 @@ class Run:
     def _close_files_after_failed_submission(self):
         """Cleanup must not replace the submission error or skip its record."""
         try:
-            self._parts.close()
+            self._file_session.close()
         except BaseException as cleanup_error:
             import logging
             logging.getLogger(__name__).warning(
@@ -639,7 +640,7 @@ class Run:
         except BaseException:
             if not self._started:
                 try:
-                    self._parts.close()
+                    self._file_session.close()
                 finally:
                     try:
                         self._release_resources(preserve=True, suppress_errors=True)
@@ -787,7 +788,7 @@ class Run:
             self._closed = True
         from kkrunner.files.streams import _close_distinct
         resources, self._owned_resources = self._owned_resources, None
-        _close_distinct((self._parts, resources))
+        _close_distinct((self._file_session, resources))
 
     def cancel(self):
         try:

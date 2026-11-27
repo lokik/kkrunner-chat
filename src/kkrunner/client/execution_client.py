@@ -16,6 +16,19 @@ from kkrunner.runs.base import RunStatus
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
+def normalize_config(target, backend):
+    """Normalize a stored client configuration before reconstruction or pooling."""
+    from kkrunner.targets import require_persistable_target, target_from_dict
+    if isinstance(target, dict):
+        target = target_from_dict(target)
+    if isinstance(backend, dict):
+        backend = BackendConfig(**backend)
+    require_persistable_target(target)
+    if not target.available or not backend.available:
+        raise ValueError("Unsupported backend or transport; only local history is available")
+    return target, backend
+
+
 class ExecutionClient:
     """Compose backend access, transport and per-run client resources.
 
@@ -109,12 +122,7 @@ class ExecutionClient:
     @classmethod
     def from_config(cls, target, backend):
         """Reconstruct a client from supported stored connection/backend data."""
-        from kkrunner.targets import require_persistable_target, target_from_dict
-        if isinstance(target, dict):
-            target = target_from_dict(target)
-        if isinstance(backend, dict):
-            backend = BackendConfig(**backend)
-        require_persistable_target(target)
+        target, backend = normalize_config(target, backend)
         return cls(backend.create(), target=target)
 
     @property
@@ -236,7 +244,8 @@ class ExecutionClient:
         return _run_sync(self._recover_submission(submission_key, submission, submitted_at=submitted_at))
 
     def file_session(self, spec):
-        return FileSession(FileContext(self, spec.staging), spec)
+        return FileSession(FileContext(self, spec.staging), spec,
+                           allow_live_streams=self.backend.execution_mode == "direct")
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         from uuid import uuid4

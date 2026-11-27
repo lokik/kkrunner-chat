@@ -43,8 +43,8 @@ def test_local_file_session_closes_only_acquired_output_handles(tmp_path, backen
         parts.files.prepare_job()
         parts.files.prepare_job()
         assert stdout.close_calls == stderr.close_calls == 0
-    parts.close()
-    parts.close()
+    parts.files.close()
+    parts.files.close()
     assert stdout.close_calls == stderr.close_calls == int(acquire)
 
 
@@ -196,6 +196,6 @@ def test_staging_failure_closes_acquired_outputs_once(tmp_path, backend, monkeyp
     monkeypatch.setattr(FileSession, "_flush_declared_handles", fail)
     with pytest.raises(SubmissionNotStarted, match="flush failed"):
         parts.files.prepare_submission()
-    parts.close()
-    parts.close()
+    parts.files.close()
+    parts.files.close()
     assert output.close_calls == 1

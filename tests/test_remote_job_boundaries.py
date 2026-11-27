@@ -172,8 +172,11 @@ class _Files:
     def finalize(self, status):
         self.events.append("sync")
         assert status.state == RunState.FINISHED
-        if self.error is not None:
-            raise self.error
+        try:
+            if self.error is not None:
+                raise self.error
+        finally:
+            self.close()
 
     def mark_transfer_failed(self, message):
         self.events.append("mark-failed")

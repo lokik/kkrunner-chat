@@ -677,13 +677,7 @@ class RunManager:
             status = replace(status, files=files)
         changes = self._observation_changes(record, status)
         if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
-            result_files = status.files if status.files is not None else record.files
-            if record.execution.directory.remote is None and result_files is not None:
-                from kkrunner.files.availability import discover_local_files
-                result_files = discover_local_files(
-                    result_files, require_outputs=status.return_code == 0,
-                )
-            changes["files"] = result_files
+            changes["files"] = status.files if status.files is not None else record.files
             updated = self.complete(record, **changes, artifacts_available=True)
         else:
             updated = self.transition(record, **changes)
@@ -1126,7 +1120,7 @@ class RunManager:
         except BaseException:
             try:
                 if parts is not None:
-                    parts.close()
+                    parts.files.close()
             finally:
                 owner.release()
             raise

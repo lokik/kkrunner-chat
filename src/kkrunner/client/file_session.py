@@ -32,10 +32,11 @@ class FileSession:
     """Own mapped files and local streams for exactly one client Run."""
 
     def __init__(
-        self, context, spec, *, files=None, remote_directory=None,
+        self, context, spec, *, files=None, remote_directory=None, allow_live_streams=False,
     ):
         self.context = context
         self.spec = spec
+        self._allow_live_streams = allow_live_streams
         self._files = FileManifest.from_spec(spec) if files is None else files
         self._remote_directory = remote_directory
         self._prepared = None
@@ -686,7 +687,7 @@ class FileSession:
             directory, manifest = await self._resolve_footprint()
             from kkrunner.client.execution_request import execution_request
             declaration = self.spec
-            if self.context.client.backend.execution_mode == "direct":
+            if self._allow_live_streams:
                 declaration = replace(self.spec, **{
                     name: file_path(getattr(self.spec, name), self.spec.directory)
                     for name in ("stdin", "output_file", "error_file")
@@ -905,16 +906,7 @@ class FileSession:
                 raise
 
     async def _synchronize(self, state):
-        if self.is_local:
-            from kkrunner.files.availability import local_manifest
-            from kkrunner.runs.base import RunStatus
-            self.close()
-            self._files = local_manifest(self._files, RunStatus(
-                state, return_code=self._status.return_code,
-                failure_phase=self._status.failure_phase, message=self._status.message))
-            if state == RunState.FINISHED and self._status.return_code == 0 and self._files.failed_artifacts:
-                raise FileNotFoundError(self._files.availability_message)
-            return
+        """Synchronize target-side artifacts for a remote session."""
         required = state == RunState.FINISHED and self._status.return_code == 0
         try:
             if self._retrieve_primary_streams:
@@ -938,15 +930,23 @@ class FileSession:
         self._status = status
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
-        try:
-            await self._synchronize(status.state)
-        finally:
+        required = status.state == RunState.FINISHED and status.return_code == 0
+        if self.is_local:
+            from kkrunner.files.availability import local_manifest
             self.close()
+            self._files = local_manifest(self._files, status)
+            if required and self._files.failed_artifacts:
+                raise FileNotFoundError(self._files.availability_message)
+        else:
+            try:
+                await self._synchronize(status.state)
+            finally:
+                self.close()
         from kkrunner.runs.files import capture_result_files
 
         if self._files.captured_at is None:
             self._files = capture_result_files(
-                self._files, require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
+                self._files, require_outputs=required,
                 cache_versions=None if self.is_local else await self._target_cache_versions(),
             )
         return self._files
