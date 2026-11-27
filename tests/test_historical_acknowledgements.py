@@ -32,13 +32,25 @@ def test_refresh_does_not_retry_historical_acknowledgements(tmp_path, monkeypatc
     manager = RunManager(store, client_pool=ClientPool())
     manager.register_client(client)
     acknowledged = []
-    monkeypatch.setattr(client, "acknowledge", lambda record: acknowledged.append(record.id))
-    monkeypatch.setattr(client, "acknowledge_submission", lambda record: None)
+
+    async def invoke(operation, identity):
+        if operation == "acknowledge_submission":
+            return {"acknowledged": False}
+        assert operation == "acknowledge"
+        assert identity == record.execution.backend_id
+        if acknowledged:
+            return {"acknowledged": False}
+        acknowledged.append(record.id)
+        return {"acknowledged": True}
+
+    monkeypatch.setattr(client, "_invoke", invoke)
 
     assert manager.refresh() == ()
     assert acknowledged == []
 
     assert manager.reconcile_acknowledgements() == (record.id,)
+    assert acknowledged == [record.id]
+    assert manager.reconcile_acknowledgements() == ()
     assert acknowledged == [record.id]
 
 
