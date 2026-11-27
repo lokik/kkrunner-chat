@@ -102,7 +102,12 @@ def test_run_store_rejects_duplicate_id_across_date_shards(tmp_path):
     with pytest.raises(ValueError, match="already exists"):
         store.save(newest)
     (store.directory / "unrelated-file.txt").write_text("not a shard")
+    backup = store.directory / "backup"
+    backup.mkdir()
+    (backup / "same-id.json").write_text(json.dumps(newest.to_dict()))
+    (backup / "not-a-record.json").write_text("{}")
     assert store.get("same-id") == old
+    assert store.runs() == (old,)
 
 
 def test_run_store_lookup_preserves_missing_directory_error(tmp_path):
