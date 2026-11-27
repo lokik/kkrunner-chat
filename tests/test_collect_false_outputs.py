@@ -13,7 +13,7 @@ from kkrunner.files.availability import discover_local_files, prepare_target_out
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.files.snapshots import matching_file
 from kkrunner.runs.conflicts import _manifest_accesses
-from kkrunner.runs.files import capture_result_files
+from kkrunner.files.availability import capture_result_files
 
 
 def spec_for(tmp_path):

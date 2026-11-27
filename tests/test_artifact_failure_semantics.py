@@ -178,3 +178,61 @@ def test_resume_download_retains_previously_available_artifacts(tmp_path):
     assert retried.files.stdout.availability_state == "available"
     assert retried.files.outputs[0].availability_state == "pending"
     assert retried.files.outputs[0].availability_message is None
+
+
+
+@pytest.mark.parametrize("state, code, phase", [
+    (RunState.FAILED, 17, FailurePhase.EXECUTION),
+    (RunState.CANCELLED, None, None),
+])
+def test_refresh_captures_local_diagnostics(tmp_path, monkeypatch, state, code, phase):
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.client import ExecutionClient
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    client = ExecutionClient(SupervisedBackend)
+    manager.register_client(client)
+    path = tmp_path / "run.out"
+    path.write_text("diagnostic")
+    record = manager.new_record(directory=tmp_path, backend=client.backend_config,
+        files=FileManifest(stdout=FileEntry(local_path=str(path), availability_state="pending")))
+    record = manager.transition(record, state=RunState.RUNNING,
+        execution=record.execution.submitted("native-job"))
+    monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda token: {
+        "state": state.value, "return_code": code,
+        "failure_phase": None if phase is None else phase.value,
+    }))
+    monkeypatch.setattr(SupervisedBackend, "acknowledge", staticmethod(lambda token: None))
+    monkeypatch.setattr(SupervisedBackend, "acknowledge_submission", staticmethod(lambda token: None))
+    (saved,) = manager.refresh((record,))
+    assert saved.state is state
+    assert saved.failure_phase is phase
+    assert saved.return_code == code
+    assert saved.files.captured_at is not None
+    assert len(saved.files.output_versions) == 1
+
+
+@pytest.mark.parametrize("state, code, phase", [
+    (RunState.FAILED, 17, FailurePhase.EXECUTION),
+    (RunState.CANCELLED, None, None),
+])
+def test_diagnostic_capture_error_preserves_native_outcome(tmp_path, monkeypatch, state, code, phase):
+    from kkrunner.files import availability
+
+    manager, record = _record(tmp_path)
+    path = tmp_path / "run.out"
+    path.write_text("diagnostic")
+    files = record.files.with_file_availability(str(path), "available")
+
+    def fail_sync(path):
+        raise OSError("cannot synchronize diagnostic")
+
+    monkeypatch.setattr(availability, "sync_file", fail_sync)
+    saved = manager.complete(record, state=state, return_code=code, failure_phase=phase,
+        message="native outcome", files=files, artifacts_available=True)
+    assert saved.state is state
+    assert saved.return_code == code
+    assert saved.failure_phase is phase
+    assert saved.message == "native outcome"
+    assert saved.files.captured_at is None
+    assert saved.files.stdout.availability_state == "available"

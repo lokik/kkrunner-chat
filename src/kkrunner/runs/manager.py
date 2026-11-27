@@ -24,7 +24,8 @@ from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
-from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current, sync_result_files
+from kkrunner.files.availability import capture_result_files, file_is_current, sync_result_files
+from kkrunner.runs.files import RunFiles
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
@@ -541,8 +542,9 @@ class RunManager:
                         conflict.state == RunState.PREPROCESSING
                         or conflict.execution.available and (
                             self._is_stale_submitting(conflict)
-                            or (conflict.execution.backend.execution_mode == "direct"
-                                and conflict.execution.backend_id is not None)
+                            or (conflict.execution.backend_id is not None
+                                and BackendCapability.STATUS in conflict.execution.backend.supports
+                                and BackendCapability.INDEPENDENT_OUTCOME not in conflict.execution.backend.supports)
                         )
                     )
                 )
@@ -634,7 +636,7 @@ class RunManager:
         return self.transition(record, **changes)
 
     def _record_observation(self, record, status, *, retrieve_ended=False):
-        """Finalize local artifacts; collect ended Direct SSH output only on request."""
+        """Finalize local artifacts; retrieve unobserved remote output only on request."""
         observed_at = record.updated_at
         record, status = self._current_observation(record, status)
         if status is None:
@@ -649,14 +651,14 @@ class RunManager:
             status = replace(status, files=local_manifest(record.files, status))
         if (
             retrieve_ended
-            and record.execution.backend.execution_mode == "direct"
+            and BackendCapability.INDEPENDENT_OUTCOME not in record.execution.backend.supports
             and not record.execution.target.is_local
             and (status.state == RunState.CANCELLED or (
                 status.state == RunState.FINISHED and status.return_code is None
             ))
             and status.files is None
         ):
-            # No live client owns finalization. Direct status/follow cannot
+            # No live client owns finalization. A liveness-only status/follow cannot
             # recover cancellation on a later observation, so collect any
             # diagnostics now, under the same ownership as completion.
             try:
@@ -681,7 +683,11 @@ class RunManager:
             # Uncertainty must not replace a more recent observation or cause
             # further receipt requests over a possibly unavailable transport.
             return self.transition(record, expected_updated_at=observed_at, **changes)
-        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
+        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING) or (
+            status.state.is_terminal and changes["state"].is_terminal
+            and status.files is not None
+            and changes["failure_phase"] not in _NO_ARTIFACTS_FAILURES
+        ):
             changes["files"] = status.files if status.files is not None else record.files
             updated = self.complete(record, **changes, artifacts_available=True)
         else:
@@ -708,8 +714,8 @@ class RunManager:
         result_files = self._merged_result_files(record, files)
 
         if result_files is not None and result_files.failed_artifacts:
-            artifacts_available = False
             if state == RunState.FINISHED or phase == FailurePhase.POSTPROCESSING:
+                artifacts_available = False
                 # The successful backend does not excuse a required download
                 # failure; the failed file retains the specific diagnostics.
                 state = RunState.FAILED
@@ -724,15 +730,17 @@ class RunManager:
                     result_files, require_outputs=state == RunState.FINISHED and return_code == 0,
                 )
             except OSError as exc:
-                state = RunState.FAILED
-                phase = FailurePhase.ARTIFACTS
-                message = str(exc)
+                capture_error = str(exc)
+                if state in (RunState.FINISHED, RunState.POSTPROCESSING):
+                    state = RunState.FAILED
+                    phase = FailurePhase.ARTIFACTS
+                    message = capture_error
                 result_files = result_files._map_artifacts(
                     lambda item: (
                         replace(
                             item,
                             availability_state="failed",
-                            availability_message=message,
+                            availability_message=capture_error,
                         )
                         if item.availability_state in (None, "pending")
                         else item
@@ -960,7 +968,7 @@ class RunManager:
             pass
 
     def refresh(self, records=None, *, on_error=None, retrieve_ended=False):
-        """Refresh statuses; opt in to ended Direct SSH output retrieval."""
+        """Refresh statuses; opt in to retrieving ended, unobserved remote output."""
 
         if records is None:
             self.reconcile_acknowledgements(on_error=on_error)
@@ -998,11 +1006,12 @@ class RunManager:
                         message="This execution backend has no independent status query",
                     )
                 continue
+            needs_exclusive_status = BackendCapability.INDEPENDENT_OUTCOME not in client.backend.supports
             locks = []
             guarded = []
             try:
                 for record in group:
-                    if client.backend.execution_mode == "direct":
+                    if needs_exclusive_status:
                         ownership = self._store_for(record).observation_lock(record)
                         if not ownership.acquire(blocking=False):
                             # The original observer is alive, possibly already
@@ -1020,7 +1029,7 @@ class RunManager:
                 if len(statuses) != len(guarded):
                     raise RuntimeError("Target returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):
-                    if client.backend.execution_mode == "direct":
+                    if needs_exclusive_status:
                         updated = self._record_observation(record, status, retrieve_ended=retrieve_ended)
                     else:
                         updated = self._apply_observation(record, status, self._record_observation)

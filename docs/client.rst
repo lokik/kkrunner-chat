@@ -74,7 +74,12 @@ RunStatus values.
 Tracking is opt-in for every backend: ``tracked=True`` uses the default
 RunManager, and ``tracked=manager`` selects a specific manager. The default
 ``tracked=False`` creates no client run record. Backend identities and
-reattachment capabilities are independent of this choice.
+reattachment capabilities are independent of this choice. An optional
+``preprocess`` callback on ``create_run()`` runs before staging and submission
+whether or not tracking is enabled. Tracked runs reserve the declared
+writable input and output paths before preprocessing. Untracked runs do not
+take these reservations; use a manager backed by ``MemoryRunStore`` for
+conflict protection without disk history.
 
 Execution intent and staging
 ----------------------------

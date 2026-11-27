@@ -10,12 +10,11 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 
+from kkrunner.files.availability import file_is_current
 from kkrunner.files.manifest import ArtifactAvailabilityState, FileEntry
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
-from kkrunner.files.versions import FileState, FileVersion, file_digest
-from kkrunner.support.durability import sync_file
+from kkrunner.files.versions import FileState, file_digest
 from kkrunner.runs.stores import resolve_record, store_for
 
 
@@ -25,77 +24,6 @@ class HistoricalFileMismatchError(OSError):
 
 def _unique(values):
     return tuple(dict.fromkeys(value for value in values if value is not None))
-
-
-def _concrete_result_files(manifests):
-    paths = []
-    seen = set()
-    for manifest in manifests:
-        for path in expand_local_candidates(manifest):
-            path = os.path.abspath(path)
-            if path in seen or not os.path.isfile(path):
-                continue
-            seen.add(path)
-            paths.append(path)
-    return tuple(paths)
-
-
-def _capturable_entries(entries):
-    """Only versions actually delivered for this run enter its provenance.
-
-    A skipped auxiliary output can still exist locally from an earlier run.
-    Expanded glob declarations likewise must not capture unrelated old local
-    matches: concrete discovered outputs have their own manifest entries.
-    """
-    return tuple(
-        entry
-        for entry in entries
-        if entry is not None and entry.local_path is not None
-        and entry.collect
-        and entry.availability_state not in ("skipped", "failed")
-        and (
-            not has_file_magic(entry.local_path)
-            or entry.availability_state in (None, "pending")
-        )
-    )
-
-
-def snapshot_file_entries(entries, *, sync=False):
-    """Capture concrete local files and declared directory contents."""
-    paths = {}
-    for entry in entries:
-        if entry.local_path is None:
-            continue
-        if entry.kind == "directory":
-            if os.path.isdir(entry.local_path):
-                paths[os.path.abspath(entry.local_path)] = entry.kind
-        else:
-            paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,)), "file"))
-    versions = []
-    for path, kind in sorted(paths.items()):
-        if sync and kind == "file":
-            sync_file(path)
-        versions.append(FileVersion.capture(path, require_digest=True, kind=kind))
-    return tuple(versions)
-
-
-def sync_result_files(manifests):
-    """Flush existing files selected by manifest paths before submission."""
-    for path in _concrete_result_files(manifests):
-        sync_file(path)
-
-
-def file_is_current(result_files, path, versions):
-    """Check a local file against captured versions, or existence before capture."""
-    if result_files is None or path is None:
-        return False
-    path = os.path.abspath(path)
-    if result_files.captured_at is None and not versions:
-        return os.path.isfile(path)
-    for version in versions:
-        if os.path.abspath(os.fspath(version.path)) == path:
-            return version.is_current()
-    return False
 
 
 def _missing_result_files(result_files):
@@ -116,24 +44,6 @@ def _missing_result_files(result_files):
         elif not os.path.isfile(manifest):
             missing.append(manifest)
     return _unique(missing)
-
-
-def capture_result_files(result_files, *, require_outputs=True, cache_versions=None):
-    """Capture published outputs and caches, retaining submission-time inputs."""
-    if result_files is None or result_files.captured_at is not None:
-        return result_files
-    from kkrunner.files.availability import discover_local_files
-
-    result_files = discover_local_files(result_files, require_outputs=require_outputs)
-    output_entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
-    cache_entries = tuple(item.file for item in result_files.caches)
-    return replace(
-        result_files,
-        output_versions=snapshot_file_entries(_capturable_entries(output_entries), sync=True),
-        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries))
-                        if cache_versions is None else cache_versions),
-        captured_at=datetime.now(timezone.utc).isoformat(),
-    )
 
 
 class RunFiles:

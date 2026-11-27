@@ -403,3 +403,18 @@ def test_save_only_does_not_recover_conflicting_abandoned_preprocessing(tmp_path
     assert persistent.refresh((abandoned,))[0].state == RunState.FAILED
     with save.preprocessing_reservation(spec):
         (tmp_path / "input").write_text("prepared")
+
+
+
+def test_untracked_preprocessing_does_not_create_run_history(tmp_path):
+    source = tmp_path / "input.txt"
+    output = tmp_path / "out.txt"
+    spec = ExecutionSpec(
+        (sys.executable, "-c", "from pathlib import Path; print(Path('input.txt').read_text())"),
+        directory=tmp_path, input_files=(TaskFile("input.txt", write=True),), output_file=output,
+    )
+    run = ExecutionClient().create_run(spec, preprocess=lambda: source.write_text("prepared"))
+    assert run.record is None
+    assert run.run().return_code == 0
+    assert output.read_text().strip() == "prepared"
+    assert run.record is None

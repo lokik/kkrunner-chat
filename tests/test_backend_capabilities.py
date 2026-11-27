@@ -13,7 +13,8 @@ from kkrunner.client.contracts import Operation
 from kkrunner.targets.implementations.ssh.rpc import operation_command
 
 
-MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS, BackendCapability.CANCEL})
+MANAGED = frozenset({BackendCapability.REATTACH, BackendCapability.RECOVER, BackendCapability.STATUS,
+                     BackendCapability.CANCEL, BackendCapability.INDEPENDENT_OUTCOME})
 
 
 def test_capabilities_are_immutable_and_instance_specific():
@@ -22,8 +23,8 @@ def test_capabilities_are_immutable_and_instance_specific():
     assert PsijBackend().supports == MANAGED
     assert PsijBackend(executor_name="SLURM").supports == MANAGED
     for name in ("pbs", "local", "flux"):
-        assert PsijBackend(executor_name=name).supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
-    assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
+        assert PsijBackend(executor_name=name).supports == MANAGED - {BackendCapability.RECOVER}
+    assert PsijBackend(executor_name="slurm", url="ssh://scheduler").supports == MANAGED - {BackendCapability.RECOVER}
 
 
 def test_backend_owns_its_options_without_a_second_endpoint_copy():
@@ -36,7 +37,7 @@ def test_backend_owns_its_options_without_a_second_endpoint_copy():
         assert not hasattr(endpoint, "backend_options")
         assert not hasattr(endpoint, "supports_reattachment")
         assert not hasattr(endpoint, "requires_backend_identity")
-        assert endpoint.backend.supports == frozenset({BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.CANCEL})
+        assert endpoint.backend.supports == MANAGED - {BackendCapability.RECOVER}
         assert dict(endpoint.backend.options) == {"executor_name": "pbs", "url": None}
     assert not hasattr(ExecutionClient, "supports_reattachment")
     with pytest.raises(TypeError):

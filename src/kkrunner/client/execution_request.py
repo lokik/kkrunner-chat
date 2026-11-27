@@ -64,19 +64,30 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
     def paths(values):
         return [path(value) for value in values if value is not None]
 
-    request = {
-        **command_request(spec),
-        "directory": target_dir,
-        "input_file": path(spec.input_file),
-        "stdin": path(spec.stdin),
-        "output_file": path(spec.output_file),
-        "error_file": path(spec.error_file),
-        "input_files": paths(spec.input_files),
-        "output_files": paths(spec.output_files),
-        "output_directories": paths(
+    return target_request(
+        spec, target_dir, input_file=path(spec.input_file), stdin=path(spec.stdin),
+        output_file=path(spec.output_file), error_file=path(spec.error_file),
+        input_files=paths(spec.input_files), output_files=paths(spec.output_files),
+        output_directories=paths(
             value for value in spec.output_files if isinstance(value, TaskFile) and value.kind == "directory"
-        ),
-        "cache_files": paths(spec.cache_files),
+        ), cache_files=paths(spec.cache_files),
+    )
+
+
+def target_request(spec, directory, *, input_file, stdin, output_file, error_file,
+                   input_files, output_files, output_directories, cache_files, transform=list):
+    """Build the wire request from already selected target paths."""
+    request = {
+        **command_request(spec, transform),
+        "directory": directory,
+        "input_file": input_file,
+        "stdin": stdin,
+        "output_file": output_file,
+        "error_file": error_file,
+        "input_files": list(input_files),
+        "output_files": list(output_files),
+        "output_directories": list(output_directories),
+        "cache_files": list(cache_files),
     }
     import json
     # Validate before contacting a target, not after a possibly accepted submit.

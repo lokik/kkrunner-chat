@@ -195,7 +195,9 @@ A configured backend exposes an immutable set of capabilities through
 job ID is supported; ``RECOVER`` means the selected configuration implements
 submission discovery without a known job ID. ``PsijBackend(executor_name="slurm",
 url=None)`` supports both. Other PSI/J schedulers, and Slurm with an explicit
-URL, support reattachment but not ``RECOVER``. Backend capabilities describe
+URL, support reattachment but not ``RECOVER``. ``INDEPENDENT_OUTCOME`` distinguishes
+backends that can report the terminal execution outcome independently of the
+original observer from liveness-only status (Direct). Backend capabilities describe
 available operations, not guaranteed success or retention of scheduler records.
 
 

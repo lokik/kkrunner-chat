@@ -114,6 +114,9 @@ them. See the application guide for its storage policy and temporary-file rules.
 For runs managed through the same RunStore, submission reserves declared file
 paths until the run reaches a terminal state. This applies with or without
 projects; untracked (`tracked=False`) executions do not take these reservations.
+Preprocessing runs before staging for both tracked and untracked executions;
+only tracked runs reserve the declared paths before invoking the callback.
+A memory-backed store provides reservations without durable history.
 
 Before reservation the SSH client resolves absolute target paths without
 staging or opening outputs. Only after the complete footprint has been durably

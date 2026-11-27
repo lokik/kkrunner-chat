@@ -7,7 +7,11 @@ producer's output streams are safe to consider published.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
+from datetime import datetime, timezone
 
+from kkrunner.files.versions import FileVersion
+from kkrunner.support.durability import sync_file
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.support.decorators import portable
 
@@ -30,20 +34,37 @@ def prepare_target_outputs(request):
         request.get("input_file"),
         *request.get("cache_files", ()),
     ]
+    def directory_entry(path):
+        # Resolve parent aliases but retain the name of the directory entry.
+        path = os.path.abspath(path)
+        return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+    def contains(directory, path):
+        return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
+
     protected = set()
     protected_inodes = set()
+    protected_directories = set()
     for declaration in protected_declarations:
         if declaration is None:
             continue
         matches = glob.glob(declaration, recursive=True) if glob.has_magic(declaration) else [declaration]
         for candidate in matches:
-            protected.add(os.path.realpath(candidate))
+            protected.update((os.path.realpath(candidate), directory_entry(candidate)))
             if os.path.exists(candidate):
                 info = os.stat(candidate)
                 protected_inodes.add((info.st_dev, info.st_ino))
+                if os.path.isdir(candidate):
+                    protected_directories.add(os.path.realpath(candidate))
 
     def is_protected(path):
-        if os.path.realpath(path) in protected:
+        real = os.path.realpath(path)
+        # Also protect the directory entry itself if it is a symlink.
+        entry = directory_entry(path)
+        if real in protected or entry in protected:
+            return True
+        if any(contains(root, name)
+               for root in protected_directories for name in (real, entry)):
             return True
         if os.path.exists(path):
             info = os.stat(path)
@@ -74,9 +95,8 @@ def prepare_target_outputs(request):
                 cursor = os.path.dirname(cursor)
             if os.path.lexists(normalized) and not os.path.isdir(normalized):
                 raise ValueError("Declared directory output is not a directory: " + declaration)
-            prefix = os.path.realpath(normalized) + os.sep
-            if any(candidate.startswith(prefix) or candidate == os.path.realpath(normalized)
-                   for candidate in protected):
+            root = os.path.realpath(normalized)
+            if any(contains(root, candidate) for candidate in protected):
                 raise ValueError("Directory output contains input/cache: " + declaration)
         wildcard = glob.has_magic(declaration)
         matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]
@@ -180,4 +200,91 @@ def local_manifest(files, status):
     return discover_local_files(
         files, include_streams=False,
         require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
+    )
+
+
+def _concrete_result_files(manifests):
+    paths = []
+    seen = set()
+    for manifest in manifests:
+        for path in expand_local_candidates(manifest):
+            path = os.path.abspath(path)
+            if path in seen or not os.path.isfile(path):
+                continue
+            seen.add(path)
+            paths.append(path)
+    return tuple(paths)
+
+
+def _capturable_entries(entries):
+    """Only versions actually delivered for this run enter its provenance.
+
+    A skipped auxiliary output can still exist locally from an earlier run.
+    Expanded glob declarations likewise must not capture unrelated old local
+    matches: concrete discovered outputs have their own manifest entries.
+    """
+    return tuple(
+        entry
+        for entry in entries
+        if entry is not None and entry.local_path is not None
+        and entry.collect
+        and entry.availability_state not in ("skipped", "failed")
+        and (
+            not has_file_magic(entry.local_path)
+            or entry.availability_state in (None, "pending")
+        )
+    )
+
+
+def snapshot_file_entries(entries, *, sync=False):
+    """Capture concrete local files and declared directory contents."""
+    paths = {}
+    for entry in entries:
+        if entry.local_path is None:
+            continue
+        if entry.kind == "directory":
+            if os.path.isdir(entry.local_path):
+                paths[os.path.abspath(entry.local_path)] = entry.kind
+        else:
+            paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,)), "file"))
+    versions = []
+    for path, kind in sorted(paths.items()):
+        if sync and kind == "file":
+            sync_file(path)
+        versions.append(FileVersion.capture(path, require_digest=True, kind=kind))
+    return tuple(versions)
+
+
+def sync_result_files(manifests):
+    """Flush existing files selected by manifest paths before submission."""
+    for path in _concrete_result_files(manifests):
+        sync_file(path)
+
+
+def file_is_current(result_files, path, versions):
+    """Check a local file against captured versions, or existence before capture."""
+    if result_files is None or path is None:
+        return False
+    path = os.path.abspath(path)
+    if result_files.captured_at is None and not versions:
+        return os.path.isfile(path)
+    for version in versions:
+        if os.path.abspath(os.fspath(version.path)) == path:
+            return version.is_current()
+    return False
+
+
+def capture_result_files(result_files, *, require_outputs=True, cache_versions=None):
+    """Capture published outputs and caches, retaining submission-time inputs."""
+    if result_files is None or result_files.captured_at is not None:
+        return result_files
+    result_files = discover_local_files(result_files, require_outputs=require_outputs)
+    output_entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
+    cache_entries = tuple(item.file for item in result_files.caches)
+    return replace(
+        result_files,
+        output_versions=snapshot_file_entries(_capturable_entries(output_entries), sync=True),
+        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries))
+                        if cache_versions is None else cache_versions),
+        captured_at=datetime.now(timezone.utc).isoformat(),
     )

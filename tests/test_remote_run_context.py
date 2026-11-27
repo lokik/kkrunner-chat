@@ -85,11 +85,9 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
 
     runner = asyncio.run(FileSession.from_attachment(context, JobAttachment(run.execution, run.files)))
     try:
-        assert runner._output_targets == {str(local / "exact.out"): str(remote / "exact.out")}
-        assert runner._output_patterns == (str(remote / "data-*.out"),)
-        assert runner._cache_targets == {str(local / "cache.dat"): (str(remote / "cache.dat"), (2, 3))}
-        assert runner._cache_patterns == (str(remote / "restart-*.pot"),)
-        assert runner._cache_before == {str(remote / "remote-only.dat"): (5, 7)}
+        assert runner.files == files
+        assert runner.files.caches[0].before == (2, 3)
+        assert runner.files.caches[3].before == (5, 7)
     finally:
         runner.close()
 

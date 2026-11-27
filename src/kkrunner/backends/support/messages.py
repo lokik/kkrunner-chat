@@ -52,6 +52,7 @@ class ExecutionRequest(_CommandRequest, total=False):
     error_file: Optional[str]
     input_files: List[str]
     output_files: List[str]
+    output_directories: List[str]
     cache_files: List[str]
 
 

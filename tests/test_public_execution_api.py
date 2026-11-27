@@ -147,11 +147,9 @@ def test_factory_output_listener(tmp_path):
     assert "".join(text for text, kind in received if kind == "out") == "42\n"
 
 
-def test_untracked_cannot_request_record_metadata_or_preprocessing():
+def test_untracked_cannot_request_record_metadata():
     with pytest.raises(ValueError, match="Record metadata"):
         Run.create("program", tracked=False, metadata={"test": {"name": "example"}})
-    with pytest.raises(ValueError, match="Preprocessing"):
-        Run.create("program", tracked=False, preprocess=lambda: None)
 
 
 def test_removed_entry_points_are_not_aliases():

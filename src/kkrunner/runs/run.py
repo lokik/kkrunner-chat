@@ -28,9 +28,10 @@ class Run:
     state; it never independently writes a RunRecord.  The supplied job handles
     raw execution and observation, not client postprocessing or persistence.
 
-    preprocess is an optional zero-argument client callback, invoked after the
-    file footprint is reserved and before staging or backend submission. Its
-    writes must be declared as writable inputs or outputs in ExecutionSpec.
+    preprocess is an optional zero-argument client callback, invoked before
+    staging or backend submission. Tracked runs reserve their file footprint
+    before invoking it; untracked runs do not participate in conflict checking.
+    Its writes must be declared as writable inputs or outputs in ExecutionSpec.
 
     owned_resources transfers additional application resources to this Run.
     They outlive file finalization and postprocessing. When the client stops
@@ -59,8 +60,6 @@ class Run:
         self.detached = detached if record is None else record.detached
         self.manager = manager
         self._record = record
-        if preprocess is not None and manager is None:
-            raise ValueError("Preprocessing requires a reserved Run")
         if preprocess is not None and not callable(preprocess):
             raise TypeError("preprocess must be callable")
         self._preprocess = preprocess
@@ -109,7 +108,6 @@ class Run:
         """Assemble a new Run through one path, with optional tracking."""
         from uuid import uuid4
 
-        from kkrunner.files.task_file import TaskFile
         from kkrunner.runs.base import ExecutionSpec
         from kkrunner.runs.manager import RunManager
         from kkrunner.targets import require_persistable_target
@@ -133,11 +131,6 @@ class Run:
             raise TypeError("detached must be None or bool")
 
         if manager is None:
-            if preprocess is not None or any(
-                isinstance(value, TaskFile) and value.write
-                for value in (spec.input_file, spec.stdin, *spec.input_files)
-            ):
-                raise ValueError("Preprocessing requires a reserved Run")
             if metadata is not None or processing_required is not None or run_id is not None:
                 raise ValueError("Record metadata requires a RunManager")
             parts = client.create_run_parts(spec)
@@ -497,17 +490,15 @@ class Run:
                 self._record = manager.reserve(self._record, preprocessing=True, recover_conflicts=True)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
-                self._state = RunState.PREPROCESSING
-                if self._job.state == RunState.CANCELLED:
-                    raise asyncio.CancelledError("Run was cancelled before preprocessing")
-                if self._preprocess is not None:
-                    self._preprocess()
-                if self._job.state == RunState.CANCELLED:
-                    raise asyncio.CancelledError("Run was cancelled during preprocessing")
+            self._state = RunState.PREPROCESSING
+            if self._job.state == RunState.CANCELLED:
+                raise asyncio.CancelledError("Run was cancelled before preprocessing")
+            if self._preprocess is not None:
+                self._preprocess()
+            if self._job.state == RunState.CANCELLED:
+                raise asyncio.CancelledError("Run was cancelled during preprocessing")
             # Stage using the same session operations for tracked/untracked
             # execution. Only the optional durable snapshot differs.
-            if self._job.state == RunState.CANCELLED:
-                raise asyncio.CancelledError("Run was cancelled before submission")
             self._file_session.prepare_submission()
             if manager is not None:
 
@@ -528,8 +519,8 @@ class Run:
 
             if manager is not None:
                 self._record = manager.begin_submission(self._record)
-                self._state = RunState.SUBMITTING
                 self._monitor_record_version = self._record.updated_at
+            self._state = RunState.SUBMITTING
             submitted = True
             self._job.submit()
             if manager is not None:

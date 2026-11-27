@@ -57,6 +57,7 @@ class SupervisedBackend(Backend, ManagedOperations):
     default_detached = True
     _supports = frozenset({
         BackendCapability.REATTACH, BackendCapability.STATUS, BackendCapability.RECOVER,
+        BackendCapability.INDEPENDENT_OUTCOME,
         BackendCapability.CANCEL, BackendCapability.SUBMIT_AND_FOLLOW, BackendCapability.ACKNOWLEDGE,
     })
 

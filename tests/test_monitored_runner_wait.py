@@ -34,5 +34,5 @@ def test_wait_and_run_async_return_completed_monitor_result(tmp_path):
     job._state = RunState.FINISHED
     job._thread = object()
     job._done.set()
-    assert job.wait() is job.result
-    assert asyncio.run(job.run_async()) is job.result
+    assert job.wait() == job.status()
+    assert asyncio.run(job.run_async()) == job.status()
