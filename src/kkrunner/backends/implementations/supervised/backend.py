@@ -155,14 +155,7 @@ class SupervisedBackend(Backend, ManagedOperations):
     def recover(
         run_id: str, request: RecoveryRequest, *, submitted_at: str | None = None,
     ) -> RecoveryReply:
-        reply = mailbox.recover_submission(run_id)
-        if reply is None:
-            return None
-        return {
-            **SupervisedBackend.status(reply["remote_id"]),
-            "remote_id": reply["remote_id"], "directory": request["directory"],
-            "output_file": reply.get("output_file"), "error_file": reply.get("error_file"),
-        }
+        return mailbox.recover_submission(run_id)
 
     @staticmethod
     async def follow(
