@@ -236,3 +236,41 @@ def test_diagnostic_capture_error_preserves_native_outcome(tmp_path, monkeypatch
     assert saved.message == "native outcome"
     assert saved.files.captured_at is None
     assert saved.files.stdout.availability_state == "available"
+
+
+@pytest.mark.parametrize("operation", ("update", "refresh"))
+def test_failed_launch_is_terminal_without_result_collection(tmp_path, monkeypatch, operation):
+    from kkrunner.backends import SupervisedBackend
+    from kkrunner.client import ExecutionClient, SshTarget
+    from kkrunner.runs.base import RunStatus
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    client = ExecutionClient(SupervisedBackend, target=SshTarget("cluster"))
+    manager.register_client(client)
+    output = tmp_path / "stale.out"
+    output.write_text("old output")
+    record = manager.new_record(
+        directory=tmp_path, remote_directory="/remote",
+        target=client.target, backend=client.backend_config,
+        files=FileManifest(stdout=FileEntry(str(output), "/remote/stale.out")).initialize_availability(),
+    )
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("launch-failed"))
+    status = RunStatus(RunState.FAILED, return_code=127, failure_phase=FailurePhase.LAUNCH,
+                       message="Executable not found", backend_id="launch-failed")
+    monkeypatch.setattr(client, "status", lambda *args: (status,))
+    monkeypatch.setattr(client, "acknowledge", lambda *args: None)
+    monkeypatch.setattr(client, "collect_ended_files",
+                        lambda *args: pytest.fail("No execution artifacts to retrieve"))
+    saved = manager.update(record, status) if operation == "update" else manager.refresh((record,), retrieve_ended=True)[0]
+    assert saved.state == RunState.FAILED
+    assert saved.failure_phase == FailurePhase.LAUNCH
+    assert saved.files.stdout.availability_state == "skipped"
+    assert saved.files.captured_at is None
+    assert not saved.files.output_versions
+    assert output.read_text() == "old output"
+    assert not manager.output_file_is_current(saved)
+    output.unlink()
+    monkeypatch.setattr(client, "resolve_result_files",
+                        lambda *args: pytest.fail("No failed-launch output to restore"))
+    assert manager.retrieve_result_files(saved) == saved

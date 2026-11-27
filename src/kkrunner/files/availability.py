@@ -181,6 +181,10 @@ def local_manifest(files, status):
     """
     import os
     from kkrunner.execution import FailurePhase, RunState
+    from kkrunner.runs.states import NO_EXECUTION_FAILURES
+
+    if status.failure_phase in NO_EXECUTION_FAILURES:
+        return files.skip_pending_artifacts()
 
     published = status.state in (RunState.FINISHED, RunState.CANCELLED) or (
         status.state == RunState.FAILED and status.failure_phase == FailurePhase.EXECUTION
@@ -210,8 +214,6 @@ def local_manifest(files, status):
             state, message = "skipped", None
         files = files.with_file_availability(entry.local_path, state, message)
 
-    if status.failure_phase in (FailurePhase.LAUNCH, FailurePhase.SUBMISSION):
-        return files
     return discover_local_files(
         files, include_streams=False,
         require_outputs=status.state == RunState.FINISHED and status.return_code == 0,
