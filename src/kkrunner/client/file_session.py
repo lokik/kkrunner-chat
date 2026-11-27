@@ -79,7 +79,7 @@ class FileSession:
 
     @property
     def files_are_local(self):
-        return self.is_local or self.context.shared_filesystem
+        return not self.context.transfers_files
 
     def _local_path(self, value):
         if value is None:
@@ -99,7 +99,7 @@ class FileSession:
         if previous is not None:
             return target
 
-        if self.context.shared_filesystem and not os.path.isfile(source):
+        if not self.context.transfers_files and not os.path.isfile(source):
             if required:
                 raise FileNotFoundError(f"Shared input file does not exist: {source}")
             return None
@@ -137,7 +137,7 @@ class FileSession:
             if previous != source:
                 raise ValueError(f"Remote input target collision: {target}")
             return target
-        if self.context.shared_filesystem and not os.path.isdir(source):
+        if not self.context.transfers_files and not os.path.isdir(source):
             if required:
                 raise FileNotFoundError(f"Shared input directory does not exist: {source}")
             return None
@@ -544,7 +544,7 @@ class FileSession:
         ]
         caches.extend(CacheEntry(FileEntry(remote_path=remote), before)
                       for remote, before in cache_before.items())
-        if self.context.shared_filesystem:
+        if not self.context.transfers_files:
             from kkrunner.files.availability import snapshot_file_entries
             versions = snapshot_file_entries(manifest.input_entries)
         else:

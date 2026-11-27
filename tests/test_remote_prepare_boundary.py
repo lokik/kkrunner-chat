@@ -13,6 +13,8 @@ from kkrunner.runs.base import SubmissionNotStarted
 from kkrunner.runs.manager import RunManager
 from kkrunner.runs.run import Run
 
+from .transfer_helpers import LoopbackFileTransfer
+
 
 def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, monkeypatch):
     """The persisted SUBMITTING record precedes the irreversible Job.submit call."""
@@ -207,7 +209,7 @@ def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkey
 
     monkeypatch.setattr(SshTarget, "run", local_run)
     monkeypatch.setattr(SshTarget, "file_digest", LocalTarget.file_digest)
-    monkeypatch.setattr(SshTarget, "put_file", LocalTarget.put_file)
+    monkeypatch.setattr(SshTarget, "put_file", LoopbackFileTransfer.put_file)
     monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
     client = ExecutionClient(target=SshTarget("loopback"))
     spec = ExecutionSpec(

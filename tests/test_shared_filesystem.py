@@ -15,6 +15,7 @@ class SharedMount(LocalTarget):
     """Loopback target exposing the same files at a different root."""
 
     is_local = False
+    supports_file_transfer = True
 
     async def run(self, argv, **kwargs):
         assert argv[:3] == ("mkdir", "-p", "--")

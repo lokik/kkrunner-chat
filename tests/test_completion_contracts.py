@@ -9,6 +9,8 @@ from kkrunner.runs.manager import RunManager
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.client import ExecutionClient
 
+from .transfer_helpers import LoopbackFileTransfer
+
 
 @pytest.mark.parametrize("optional", [False, True])
 def test_missing_output_respects_optionality(tmp_path, optional):
@@ -415,7 +417,7 @@ def test_historical_retrieval_cannot_write_into_active_run(tmp_path, monkeypatch
     source = remote / "data"
     source.write_text("historical")
     monkeypatch.setattr(SshTarget, "expand_files", LocalTarget.expand_files)
-    monkeypatch.setattr(SshTarget, "get_file", LocalTarget.get_file)
+    monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
     client = ExecutionClient(target=SshTarget("loopback"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     manager.register_client(client)

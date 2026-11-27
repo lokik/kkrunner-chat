@@ -28,29 +28,9 @@ def test_local_transport_run_start_and_files(tmp_path):
         assert stdout == b"stream\n"
         assert stderr == b"err\n"
         source = tmp_path / "source"
-        copied = tmp_path / "subdir" / "copied"
-        returned = tmp_path / "returned"
         source.write_bytes(b"content")
-        await transport.put_file(source, copied)
-        assert await transport.read_file(copied) == b"content"
-        await transport.get_file(copied, returned)
-        assert returned.read_bytes() == b"content"
-
-    asyncio.run(run_test())
-
-
-def test_local_transport_preserves_file_signature(tmp_path):
-
-    async def run_test():
-        transport = LocalTarget()
-        source = tmp_path / "source"
-        destination = tmp_path / "destination"
-        source.write_bytes(b"content")
-        stat = source.stat()
-        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns - 1000000000))
-        source_signature = await transport.file_signature(source)
-        await transport.get_file(source, destination)
-        assert await transport.file_signature(destination) == source_signature
+        assert await transport.read_file(source) == b"content"
+        assert not transport.supports_file_transfer
 
     asyncio.run(run_test())
 
@@ -640,7 +620,7 @@ def test_local_staging_does_not_replace_concurrent_destination(tmp_path):
     assert list(tmp_path.iterdir()) == [destination]
 
 
-@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
+@pytest.mark.parametrize("factory", [_LoopbackSshTransport])
 def test_directory_upload_replaces_whole_tree(tmp_path, factory):
     source, target = tmp_path / "source", tmp_path / "target"
     source.mkdir()
@@ -675,7 +655,7 @@ def test_large_batch_manifest_is_not_passed_in_argv(tmp_path):
     assert len(result) == len(names)
 
 
-@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
+@pytest.mark.parametrize("factory", [_LoopbackSshTransport])
 def test_exact_batch_does_not_expand_wildcards_and_allows_rename(tmp_path, factory):
     source, remote = tmp_path / "source", tmp_path / "remote"
     source.mkdir()

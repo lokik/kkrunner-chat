@@ -34,6 +34,8 @@ from .source import function_definition
 class SshTarget(Target):
     """Target using the system ``ssh`` client."""
 
+    supports_file_transfer = True
+
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
                         tail_paths=None, observe_only=False):
         from .call import SshCall
