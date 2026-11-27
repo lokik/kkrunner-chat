@@ -128,15 +128,14 @@ def discover_local_files(files, *, include_streams=True, require_outputs=True):
     declarations.extend(("output", entry) for entry in files.outputs)
     declarations.extend(("cache", item.file) for item in files.caches)
 
-    for kind, entry in declarations:
-        if (
-            entry is None
-            or not entry.collect
-            or entry.local_path is None
-            or entry.source_pattern is not None
-            or entry.availability_state not in (None, "pending")
-        ):
-            continue
+    pending = [
+        (kind, entry) for kind, entry in declarations
+        if entry is not None and entry.collect and entry.local_path is not None
+        and entry.source_pattern is None and entry.availability_state in (None, "pending")
+    ]
+    # Resolve exact artifacts first, as in remote synchronization. A wildcard
+    # should never infer availability from an unresolved exact declaration.
+    for kind, entry in sorted(pending, key=lambda item: has_file_magic(item[1].local_path)):
         path = entry.local_path
         if has_file_magic(path):
             matches = tuple(candidate for candidate in expand_local_candidates(path) if os.path.isfile(candidate))
@@ -156,7 +155,7 @@ def discover_local_files(files, *, include_streams=True, require_outputs=True):
                     source_pattern=path,
                 )
             state = "available" if any(
-                item.local_path in collected and item.availability_state not in ("failed", "skipped")
+                item.local_path in collected and item.availability_state == "available"
                 for item in files.artifacts
             ) else "skipped"
             if matches and not collected:

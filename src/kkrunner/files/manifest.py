@@ -270,8 +270,11 @@ class FileManifest:
 
     def output_excluded(self, path, *, remote=False):
         """Exclude input/cache namespaces and uncollected outputs from output globs."""
+        import os
         from kkrunner.files.paths import declaration_paths, path_matches
 
+        if not remote:
+            path = os.path.realpath(path)
         entries = (
             *self.input_entries, *(cache.file for cache in self.caches),
             *(entry for entry in self.outputs if not entry.collect),
@@ -280,6 +283,8 @@ class FileManifest:
             declared = entry.remote_path if remote else entry.local_path
             if declared is None:
                 continue
+            if not remote:
+                declared = os.path.realpath(declared)
             directory = entry.kind == "directory"
             if any(path_matches(path, pattern, include_hidden=directory)
                    for pattern in declaration_paths(declared, directory=directory)):

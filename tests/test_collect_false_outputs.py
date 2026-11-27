@@ -239,3 +239,22 @@ def test_output_globs_do_not_claim_inputs_or_caches(tmp_path, remote):
     assert matching_file(run.files, local / "cache.dat") is not None
     pattern = next(entry for entry in run.files.outputs if entry.local_path == str(local / "input*.dat"))
     assert pattern.availability_state == "skipped"
+
+
+def test_local_output_glob_excludes_input_and_cache_aliases(tmp_path):
+    source = tmp_path / "input.dat"
+    source.write_text("input")
+    cache = tmp_path / "cache.dat"
+    cache.write_text("cache")
+    (tmp_path / "input-alias.dat").symlink_to(source)
+    (tmp_path / "cache-alias.dat").symlink_to(cache)
+    result = tmp_path / "result.dat"
+    result.write_text("result")
+    files = capture_result_files(FileManifest.from_spec(ExecutionSpec(
+        ("true",), directory=tmp_path, input_files=("input.dat",),
+        cache_files=("cache.dat",), output_files=("*.dat",),
+    )))
+    assert {version.path for version in files.output_versions} == {result}
+    assert matching_file(files, tmp_path / "input-alias.dat") is None
+    assert matching_file(files, tmp_path / "cache-alias.dat") is None
+    assert {version.path for version in files.cache_versions} == {cache}

@@ -286,19 +286,19 @@ class FileSession:
         )
 
     async def _sync_patterns(
-        self, patterns, *, kind, required=False, excluded_remote=(), excluded_local=(), seen_remote=None
+        self, declarations, *, kind, required=False, seen_remote, excluded_local=()
     ):
         """Expand and inspect a pattern in one query, then transfer exact pairs."""
         mapping = self._files.mapping
         remote_root = mapping.remote_root if mapping is not None else await self.context._resolved_remote_root()
-        selected = seen_remote if seen_remote is not None else set()
-        selected.update(excluded_remote)
         cache_before = ({cache.file.remote_path: cache.before for cache in self._files.caches
                          if cache.file.local_path is None} if kind == "cache" else {})
         excluded_local = set(excluded_local)
         transport = self.context.target
-        for pattern in patterns:
-            local_pattern = os.fspath(self.context._unmap_path(pattern, remote_root))
+        for declaration in declarations:
+            pattern = declaration.remote_path
+            local_pattern = declaration.local_path
+            mandatory = required and not declaration.optional
             pending = []
             downloads = []
             try:
@@ -313,19 +313,20 @@ class FileSession:
                 matches = [item for item in observed
                            if item["status"] == "ok" and item["type"] == "file"]
                 if not matches:
-                    if required:
+                    if mandatory:
                         raise FileNotFoundError(f"Declared remote {kind} pattern did not match any files: {pattern}")
                     self._set_file_availability(local_pattern, "skipped", kind=kind)
                     continue
+                if kind == "output":
+                    matches = [item for item in matches
+                               if not self._files.output_excluded(item["path"], remote=True)]
                 for item in matches:
                     remote = item["path"]
-                    if remote in selected:
+                    if remote in seen_remote:
                         continue
-                    selected.add(remote)
+                    seen_remote.add(remote)
                     local = os.fspath(self.context._unmap_path(remote, remote_root))
-                    if local in excluded_local or (
-                        kind == "output" and self._files.output_excluded(remote, remote=True)
-                    ):
+                    if local in excluded_local:
                         continue
                     self._set_file_availability(
                         local, "pending", remote=remote, kind=kind, source_pattern=local_pattern,
@@ -338,7 +339,7 @@ class FileSession:
                         available = transfer
                     else:
                         available, transfer = self._output_file_action(
-                            local, remote, required, item,
+                            local, remote, mandatory, item,
                         )
                     if transfer:
                         downloads.append((remote, local))
@@ -354,10 +355,7 @@ class FileSession:
                     )
                 for local in pending:
                     self._set_file_availability(local, "available", kind=kind)
-                matched_paths = {
-                    item["path"] for item in matches
-                    if kind != "output" or not self._files.output_excluded(item["path"], remote=True)
-                }
+                matched_paths = {item["path"] for item in matches}
                 available = any(entry.remote_path in matched_paths and entry.availability_state == "available"
                                 for entry in self._files.artifacts)
                 self._set_file_availability(local_pattern, "available" if available else "skipped", kind=kind)
@@ -374,10 +372,10 @@ class FileSession:
         required = required and self.context.output_files != FileSyncPolicy.NEVER
         declarations = tuple(entry for entry in (self._files.stdout, self._files.stderr, *self._files.outputs)
                              if entry is not None and entry.collect and entry.source_pattern is None
-                             and entry.remote_path is not None)
+                             and entry.remote_path is not None and entry.local_path is not None)
         seen_remote = set()
         for entry in declarations:
-            if has_file_magic(entry.remote_path) or entry.local_path is None or entry.remote_path in seen_remote:
+            if has_file_magic(entry.remote_path) or entry.remote_path in seen_remote:
                 continue
             seen_remote.add(entry.remote_path)
             await self._sync_output_entry(
@@ -385,18 +383,14 @@ class FileSession:
                 kind=entry.kind,
             )
 
-        primary = {path for path in (self.output_file, self.error_file) if path is not None}
-        # Even uncollected exact declarations must not be collected via a glob.
-        seen_remote.update(entry.remote_path for entry in self._files.outputs
-                           if entry.source_pattern is None and entry.remote_path is not None
-                           and not has_file_magic(entry.remote_path))
-        for entry in declarations:
-            if has_file_magic(entry.remote_path):
-                await self._sync_patterns(
-                    (entry.remote_path,), kind="output",
-                    required=required and not entry.optional,
-                    excluded_local=primary, seen_remote=seen_remote,
-                )
+        patterns = [entry for entry in declarations if has_file_magic(entry.remote_path)]
+        if patterns:
+            primary = {entry.local_path for entry in (self._files.stdout, self._files.stderr)
+                       if entry is not None and entry.local_path is not None}
+            await self._sync_patterns(
+                patterns, kind="output", required=required,
+                excluded_local=primary, seen_remote=seen_remote,
+            )
 
     async def _sync_one_output(self, local, remote, required, *, kind="file"):
         policy = self.context.output_files
@@ -503,22 +497,22 @@ class FileSession:
         self._set_file_availability(local, state, kind="cache")
 
     async def _sync_cache_files(self):
-        exact = []
+        exact = set()
         patterns = []
         for cache in self._files.caches:
             entry = cache.file
-            if entry.remote_path is None or entry.source_pattern is not None:
+            if entry.remote_path is None or entry.local_path is None or entry.source_pattern is not None:
                 continue
             if has_file_magic(entry.remote_path):
-                patterns.append(entry.remote_path)
-            elif entry.local_path is not None:
-                exact.append(entry.remote_path)
+                patterns.append(entry)
+            else:
+                exact.add(entry.remote_path)
                 await self._sync_cache_entry(
                     entry.local_path, entry.remote_path, cache.before, kind=entry.kind,
                 )
 
         if patterns:
-            await self._sync_patterns(patterns, kind="cache", excluded_remote=exact)
+            await self._sync_patterns(patterns, kind="cache", seen_remote=exact)
 
     def _remote_argv(self, argv, staged):
         out = []
