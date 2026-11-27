@@ -624,10 +624,11 @@ class RunManager:
         # Supplied execution facts alone cannot publish uncaptured diagnostic
         # or successful output. Keep the reservation until finalization.
         files = status.files if status.files is not None else record.files
+        transfers_files = record.execution.target.transfers_files(shared_filesystem=files.shared_filesystem)
         changes = self._observation_changes(
             record, status,
             files_pending=(
-                (not record.execution.target.is_local and status.files is None)
+                (transfers_files and status.files is None)
                 or files.captured_at is None
                 or (status.state == RunState.FINISHED and bool(files.failed_artifacts))
             ),
@@ -640,10 +641,8 @@ class RunManager:
         record, status = self._current_observation(record, status)
         if status is None:
             return record
-        if (
-            (record.execution.target.is_local or record.files.shared_filesystem)
-            and status.state.is_terminal and status.files is None
-        ):
+        transfers_files = record.execution.target.transfers_files(shared_filesystem=record.files.shared_filesystem)
+        if not transfers_files and status.state.is_terminal and status.files is None:
             # Backend status contains execution facts only. The client-side
             # manifest projection owns streams and application artifacts.
             from kkrunner.files.availability import local_manifest
@@ -651,7 +650,7 @@ class RunManager:
         if (
             retrieve_ended
             and BackendCapability.INDEPENDENT_OUTCOME not in record.execution.backend.supports
-            and not record.execution.target.is_local
+            and transfers_files
             and (status.state == RunState.CANCELLED or (
                 status.state == RunState.FINISHED and status.return_code is None
             ))
@@ -676,7 +675,7 @@ class RunManager:
             status = replace(status, files=files)
         changes = self._observation_changes(
             record, status,
-            files_pending=not record.execution.target.is_local and status.files is None,
+            files_pending=transfers_files and status.files is None,
         )
         if changes["state"] == RunState.UNKNOWN:
             # Uncertainty must not replace a more recent observation or cause
@@ -721,7 +720,7 @@ class RunManager:
             state = RunState.FAILED
             phase = (
                 FailurePhase.DOWNLOAD
-                if record.execution.directory.remote is not None and not result_files.shared_filesystem
+                if record.execution.target.transfers_files(shared_filesystem=result_files.shared_filesystem)
                 else FailurePhase.ARTIFACTS
             )
             message = result_files.availability_message or message

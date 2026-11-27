@@ -158,3 +158,27 @@ def test_shared_finished_status_uses_local_artifacts_and_snapshot(tmp_path, monk
     failed = manager.refresh((missing,))[0]
     assert failed.state == RunState.FAILED
     assert failed.failure_phase == FailurePhase.ARTIFACTS
+
+
+def test_update_with_captured_shared_results_needs_no_download(tmp_path):
+    from kkrunner import RunManager, RunStore
+    from kkrunner.client import SshTarget
+    from kkrunner.files import FileEntry, FileMapping
+    from kkrunner.files.availability import capture_result_files
+
+    output = tmp_path / "result.out"
+    output.write_text("shared result")
+    files = capture_result_files(FileManifest(
+        stdout=FileEntry(str(output), "/work/result.out"),
+        mapping=FileMapping(str(tmp_path), "/work", shared_filesystem=True),
+    ))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=tmp_path, remote_directory="/work", target=SshTarget("cluster"),
+        files=files,
+    )
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("native-job"))
+    saved = manager.update(record, RunStatus(RunState.FINISHED, return_code=0))
+    assert saved.state == RunState.FINISHED
+    assert saved.files == files
