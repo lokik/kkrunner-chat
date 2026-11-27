@@ -10,6 +10,7 @@ from kkrunner.client.file_context import FileContext, _relative_local_path
 from kkrunner.client.contracts import Operation
 from kkrunner.files.manifest import FileEntry
 from kkrunner.files.queries import remote_file_cleanup
+from kkrunner.files.snapshots import snapshot_request
 from kkrunner.client.staging import StagingSpec
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
@@ -20,16 +21,12 @@ class FileAccess:
 
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""
+        file, entry, destination = snapshot_request(
+            run.files, run.execution.directory.local, file, destination,
+        )
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         _relative_local_path(file, context.local_root)
-        entry = next(
-            (item for item in (
-                run.files.stdout, run.files.stderr, *run.files.outputs,
-                *(cache.file for cache in run.files.caches),
-            ) if item is not None and item.local_path == file),
-            None,
-        )
-        remote = entry.remote_path if entry is not None else None
+        remote = entry.remote_path if os.path.abspath(entry.local_path) == file else None
         if remote is None:
             remote = await context.map_path(file)
         root = await context._resolved_remote_root()
