@@ -106,7 +106,7 @@ def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
 def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_path):
     run, _, destination, output = _run(tmp_path, RunState.UNKNOWN)
 
-    async def fail_sync(*args):
+    async def fail_sync(*, required):
         raise AssertionError("Unknown execution must not download results")
 
     run._file_session._synchronize = fail_sync
@@ -129,7 +129,7 @@ def test_unknown_backend_state_preserves_partial_output_without_downloading(tmp_
 def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, expected_phase):
     run, _, _, output = _run(tmp_path, state)
 
-    async def unavailable(*args):
+    async def unavailable(*, required):
         raise OSError("download unavailable")
 
     run._file_session._synchronize = unavailable

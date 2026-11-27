@@ -791,8 +791,9 @@ class FileSession:
             self._files = manifest
 
     def prepare_job(self):
-        """Open locally owned output streams and return a backend request."""
-        self.prepare_submission()
+        """Open locally owned output streams for an already staged request."""
+        if self._prepared is None:
+            raise SubmissionNotStarted("Files must be staged before preparing the job")
         request = self._prepared
         if not self.is_local:
             try:
@@ -905,9 +906,8 @@ class FileSession:
                 self._set_file_availability(entry.local_path, "failed", str(exc))
                 raise
 
-    async def _synchronize(self, state):
+    async def _synchronize(self, *, required):
         """Synchronize target-side artifacts for a remote session."""
-        required = state == RunState.FINISHED and self._status.return_code == 0
         try:
             if self._retrieve_primary_streams:
                 await self._retrieve_target_streams(required=required)
@@ -927,7 +927,6 @@ class FileSession:
 
     async def finalize_async(self, status):
         """Finalize owned files on the existing event loop, if any."""
-        self._status = status
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
         required = status.state == RunState.FINISHED and status.return_code == 0
@@ -939,7 +938,7 @@ class FileSession:
                 raise FileNotFoundError(self._files.availability_message)
         else:
             try:
-                await self._synchronize(status.state)
+                await self._synchronize(required=required)
             finally:
                 self.close()
         from kkrunner.runs.files import capture_result_files

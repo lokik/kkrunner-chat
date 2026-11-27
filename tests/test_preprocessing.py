@@ -382,3 +382,24 @@ def test_rejected_run_does_not_flush_or_close_borrowed_file(tmp_path, role):
             assert not stream.closed
             assert path.read_text() == "original"
             manager.complete(reserved, state=RunState.FAILED)
+
+
+def test_save_only_does_not_recover_conflicting_abandoned_preprocessing(tmp_path):
+    from kkrunner import MemoryRunStore
+
+    disk = RunStore(tmp_path / "runs")
+    save = RunManager(MemoryRunStore(), conflict_stores=(disk,))
+    persistent = RunManager(disk)
+    spec = ExecutionSpec(argv=(), directory=tmp_path, input_files=(TaskFile("input", write=True),))
+    abandoned = persistent.reserve(persistent.new_record(
+        directory=tmp_path, files=FileManifest.from_spec(spec),
+    ), preprocessing=True)
+
+    with pytest.raises(DuplicateSubmissionError):
+        with save.preprocessing_reservation(spec):
+            pytest.fail("Conflicting preprocessing must not be entered")
+    assert disk.get(abandoned.id) == abandoned
+    assert not save.store.runs()
+    assert persistent.refresh((abandoned,))[0].state == RunState.FAILED
+    with save.preprocessing_reservation(spec):
+        (tmp_path / "input").write_text("prepared")

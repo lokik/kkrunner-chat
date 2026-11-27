@@ -220,9 +220,10 @@ def test_unreachable_status_does_not_claim_completion(tmp_path, monkeypatch, bac
         record, state=RunState.RUNNING,
         execution=record.execution.submitted("direct:123:4:fake-boot"),
     )
-    def unreachable(self, *attachments):
+    async def unreachable(self, operation, *args):
+        assert operation == "status"
         raise OSError("Host unreachable")
-    monkeypatch.setattr(ExecutionClient, "status", unreachable)
+    monkeypatch.setattr(ExecutionClient, "_invoke", unreachable)
     refreshed = manager.refresh((record,))[0]
     assert refreshed.state == RunState.UNKNOWN
     assert "Host unreachable" in refreshed.message

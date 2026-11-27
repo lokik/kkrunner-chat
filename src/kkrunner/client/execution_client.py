@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from subprocess import SubprocessError
+
 from kkrunner.backends import configured_backend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, JobRef, decode_job_status
@@ -12,7 +14,7 @@ from kkrunner.client.file_session import FileSession
 from kkrunner.client.job import Job
 from kkrunner.client.run_parts import RunParts
 from kkrunner.client.staging import StagingSpec
-from kkrunner.runs.base import RunStatus
+from kkrunner.runs.base import RunState, RunStatus
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
@@ -177,6 +179,7 @@ class ExecutionClient:
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
 
     def status(self, *runs):
+        """Query each native job; a failed connection leaves only that observation unknown."""
         if BackendCapability.STATUS not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("This backend has no independent status query")
@@ -189,8 +192,15 @@ class ExecutionClient:
             result = []
             for run in runs:
                 token = run.execution.backend_id
-                status = decode_job_status(await self._invoke("status", token))
-                result.append(RunStatus.from_job_status(status, backend_id=token))
+                try:
+                    facts = await self._invoke("status", token)
+                except (OSError, SubprocessError) as exc:
+                    result.append(RunStatus(
+                        RunState.UNKNOWN, backend_id=token,
+                        message=f"Cannot query execution status: {exc}",
+                    ))
+                else:
+                    result.append(RunStatus.from_job_status(decode_job_status(facts), backend_id=token))
             return tuple(result)
 
         return _run_sync(query()) if runs else ()

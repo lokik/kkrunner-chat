@@ -236,3 +236,15 @@ def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkey
     monkeypatch.setattr(run._job, "submit", stop)
     with pytest.raises(SubmissionNotStarted, match="stop before native"):
         run.submit()
+
+
+def test_prepare_job_requires_explicit_file_staging(tmp_path):
+    client = ExecutionClient("direct")
+    session = client.create_run_parts(ExecutionSpec(("ignored",), directory=tmp_path)).files
+    try:
+        with pytest.raises(SubmissionNotStarted, match="Files must be staged"):
+            session.prepare_job()
+        session.prepare_submission()
+        assert session.prepare_job()["directory"] == str(tmp_path)
+    finally:
+        session.close()

@@ -465,10 +465,10 @@ class RunManager:
 
     @contextmanager
     def _scoped_reservation(self, record):
-        """Use the ordinary preprocessing reservation for a synchronous scope."""
+        """Reserve a synchronous scope without recovering other runs."""
         store = self._store_for(record)
         with store.observation_lock(record):
-            reserved = self._reserve_recovering(record, lambda: store.save(
+            reserved = self._reserve(record, lambda: store.save(
                 replace(record, state=RunState.PREPROCESSING, updated_at=_now()),
             ))
             try:
@@ -635,6 +635,7 @@ class RunManager:
 
     def _record_observation(self, record, status, *, retrieve_ended=False):
         """Finalize local artifacts; collect ended Direct SSH output only on request."""
+        observed_at = record.updated_at
         record, status = self._current_observation(record, status)
         if status is None:
             return record
@@ -676,6 +677,10 @@ class RunManager:
                 status = replace(status, message=message)
             status = replace(status, files=files)
         changes = self._observation_changes(record, status)
+        if changes["state"] == RunState.UNKNOWN:
+            # Uncertainty must not replace a more recent observation or cause
+            # further receipt requests over a possibly unavailable transport.
+            return self.transition(record, expected_updated_at=observed_at, **changes)
         if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING):
             changes["files"] = status.files if status.files is not None else record.files
             updated = self.complete(record, **changes, artifacts_available=True)
@@ -1009,19 +1014,9 @@ class RunManager:
                     guarded.append(record)
                 if not guarded:
                     continue
-                try:
-                    statuses = client.status(
-                        *(JobAttachment(record.execution, record.files) for record in guarded)
-                    )
-                except (OSError, SubprocessError) as exc:
-                    # Transport failure is uncertainty, not a native job outcome.
-                    for record in guarded:
-                        current[self._record_key(record)] = self.transition(
-                            record, state=RunState.UNKNOWN,
-                            message=f"Cannot query execution status: {exc}",
-                            expected_updated_at=record.updated_at,
-                        )
-                    continue
+                statuses = client.status(
+                    *(JobAttachment(record.execution, record.files) for record in guarded)
+                )
                 if len(statuses) != len(guarded):
                     raise RuntimeError("Target returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):

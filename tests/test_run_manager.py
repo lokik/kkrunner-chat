@@ -1,3 +1,4 @@
+from subprocess import CalledProcessError
 from threading import Event
 import pytest
 
@@ -196,3 +197,54 @@ def test_duplicate_submission_is_blocked_by_persisted_namespace(tmp_path):
     )
     with pytest.raises(DuplicateSubmissionError):
         second.submit()
+
+
+@pytest.mark.parametrize("error", [OSError("unreachable"), CalledProcessError(255, ["ssh"])])
+def test_refresh_preserves_successful_statuses_when_one_query_fails(tmp_path, monkeypatch, error):
+    manager = _manager(tmp_path)
+    client = ExecutionClient("psij")
+    manager.register_client(client)
+    records = []
+    for identity in ("first", "unreachable", "last"):
+        record = manager.new_record(
+            directory=tmp_path / identity, target=client.target, backend=client.backend_config,
+        )
+        records.append(manager.transition(
+            record, state=RunState.QUEUED, execution=record.execution.submitted(identity),
+        ))
+
+    async def invoke(operation, identity):
+        assert operation == "status"
+        if identity == "unreachable":
+            raise error
+        return {"state": "running" if identity == "first" else "finished",
+                "return_code": None if identity == "first" else 0}
+
+    monkeypatch.setattr(client, "_invoke", invoke)
+    refreshed = manager.refresh(records)
+    assert [record.state for record in refreshed] == [
+        RunState.RUNNING, RunState.UNKNOWN, RunState.FINISHED,
+    ]
+    assert "Cannot query execution status" in refreshed[1].message
+    assert refreshed[2].return_code == 0
+
+
+def test_failed_status_query_does_not_replace_a_newer_observation(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    client = ExecutionClient(SupervisedBackend)
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=tmp_path, target=client.target, backend=client.backend_config,
+    )
+    record = manager.transition(record, state=RunState.QUEUED,
+                                execution=record.execution.submitted("native"))
+
+    async def invoke(operation, identity):
+        assert operation == "status"
+        manager.transition(record, state=RunState.RUNNING)
+        raise OSError("connection lost")
+
+    monkeypatch.setattr(client, "_invoke", invoke)
+    (refreshed,) = manager.refresh((record,))
+    assert refreshed.state == RunState.RUNNING
+    assert refreshed.message is None
