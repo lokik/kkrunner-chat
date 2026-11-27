@@ -1270,3 +1270,58 @@ def test_ended_collection_retry_keeps_published_cache(tmp_path, monkeypatch, pol
     assert (local / "first.cache").read_text() == "first.cache"
     assert (local / "second.cache").read_text() == "second.cache"
     assert {version.path.name for version in completed.cache_versions} == {"first.cache", "second.cache"}
+
+
+@pytest.mark.parametrize("kind", ["output", "cache"])
+@pytest.mark.parametrize("remove_source", [False, True])
+def test_ended_collection_retry_keeps_published_pattern_members(tmp_path, monkeypatch, kind, remove_source):
+    from dataclasses import replace
+    from kkrunner.files.manifest import CacheEntry
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("first-1.dat", "second-1.dat"):
+        (remote / name).write_text(name)
+    target = SshTarget("loopback")
+    client = ExecutionClient(target=target)
+    declarations = tuple(FileEntry(local / pattern, remote / pattern)
+                         for pattern in ("first-*.dat", "second-*.dat"))
+    files = FileManifest(
+        outputs=declarations if kind == "output" else (),
+        caches=tuple(CacheEntry(entry) for entry in declarations) if kind == "cache" else (),
+        mapping=FileMapping(local, remote, output_sync="always"),
+    ).initialize_availability()
+    record = RunManager().new_record(
+        directory=local, remote_directory=remote, target=target, files=files,
+    )
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+    calls = []
+    fail_second = True
+
+    async def download(self, pairs, source_directory, destination_directory):
+        for source, destination in pairs:
+            calls.append(str(source))
+            if fail_second and str(source) == str(remote / "second-1.dat"):
+                raise OSError("second pattern transfer failed")
+            await LoopbackFileTransfer.get_file(self, source, destination)
+
+    monkeypatch.setattr(SshTarget, "get_files", download)
+    status = RunStatus(RunState.FINISHED, return_code=0)
+    partial, error = client.collect_ended_files(record, status)
+    assert isinstance(error, OSError)
+    assert (local / "first-1.dat").read_text() == "first-1.dat"
+    assert not (local / "second-1.dat").exists()
+    if remove_source:
+        (remote / "first-1.dat").unlink()
+
+    fail_second = False
+    completed, error = client.collect_ended_files(replace(record, files=partial), status)
+    assert error is None
+    assert {entry.availability_state for entry in completed.artifacts} == {"available"}
+    assert calls == [str(remote / name) for name in ("first-1.dat", "second-1.dat", "second-1.dat")]
+    assert (local / "first-1.dat").read_text() == "first-1.dat"
+    assert (local / "second-1.dat").read_text() == "second-1.dat"
+    if kind == "output":
+        assert {version.path.name for version in completed.output_versions} == {"first-1.dat", "second-1.dat"}
