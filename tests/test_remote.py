@@ -873,3 +873,40 @@ def test_always_output_sync_does_not_hash_before_transfer(tmp_path, monkeypatch)
             assert version.digest == file_digest(version.path)
     finally:
         session.close()
+
+
+def test_run_uses_resolved_mapping_through_finalization(tmp_path):
+    from kkrunner.runs.base import RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+
+    class Target(_OperationLoopbackTransport):
+        async def home_directory(self):
+            assert not home_queries, "The run already has a resolved mapping"
+            home_queries.append(True)
+            return str(remote)
+
+    home_queries = []
+    client = _executor(Target())
+    spec = ExecutionSpec(
+        argv=("unused",), directory=local,
+        output_files=("result-*.dat",), cache_files=("cache-*.dat",),
+        staging=StagingSpec(local_root=local, output_sync="always"),
+    )
+    session = client.file_session(spec)
+    try:
+        directory, manifest = session.submission_footprint()
+        assert directory.target == str(remote)
+        assert manifest.mapping.remote_root == str(remote)
+        session.prepare_submission()
+        (remote / "result-one.dat").write_text("result")
+        (remote / "cache-one.dat").write_text("cache")
+        files = session.finalize(RunStatus(RunState.FINISHED, return_code=0))
+        assert (local / "result-one.dat").read_text() == "result"
+        assert (local / "cache-one.dat").read_text() == "cache"
+        assert {version.path.name for version in files.output_versions} == {"result-one.dat"}
+        assert {version.path.name for version in files.cache_versions} == {"cache-one.dat"}
+    finally:
+        session.close()
