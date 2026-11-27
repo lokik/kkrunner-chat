@@ -1078,26 +1078,23 @@ class RunManager:
     ):
         """Open a tracked Run without resubmitting its backend job."""
         from kkrunner.runs.run import Run
-        record = resolve_record(run, self.store)
-        if record.state.is_terminal:
-            raise RuntimeError("Run is already terminal; use explicit retry")
-        if process_result is not None and not record.processing_required:
-            raise ValueError("This Run did not request postprocessing")
-        if record.execution.backend_id is None:
-            raise RuntimeError(f"Run {record.id} has no backend reference")
-        client = self.client_for(record) if client is None else client
-        self.register_client(client)
+        record = resolve_record(run, self.store) if isinstance(run, str) else run
         owner = self._claim_client_files(record)
         parts = None
         try:
-            # Check again under ownership, before opening any output streams.
             record = resolve_record(record, self.store)
             if record.state.is_terminal:
                 raise RuntimeError("Run is already terminal; use explicit retry")
+            if process_result is not None and not record.processing_required:
+                raise ValueError("This Run did not request postprocessing")
+            if record.execution.backend_id is None:
+                raise RuntimeError(f"Run {record.id} has no backend reference")
+            client = self.client_for(record) if client is None else client
             parts = client.open_run_parts(
                 JobAttachment(record.execution, record.files),
                 output_listener=output_listener,
             )
+            self.register_client(client)
             attached = Run(
                 parts, client=client, manager=self, record=record,
                 process_result=process_result, callback=callback, owned_resources=owned_resources,
