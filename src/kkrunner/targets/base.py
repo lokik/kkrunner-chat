@@ -14,15 +14,21 @@ class Target:
     """Run commands and move files on one target machine.
 
     Target operations are asynchronous because remote execution is mostly
-    I/O. ``put_file()`` and ``get_file()`` are exact one-file primitives.
+    I/O. Only targets supporting file transfer implement the transfer methods.
+    ``put_file()`` and ``get_file()`` are exact one-file primitives.
     ``put_files()`` and ``get_files()`` accept exact relative paths or explicit
     source/destination pairs, with separate roots for the two filesystems.
     Pattern expansion belongs to the caller.
     """
 
     is_local = False
+    supports_file_transfer = False
     available = True
     host: str | None
+
+    def transfers_files(self, *, shared_filesystem=False):
+        """Whether the workspace requires a separate target file copy."""
+        return self.supports_file_transfer and not shared_filesystem
 
     def close(self):
         """Release transport resources, if any."""

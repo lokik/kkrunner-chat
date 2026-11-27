@@ -241,6 +241,7 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
 
     class Observed(LocalTarget):
         is_local = False
+        supports_file_transfer = True
 
         async def query_files(self, sources, *, root=None, digest=False):
             calls.append((tuple(sources), root))

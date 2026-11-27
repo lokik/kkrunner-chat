@@ -103,6 +103,12 @@ from different hostnames. Distinct IDs declare distinct target filesystems.
 Shared filesystem
 -----------------
 
+A local target never transfers files: its working files already reside on
+the client filesystem. SSH supports file transfer, but only a separate
+target filesystem needs staging and retrieval. The target's
+``supports_file_transfer`` capability describes the transport; the run's
+mapping determines whether that capability is used.
+
 Set ``StagingSpec(shared_filesystem=True, local_root=..., remote_root=...)``
 when both roots refer to the same mounted files. Both transfer policies are
 forced to ``never``; input and result versions are captured locally, without

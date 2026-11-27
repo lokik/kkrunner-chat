@@ -123,7 +123,7 @@ class RunFiles:
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
-        if record.execution.target.is_local or record.files.shared_filesystem:
+        if not record.execution.target.transfers_files(shared_filesystem=record.files.shared_filesystem):
             return record  # There is no separate target copy to restore.
         if record.execution.backend_id is None or not record.execution.available:
             return record
@@ -134,11 +134,12 @@ class RunFiles:
             return record
 
         client = self._client_for(record)
-        if not client.supports_result_file_retrieval:
-            return record
 
         versions = {os.path.abspath(os.fspath(version.path)): version
                     for version in record.files.all_versions}
+        # Input identity is tracked by input_versions, not output availability.
+        artifact_paths = {entry.local_path for entry in record.files.artifacts}
+        artifact_paths.update(os.fspath(version.path) for version in record.files.output_versions)
 
         def verify(target, temporary):
             version = versions.get(target)
@@ -168,9 +169,10 @@ class RunFiles:
         scope = reserve(record, tuple(by_destination.values())) if by_destination else nullcontext()
         with scope:
             for path, message in errors.items():
-                record = self.update_artifact_availability(
-                    record, path, ArtifactAvailabilityState.FAILED, message,
-                )
+                if path in artifact_paths:
+                    record = self.update_artifact_availability(
+                        record, path, ArtifactAvailabilityState.FAILED, message,
+                    )
             for path, entries in planned.items():
                 try:
                     # Exact historical entries retain the original captured
@@ -181,11 +183,10 @@ class RunFiles:
                     client.download_result_files(entries, verify=verify_entry)
                     if not all(os.path.isfile(entry.local_path) for entry in entries):
                         raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
-                    record = self.update_artifact_availability(
-                        record, path, ArtifactAvailabilityState.AVAILABLE,
-                    )
                 except (OSError, RuntimeError) as exc:
-                    record = self.update_artifact_availability(
-                        record, path, ArtifactAvailabilityState.FAILED, str(exc),
-                    )
+                    state, message = ArtifactAvailabilityState.FAILED, str(exc)
+                else:
+                    state, message = ArtifactAvailabilityState.AVAILABLE, None
+                if path in artifact_paths:
+                    record = self.update_artifact_availability(record, path, state, message)
         return record

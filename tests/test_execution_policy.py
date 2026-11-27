@@ -190,14 +190,6 @@ def test_artifact_availability_failure_does_not_change_finished_state(tmp_path):
     assert record.files.availability_message == "ssh disconnected"
 
 
-def test_local_transport_failed_copy_preserves_destination(tmp_path):
-    destination = tmp_path / "output"
-    destination.write_bytes(b"old")
-    with pytest.raises(FileNotFoundError):
-        asyncio.run(LocalTarget().put_file(tmp_path / "missing", destination))
-    assert destination.read_bytes() == b"old"
-
-
 def test_file_path_resolves_named_files_and_tolerates_unnamed(tmp_path):
     output = tmp_path / "output.dat"
     output.write_text("a")

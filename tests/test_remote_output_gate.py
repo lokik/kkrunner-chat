@@ -18,8 +18,10 @@ from kkrunner.targets import LocalTarget
 from kkrunner.files.manifest import FileEntry, FileManifest, FileSyncPolicy
 from kkrunner.runs.base import FailurePhase
 
+from .transfer_helpers import LoopbackFileTransfer
 
-class _Transport(LocalTarget):
+
+class _Transport(LoopbackFileTransfer):
     """Remote-like observation over real local files, with no SSH daemon."""
 
     is_local = False

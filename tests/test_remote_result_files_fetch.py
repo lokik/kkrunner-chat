@@ -6,6 +6,8 @@ from kkrunner.files.manifest import FileMapping
 from kkrunner.client import ExecutionClient, SshTarget, LocalTarget
 from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 
+from .transfer_helpers import LoopbackFileTransfer
+
 
 @pytest.fixture(autouse=True)
 def loopback_file_transport(monkeypatch):
@@ -14,8 +16,8 @@ def loopback_file_transport(monkeypatch):
     This test verifies FileAccess path mapping, not the SSH process protocol.
     """
     monkeypatch.setattr(SshTarget, "expand_files", LocalTarget.expand_files)
-    monkeypatch.setattr(SshTarget, "put_file", LocalTarget.put_file)
-    monkeypatch.setattr(SshTarget, "get_file", LocalTarget.get_file)
+    monkeypatch.setattr(SshTarget, "put_file", LoopbackFileTransfer.put_file)
+    monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
 
 
 def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
@@ -59,7 +61,7 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
     local_output = local_directory / "run.out"
     local_second = local_directory / "result-2.dat"
     local_later = local_directory / "result-later.dat"
-    assert executor.supports_result_file_retrieval is True
+    assert executor.target.supports_file_transfer
     executor.fetch_result_files(run, (local_input, local_potential, local_output, local_second))
     assert local_input.read_text() == "input"
     assert local_potential.read_text() == "potential"
@@ -76,7 +78,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
 
     expanded, downloaded = [], []
     native_expand = LocalTarget.expand_files
-    native_get = LocalTarget.get_file
+    native_get = LoopbackFileTransfer.get_file
 
     async def observed_expand(self, sources, root):
         expanded.append(os.fspath(sources))
@@ -324,7 +326,7 @@ def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatc
         assert str(destination) == str(path)
         downloading.set()
         assert release.wait(5), "transfer was not released"
-        await LocalTarget.get_file(self, source_path, destination, **kwargs)
+        await LoopbackFileTransfer.get_file(self, source_path, destination, **kwargs)
 
     monkeypatch.setattr(SshTarget, "get_file", download)
 
@@ -417,7 +419,7 @@ def test_historical_wildcard_download_uses_transport_staging(tmp_path, monkeypat
                               execution=record.execution.submitted("historical"),
                               artifacts_available=False)
 
-    original = LocalTarget.get_file
+    original = LoopbackFileTransfer.get_file
 
     async def download(self, source, destination, **kwargs):
         from pathlib import Path
@@ -739,3 +741,76 @@ def test_declared_historical_output_glob_excludes_uncollected_files(tmp_path, ex
         assert (local / "scratch.dat").read_text() == "local scratch"
     else:
         assert not (local / "scratch.dat").exists()
+
+
+@pytest.mark.parametrize("captured", [False, True])
+@pytest.mark.parametrize("remote_exists", [False, True])
+def test_restore_input_does_not_create_output_artifact(tmp_path, captured, remote_exists):
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    source = local / "input.inp"
+    source.write_text("original input")
+    version = FileVersion.capture(source, require_digest=True)
+    source.unlink()
+    if remote_exists:
+        (remote / source.name).write_text("original input")
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=client.backend_config,
+        files=FileManifest(
+            inputs=(FileEntry(str(source), str(remote / source.name)),),
+            input_versions=(version,) if captured else (),
+            captured_at="2026-10-13T08:00:00+00:00" if captured else None,
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.complete(record, state=RunState.FINISHED, return_code=0,
+                              execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert source.exists() == remote_exists
+    if remote_exists:
+        assert source.read_text() == "original input"
+        assert version.state() is FileState.CURRENT
+    assert restored == record
+    assert restored.files.artifacts == ()
+    assert manager.store.get(record.id) == record
+
+
+def test_history_write_failure_is_not_a_transfer_failure(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+    from kkrunner.runs.manager import RunManager
+    from kkrunner.runs.files import RunFiles
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    output = local / "output.dat"
+    (remote / output.name).write_text("result")
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=client.backend_config,
+        files=FileManifest(
+            outputs=(FileEntry(str(output), str(remote / output.name)),),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.complete(record, state=RunState.FINISHED, return_code=0,
+                              execution=record.execution.submitted("historical"))
+    def fail_history_write(self, record, path, state, message=None):
+        assert state == "available"
+        raise OSError("history is read-only")
+
+    monkeypatch.setattr(RunFiles, "update_artifact_availability", fail_history_write)
+    with pytest.raises(OSError, match="history is read-only"):
+        manager.retrieve_result_files(record)
+    assert output.read_text() == "result"

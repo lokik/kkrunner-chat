@@ -56,7 +56,7 @@ class FileAccess:
     async def _resolve_result_files(self, run, files):
         """Read-only discovery: freeze the exact source and destination pairs."""
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
-        if context.shared_filesystem:
+        if not context.transfers_files:
             return ()  # No independent target copy exists.
         remote_root = await context._resolved_remote_root()
         declared = {
@@ -139,7 +139,7 @@ class FileAccess:
 
     async def _remote_cleanup(self, run, paths, *, expected=None):
         """Operate on declared remote files, including TAUDIR outside the run directory."""
-        if self.client.target.is_local or run.files.shared_filesystem:
+        if not self.client.target.transfers_files(shared_filesystem=run.files.shared_filesystem):
             raise ValueError("Remote-file cleanup requires a separate target filesystem")
         entries = (
             *run.files.inputs, *run.files.outputs,

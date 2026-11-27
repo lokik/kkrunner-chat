@@ -13,8 +13,10 @@ from kkrunner.client.file_session import FileSession
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
+from .transfer_helpers import LoopbackFileTransfer
 
-class _OperationLoopbackTransport(LocalTarget):
+
+class _OperationLoopbackTransport(LoopbackFileTransfer):
     """Local subprocess and file transport viewed as a remote SSH target."""
 
     host = "loopback"

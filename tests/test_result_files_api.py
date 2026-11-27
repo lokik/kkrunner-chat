@@ -15,8 +15,11 @@ def test_result_file_names_use_canonical_public_api():
 def test_result_file_retrieval_is_owned_by_shared_client():
     local = ExecutionClient(PsijBackend, target=LocalTarget())
     remote = ExecutionClient(PsijBackend, target=SshTarget("cluster"))
-    assert local.supports_result_file_retrieval is True
-    assert remote.supports_result_file_retrieval is True
+    assert not local.target.supports_file_transfer
+    assert remote.target.supports_file_transfer
+    assert not local.target.transfers_files()
+    assert remote.target.transfers_files()
+    assert not remote.target.transfers_files(shared_filesystem=True)
     assert callable(local.fetch_result_files)
     assert callable(remote.fetch_result_files)
 
@@ -116,3 +119,34 @@ def test_local_history_retrieval_does_not_change_missing_artifact_metadata(tmp_p
     assert manager.retrieve_result_files(record) == record
     assert store.get(record.id) == record
     assert record.files.output_versions[0].state() is FileState.MISSING
+
+
+def test_local_and_shared_result_fetch_do_not_copy(tmp_path, monkeypatch):
+    from kkrunner import RunManager, RunStore
+    from kkrunner.files import FileEntry
+    from kkrunner.files.manifest import FileMapping
+
+    source = tmp_path / "source"
+    source.write_text("result")
+    destination = tmp_path / "copy"
+    manager = RunManager(RunStore(tmp_path / "history"))
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("No transfer or remote discovery expected")
+
+    monkeypatch.setattr(SshTarget, "expand_files", unexpected)
+    monkeypatch.setattr(SshTarget, "get_file", unexpected)
+    for target, mapping in (
+        (LocalTarget(), None),
+        (SshTarget("cluster"), FileMapping(str(tmp_path), "/work", shared_filesystem=True)),
+    ):
+        client = ExecutionClient(target=target)
+        record = manager.new_record(
+            directory=tmp_path, remote_directory=None if mapping is None else "/work",
+            target=target, backend=client.backend_config,
+            files=FileManifest(stdout=FileEntry(str(source)), mapping=mapping),
+        )
+        assert client.resolve_result_files(record, (source,)) == ()
+        assert client.fetch_result_files(record, (source,), destinations={source: destination}) == ()
+    assert not destination.exists()
+    assert source.read_text() == "result"

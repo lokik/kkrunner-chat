@@ -38,8 +38,6 @@ class ExecutionClient:
     bindings, file mapping/staging to file services, persistence to RunManager.
     """
 
-    supports_result_file_retrieval = True
-
     def __init__(self, backend=None, *, target=None, backend_options=None):
         from kkrunner.targets import LocalTarget, SshTarget
         self.backend = configured_backend(backend, options=backend_options)

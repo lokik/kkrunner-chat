@@ -3,35 +3,9 @@ import asyncio
 import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
-from kkrunner.targets import LocalTarget
 from kkrunner.runs.base import SubmissionNotStarted
 
 from .test_remote import _processed_run, _text_run
-
-
-def test_local_transport_put_files_preserves_exact_relative_paths(tmp_path):
-    source = tmp_path / "source"
-    destination = tmp_path / "destination"
-    (source / "a").mkdir(parents=True)
-    (source / "b").mkdir()
-    (source / "a" / "one.dat").write_text("one")
-    (source / "b" / "two.dat").write_text("two")
-    (source / "a" / "ignored.txt").write_text("ignored")
-    asyncio.run(LocalTarget().put_files(("a/one.dat", "b/two.dat"), source, destination))
-    assert (destination / "a" / "one.dat").read_text() == "one"
-    assert (destination / "b" / "two.dat").read_text() == "two"
-    assert not (destination / "a" / "ignored.txt").exists()
-
-
-def test_local_transport_get_files_accepts_exact_relative_pairs(tmp_path):
-    source = tmp_path / "source"
-    destination = tmp_path / "destination"
-    (source / "nested").mkdir(parents=True)
-    (source / "nested" / "one.out").write_text("one")
-    (source / "nested" / "two.out").write_text("two")
-    asyncio.run(LocalTarget().get_files(("nested/one.out", ("nested/two.out", "renamed.out")), source, destination))
-    assert (destination / "nested" / "one.out").read_text() == "one"
-    assert (destination / "renamed.out").read_text() == "two"
 
 
 def test_remote_executor_expands_input_wildcards(tmp_path):
@@ -171,38 +145,6 @@ def test_remote_executor_tolerates_unmatched_optional_cache_wildcard(tmp_path):
     assert result.output == b"done\n"
     assert not tuple(workdir.glob("not-present-*.pot"))
     assert not tuple((remote_root / "calculation").glob("not-present-*.pot"))
-
-
-def test_local_transfer_batches_use_their_directional_file_primitives(tmp_path):
-    source = tmp_path / "source"
-    dest = tmp_path / "dest"
-    (source / "nested").mkdir(parents=True)
-    (source / "nested" / "result.dat").write_text("data")
-
-    class TracedTransport(LocalTarget):
-        def __init__(self):
-            self.operations = []
-
-        async def put_file(self, src, dst):
-            self.operations.append("put")
-            await super().put_file(src, dst)
-
-        async def get_file(self, src, dst):
-            self.operations.append("get")
-            await super().get_file(src, dst)
-
-    transport = TracedTransport()
-
-    async def check():
-        await transport.put_files("nested/result.dat", source, dest)
-        assert transport.operations == ["put"]
-        transport.operations.clear()
-        await transport.get_files("nested/result.dat", source, dest)
-        assert transport.operations == ["get"]
-        assert (dest / "nested" / "result.dat").read_text() == "data"
-
-    asyncio.run(check())
-    assert (dest / "nested" / "result.dat").read_text() == "data"
 
 
 def test_overlapping_exact_and_wildcard_caches_are_transferred_once(tmp_path):

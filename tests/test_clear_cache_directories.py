@@ -90,23 +90,3 @@ def test_directory_output_rejects_symlink_without_removing_target(tmp_path):
     with pytest.raises(ValueError, match="symbolic link"):
         prepare_target_outputs(request(tmp_path, link))
     assert (actual / "keep").read_text() == "safe"
-
-
-def test_local_transport_copies_complete_directory_tree(tmp_path):
-    import asyncio
-
-    from kkrunner.targets import LocalTarget
-
-    source = tmp_path / "source"
-    (source / "nested").mkdir(parents=True)
-    (source / "nested" / "P1E1").write_text("tau")
-    (source / ".hidden").write_text("metadata")
-    target = tmp_path / "copy"
-    transport = LocalTarget()
-    asyncio.run(transport.put_directory(source, target))
-    assert (target / "nested" / "P1E1").read_text() == "tau"
-    assert (target / ".hidden").read_text() == "metadata"
-    (source / "obsolete").write_text("old")
-    asyncio.run(transport.get_directory(target, source))
-    assert not (source / "obsolete").exists()
-    assert (source / "nested" / "P1E1").read_text() == "tau"
