@@ -656,3 +656,48 @@ def test_restore_does_not_read_existing_result_contents(tmp_path, monkeypatch, r
         assert not missing.exists()
         assert restored.files.outputs[1].availability_state == "failed"
         assert "overwritten" in restored.files.outputs[1].availability_message
+
+
+@pytest.mark.parametrize("collision", ["explicit", "implicit", "alias"])
+def test_staged_result_destinations_must_be_distinct(tmp_path, collision):
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    first, second = local / "first.dat", local / "second.dat"
+    (remote / first.name).write_text("first")
+    (remote / second.name).write_text("second")
+    client = ExecutionClient(target=SshTarget("loopback"))
+    run = RunRecord(
+        id="staged-collision", state=RunState.FINISHED,
+        created_at="2026-10-13T08:00:00+00:00",
+        updated_at="2026-10-13T08:00:00+00:00",
+        execution=ExecutionMetadata(client.target, WorkingDirectory(str(local), str(remote)), "job"),
+        files=FileManifest(mapping=FileMapping(str(local), str(remote))),
+    )
+    target = local / "staged.dat"
+    if collision == "implicit":
+        destinations = {first: second}
+    elif collision == "alias":
+        alias = tmp_path / "alias"
+        alias.symlink_to(local, target_is_directory=True)
+        destinations = {first: target, second: alias / target.name}
+    else:
+        destinations = {first: target, second: target}
+    with pytest.raises(ValueError, match="Different historical sources"):
+        client.fetch_result_files(run, (first, second), destinations=destinations)
+    assert not tuple(local.iterdir())
+
+    verified = []
+
+    def verify(path, temporary):
+        from pathlib import Path
+        verified.append((path, Path(temporary).read_text()))
+
+    staged = local / "other.dat"
+    restored = client.fetch_result_files(
+        run, (first, second), destinations={first: target, second: staged}, verify=verify,
+    )
+    assert restored == (str(first), str(second))
+    assert verified == [(str(first), "first"), (str(second), "second")]
+    assert target.read_text() == "first"
+    assert staged.read_text() == "second"
