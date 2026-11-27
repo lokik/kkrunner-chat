@@ -653,8 +653,17 @@ class RunManager:
             # recover cancellation on a later observation, so collect any
             # diagnostics now, under the same ownership as completion.
             from kkrunner.client.file_access import FileAccess
-            files, error = FileAccess(record.execution.target).collect_ended_files(record, status)
+            files, error = FileAccess(record.execution.target).collect_ended_files(
+                record, status, on_resolved=lambda manifest: self.transition(
+                    record, state=RunState.DOWNLOADING, files=manifest,
+                ),
+            )
             if error is not None:
+                if status.state != RunState.CANCELLED and files.remote_patterns_resolved is False:
+                    return self.transition(
+                        record, state=RunState.FAILED, files=files,
+                        failure_phase=FailurePhase.DOWNLOAD, message=str(error),
+                    )
                 if status.state != RunState.CANCELLED:
                     return self.transition(
                         record, state=RunState.DOWNLOADING, files=files,
@@ -767,8 +776,9 @@ class RunManager:
                 or latest.return_code != 0
                 or latest.execution.backend_id is None
                 or latest.files.captured_at is not None
+                or latest.files.remote_patterns_resolved is False
             ):
-                raise ValueError("Only failed downloads of successful backend jobs can be retried")
+                raise ValueError("Only failed transfers with a valid file plan can be retried")
             # Keep already transferred artifacts and all bytes on disk.
             # Only failed transfers become eligible for a fresh attempt.
             files = latest.files.retry_failed_artifacts()

@@ -1158,6 +1158,7 @@ def test_ended_collection_retry_rechecks_failed_pattern_members(tmp_path, monkey
                           source_pattern=pattern, availability_state="failed"),
             ),
             mapping=FileMapping(local, remote),
+            remote_patterns_resolved=True,
         ),
     )
     monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
@@ -1315,7 +1316,13 @@ def test_ended_collection_retry_keeps_published_pattern_members(tmp_path, monkey
     assert not (local / "second-1.dat").exists()
     if remove_source:
         (remote / "first-1.dat").unlink()
+    (remote / "second-new.dat").write_text("unrelated later file")
 
+    async def exact_queries_only(self, sources, *, root=None, digest=False):
+        assert root is None, "A retry may not expand remote patterns"
+        return await LocalTarget.query_files(self, sources, digest=digest)
+
+    monkeypatch.setattr(SshTarget, "query_files", exact_queries_only)
     fail_second = False
     completed, error = client.collect_ended_files(replace(record, files=partial), status)
     assert error is None
@@ -1323,6 +1330,9 @@ def test_ended_collection_retry_keeps_published_pattern_members(tmp_path, monkey
     assert calls == [str(remote / name) for name in ("first-1.dat", "second-1.dat", "second-1.dat")]
     assert (local / "first-1.dat").read_text() == "first-1.dat"
     assert (local / "second-1.dat").read_text() == "second-1.dat"
+    assert not (local / "second-new.dat").exists()
+    if kind == "cache":
+        assert {version.path.name for version in completed.cache_versions} <= {"first-1.dat", "second-1.dat"}
     if kind == "output":
         assert {version.path.name for version in completed.output_versions} == {"first-1.dat", "second-1.dat"}
 
@@ -1353,3 +1363,57 @@ def test_published_directory_does_not_satisfy_required_file_pattern(tmp_path, mo
     assert isinstance(error, FileNotFoundError)
     assert files.outputs[0].availability_state == "available"
     assert files.outputs[1].availability_state == "failed"
+
+
+@pytest.mark.parametrize("fail_kind", ["output", "cache"])
+def test_failed_pattern_discovery_never_starts_or_retries_transfer(tmp_path, monkeypatch, fail_kind):
+    from dataclasses import replace
+    from kkrunner.files.manifest import CacheEntry
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("stdout", "first.dat", "cache.dat"):
+        (remote / name).write_text(name)
+    target = SshTarget("loopback")
+    record = RunManager().new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            stdout=FileEntry(local / "stdout", remote / "stdout"),
+            outputs=(FileEntry(local / "first*.dat", remote / "first*.dat"),
+                     FileEntry(local / "bad*.dat", remote / "bad*.dat")) if fail_kind == "output"
+                    else (FileEntry(local / "first*.dat", remote / "first*.dat"),),
+            caches=(CacheEntry(FileEntry(local / "bad*.dat", remote / "bad*.dat")),)
+                    if fail_kind == "cache" else (),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    queries = []
+    async def discover(self, sources, *, root=None, digest=False):
+        queries.extend(sources)
+        if any("bad*" in path for path in sources):
+            raise PermissionError("cannot expand source")
+        return await LocalTarget.query_files(self, sources, root=root, digest=digest)
+
+    async def unexpected_transfer(*args, **kwargs):
+        pytest.fail("No download may start before every pattern is resolved")
+
+    monkeypatch.setattr(SshTarget, "query_files", discover)
+    monkeypatch.setattr(SshTarget, "get_file", unexpected_transfer)
+    monkeypatch.setattr(SshTarget, "get_files", unexpected_transfer)
+    client = ExecutionClient(target=target)
+    status = RunStatus(RunState.FINISHED, return_code=0)
+    files, error = client.collect_ended_files(record, status)
+    assert isinstance(error, PermissionError)
+    assert files.remote_patterns_resolved is False
+    assert len(queries) == 2
+    assert not tuple(local.iterdir())
+    assert all(entry.source_pattern is None for entry in files.artifacts)
+
+    (remote / "bad-new.dat").write_text("new")
+    retry, error = client.collect_ended_files(replace(record, files=files), status)
+    assert error is not None
+    assert retry == files
+    assert len(queries) == 2
+    assert not tuple(local.iterdir())

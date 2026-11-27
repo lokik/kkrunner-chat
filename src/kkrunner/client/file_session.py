@@ -285,103 +285,126 @@ class FileSession:
             "available" if available else "skipped",
         )
 
-    async def _sync_patterns(
-        self, declarations, *, kind, required=False, seen_remote, excluded_local=()
-    ):
-        """Expand and inspect a pattern in one query, then transfer exact pairs."""
+    def _pattern_declarations(self, kind):
+        entries = (
+            (cache.file for cache in self._files.caches) if kind == "cache"
+            else self._files.outputs
+        )
+        return tuple(entry for entry in entries if entry.collect
+                     and entry.local_path is not None and entry.remote_path is not None
+                     and entry.source_pattern is None and has_file_magic(entry.remote_path))
+
+    async def _resolve_result_patterns(self, required, on_resolved):
+        """Freeze all remote output/cache glob members before any download."""
+        state = self._files.remote_patterns_resolved
+        if state is False:
+            raise OSError(self._files.availability_message or "Remote pattern discovery failed")
+        if state is True:
+            return
+        patterns = [(kind, entry) for kind in ("output", "cache")
+                    for entry in self._pattern_declarations(kind)]
+        if not patterns:
+            return
+        manifest = self._files
+        try:
+            root = (manifest.mapping.remote_root if manifest.mapping is not None
+                    else await self.context._resolved_remote_root())
+            for kind, declaration in patterns:
+                pattern = declaration.remote_path
+                observed = await self.context.target.query_files([pattern], root=root)
+                matches = [item["path"] for item in observed
+                           if item["status"] == "ok" and item["type"] == "file"]
+                if not matches and kind == "output" and required and not declaration.optional:
+                    raise FileNotFoundError(f"Declared remote output pattern did not match any files: {pattern}")
+                for remote in matches:
+                    if kind == "output" and manifest.output_excluded(remote, remote=True):
+                        continue
+                    local = os.fspath(self.context._unmap_path(remote, root))
+                    if any(entry.local_path == local for entry in manifest.artifacts):
+                        continue
+                    manifest = manifest.with_file_availability(
+                        local, "pending", remote_path=remote, kind=kind,
+                        source_pattern=declaration.local_path,
+                    )
+        except Exception as exc:
+            # Do not publish a partial expansion or perform any transfers.
+            self._files = replace(self._files.fail_pending_artifacts(str(exc)),
+                                  remote_patterns_resolved=False)
+            if on_resolved is not None:
+                on_resolved(self._files)
+            raise
+        self._files = replace(manifest, remote_patterns_resolved=True)
+        if on_resolved is not None:
+            on_resolved(self._files)
+
+    async def _sync_patterns(self, declarations, *, kind, required=False, seen_remote):
+        """Transfer only previously discovered concrete members; never expand."""
         mapping = self._files.mapping
         remote_root = mapping.remote_root if mapping is not None else await self.context._resolved_remote_root()
         cache_before = ({cache.file.remote_path: cache.before for cache in self._files.caches
                          if cache.file.local_path is None} if kind == "cache" else {})
-        excluded_local = set(excluded_local)
-        transport = self.context.target
         entries = (
-            (cache.file for cache in self._files.caches) if kind == "cache"
+            tuple(cache.file for cache in self._files.caches) if kind == "cache"
             else (self._files.stdout, self._files.stderr, *self._files.outputs)
         )
-        published = set()
-        for entry in entries:
-            if (entry is None or not entry.collect or entry.kind != "file"
-                    or entry.local_path is None or entry.remote_path is None
-                    or has_file_magic(entry.remote_path)):
-                continue
-            if self._published_locally(entry):
-                published.add(entry.remote_path)
-            elif entry.source_pattern is not None and entry.availability_state == "available":
-                # A missing local copy must be resolved again, not silently
-                # retained as available if the remote member has also gone.
-                self._set_file_availability(entry.local_path, "pending", kind=kind)
+        concrete = tuple(entry for entry in entries
+                         if entry is not None and entry.collect and entry.kind == "file"
+                         and entry.local_path is not None and entry.remote_path is not None
+                         and (entry.source_pattern is not None or not has_file_magic(entry.remote_path)))
+        transport = self.context.target
+        policy = self.context.output_files
+        compare = kind == "output" or policy == FileSyncPolicy.NEVER
         for declaration in declarations:
             pattern = declaration.remote_path
             local_pattern = declaration.local_path
             mandatory = required and not declaration.optional
-            retained = {path for path in published if path_matches(path, pattern)
-                        and (kind != "output" or not self._files.output_excluded(path, remote=True))}
+            members = tuple(entry for entry in concrete if path_matches(entry.remote_path, pattern)
+                            and (kind != "output" or not self._files.output_excluded(entry.remote_path, remote=True)))
             pending = []
-            downloads = []
             try:
-                # Outputs use the ordinary transfer policy; caches normally
-                # compare pre-run signatures instead of content digests.
-                output_policy = self.context.output_files
-                compare = kind == "output" or output_policy == FileSyncPolicy.NEVER
-                observed = await transport.query_files(
-                    [pattern], root=remote_root,
-                    digest=compare and output_policy != FileSyncPolicy.ALWAYS,
-                )
-                matches = [item for item in observed
-                           if item["status"] == "ok" and item["type"] == "file"]
-                if not matches and not retained:
-                    if mandatory:
-                        raise FileNotFoundError(f"Declared remote {kind} pattern did not match any files: {pattern}")
-                    self._set_file_availability(local_pattern, "skipped", kind=kind)
-                    continue
-                if kind == "output":
-                    matches = [item for item in matches
-                               if not self._files.output_excluded(item["path"], remote=True)]
-                for item in matches:
-                    remote = item["path"]
+                candidates = []
+                for entry in members:
+                    remote = entry.remote_path
                     if remote in seen_remote:
                         continue
                     seen_remote.add(remote)
-                    local = os.fspath(self.context._unmap_path(remote, remote_root))
-                    if local in excluded_local or remote in retained:
+                    if self._published_locally(entry) or entry.availability_state == "skipped":
                         continue
-                    self._set_file_availability(
-                        local, "pending", remote=remote, kind=kind, source_pattern=local_pattern,
-                    )
-                    pending.append(local)
-                    if not compare:
-                        transfer = self._cache_file_changed(
-                            local, cache_before.get(remote), (item["size"], item["mtime_ns"]),
-                        )
-                        available = transfer
+                    self._set_file_availability(entry.local_path, "pending", kind=kind)
+                    candidates.append(entry)
+                # No root argument: query_files treats these names as literals.
+                observed = await transport.query_files(
+                    [entry.remote_path for entry in candidates],
+                    digest=compare and policy != FileSyncPolicy.ALWAYS,
+                ) if candidates else ()
+                by_path = {item["path"]: item for item in observed}
+                downloads = []
+                for entry in candidates:
+                    local, remote = entry.local_path, entry.remote_path
+                    item = by_path[remote]
+                    if compare:
+                        available, transfer = self._output_file_action(local, remote, mandatory, item)
                     else:
-                        available, transfer = self._output_file_action(
-                            local, remote, mandatory, item,
+                        signature = ((item["size"], item["mtime_ns"])
+                                     if item["status"] == "ok" and item["type"] == "file" else None)
+                        available = transfer = self._cache_file_changed(
+                            local, cache_before.get(remote), signature,
                         )
                     if transfer:
                         downloads.append((remote, local))
+                        pending.append(local)
                     else:
-                        self._set_file_availability(
-                            local, "available" if available else "skipped", kind=kind,
-                        )
-                        pending.pop()
+                        self._set_file_availability(local, "available" if available else "skipped", kind=kind)
                 if downloads:
-                    await transport.get_files(
-                        downloads, source_directory=remote_root,
-                        destination_directory=self.context.local_root,
-                    )
+                    await transport.get_files(downloads, source_directory=remote_root,
+                                              destination_directory=self.context.local_root)
                 for local in pending:
                     self._set_file_availability(local, "available", kind=kind)
-                matched_paths = {item["path"] for item in matches}
-                available = bool(retained) or any(
-                    entry.remote_path in matched_paths and entry.availability_state == "available"
-                    for entry in self._files.artifacts
-                )
+                matched_paths = {entry.local_path for entry in members}
+                available = any(entry.local_path in matched_paths and entry.availability_state == "available"
+                                for entry in self._files.artifacts)
                 self._set_file_availability(local_pattern, "available" if available else "skipped", kind=kind)
             except Exception as exc:
-                for local in pending:
-                    self._set_file_availability(local, "failed", str(exc), kind=kind)
                 self._set_file_availability(local_pattern, "failed", str(exc), kind=kind)
                 raise
 
@@ -417,11 +440,8 @@ class FileSession:
 
         patterns = [entry for entry in declarations if has_file_magic(entry.remote_path)]
         if patterns:
-            primary = {entry.local_path for entry in (self._files.stdout, self._files.stderr)
-                       if entry is not None and entry.local_path is not None}
             await self._sync_patterns(
-                patterns, kind="output", required=required,
-                excluded_local=primary, seen_remote=seen_remote,
+                patterns, kind="output", required=required, seen_remote=seen_remote,
             )
 
     async def _sync_one_output(self, local, remote, required, *, kind="file"):
@@ -608,18 +628,11 @@ class FileSession:
             versions = await self._target_input_versions(manifest, inputs)
         return request, replace(manifest, caches=tuple(caches), input_versions=versions)
 
-    async def _target_versions(self, paths, *, root=None):
+    async def _target_versions(self, paths):
         transport = self.context.target
         files = [target for target, (_, kind) in paths.items() if kind == "file"]
-        observed = await transport.query_files(files, root=root, digest=True) if files else ()
+        observed = await transport.query_files(files, digest=True) if files else ()
         digests = {item["path"]: item["digest"] for item in observed if "digest" in item}
-        if root is not None:
-            # The same query expands cache globs and captures their contents.
-            # Exact declarations retain their explicitly mapped local identity.
-            paths = {**paths, **{
-                target: (self.context._unmap_path(target, root), "file")
-                for target in digests if target not in paths
-            }}
         versions = []
         for target, (local, kind) in paths.items():
             digest = digests.get(target)
@@ -637,16 +650,12 @@ class FileSession:
         })
 
     async def _target_cache_versions(self):
-        paths = {
+        return await self._target_versions({
             entry.remote_path: (entry.local_path, entry.kind)
             for cache in self._files.caches
             if (entry := cache.file).remote_path is not None and entry.local_path is not None
-        }
-        root = None
-        if any(has_file_magic(target) for target, (_, kind) in paths.items() if kind == "file"):
-            mapping = self._files.mapping
-            root = mapping.remote_root if mapping is not None else await self.context._resolved_remote_root()
-        return await self._target_versions(paths, root=root)
+            and (entry.source_pattern is not None or not has_file_magic(entry.remote_path))
+        })
 
     def _flush_declared_handles(self):
         """Use live descriptors only after the caller has reserved their paths."""
@@ -795,7 +804,7 @@ class FileSession:
         # before a retry. Only a synchronization decision can publish it.
         self._files = self._files.skip_pending_artifacts()
 
-    async def finalize_async(self, status):
+    async def finalize_async(self, status, *, on_resolved=None):
         """Finalize owned files on the existing event loop, if any."""
         if not status.state.is_terminal:
             raise RuntimeError("Cannot finalize files before terminal backend status")
@@ -817,6 +826,9 @@ class FileSession:
                 if required and self._files.failed_artifacts:
                     raise FileNotFoundError(self._files.availability_message)
             else:
+                await self._resolve_result_patterns(
+                    required and self.context.output_files != FileSyncPolicy.NEVER, on_resolved,
+                )
                 await self._synchronize(required=required)
             from kkrunner.files.availability import capture_result_files
 
@@ -829,9 +841,9 @@ class FileSession:
             self._files = self._files.fail_pending_artifacts(str(exc))
             raise
 
-    def finalize(self, status):
+    def finalize(self, status, *, on_resolved=None):
         """Synchronously finalize using the same file authority as SSH recovery."""
-        return _run_sync(self.finalize_async(status))
+        return _run_sync(self.finalize_async(status, on_resolved=on_resolved))
 
     def close(self):
         """Release owned streams once, even if cleanup itself raises."""

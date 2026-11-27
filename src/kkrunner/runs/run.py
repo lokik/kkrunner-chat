@@ -290,7 +290,13 @@ class Run:
                 try:
                     # FileSession closes its streams and only collects files
                     # when the backend actually launched the program.
-                    self._file_session.finalize(status)
+                    def persist_plan(files):
+                        with self._completion_lock:
+                            self._record = self.manager.transition(self._record, files=files)
+
+                    self._file_session.finalize(
+                        status, on_resolved=persist_plan if self.manager is not None else None,
+                    )
                 except Exception as exc:
                     if raw_state == RunState.FINISHED:
                         self._exception = exc
