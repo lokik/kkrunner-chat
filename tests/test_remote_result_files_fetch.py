@@ -1223,3 +1223,50 @@ def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatc
     assert files.output_versions[0].is_current()
     assert finalized.stdout.availability_state == "failed"
     assert finalized.stdout.availability_message == "original failure"
+
+@pytest.mark.parametrize("policy", ["missing", "always"])
+def test_ended_collection_retry_keeps_published_cache(tmp_path, monkeypatch, policy):
+    from dataclasses import replace
+    from kkrunner.files.manifest import CacheEntry
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("first.cache", "second.cache"):
+        (remote / name).write_text(name)
+    target = SshTarget("loopback")
+    client = ExecutionClient(target=target)
+    record = RunManager().new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            caches=tuple(CacheEntry(FileEntry(local / name, remote / name))
+                         for name in ("first.cache", "second.cache")),
+            mapping=FileMapping(local, remote, output_sync=policy),
+        ).initialize_availability(),
+    )
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+    calls = []
+    fail_second = True
+
+    async def download(self, source, destination, **kwargs):
+        calls.append(str(source))
+        if fail_second and str(source) == str(remote / "second.cache"):
+            raise OSError("second cache transfer failed")
+        await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTarget, "get_file", download)
+    status = RunStatus(RunState.FINISHED)
+    partial, error = client.collect_ended_files(record, status)
+    assert isinstance(error, OSError)
+    assert partial.caches[0].file.availability_state == "available"
+    assert partial.caches[1].file.availability_state == "failed"
+
+    fail_second = False
+    completed, error = client.collect_ended_files(replace(record, files=partial), status)
+    assert error is None
+    assert all(cache.file.availability_state == "available" for cache in completed.caches)
+    assert calls == [str(remote / name) for name in ("first.cache", "second.cache", "second.cache")]
+    assert (local / "first.cache").read_text() == "first.cache"
+    assert (local / "second.cache").read_text() == "second.cache"
+    assert {version.path.name for version in completed.cache_versions} == {"first.cache", "second.cache"}
