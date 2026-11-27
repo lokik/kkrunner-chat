@@ -766,3 +766,64 @@ def test_remote_directory_cache_policy(tmp_path, policy, modify, expected, trans
     assert (local / "obsolete").exists() is not transfer
     remote = remote_root / "calculation/cache-tree"
     assert transport.directory_downloads == ([(remote, local)] if transfer else [])
+
+
+@pytest.mark.parametrize("policy", (FileSyncPolicy.ALWAYS, FileSyncPolicy.MISSING))
+def test_existence_based_staging_only_hashes_final_target_inputs(tmp_path, monkeypatch, policy):
+    from kkrunner.client import file_session
+    from kkrunner.files.versions import file_digest
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    names = ("input", "part-1.dat", "part-2.dat")
+    for name in names:
+        (local / name).write_text("new " + name)
+    for name in names[:2]:
+        (remote / name).write_text("old " + name)
+
+    class Target(_OperationLoopbackTransport):
+        def __init__(self):
+            super().__init__()
+            self.queries = []
+            self.uploads = []
+
+        async def query_files(self, sources, *, root=None, digest=False):
+            self.queries.append((tuple(sources), digest, tuple(self.uploads)))
+            return await super().query_files(sources, root=root, digest=digest)
+
+        async def put_file(self, source, destination):
+            await super().put_file(source, destination)
+            self.uploads.append(Path(destination).name)
+
+    target = Target()
+    client = _executor(target)
+    spec = ExecutionSpec(
+        argv=("unused",), directory=local, input_file="input",
+        input_files=("part-*.dat",),
+        staging=_launch(local, remote, input_files=policy),
+    )
+
+    def unexpected_hash(*args, **kwargs):
+        pytest.fail("Existence-based input staging must not hash local files")
+
+    monkeypatch.setattr(file_session, "file_digest", unexpected_hash)
+    session = client.file_session(spec)
+    try:
+        session.prepare_submission()
+        expected_uploads = set(names if policy == FileSyncPolicy.ALWAYS else names[2:])
+        assert set(target.uploads) == expected_uploads
+        hashed = [(sources, uploads) for sources, digest, uploads in target.queries if digest]
+        assert len(hashed) == 1
+        sources, uploads = hashed[0]
+        assert set(map(Path, sources)) == {remote / name for name in names}
+        assert set(uploads) == expected_uploads
+        if policy == FileSyncPolicy.ALWAYS:
+            assert len(target.queries) == 1
+        for name in names:
+            version = session.files.input_version(local / name)
+            expected = "new " if name in expected_uploads else "old "
+            assert (remote / name).read_text() == expected + name
+            assert version.digest == file_digest(remote / name)
+    finally:
+        session.close()

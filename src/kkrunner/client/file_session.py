@@ -18,7 +18,7 @@ from kkrunner.files.manifest import (
     FileSyncPolicy,
 )
 from kkrunner.files.paths import file_path, has_file_magic
-from kkrunner.files.queries import directory_digest
+from kkrunner.files.queries import directory_digest, local_file_signature
 from kkrunner.files.streams import OutputStreams
 from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.runs.base import ExecutionOutcome, RunState, SubmissionNotStarted
@@ -89,7 +89,7 @@ class FileSession:
         except ValueError as exc:
             raise ValueError("Remote execution requires named files") from exc
 
-    async def _stage_file(self, entry, used, *, required=True, uploads=None, remote_digests=None):
+    async def _stage_file(self, entry, used, *, required=True, uploads=None, remote_values=None):
         if entry is None:
             return None
         source, target = entry.local_path, entry.remote_path
@@ -108,19 +108,29 @@ class FileSession:
             used[target] = source
             return target
 
-        local_digest = file_digest(source, missing_ok=True)
-        remote_digest = (await self.context.target.file_digest(target)
-                         if remote_digests is None else remote_digests.get(target))
-        if local_digest is None:
-            if not required and remote_digest is None:
-                return None
-            if required:
-                if policy == FileSyncPolicy.ALWAYS:
-                    raise FileNotFoundError(f"Local input file does not exist: {source}")
-                if remote_digest is None:
-                    raise FileNotFoundError(f"Input file exists neither locally nor remotely: {source}")
+        # Only CHANGED needs content identity to decide whether to upload.
+        # ALWAYS with a local source does not need to inspect the target at all.
+        # The authoritative input digest is captured after staging.
+        compare = policy == FileSyncPolicy.CHANGED
+        local_value = (file_digest(source, missing_ok=True) if compare
+                       else local_file_signature(source))
+        if policy == FileSyncPolicy.ALWAYS and local_value is None and required:
+            raise FileNotFoundError(f"Local input file does not exist: {source}")
+        if policy == FileSyncPolicy.ALWAYS and local_value is not None:
+            remote_value = None
+        elif remote_values is not None:
+            remote_value = remote_values.get(target)
+        elif compare:
+            remote_value = await self.context.target.file_digest(target)
+        else:
+            remote_value = await self.context.target.file_signature(target)
 
-        if policy.should_transfer(local_digest, remote_digest):
+        if local_value is None and remote_value is None:
+            if required:
+                raise FileNotFoundError(f"Input file exists neither locally nor remotely: {source}")
+            return None
+
+        if policy.should_transfer(local_value, remote_value):
             if uploads is None:
                 await self.context.target.put_file(source, target)
             else:
@@ -182,14 +192,18 @@ class FileSession:
             return
         policy = self.context.input_files
         pending = [match.remote_path for match in matches if match.remote_path not in used]
-        digests = {}
-        if pending and policy != FileSyncPolicy.NEVER:
-            observed = await self.context.target.query_files(pending, digest=True)
-            digests = {item["path"]: item.get("digest") for item in observed}
+        values = None
+        if pending and policy in (FileSyncPolicy.CHANGED, FileSyncPolicy.MISSING):
+            compare = policy == FileSyncPolicy.CHANGED
+            observed = await self.context.target.query_files(pending, digest=compare)
+            values = {
+                item["path"]: item.get("digest") if compare else True
+                for item in observed if item["status"] == "ok" and item["type"] == "file"
+            }
         uploads = []
         for match in matches:
             await self._stage_file(match, used, required=required, uploads=uploads,
-                                   remote_digests=digests)
+                                   remote_values=values)
         if uploads:
             await self.context.target.put_files(
                 uploads, source_directory=self.context.local_root,
@@ -430,7 +444,7 @@ class FileSession:
     def _cache_file_changed(self, local, before, after):
         return after is not None and after != before and not (
             self.context.output_files == FileSyncPolicy.MISSING
-            and file_digest(local, missing_ok=True) is not None
+            and local_file_signature(local) is not None
         )
 
     async def _sync_cache_entry(self, local, remote, before, *, kind="file"):
