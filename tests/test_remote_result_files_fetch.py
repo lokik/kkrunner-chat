@@ -600,3 +600,59 @@ def test_uncaptured_history_only_restores_regular_file_declarations(
     assert restored.files.outputs[0] == record.files.outputs[0]
     assert restored.files.inputs == record.files.inputs
     assert (local / "output-tree").exists() == local_directory_exists
+
+
+@pytest.mark.parametrize("remote_content", ["original", "different"])
+def test_restore_does_not_read_existing_result_contents(tmp_path, monkeypatch, remote_content):
+    from dataclasses import replace
+    from kkrunner import RunStore
+    from kkrunner.files import versions
+    from kkrunner.runs.manager import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    existing, missing = local / "existing.dat", local / "missing.dat"
+    existing.write_text("existing")
+    missing.write_text("original")
+    captured = (
+        replace(FileVersion.capture(existing, require_digest=True), fingerprint=None),
+        FileVersion.capture(missing, require_digest=True),
+    )
+    missing.unlink()
+    (remote / missing.name).write_text(remote_content)
+    client = ExecutionClient(target=SshTarget("loopback"))
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    manager.register_client(client)
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=client.target,
+        backend=client.backend_config,
+        files=FileManifest(
+            outputs=tuple(FileEntry(str(path), str(remote / path.name))
+                          for path in (existing, missing)),
+            output_versions=captured,
+            captured_at="2026-10-13T08:00:00+00:00",
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.complete(record, state=RunState.FINISHED, return_code=0,
+                              execution=record.execution.submitted("historical"))
+
+    original_digest = versions.file_digest
+
+    def digest(path, **kwargs):
+        from pathlib import Path
+        assert Path(path) != existing, "Recovery must not hash an existing result"
+        return original_digest(path, **kwargs)
+
+    monkeypatch.setattr(versions, "file_digest", digest)
+    restored = manager.retrieve_result_files(record)
+    assert existing.read_text() == "existing"
+    assert restored.files.outputs[0] == record.files.outputs[0]
+    if remote_content == "original":
+        assert missing.read_text() == "original"
+        assert restored.files.outputs[1].availability_state == "available"
+    else:
+        assert not missing.exists()
+        assert restored.files.outputs[1].availability_state == "failed"
+        assert "overwritten" in restored.files.outputs[1].availability_message

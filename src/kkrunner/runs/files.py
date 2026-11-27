@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from kkrunner.files.availability import file_is_current
 from kkrunner.files.manifest import ArtifactAvailabilityState
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
-from kkrunner.files.versions import FileState, file_digest
+from kkrunner.files.versions import file_digest
 from kkrunner.runs.stores import resolve_record, store_for
 
 
@@ -27,14 +27,20 @@ def _unique(values):
 
 
 def _missing_result_files(result_files):
-    if result_files is None:
-        return ()
     if result_files.captured_at is not None:
-        # Automatic artifact retrieval works on ordinary files and excludes caches.
-        return _unique(
-            os.fspath(item.path) for item in (*result_files.input_versions, *result_files.output_versions)
-            if item.kind == "file" and item.state() is FileState.MISSING
-        )
+        # Retrieval needs existence, not content identity. Only verify the
+        # contents of files actually being restored.
+        missing = []
+        for version in (*result_files.input_versions, *result_files.output_versions):
+            if version.kind != "file":
+                continue
+            try:
+                version.path.stat()
+            except FileNotFoundError:
+                missing.append(os.fspath(version.path))
+            except OSError:
+                continue
+        return _unique(missing)
 
     entries = (
         *result_files.input_entries, result_files.stdout, result_files.stderr,
@@ -104,8 +110,10 @@ class RunFiles:
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
+        if record.execution.backend_id is None or not record.execution.available:
+            return record
         missing = _missing_result_files(record.files)
-        if not missing or record.execution.backend_id is None or not record.execution.available:
+        if not missing:
             return record
 
         client = self._client_for(record)
