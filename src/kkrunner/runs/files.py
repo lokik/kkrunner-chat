@@ -62,10 +62,11 @@ def _missing_result_files(result_files, *, include_outputs=True):
         if entry is not None and entry.kind == "file" and entry.local_path is not None
         and not any(
             os.path.isfile(path) and not (
-                entry in result_files.outputs and has_file_magic(entry.local_path)
-                and result_files.output_excluded(path)
+                entry in result_files.outputs and entry.source_pattern is None
+                and has_file_magic(entry.local_path) and result_files.output_excluded(path)
             )
-            for path in expand_local_candidates(entry.local_path)
+            for path in ((entry.local_path,) if entry.source_pattern is not None
+                         else expand_local_candidates(entry.local_path))
         )
     )
     return _unique(missing)
