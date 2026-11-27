@@ -125,12 +125,14 @@ class RunManager:
         return store_for(record, self.store)
 
     def _record_key(self, record):
-        return record.key if record.store is not None else (self.store.lock_key, record.id)
+        if record.store is not None or self.store is None:
+            return record.key
+        return (self.store.lock_key, record.id)
 
     def _reservation_stores(self, *additional):
         # Deduplicate disk stores opened through separate objects. The primary
         # store wins, and all managers take locks in the same order.
-        stores = {self.store.lock_key: self.store}
+        stores = {} if self.store is None else {self.store.lock_key: self.store}
         for store in (_TEMPORARY_RESERVATIONS, *self.conflict_stores, *additional):
             stores.setdefault(store.lock_key, store)
         return tuple(stores[key] for key in sorted(stores))
@@ -482,7 +484,8 @@ class RunManager:
 
     def conflicts(self, record):
         """Inspect the same reservation domain as reserve(), without reserving."""
-        stores = self._reservation_stores()
+        store = self._store_for(record)
+        stores = self._reservation_stores(*(() if store is None else (store,)))
         with ExitStack() as locks:
             for store in stores:
                 locks.enter_context(store.submission_lock())

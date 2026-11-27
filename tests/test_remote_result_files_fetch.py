@@ -840,7 +840,8 @@ def test_history_write_failure_is_not_a_transfer_failure(tmp_path, monkeypatch):
     assert output.read_text() == "result"
 
 
-def test_restore_results_without_original_execution_backend(tmp_path, monkeypatch):
+@pytest.mark.parametrize("default_store", [True, False])
+def test_restore_results_without_original_execution_backend(tmp_path, monkeypatch, default_store):
     from kkrunner import RunStore
     from kkrunner.backends.config import BackendConfig
     from kkrunner.runs.manager import RunManager
@@ -863,9 +864,11 @@ def test_restore_results_without_original_execution_backend(tmp_path, monkeypatc
     record = manager.transition(record, state=RunState.FINISHED, return_code=0,
                                 execution=record.execution.submitted("historical"))
     assert not record.execution.available
-    monkeypatch.setattr(manager.client_pool, "for_config",
+    reader = manager if default_store else RunManager()
+    monkeypatch.setattr(reader.client_pool, "for_config",
                         lambda *args: pytest.fail("File retrieval must not reconstruct a backend"))
-    restored = manager.retrieve_result_files(record)
+    restored = reader.retrieve_result_files(record)
+    assert manager.store.get(record.id) == restored
     assert path.read_text() == "historical result"
     assert restored.files.stdout.availability_state == "available"
 
