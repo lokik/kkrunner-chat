@@ -44,14 +44,18 @@ class FileAccess:
             raise ValueError("File collection requires terminal execution status")
 
         async def collect():
-            context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
-            session = await FileSession.from_attachment(context, run)
+            session = None
             try:
+                context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
+                session = await FileSession.from_attachment(context, run)
                 return await session.finalize_async(status), None
             except (OSError, RuntimeError, ValueError) as exc:
-                return session.files, exc
+                # A session that failed to initialize has no partial state yet.
+                files = run.files.fail_pending_artifacts(str(exc)) if session is None else session.files
+                return files, exc
             finally:
-                session.close()
+                if session is not None:
+                    session.close()
 
         return _run_sync(collect())
 

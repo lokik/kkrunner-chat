@@ -1105,3 +1105,27 @@ def test_client_collects_ended_files_without_original_backend(tmp_path, monkeypa
     assert (local / "stdout").read_text() == "result"
     assert files.stdout.availability_state == "available"
     assert files.output_versions[0].is_current()
+
+
+def test_ended_file_collection_reports_session_setup_failure(tmp_path):
+    from kkrunner.runs import RunManager, RunStatus
+    from kkrunner.client.file_access import FileAccess
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    target = SshTarget("loopback")
+    record = RunManager().new_record(
+        directory=local, target=target,
+        files=FileManifest(
+            stdout=FileEntry(local / "stdout", remote / "stdout"),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    files, error = FileAccess(target).collect_ended_files(
+        record, RunStatus(RunState.CANCELLED),
+    )
+    assert isinstance(error, ValueError)
+    assert "working directory" in str(error)
+    assert files.stdout.availability_state == "failed"
+    assert files.stdout.availability_message == str(error)
+    assert not (local / "stdout").exists()
