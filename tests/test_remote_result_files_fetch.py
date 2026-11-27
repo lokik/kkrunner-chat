@@ -1072,11 +1072,17 @@ def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, 
         assert {v.path.name for v in saved.files.output_versions} == {"stdout"}
     else:
         assert saved.files.captured_at is None
+        # The first attempt already published stdout. Retrying stderr must
+        # not invalidate that result if its target-side copy has disappeared.
+        (remote / "stdout").unlink()
         monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
         finished = manager.refresh((saved,), retrieve_ended=True)[0]
         assert finished.state == RunState.FINISHED
         assert finished.files.stderr.availability_state == "available"
         assert (local / "stderr").read_text() == "stderr"
+        assert finished.files.stdout.availability_state == "available"
+        assert (local / "stdout").read_text() == "stdout"
+        assert {v.path.name for v in finished.files.output_versions} == {"stdout", "stderr"}
         assert finished.message == "Process ended; exit code unavailable"
 
 
