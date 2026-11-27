@@ -183,8 +183,9 @@ class RunStore:
     def _path(self, record):
         return self.directory / self._bucket(record.created_at) / f"{record.id}.json"
 
-    def _run_lock_path(self, record):
-        return self.directory / ".locks" / f"{record.id}.lock"
+    def _run_lock_path(self, run_id):
+        validate_run_id(run_id)
+        return self.directory / ".locks" / f"{run_id}.lock"
 
     def _forgotten_path(self, run_id):
         return self.directory / ".forgotten" / f"{run_id}.json"
@@ -211,7 +212,7 @@ class RunStore:
         After client death the operating system releases the lock, permitting
         independent recovery. This is not a native execution lock.
         """
-        return FileLock(self._run_lock_path(record).with_suffix(".observation.lock"))
+        return FileLock(self._run_lock_path(record.id).with_suffix(".observation.lock"))
 
     @staticmethod
     def _decode(path):
@@ -268,7 +269,7 @@ class RunStore:
         Existing records can change only through update(), under their global
         per-ID lock. An ID is unique across all date shards of this store.
         """
-        with self._lock, FileLock(self._run_lock_path(record)):
+        with self._lock, FileLock(self._run_lock_path(record.id)):
             self._assert_not_forgotten(record.id)
             try:
                 latest = self.get(record.id)
@@ -279,7 +280,7 @@ class RunStore:
             return latest
 
     def update(self, record: RunRecord, updater):
-        with self._lock, FileLock(self._run_lock_path(record)):
+        with self._lock, FileLock(self._run_lock_path(record.id)):
             self._assert_not_forgotten(record.id)
             try:
                 latest = self.get(record.id)
@@ -311,9 +312,7 @@ class RunStore:
         concurrent reassignment. The owning ProjectRepository validates the
         destination and serializes reassignment against project deletion.
         """
-        # Resolve the identity first; the locked read below is authoritative.
-        record = self.get(run_id)
-        with self._lock, FileLock(self._run_lock_path(record)):
+        with self._lock, FileLock(self._run_lock_path(run_id)):
             current = self.get(run_id)
             if current.project_id != expected_project_id:
                 raise ValueError(f"Run {run_id!r} belongs to a different project now")
@@ -326,7 +325,7 @@ class RunStore:
 
         Its observation lock must still be held by the scope's owner.
         """
-        with self.submission_lock(), FileLock(self._run_lock_path(record)):
+        with self.submission_lock(), FileLock(self._run_lock_path(record.id)):
             if self.get(record.id) != record:
                 raise ValueError("Cannot discard a changed scoped reservation")
             path = self._path(record)
@@ -351,8 +350,7 @@ class RunStore:
         if type(force) is not bool:
             raise TypeError("force must be a bool")
         run_id = run if isinstance(run, str) else run.id
-        record = self.get(run_id)
-        with self._lock, FileLock(self._run_lock_path(record)):
+        with self._lock, FileLock(self._run_lock_path(run_id)):
             record = self.get(run_id)
             if not record.state.is_terminal and not force:
                 raise ActiveRunDeletionError(

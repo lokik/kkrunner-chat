@@ -127,3 +127,22 @@ def test_processing_token_is_not_part_of_persisted_history(tmp_path):
     data["processing_attempt"] = "old-client-token"
     path.write_text(json.dumps(data))
     assert store.get(record.id) == record
+
+
+@pytest.mark.parametrize("run_id", ["", "..", "a/b", "a\\b"])
+def test_history_mutations_reject_invalid_run_ids(tmp_path, run_id):
+    store = RunStore(tmp_path / "runs")
+    with pytest.raises(ValueError, match="filename component"):
+        store.reassign_project(run_id, "project", expected_project_id=None)
+    with pytest.raises(ValueError, match="filename component"):
+        store.forget(run_id)
+    assert store.runs() == ()
+
+
+def test_history_mutations_require_existing_record(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    with pytest.raises(FileNotFoundError):
+        store.reassign_project("missing", "project", expected_project_id=None)
+    with pytest.raises(FileNotFoundError):
+        store.forget("missing")
+    assert store.runs() == ()
