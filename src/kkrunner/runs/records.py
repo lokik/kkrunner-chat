@@ -19,7 +19,9 @@ from kkrunner.files.manifest import FileManifest
 from kkrunner.runs.base import FailurePhase, RunState
 from kkrunner.runs.metadata import freeze_metadata
 from kkrunner.runs.model import ExecutionMetadata
-from kkrunner.support.durability import durable_mkdir, durable_write_json, fsync_directory
+from kkrunner.support.durability import (
+    durable_mkdir, durable_replace, durable_write_json, durable_write_text, fsync_directory,
+)
 from kkrunner.support.file_locks import FileLock
 
 _RUN_RECORD_SCHEMA_VERSION = 1
@@ -156,7 +158,7 @@ def validate_update(latest, updated):
 
 
 class RunStore:
-    """Run history stored as date-sharded durable JSON files."""
+    """Active records and date-sharded terminal history, with one file per run."""
 
     durable = True
 
@@ -180,8 +182,53 @@ class RunStore:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid run creation timestamp: {created_at!r}") from exc
 
+    @property
+    def _active_directory(self):
+        return self.directory / "active"
+
+    @property
+    def _layout_marker(self):
+        return self.directory / ".active-layout"
+
     def _path(self, record):
-        return self.directory / self._bucket(record.created_at) / f"{record.id}.json"
+        directory = (self.directory / self._bucket(record.created_at)
+                     if record.state.is_terminal else self._active_directory)
+        return directory / f"{record.id}.json"
+
+    def _move_record(self, source, destination):
+        durable_mkdir(destination.parent, parents=True, exist_ok=True, mode=0o700)
+        durable_replace(source, destination)
+
+    def _migrate_layout(self):
+        """Under the submission lock, migrate the old date-only layout once.
+
+        No record contents change. Interrupted moves are safe to resume; only
+        publish the marker after every nonterminal record is in active/.
+        """
+        if self._layout_marker.is_file():
+            return
+        for day in self._day_directories(newest=False):
+            for path in day.glob("*.json"):
+                if self._forgotten_path(path.stem).is_file():
+                    continue
+                with FileLock(self._run_lock_path(path.stem)):
+                    record = self._decode(path)
+                    if record.state.is_terminal:
+                        continue
+                    destination = self._path(record)
+                    if destination.exists():
+                        raise CorruptRunRecord(path, "duplicate run identity in active and history")
+                    self._move_record(path, destination)
+            # Also flush moves interrupted before their final directory barrier.
+            fsync_directory(day)
+        if self._active_directory.is_dir():
+            fsync_directory(self._active_directory)
+        durable_write_text(self._layout_marker, "1\n", mode=0o600)
+
+    def _ensure_layout(self):
+        if not self._layout_marker.is_file():
+            with self.submission_lock():
+                pass
 
     def _run_lock_path(self, run_id):
         validate_run_id(run_id)
@@ -199,7 +246,9 @@ class RunStore:
         if self._forgotten_path(run_id).is_file():
             raise FileNotFoundError(run_id)
         filename = f"{run_id}.json"
-        paths = tuple(day / filename for day in self._day_directories(newest=True) if (day / filename).is_file())
+        paths = tuple(folder / filename
+                      for folder in (self._active_directory, *self._day_directories(newest=True))
+                      if (folder / filename).is_file())
         if not paths:
             raise FileNotFoundError(run_id)
         if len(paths) != 1:
@@ -228,7 +277,10 @@ class RunStore:
             # It has no bearing on the durable execution or artifact identity.
             data.pop("processing_attempt", None)
             record = RunRecord(**data)
-            if record.id != path.stem or RunStore._bucket(record.created_at) != path.parent.name:
+            if record.id != path.stem or (
+                path.parent.name != "active"
+                and RunStore._bucket(record.created_at) != path.parent.name
+            ):
                 raise ValueError("Run identity does not match its persistent location")
             return record
         except CorruptRunRecord:
@@ -242,25 +294,40 @@ class RunStore:
             return os.fspath(value)
         raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
-    def _write_unlocked(self, record):
-        durable_mkdir(self.directory, parents=True, exist_ok=True, mode=0o700)
-        path = self._path(record)
+    def _finish_move(self, record, path):
+        destination = self._path(record)
+        if path != destination:
+            self._move_record(path, destination)
+
+    def _write_unlocked(self, record, *, previous_path=None):
+        destination = self._path(record)
+        path = destination
+        if previous_path is not None and previous_path != destination:
+            if record.state.is_terminal:
+                # Publish terminal state before removing the active entry.
+                # A crash can leave a terminal record in active/, never an
+                # active reservation hidden in the dated history.
+                path = previous_path
+            else:
+                # Move the old terminal record before publishing active state.
+                self._move_record(previous_path, destination)
         durable_mkdir(path.parent, parents=True, exist_ok=True, mode=0o700)
         record = replace(record, store=self)
-        data = record.to_dict()
         durable_write_json(
             path,
-            data,
+            record.to_dict(),
             mode=0o600,
             sort_keys=True,
             default=self._json_default,
         )
+        self._finish_move(record, path)
         return record
 
     @contextmanager
     def submission_lock(self):
         durable_mkdir(self.directory, parents=True, exist_ok=True, mode=0o700)
         with self._lock, FileLock(self.directory / ".submit.lock"):
+            self._migrate_layout()
             yield
 
     def save(self, record: RunRecord):
@@ -269,37 +336,42 @@ class RunStore:
         Existing records can change only through update(), under their global
         per-ID lock. An ID is unique across all date shards of this store.
         """
+        self._ensure_layout()
         with self._lock, FileLock(self._run_lock_path(record.id)):
             self._assert_not_forgotten(record.id)
             try:
-                latest = self.get(record.id)
+                path = self._path_for_id(record.id)
             except FileNotFoundError:
                 return self._write_unlocked(record)
+            latest = replace(self._decode(path), store=self)
             if latest != record:
                 raise ValueError("Run already exists; update cannot replace identity or metadata")
+            self._finish_move(latest, path)
             return latest
 
     def update(self, record: RunRecord, updater):
+        self._ensure_layout()
         with self._lock, FileLock(self._run_lock_path(record.id)):
             self._assert_not_forgotten(record.id)
             try:
-                latest = self.get(record.id)
+                previous_path = self._path_for_id(record.id)
             except FileNotFoundError:
                 if record.state != RunState.NEW:
                     raise
                 latest = replace(record, store=self)
-                exists = False
+                previous_path = None
             else:
-                exists = True
+                latest = replace(self._decode(previous_path), store=self)
             if latest.created_at != record.created_at:
                 raise ValueError("Run id already belongs to a different persistent identity")
             updated = updater(latest)
             validate_update(latest, updated)
             # Returning the authoritative record is an explicit no-op, not
             # a request to repeat its durable publication.
-            if exists and updated is latest:
+            if previous_path is not None and updated is latest:
+                self._finish_move(latest, previous_path)
                 return latest
-            return self._write_unlocked(updated)
+            return self._write_unlocked(updated, previous_path=previous_path)
 
     def reassign_project(
         self, run_id: str, project_id: str | None, *, expected_project_id: str | None,
@@ -312,13 +384,17 @@ class RunStore:
         concurrent reassignment. The owning ProjectRepository validates the
         destination and serializes reassignment against project deletion.
         """
+        self._ensure_layout()
         with self._lock, FileLock(self._run_lock_path(run_id)):
-            current = self.get(run_id)
+            previous_path = self._path_for_id(run_id)
+            current = replace(self._decode(previous_path), store=self)
             if current.project_id != expected_project_id:
                 raise ValueError(f"Run {run_id!r} belongs to a different project now")
             if current.project_id == project_id:
+                self._finish_move(current, previous_path)
                 return current
-            return self._write_unlocked(replace(current, project_id=project_id))
+            return self._write_unlocked(replace(current, project_id=project_id),
+                                        previous_path=previous_path)
 
     def discard(self, record):
         """Remove an exact, owner-scoped reservation without a tombstone.
@@ -326,9 +402,9 @@ class RunStore:
         Its observation lock must still be held by the scope's owner.
         """
         with self.submission_lock(), FileLock(self._run_lock_path(record.id)):
-            if self.get(record.id) != record:
+            path = self._path_for_id(record.id)
+            if self._decode(path) != record:
                 raise ValueError("Cannot discard a changed scoped reservation")
-            path = self._path(record)
             path.unlink()
             fsync_directory(path.parent)
 
@@ -351,7 +427,8 @@ class RunStore:
             raise TypeError("force must be a bool")
         run_id = run if isinstance(run, str) else run.id
         with self._lock, FileLock(self._run_lock_path(run_id)):
-            record = self.get(run_id)
+            path = self._path_for_id(run_id)
+            record = replace(self._decode(path), store=self)
             if not record.state.is_terminal and not force:
                 raise ActiveRunDeletionError(
                     f"Run {run_id!r} is {record.state.value}; its process may "
@@ -364,13 +441,21 @@ class RunStore:
                 tombstone, {"run_id": run_id, "created_at": record.created_at},
                 mode=0o600, sort_keys=True,
             )
-            path = self._path(record)
             path.unlink()
             fsync_directory(path.parent)
             return record
 
-    def get(self, run_id):
+    def _get_unlocked(self, run_id):
         return replace(self._decode(self._path_for_id(run_id)), store=self)
+
+    def get(self, run_id):
+        validate_run_id(run_id)
+        if not self.directory.is_dir():
+            raise FileNotFoundError(run_id)
+        # A record may move between namespaces during a lifecycle update.
+        # Reuse the per-ID lock so lookup and read see one location.
+        with self._lock, FileLock(self._run_lock_path(run_id)):
+            return self._get_unlocked(run_id)
 
     def _day_directories(self, *, newest):
         if not self.directory.is_dir():
@@ -409,10 +494,54 @@ class RunStore:
         if limit == 0:
             return ()
 
+        if active is True and self.directory.is_dir() and not self._layout_marker.is_file():
+            try:
+                self._ensure_layout()
+            except CorruptRunRecord:
+                if on_error is None:
+                    raise
+                # A tolerant history viewer may still inspect valid records.
+                # Never publish a layout marker while an old shard is unreadable.
         with self._lock:
+            migrated = self._layout_marker.is_file()
+            if active is True and migrated:
+                records = tuple(record for record in self._records_in_directory(
+                    self._active_directory, newest=newest, on_error=on_error,
+                ) if not record.state.is_terminal)
+                return records[:limit]
+
+            # Terminal entries can remain in active/ after an interrupted move.
+            # Merge both namespaces by creation date, retaining the existing
+            # limit optimization for dated history.
+            by_day = {}
+            for record in self._records_in_directory(
+                self._active_directory, newest=newest, on_error=on_error,
+            ):
+                by_day.setdefault(self._bucket(record.created_at), []).append(record)
+            days = {day.name: day for day in self._day_directories(newest=newest)}
             records = []
-            for day in self._day_directories(newest=newest):
-                for record in self._records_in_directory(day, newest=newest, on_error=on_error):
+            seen = set()
+            for name in sorted(days.keys() | by_day.keys(), reverse=newest):
+                entries = by_day.get(name, [])
+                if name in days:
+                    entries.extend(self._records_in_directory(
+                        days[name], newest=newest, on_error=on_error,
+                    ))
+                for record in sorted(entries, key=lambda item: item.created_at, reverse=newest):
+                    # A moving record may be observed in both enumerations.
+                    # Distinguish that race from duplicate persisted identities
+                    # using the normal locked lookup.
+                    if record.id in seen:
+                        try:
+                            self.get(record.id)
+                        except FileNotFoundError:
+                            pass
+                        except CorruptRunRecord as exc:
+                            if on_error is None:
+                                raise
+                            on_error(exc)
+                        continue
+                    seen.add(record.id)
                     if active is True and record.state.is_terminal:
                         continue
                     if active is False and not record.state.is_terminal:

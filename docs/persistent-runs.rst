@@ -142,6 +142,20 @@ Use its atomic update API for subsequent changes. A date shard does not create
 a separate ID namespace. Invalid or duplicate records raise
 :class:`~kkrunner.runs.CorruptRunRecord`; they are not silently ignored.
 
+Nonterminal records reside in ``active/``; terminal records reside in the
+date shard of their creation timestamp. Each run has exactly one JSON
+record. Active-only queries and reservation checks do not scan dated
+history. Completion publishes the terminal state before moving the record
+to history; reopening moves it back before publishing a nonterminal state.
+An interrupted move may leave a terminal record in ``active/``; readers
+still classify it by its recorded state, not by its location.
+
+Existing date-only stores are migrated once, under the submission lock, on
+the first active-only query or write. The migration preserves IDs, contents
+and creation dates. It must complete successfully before conflict checks may
+skip dated history. Upgrade all clients sharing the store before using the
+new layout: older versions do not recognize ``active/``.
+
 Metadata is namespaced JSON data, recursively immutable after record creation.
 It cannot change run identity, choose parsers, or execute code. Put the
 application's reconstruction parameters in its namespace and keep executable
