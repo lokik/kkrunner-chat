@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.projects import ProjectRunManager, ProjectRepository
 from kkrunner import ExecutionSpec, RunState
 
@@ -57,7 +57,7 @@ class _Runner:
         pass
 
 
-class _Executor(EndpointClient):
+class _Executor(ExecutionClient):
     def __init__(self):
         super().__init__(SupervisedBackend)
 
@@ -80,9 +80,8 @@ def _fixture(tmp_path):
 def test_run_is_durable_in_project_namespace_before_backend_submit(tmp_path):
     manager, projects, project = _fixture(tmp_path)
     executor = _Executor()
-    run = manager.create_run(
-        executor,
-        ExecutionSpec(("unused",), directory=str(tmp_path)),
+    run = executor.create_run(
+        ExecutionSpec(("unused",), directory=str(tmp_path)), persistent=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "input_definition": "DOS"}},
     )
@@ -104,15 +103,13 @@ def test_project_must_exist_before_backend_is_created(tmp_path, explicit):
     projects = ProjectRepository(tmp_path / "projects")
     manager = ProjectRunManager(project_repository=projects)
     executor = _Executor()
-    options = {"project": "missing"} if explicit else {}
     errors = (KeyError, ValueError) if explicit else ValueError
     message = None if explicit else "existing project"
     with pytest.raises(errors, match=message):
-        manager.create_run(
-            executor,
-            ExecutionSpec(("unused",), directory=str(tmp_path)),
+        selected = manager.for_project("missing") if explicit else manager
+        executor.create_run(
+            ExecutionSpec(("unused",), directory=str(tmp_path)), persistent=selected,
             process_result=lambda outcome: outcome,
-            **options,
             metadata={"test": {"task": "DOS"}},
         )
     assert not hasattr(executor, "runner")

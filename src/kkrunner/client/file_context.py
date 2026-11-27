@@ -40,9 +40,9 @@ class FileContext:
         if not isinstance(staging, StagingSpec):
             staging = StagingSpec(**dict(staging))
         self.client = client
-        self.transport = client.transport
+        self.target = client.target
         self.filesystem_id = staging.filesystem_id
-        self.local_root = Path(staging.local_root or (Path("/") if self.transport.is_local else Path.home())).expanduser().resolve()
+        self.local_root = Path(staging.local_root or (Path("/") if self.target.is_local else Path.home())).expanduser().resolve()
         self.remote_root = None if staging.remote_root is None else os.fspath(staging.remote_root)
         self.input_files = FileSyncPolicy(staging.input_sync)
         self.output_files = FileSyncPolicy(staging.output_sync)
@@ -52,7 +52,7 @@ class FileContext:
 
     def _target_root(self, home):
         """Use the same root rules for a symbolic preview and a resolved path."""
-        if self.transport.is_local:
+        if self.target.is_local:
             return os.fspath(self.local_root)
         root = self.remote_root
         if root is not None and posixpath.isabs(root):
@@ -68,12 +68,12 @@ class FileContext:
         return home if suffix == "." else posixpath.join(home, suffix)
 
     async def _resolved_remote_root(self):
-        if self.transport.is_local or (self.remote_root is not None and posixpath.isabs(self.remote_root)):
+        if self.target.is_local or (self.remote_root is not None and posixpath.isabs(self.remote_root)):
             return self._target_root("~")
         return self._target_root(await self._remote_home())
 
     def _map_path(self, path, remote_root):
-        if self.transport.is_local:
+        if self.target.is_local:
             return os.path.abspath(os.fspath(path))
         relative = _relative_local_path(path, self.local_root)
         if not relative.parts:
@@ -89,7 +89,7 @@ class FileContext:
 
     async def resolve_target_path(self, path):
         """Resolve an already-target-side path, without mapping it again."""
-        if self.transport.is_local:
+        if self.target.is_local:
             return os.path.abspath(path)
         path = os.fspath(path)
         if path == "~" or path.startswith("~/"):
@@ -99,7 +99,7 @@ class FileContext:
 
     async def map_manifest(self, manifest):
         """Project declared file identities; do not stage files or capture versions."""
-        if self.transport.is_local:
+        if self.target.is_local:
             return manifest
 
         remote_root = await self._resolved_remote_root()
@@ -124,7 +124,7 @@ class FileContext:
         )
 
     def _unmap_path(self, path, remote_root):
-        if self.transport.is_local:
+        if self.target.is_local:
             return Path(os.path.abspath(path))
         path = posixpath.normpath(os.fspath(path))
         if not posixpath.isabs(path):

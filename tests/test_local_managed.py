@@ -20,7 +20,7 @@ from kkrunner.backends.implementations.supervised.mailbox import recover_submiss
 from kkrunner.remote.handles import decode_handle, encode_handle
 from kkrunner.support.process_identity import ProcessIdentity
 from kkrunner.runs.base import FailurePhase, RunStatus
-from kkrunner.client import EndpointClient, LocalTransport, StagingSpec
+from kkrunner.client import ExecutionClient, LocalTarget, StagingSpec
 from kkrunner.client.job import Job
 from kkrunner.backends.config import BackendConfig
 
@@ -51,7 +51,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("kkrunner")),
+        execution=ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("kkrunner")),
         files=FileManifest(
             stdout=FileEntry(local_path=str(tmp_path / "out.txt")) if stdout else None,
             stderr=FileEntry(local_path=str(tmp_path / "err.txt")) if stderr else None,
@@ -63,7 +63,7 @@ def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
 
 def _managed_parts(spec, *, submission_key=RUN_ID, backend=SupervisedBackend, backend_options=None):
     """Prepare one client session without introducing an alternate Job implementation."""
-    client = EndpointClient(backend, backend_options=backend_options)
+    client = ExecutionClient(backend, backend_options=backend_options)
     parts = client.create_run_parts(spec, submission_key=submission_key)
     parts.files.prepare_submission()
     parts.prepare_job()
@@ -80,7 +80,7 @@ def _attachment(record):
 
 
 def test_project_launch_reconnect_and_shared_ticket(tmp_path):
-    executor = EndpointClient(SupervisedBackend)
+    executor = ExecutionClient(SupervisedBackend)
     runner = _managed_job(_spec(tmp_path), submission_key=RUN_ID)
     runner.submit()
     handle = runner.backend_id
@@ -140,7 +140,7 @@ def test_cancel_is_supervisor_owned_and_nonblocking(tmp_path):
 
 
 def test_missing_ticket_keeps_submission_uncertain(tmp_path):
-    assert EndpointClient(SupervisedBackend).recover_submission(
+    assert ExecutionClient(SupervisedBackend).recover_submission(
         RUN_ID, SubmissionContext(_record(tmp_path, None).execution)
     ).disposition is RecoveryDisposition.INDETERMINATE
 
@@ -154,7 +154,7 @@ def test_missing_supervisor_outcome_is_unknown(tmp_path):
             "socket_path": "/missing/socket",
         }
     )
-    assert EndpointClient(SupervisedBackend).status(_attachment(_record(tmp_path, handle)))[0].state == RunState.UNKNOWN
+    assert ExecutionClient(SupervisedBackend).status(_attachment(_record(tmp_path, handle)))[0].state == RunState.UNKNOWN
 
 
 def test_wildcards_track_concrete_file_availability(tmp_path):
@@ -191,15 +191,23 @@ def test_failed_execution_replaces_stale_stdout(tmp_path):
     assert out.read_bytes() == b""
 
 
-def test_none_stream_paths_are_live_only(tmp_path):
-    runner = _managed_job(_spec(tmp_path, out=None, err=None), submission_key=RUN_ID)
+def test_none_stream_paths_are_live_only(tmp_path, monkeypatch):
+    async def unexpected_follow(self, *args, **kwargs):
+        pytest.fail("New supervised submission must not need a separate FOLLOW call")
+
+    monkeypatch.setattr(LocalTarget, "follow", unexpected_follow)
+    spec = _spec(tmp_path, (sys.executable, "-c",
+                "from pathlib import Path; Path('started').touch(); print('output')"),
+                out=None, err=None)
+    runner = _managed_job(spec, submission_key=RUN_ID)
     seen = []
     runner.add_output_listener(lambda text, kind: seen.append((text, kind)))
     runner.submit()
     assert runner.wait().return_code == 0
+    assert "".join(text for text, kind in seen if kind == "out") == "output\n"
     assert not (tmp_path / "out.txt").exists()
     assert not (tmp_path / "err.txt").exists()
-    attached = open_job(EndpointClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False)
+    attached = open_job(ExecutionClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False)
     assert attached.backend_id == runner.backend_id
     assert attached.result.output_file is None
     assert attached.result.error_file is None
@@ -211,7 +219,7 @@ def test_terminal_without_ticket_is_still_accessible_by_handle(tmp_path):
     runner.submit()
     runner.wait()
     assert SupervisedBackend.acknowledge_submission(RUN_ID)["acknowledged"]
-    assert EndpointClient(SupervisedBackend).status(
+    assert ExecutionClient(SupervisedBackend).status(
         _attachment(_record(tmp_path, runner.backend_id))
     )[0].state == RunState.FINISHED
 
@@ -249,7 +257,7 @@ def _attached_job(tmp_path, *, state="running", return_code=None):
     from kkrunner.client.backend_execution import bind_execution
 
     binding = bind_execution(
-        SupervisedBackend(), LocalTransport(),
+        SupervisedBackend(), LocalTarget(),
         ref=JobRef("kkrunner", "opaque-target-id"),
         status={"state": state, "return_code": return_code},
     )
@@ -349,7 +357,7 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     existing.write_text("restart cache")
     extra.write_text("old output")
     spec = replace(_spec(tmp_path), cache_files=(str(existing),), output_files=(str(extra),))
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
     with pytest.raises(ValueError, match="cache collision"):
         client.create_run_parts(spec, submission_key=RUN_ID)
     assert existing.read_text() == "restart cache"
@@ -357,15 +365,14 @@ def test_local_project_invalid_output_is_known_non_submission(tmp_path):
     assert recover_submission(RUN_ID) is None
 
 
-def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(tmp_path):
+@pytest.mark.parametrize("abrupt_exit", [False, True], ids=["normal-exit", "abrupt-exit"])
+def test_new_client_process_reopens_store_and_reconnects_to_running_calculation(tmp_path, abrupt_exit):
     import subprocess
 
     submit = """
 import os, sys
 from pathlib import Path
-from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.backends import SupervisedBackend
-from kkrunner.client import EndpointClient
+from kkrunner import submit, RunManager, RunStore
 root = Path(sys.argv[1])
 manager = RunManager(RunStore(root / 'runs'))
 command = '''
@@ -378,13 +385,15 @@ while not Path('resume').exists():
     time.sleep(0.01)
 print(42)
 '''
-run = manager.create_run(EndpointClient(SupervisedBackend), ExecutionSpec(
-    [sys.executable, '-c', command], directory=root, output_file='run.out'))
-run.submit()
+run = submit(
+    [sys.executable, '-c', command], directory=root, output_file='run.out',
+    backend='kkrunner', persistent=manager,
+)
 print(run.id, flush=True)
-# Simulate abrupt client termination without running monitor cleanup.
-os._exit(0)
 """
+    if abrupt_exit:
+        # Simulate abrupt client termination without running monitor cleanup.
+        submit += "os._exit(0)\n"
     reconnect = """
 import sys
 from pathlib import Path
@@ -452,9 +461,9 @@ def test_local_follow_uses_psij_backend_with_original_job_identity(tmp_path, mon
         return {"state": "running", "return_code": None}
 
     monkeypatch.setattr(PsijBackend, "follow", staticmethod(follow))
-    client = EndpointClient(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
+    client = ExecutionClient(PsijBackend, backend_options={"executor_name": "pbs", "url": "local"})
     identity = encode_handle({"kind": "psij", "executor_name": "pbs", "url": "local", "native_id": "native-id"})
-    result = asyncio.run(client.transport.follow(
+    result = asyncio.run(client.target.follow(
         Operation.for_backend(PsijBackend, "follow"), identity, lambda *_: None,
         stdout_offset=4, stderr_offset=None, stdout_path=str(tmp_path / "run.out"),
         stderr_path=None,
@@ -483,3 +492,15 @@ def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_
     asyncio.run(job._monitor())
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
+
+def test_initial_supervised_named_streams_are_not_delivered_twice(tmp_path):
+    spec = _spec(tmp_path, (sys.executable, "-c",
+                           "import sys; print('out'); print('err', file=sys.stderr)"))
+    runner = _managed_job(spec)
+    seen = {"out": [], "err": []}
+    runner.add_output_listener(lambda text, kind: seen[kind].append(text))
+    runner.submit()
+    assert runner.wait().return_code == 0
+    assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {"out": "out\n", "err": "err\n"}
+    assert (tmp_path / "out.txt").read_text() == "out\n"
+    assert (tmp_path / "err.txt").read_text() == "err\n"

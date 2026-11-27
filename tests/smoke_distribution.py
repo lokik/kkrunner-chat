@@ -11,7 +11,7 @@ from pathlib import Path
 import kkrunner
 from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
 from kkrunner.backends import DirectBackend, SupervisedBackend
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.projects import ProjectRunManager, ProjectRepository
 
 assert not os.environ.get("PYTHONPATH")
@@ -23,27 +23,24 @@ for module in pkgutil.walk_packages(kkrunner.__path__, kkrunner.__name__ + "."):
 assert md.version("kkrunner") == kkrunner.__version__
 
 root = Path(tempfile.mkdtemp(prefix="kkrunner-distribution-"))
-raw = Run.untracked(
-    EndpointClient(DirectBackend),
+raw = ExecutionClient(DirectBackend).create_run(
     ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=root,
         output_file="raw.out",
-    )
-)
+    ), persistent=False)
 assert raw.run().return_code == 0
 assert (root / "raw.out").read_text() == "42\n"
 
 projects = ProjectRepository(root / "projects")
 project = projects.create("Wheel review", directory=root)
 manager = ProjectRunManager(project_repository=projects, project=project)
-run = manager.create_run(
-    EndpointClient(SupervisedBackend),
+run = ExecutionClient(SupervisedBackend).create_run(
     ExecutionSpec(
         [sys.executable, "-c", "print(43)"],
         directory=root,
         output_file="managed.out",
-    ),
+    ), persistent=manager,
     processing_required=True,
 )
 try:
@@ -59,7 +56,7 @@ assert restarted.store.get(run.id).state == RunState.FINISHED
 local, remote = root / "local", root / "remote"
 local.mkdir()
 remote.mkdir()
-class LoopbackSshTransport(SshTransport):
+class LoopbackSshTransport(SshTarget):
     """Run SSH target commands locally using the real operation protocol."""
 
     def __init__(self):
@@ -70,15 +67,14 @@ class LoopbackSshTransport(SshTransport):
         return tuple(argv)
 
 
-client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
-run = Run.untracked(client,
+client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
+run = client.create_run(
     ExecutionSpec(
         [sys.executable, "-c", "print(44)"],
         directory=local,
         output_file="remote.out",
         staging=StagingSpec(local_root=local, remote_root=remote),
-    )
-)
+    ), persistent=False)
 assert run.run().return_code == 0
 assert (local / "remote.out").read_text() == "44\n"
 commands = {entry.name for entry in md.distribution("kkrunner").entry_points if entry.group == "console_scripts"}

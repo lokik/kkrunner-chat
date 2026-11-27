@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from kkrunner.backends import DirectBackend
-from kkrunner.client import EndpointClient, LocalTransport
+from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.client.execution_request import command_request, execution_request
 from kkrunner.client.run_parts import RunParts
 from kkrunner.execution import MpiSpec
@@ -27,7 +27,7 @@ def _local_spec(tmp_path, code="print('ok')"):
 
 
 def test_output_observer_failure_is_reported_but_does_not_fail_process(tmp_path):
-    runner = Run.untracked(EndpointClient(DirectBackend), _local_spec(tmp_path))
+    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), persistent=False)
     observer_errors = []
 
     def broken_observer(*_):
@@ -47,7 +47,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
     def fail(_outcome):
         raise ValueError("parser failed")
 
-    runner = Run.untracked(EndpointClient(DirectBackend), _local_spec(tmp_path), process_result=fail)
+    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), persistent=False, process_result=fail)
     raw = runner._job
     runner.submit()
     with pytest.raises(ValueError, match="parser failed"):
@@ -58,8 +58,7 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
-    runner = Run.untracked(
-        EndpointClient(DirectBackend), _local_spec(tmp_path),
+    runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), persistent=False,
         callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed")),
     )
     runner.submit()
@@ -96,7 +95,7 @@ class _UnknownRunner:
 def test_unknown_raw_state_is_preserved_and_not_postprocessed():
     raw = _UnknownRunner()
     processed = []
-    client = EndpointClient(DirectBackend)
+    client = ExecutionClient(DirectBackend)
     spec = ExecutionSpec(argv=("unused",), directory=".")
     parts = client.create_run_parts(spec)
     parts.job = raw
@@ -146,12 +145,12 @@ class _UncertainRunner(_NotStartedRunner):
 
 def _project_wrapper(tmp_path, runner):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    client = EndpointClient(DirectBackend)
+    client = ExecutionClient(DirectBackend)
     spec = ExecutionSpec(argv=("unused",), directory=str(tmp_path))
     parts = client.create_run_parts(spec)
     parts.job = runner
     record = manager.new_record(
-        directory=tmp_path, transport=client.transport, backend=client.backend_config,
+        directory=tmp_path, target=client.target, backend=client.backend_config,
         metadata={"test": {"task": "SCF"}}, processing_required=True,
     )
     return manager, Run(runner, client=client, manager=manager, record=record, parts=parts)
@@ -199,7 +198,7 @@ def test_local_transport_failed_copy_preserves_destination(tmp_path):
     destination = tmp_path / "output"
     destination.write_bytes(b"old")
     with pytest.raises(FileNotFoundError):
-        asyncio.run(LocalTransport().put_file(tmp_path / "missing", destination))
+        asyncio.run(LocalTarget().put_file(tmp_path / "missing", destination))
     assert destination.read_bytes() == b"old"
 
 
@@ -252,11 +251,11 @@ def test_file_path_strict_contract_preserves_optional_none(tmp_path):
 
 
 def test_strict_runner_path_errors_remain_backend_specific(tmp_path):
-    from kkrunner.client import SshTransport
+    from kkrunner.client import SshTarget
     from kkrunner.client.file_session import FileSession
 
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    session = EndpointClient(DirectBackend, transport=SshTransport("example.org")).file_session(spec)
+    session = ExecutionClient(DirectBackend, target=SshTarget("example.org")).file_session(spec)
     with pytest.raises(ValueError, match="Remote execution requires named files"):
         session._local_path(object())
     with pytest.raises(ValueError, match="Remote execution requires named files"):
@@ -309,11 +308,11 @@ def test_partial_spec_distinguishes_unknown_from_empty_argv(tmp_path):
 
 def test_partial_spec_cannot_be_submitted_to_public_backend_apis(tmp_path):
     spec = ExecutionSpec(argv=None, directory=str(tmp_path))
-    client = EndpointClient(DirectBackend)
+    client = ExecutionClient(DirectBackend)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        Run.untracked(client, spec)
+        client.create_run(spec, persistent=False)
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
         client.create_run_parts(spec)
     manager = RunManager(RunStore(tmp_path / "store"))
     with pytest.raises(ValueError, match="partial ExecutionSpec"):
-        manager.create_run(client, spec)
+        client.create_run(spec, persistent=manager)

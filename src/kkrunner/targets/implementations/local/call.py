@@ -10,15 +10,19 @@ from ...calls import _Call, OutputSink
 class LocalCall(_Call):
     """Invoke a backend coroutine with borrowed streams on the caller's loop."""
 
-    def __init__(self, function, request, on_output, *, files=None, stdin=None, tail_paths=None):
+    def __init__(self, function, request, on_output, *, files=None, stdin=None,
+                 tail_paths=None, observe_only=False):
         super().__init__()
-        self._control = asyncio.StreamReader()
+        self._control = None if observe_only else asyncio.StreamReader()
         self._start(self._invoke(function, request, on_output, files, stdin, tail_paths))
 
     async def _invoke(self, function, request, on_output, files, stdin, tail_paths):
+        io = {} if files is None else {"files": files, "stdin": stdin}
+        if self._control is not None:
+            io["control"] = self._control
         running = asyncio.create_task(function(
             request, stdout=OutputSink(on_output, "out"), stderr=OutputSink(on_output, "err"),
-            control=self._control, started=self._started, files=files, stdin=stdin,
+            started=self._started, **io,
         ))
         tasks = [running]
         if tail_paths:
@@ -37,12 +41,15 @@ class LocalCall(_Call):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def cancel(self):
+        if self._control is None:
+            raise RuntimeError("Observation-only calls do not accept cancellation commands")
         if self._task.done():
             raise ConnectionError("Execution call is closed")
         self._control.feed_data(b"cancel\n")
 
     async def close(self):
-        self._control.feed_eof()
+        if self._control is not None:
+            self._control.feed_eof()
         if not self._task.done():
             self._task.cancel()
         await asyncio.gather(self._task, return_exceptions=True)

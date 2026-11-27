@@ -1,4 +1,4 @@
-"""Tests for command/file transports."""
+"""Tests for command/file targets."""
 
 import asyncio
 import hashlib
@@ -11,13 +11,13 @@ import sys
 import pytest
 
 from kkrunner.files.versions import FileVersion, file_digest
-from kkrunner.transports import LocalTransport, SshTransport
+from kkrunner.targets import LocalTarget, SshTarget
 
 
 def test_local_transport_run_start_and_files(tmp_path):
 
     async def run_test():
-        transport = LocalTransport()
+        transport = LocalTarget()
         result = await transport.run((sys.executable, "-c", "print('ok')"))
         assert result.stdout == b"ok\n"
         command = await transport.start(
@@ -42,7 +42,7 @@ def test_local_transport_run_start_and_files(tmp_path):
 def test_local_transport_preserves_file_signature(tmp_path):
 
     async def run_test():
-        transport = LocalTransport()
+        transport = LocalTarget()
         source = tmp_path / "source"
         destination = tmp_path / "destination"
         source.write_bytes(b"content")
@@ -59,7 +59,7 @@ def test_local_transport_drains_stdout_and_stderr_concurrently():
     """Both pipes must be drained while the child is still running."""
 
     async def run_test():
-        transport = LocalTransport()
+        transport = LocalTarget()
         chunks = 64
         chunk_size = 8192
         command = await transport.start(
@@ -81,7 +81,7 @@ def test_local_transport_drains_stdout_and_stderr_concurrently():
 
 
 def test_ssh_transport_quotes_remote_command():
-    transport = SshTransport("cluster", options=("-p", "2222"))
+    transport = SshTarget("cluster", options=("-p", "2222"))
     assert transport._command(("printf", "%s", "a b"), cwd="/tmp/a b") == [
         "ssh",
         "-p",
@@ -99,19 +99,19 @@ def test_transport_and_file_version_use_identical_digest(tmp_path):
     assert file_digest(source) == expected
     assert file_digest(source, missing_ok=True) == expected
     assert FileVersion.capture(source, require_digest=True).digest == expected
-    assert asyncio.run(LocalTransport().file_digest(source)) == expected
+    assert asyncio.run(LocalTarget().file_digest(source)) == expected
 
 
 def test_transport_missing_file_is_optional_but_provenance_digest_is_strict(tmp_path):
     missing = tmp_path / "missing"
     assert file_digest(missing, missing_ok=True) is None
-    assert asyncio.run(LocalTransport().file_digest(missing)) is None
+    assert asyncio.run(LocalTarget().file_digest(missing)) is None
     with pytest.raises(FileNotFoundError):
         file_digest(missing)
 
 
 def test_ssh_and_local_globstar_agree_on_hidden_entries(tmp_path):
-    """Exercise both transports, including Python glob's hidden-entry rules."""
+    """Exercise both targets, including Python glob's hidden-entry rules."""
     for name in (
         "shown/one.dat",
         "shown/.private.dat",
@@ -133,7 +133,7 @@ def test_ssh_and_local_globstar_agree_on_hidden_entries(tmp_path):
             ".hidden/*.dat",
             "shown/one.dat",
         ):
-            local = await LocalTransport().expand_files(pattern, tmp_path)
+            local = await LocalTarget().expand_files(pattern, tmp_path)
             remote = await _LoopbackSshTransport().expand_files(pattern, tmp_path)
             assert remote == local
 
@@ -160,7 +160,7 @@ def test_strict_transfer_refuses_wildcard_symlink_outside_source_root(tmp_path):
     assert target.read_text() == "protected"
 
 
-class _LoopbackSshTransport(SshTransport):
+class _LoopbackSshTransport(SshTarget):
     """Exercise the real SSH transfer implementation without an SSH server."""
 
     def __init__(self, *, compression="auto"):
@@ -268,7 +268,7 @@ async def _cancel_and_check_reaped(task, pid):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="PID cleanup assertion is POSIX-only")
-@pytest.mark.parametrize("factory", (LocalTransport, _LoopbackSshTransport))
+@pytest.mark.parametrize("factory", (LocalTarget, _LoopbackSshTransport))
 def test_transport_run_cancellation_reaps_subprocess(tmp_path, factory):
     pid_file = tmp_path / "command.pid"
 
@@ -404,7 +404,7 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
     elif status == "error":
         item["error"] = {"errno": 13, "message": "permission denied"}
 
-    class ProbedTransport(SshTransport):
+    class ProbedTransport(SshTarget):
         async def run(self, argv, *, cwd=None, input=None, check=True):
             calls.append((argv, json.loads(input), check))
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"version": 1, "result": [item]}).encode(), stderr=b"")
@@ -426,9 +426,9 @@ def test_ssh_file_queries_distinguish_absence_and_errors(method, expected, statu
     assert checked is True
 
 def test_ssh_file_query_preserves_command_errors():
-    class Failed(SshTransport):
+    class Failed(SshTarget):
         async def start(self, argv, *, cwd=None, stdin=None):
-            return await LocalTransport().start(
+            return await LocalTarget().start(
                 (sys.executable, "-c", "import sys; sys.stderr.write('connection failed'); sys.exit(255)"), stdin=stdin
             )
 
@@ -478,17 +478,17 @@ def test_ssh_batch_incomplete_archive_does_not_publish(tmp_path):
 
 
 def test_ssh_client_compression_roundtrips_from_transport():
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.backends import DirectBackend
 
     for compression in (None, "auto", "gz", "bz2", "xz", "zstd"):
-        client = EndpointClient(DirectBackend, transport=SshTransport("cluster", compression=compression))
-        assert client.transport.compression == compression
-        restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
-        assert restored.transport == client.transport
-        assert restored.transport.compression == compression
+        client = ExecutionClient(DirectBackend, target=SshTarget("cluster", compression=compression))
+        assert client.target.compression == compression
+        restored = ExecutionClient.from_config(client.target.to_dict(), client.backend_config)
+        assert restored.target == client.target
+        assert restored.target.compression == compression
 
-@pytest.mark.parametrize("factory", (LocalTransport, _LoopbackSshTransport))
+@pytest.mark.parametrize("factory", (LocalTarget, _LoopbackSshTransport))
 @pytest.mark.parametrize("check", (False, True))
 @pytest.mark.parametrize("send_input", (False, True))
 def test_transport_run_uses_start_and_preserves_completion(factory, check, send_input):
@@ -533,7 +533,7 @@ def test_transport_run_uses_start_and_preserves_completion(factory, check, send_
 def test_ssh_upload_reports_connection_failure(tmp_path):
     source = tmp_path / "source.txt"
     source.write_bytes(b"payload")
-    transport = SshTransport("unused", ssh="/missing-kkrunner-ssh-executable")
+    transport = SshTarget("unused", ssh="/missing-kkrunner-ssh-executable")
 
     with pytest.raises(FileNotFoundError, match="missing-kkrunner-ssh-executable"):
         asyncio.run(transport.put_file(source, "/remote/destination.txt"))
@@ -542,11 +542,11 @@ def test_ssh_upload_reports_connection_failure(tmp_path):
 def test_ssh_download_preserves_original_error_when_temp_unlink_fails(tmp_path, monkeypatch):
     from kkrunner.files import staging as module
 
-    class UnavailableTransport(SshTransport):
+    class UnavailableTarget(SshTarget):
         async def file_signature(self, path):
             return (5, 1000000000)
 
-    transport = UnavailableTransport("unused", ssh="/missing-kkrunner-ssh-executable")
+    transport = UnavailableTarget("unused", ssh="/missing-kkrunner-ssh-executable")
     staged = tmp_path / "staged.tmp"
     cleanup_calls = []
 
@@ -594,15 +594,15 @@ def test_agent_ssh_uses_raw_portable_file_operations(tmp_path):
 
 
 def test_ssh_client_retains_target_python_configuration():
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.backends import DirectBackend
 
-    client = EndpointClient(
-        DirectBackend, transport=SshTransport("cluster", python_command=("python3.12",)),
+    client = ExecutionClient(
+        DirectBackend, target=SshTarget("cluster", python_command=("python3.12",)),
     )
-    assert client.transport.python_command == ("python3.12",)
-    restored = EndpointClient.from_config(client.transport.to_dict(), client.backend_config)
-    assert restored.transport == client.transport
+    assert client.target.python_command == ("python3.12",)
+    restored = ExecutionClient.from_config(client.target.to_dict(), client.backend_config)
+    assert restored.target == client.target
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -640,7 +640,7 @@ def test_local_staging_does_not_replace_concurrent_destination(tmp_path):
     assert list(tmp_path.iterdir()) == [destination]
 
 
-@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
 def test_directory_upload_replaces_whole_tree(tmp_path, factory):
     source, target = tmp_path / "source", tmp_path / "target"
     source.mkdir()
@@ -675,7 +675,7 @@ def test_large_batch_manifest_is_not_passed_in_argv(tmp_path):
     assert len(result) == len(names)
 
 
-@pytest.mark.parametrize("factory", [LocalTransport, _LoopbackSshTransport])
+@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
 def test_exact_batch_does_not_expand_wildcards_and_allows_rename(tmp_path, factory):
     source, remote = tmp_path / "source", tmp_path / "remote"
     source.mkdir()
@@ -707,7 +707,7 @@ def test_single_ssh_upload_accepts_explicit_symlink_source(tmp_path):
     (["gz", "zstd"], ["gz"], "gz"),
 ])
 def test_auto_compression_negotiates_and_caches(monkeypatch, local, remote, expected):
-    from kkrunner.transports.implementations.ssh import transport as module
+    from kkrunner.targets.implementations.ssh import transport as module
 
     probes = []
     queries = []
@@ -733,7 +733,7 @@ def test_auto_compression_negotiates_and_caches(monkeypatch, local, remote, expe
 
 
 def test_explicit_unsupported_compression_does_not_fall_back(monkeypatch):
-    from kkrunner.transports.implementations.ssh import transport as module
+    from kkrunner.targets.implementations.ssh import transport as module
 
     monkeypatch.setattr(module, "archive_compressions", lambda: ["gz", "zstd"])
 
@@ -768,10 +768,10 @@ def test_ssh_directory_roundtrip_uses_native_compression(tmp_path, compression):
 
 
 def test_legacy_persisted_compression_is_readable():
-    from kkrunner.transports import transport_from_dict
+    from kkrunner.targets import target_from_dict
 
     for old, compression in ((False, None), (True, "zstd")):
-        transport = transport_from_dict({"kind": "ssh", "host": "cluster", "zstd": old})
+        transport = target_from_dict({"kind": "ssh", "host": "cluster", "zstd": old})
         assert transport.compression == compression
         assert "zstd" not in transport.to_dict()
 

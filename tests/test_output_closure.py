@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.backends import DirectBackend, SupervisedBackend
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.client.job import Job
 from kkrunner.files.streams import close_output_files
 from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
@@ -34,7 +34,7 @@ def test_local_file_session_closes_only_acquired_output_handles(tmp_path, backen
     stdout = _TrackedOutput(str(tmp_path / "stdout.out"))
     stderr = stdout if merged else _TrackedOutput(str(tmp_path / "stderr.err"))
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=stdout, error_file=stderr)
-    parts = EndpointClient(backend).create_run_parts(spec)
+    parts = ExecutionClient(backend).create_run_parts(spec)
     # Creating an unstarted session only borrows application streams.
     assert stdout.close_calls == stderr.close_calls == 0
     if acquire:
@@ -65,9 +65,9 @@ def _managed_job(spec):
     from kkrunner.backends.contracts import JobRef
     from kkrunner.client.backend_execution import bind_execution
 
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
     binding = bind_execution(
-        client.backend, client.transport,
+        client.backend, client.target,
         ref=JobRef("process", "job-1"),
         status={"state": "running", "return_code": None},
     )
@@ -77,7 +77,7 @@ def _managed_job(spec):
 def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path, monkeypatch):
     output = _TrackedOutput(str(tmp_path / "output.out"))
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output, error_file=output)
-    files = EndpointClient().file_session(spec)
+    files = ExecutionClient().file_session(spec)
     files.prepare_submission()
     job = _managed_job(spec)
 
@@ -158,7 +158,7 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     error = OSError("cannot close output")
     output = _TrackedOutput(str(tmp_path / "out.txt"), error=error)
     spec = ExecutionSpec(("true",), directory=tmp_path, output_file=output)
-    client = EndpointClient(SupervisedBackend)
+    client = ExecutionClient(SupervisedBackend)
     files = client.file_session(spec)
     files.prepare_submission()
     job = _managed_job(spec)
@@ -185,7 +185,7 @@ def test_staging_failure_closes_acquired_outputs_once(tmp_path, backend, monkeyp
     from kkrunner.client.file_session import FileSession
 
     output = _TrackedOutput(str(tmp_path / "out"))
-    parts = EndpointClient(backend).create_run_parts(ExecutionSpec(
+    parts = ExecutionClient(backend).create_run_parts(ExecutionSpec(
         ("true",), directory=tmp_path, output_file=output, error_file=output,
     ))
 

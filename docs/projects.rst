@@ -14,7 +14,7 @@ records have separate stores.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import EndpointClient
+   from kkrunner.client import ExecutionClient
    from kkrunner.projects import ProjectRunManager, ProjectRepository
 
    workspace = tempfile.TemporaryDirectory()
@@ -26,9 +26,8 @@ records have separate stores.
        project_repository=projects,
        project=project,
    )
-   run = manager.create_run(
-       EndpointClient(SupervisedBackend),
-       ExecutionSpec([sys.executable, "-c", "pass"], directory=directory),
+   run = ExecutionClient(SupervisedBackend).create_run(
+       ExecutionSpec([sys.executable, "-c", "pass"], directory=directory), persistent=manager,
    )
    print(run.run().return_code)
    print(manager.store.get(run.id).project_id == project.id)

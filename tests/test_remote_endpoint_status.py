@@ -5,14 +5,14 @@ import pytest
 from kkrunner import RunState
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
-from kkrunner.client import EndpointClient, SshTransport
+from kkrunner.client import ExecutionClient, SshTarget
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files import FileManifest
 from kkrunner.runs import ExecutionMetadata, FailurePhase, RunRecord, WorkingDirectory
 
 
 def _run(native_id, *, backend="psij"):
-    transport = SshTransport("cluster")
+    transport = SshTarget("cluster")
     return RunRecord(
         id=native_id or "unconfirmed",
         state=RunState.RUNNING,
@@ -30,7 +30,7 @@ def _attachment(record):
 
 
 def test_remote_endpoint_status_queries_opaque_handles_individually():
-    executor = EndpointClient("psij", transport=SshTransport("cluster"))
+    executor = ExecutionClient("psij", target=SshTarget("cluster"))
     calls = []
     replies = {
         "job-1": {"state": "running", "return_code": None},
@@ -55,7 +55,7 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
 
 
 def test_remote_terminal_status_does_not_claim_client_completion():
-    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    executor = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -69,13 +69,13 @@ def test_remote_terminal_status_does_not_claim_client_completion():
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
-    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    executor = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     with pytest.raises(ValueError, match="different transport or backend"):
         executor.status(_attachment(_run("job", backend="psij")))
 
 
 def test_recovery_proves_identity_without_claiming_execution_status():
-    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    executor = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     calls = []
 
     async def request(action, *args, **kwargs):
@@ -112,7 +112,7 @@ def test_recovery_proves_identity_without_claiming_execution_status():
     ],
 )
 def test_remote_recovery_does_not_guess_non_submission(reply, expected):
-    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    executor = ExecutionClient("kkrunner", target=SshTarget("cluster"))
 
     async def request(action, *args, **kwargs):
         assert action == "recover"
@@ -137,7 +137,7 @@ def test_remote_recovery_does_not_guess_non_submission(reply, expected):
     ],
 )
 def test_status_reports_backend_facts_without_claiming_client_transfer(facts, expected_state):
-    executor = EndpointClient("kkrunner", transport=SshTransport("cluster"))
+    executor = ExecutionClient("kkrunner", target=SshTarget("cluster"))
 
     async def request(action, *args, **kwargs):
         assert action == "status"

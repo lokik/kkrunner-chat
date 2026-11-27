@@ -95,14 +95,14 @@ def test_directory_output_rejects_symlink_without_removing_target(tmp_path):
 def test_local_transport_copies_complete_directory_tree(tmp_path):
     import asyncio
 
-    from kkrunner.transports import LocalTransport
+    from kkrunner.targets import LocalTarget
 
     source = tmp_path / "source"
     (source / "nested").mkdir(parents=True)
     (source / "nested" / "P1E1").write_text("tau")
     (source / ".hidden").write_text("metadata")
     target = tmp_path / "copy"
-    transport = LocalTransport()
+    transport = LocalTarget()
     asyncio.run(transport.put_directory(source, target))
     assert (target / "nested" / "P1E1").read_text() == "tau"
     assert (target / ".hidden").read_text() == "metadata"

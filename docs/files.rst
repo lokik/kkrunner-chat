@@ -79,14 +79,14 @@ still needs. They cover the declared read and write paths, including caches,
 stdout/stderr and transfer destinations; sharing a working directory does not
 reserve the entire directory.
 
-A runner created by ``RunManager.create_run`` reserves its files at ``submit()``,
+A tracked run reserves its files at ``submit()``,
 before uploads, opening outputs or starting the command. The reservation lasts
 until the managed run reaches a terminal state, including any transfers and
 required result processing. Detaching observation does not release it.
 
 Coordination applies to runs in the same ``RunStore``, even when different
 manager instances or projects use that store. ``ProjectRunManager`` uses
-the same mechanism. Untracked ``Run.untracked`` calls and separate stores do
+the same mechanism. Untracked ``persistent=False`` calls and separate stores do
 not coordinate these reservations.
 
 Two active runs may read the same file. A write conflicts with another run's

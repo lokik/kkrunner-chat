@@ -113,7 +113,7 @@ def test_attached_supervisor_detects_session_disconnect(tmp_path):
             reader, writer = await asyncio.open_unix_connection(streams.socket_path)
             writer.write(b'{"command":"follow","offsets":{"out":0,"err":0}}\n')
             await writer.drain()
-            await asyncio.wait_for(streams.connected.wait(), 2)
+            assert await asyncio.wait_for(reader.readexactly(8), 2) == b"A2SFOLL1"
             writer.close()
             await writer.wait_closed()
             await asyncio.wait_for(streams.disconnected.wait(), 2)
@@ -187,7 +187,7 @@ def test_live_only_stream_does_not_replay_earlier_bytes(tmp_path):
             streams.publish("out", b"old")
             seen = []
             follower = asyncio.create_task(
-                follow_socket(streams.socket_path, {"out": 0, "err": 0}, lambda *args: seen.append(args))
+                follow_socket(streams.socket_path, {"out": None, "err": None}, lambda *args: seen.append(args))
             )
             await asyncio.sleep(0.05)
             streams.publish("out", b"new")
@@ -260,12 +260,12 @@ class _FakeFollowerTransport:
 
 class _FakeFollowerWriter:
     def __init__(self, buffered=0):
-        self.transport = _FakeFollowerTransport(buffered)
+        self.target = _FakeFollowerTransport(buffered)
         self.frames = []
 
     def write(self, data):
         self.frames.append(data)
-        self.transport.buffered += len(data)
+        self.target.buffered += len(data)
 
 
 def test_live_only_channel_is_delivered_during_other_channel_replay():
@@ -333,7 +333,7 @@ def test_supervisor_finish_is_bounded_when_client_never_drains(tmp_path):
         streams = SupervisorStreams(tmp_path / "out", None)
         await streams.start()
 
-        class Transport:
+        class Target:
             def __init__(self, done):
                 self.done = done
                 self.aborted = False
@@ -347,10 +347,10 @@ def test_supervisor_finish_is_bounded_when_client_never_drains(tmp_path):
 
         class Writer:
             def __init__(self, transport):
-                self.transport = transport
+                self.target = transport
 
         done = asyncio.Event()
-        transport = Transport(done)
+        transport = Target(done)
         follower = _Follower(Writer(transport), {"out": 0, "err": 0})
         streams._followers.add(follower)
         streams.terminal({"state": "finished", "return_code": 0})
@@ -447,3 +447,57 @@ def test_supervisor_start_preserves_failure_when_cleanup_also_fails(tmp_path, mo
         assert not os.path.exists(streams._socket_dir)
 
     asyncio.run(check())
+
+
+def test_live_only_numeric_offset_cannot_silently_skip_previous_bytes():
+    async def run():
+        streams = SupervisorStreams()
+        await streams.start()
+        try:
+            streams.publish("out", b"already gone")
+            with pytest.raises((asyncio.IncompleteReadError, ConnectionError)):
+                await follow_socket(streams.socket_path, {"out": 0, "err": 0}, lambda *_: None)
+        finally:
+            await streams.finish()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("initial", [False, True])
+def test_follow_supports_async_output_sinks_on_both_connections(tmp_path, initial):
+    import io
+    import socket
+    from kkrunner.backends.implementations.supervised.streams import output_callback
+
+    class AsyncSink(io.BytesIO):
+        async def write(self, data):
+            await asyncio.sleep(0)
+            return super().write(data)
+
+    async def exercise():
+        streams = SupervisorStreams(tmp_path / "stdout", tmp_path / "stderr")
+        await streams.start()
+        connection = None
+        try:
+            if initial:
+                connection, supervisor = socket.socketpair()
+                await streams.attach_initial(supervisor)
+            streams.publish("out", b"first")
+            streams.publish("err", b"warning")
+            streams.terminal({"state": "finished", "return_code": 0})
+            offsets = {"out": 0, "err": 0}
+            out, err = AsyncSink(), AsyncSink()
+            terminal = await asyncio.wait_for(follow_socket(
+                None if initial else streams.socket_path, dict(offsets),
+                output_callback(out, err, offsets), connection=connection,
+            ), 5)
+            assert terminal["return_code"] == 0
+            assert out.getvalue() == b"first"
+            assert err.getvalue() == b"warning"
+            assert offsets == {"out": 5, "err": 7}
+        finally:
+            if connection is not None:
+                connection.close()
+            await streams.finish()
+
+    asyncio.run(exercise())

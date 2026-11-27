@@ -1,4 +1,4 @@
-"""Shared call lifecycle and output adapters for concrete transports.
+"""Shared call lifecycle and output adapters for concrete targets.
 
 Local and SSH call implementations live in their respective implementation
 packages. They own invocation resources, not calculation state.

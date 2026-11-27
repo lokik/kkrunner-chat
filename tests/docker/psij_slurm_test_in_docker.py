@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.backends import PsijBackend
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.runs.manager import RunManager
 
 
@@ -14,14 +14,13 @@ def main():
     with TemporaryDirectory(prefix="kkrunner-slurm-") as work:
         directory = Path(work)
         manager = RunManager(RunStore(directory / "runs"))
-        run = manager.create_run(
-            EndpointClient(PsijBackend, backend_options={"executor_name": "slurm"}),
+        run = ExecutionClient(PsijBackend, backend_options={"executor_name": "slurm"}).create_run(
             ExecutionSpec(
                 [sys.executable, "-c", "from pathlib import Path; Path('result.txt').write_text('42'); print('done')"],
                 directory=work,
                 output_file=directory / "stdout.txt",
                 output_files=(directory / "result.txt",),
-            ),
+            ), persistent=manager,
         )
         outcome = run.run()
         assert outcome.return_code == 0, (

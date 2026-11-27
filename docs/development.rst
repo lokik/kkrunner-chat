@@ -43,7 +43,7 @@ MyST and the theme; installing only the core package does not include them.
 
 Open ``build/docs/html/index.html``. ``make docs`` treats Sphinx warnings as
 errors; ``make docs-test`` executes the guide's examples, including managed
-reconnect and the remote protocol through ``LocalTransport``. Both build against
+reconnect and the remote protocol through ``LocalTarget``. Both build against
 the installed distribution and do not inject the source directory into imports.
 The documentation CI repeats those checks on an isolated wheel installation,
 uploads the rendered HTML as an artifact. A separate documentation workflow

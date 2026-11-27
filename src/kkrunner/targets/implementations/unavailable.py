@@ -3,11 +3,11 @@
 import json
 from dataclasses import dataclass
 
-from ..base import Transport
+from ..base import Target
 
 
 @dataclass(frozen=True, init=False)
-class UnavailableTransport(Transport):
+class UnavailableTarget(Target):
     """Preserve connection metadata without enabling any target operation."""
 
     settings_json: str

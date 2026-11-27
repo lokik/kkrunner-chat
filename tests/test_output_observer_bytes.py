@@ -5,7 +5,7 @@ import pytest
 
 from kkrunner.client.job import Job
 from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.transports import LocalTransport
+from kkrunner.targets import LocalTarget
 from kkrunner.backends import DirectBackend
 from kkrunner.runs.base import ExecutionSpec
 from kkrunner.runs.base import OutputObservers
@@ -30,7 +30,7 @@ def test_emit_bytes_decodes_nonempty_chunks(data, expected):
 @pytest.mark.parametrize("kind", ("out", "err"))
 def test_observed_output_delivers_bytes_and_preserves_raw_sink(kind):
     received, written = [], []
-    job = Job(DirectExecution(DirectBackend(), LocalTransport()), ExecutionSpec(("true",)))
+    job = Job(DirectExecution(DirectBackend(), LocalTarget()), ExecutionSpec(("true",)))
     job.configure_observation(
         stream_offsets={"out": 0, "err": 0},
         stream_writer=lambda data, stream: written.append((data, stream)),
@@ -45,7 +45,7 @@ def test_observed_output_delivers_bytes_and_preserves_raw_sink(kind):
 
 def test_observed_output_without_file_sink_decodes_bytes():
     received = []
-    job = Job(DirectExecution(DirectBackend(), LocalTransport()), ExecutionSpec(("true",)))
+    job = Job(DirectExecution(DirectBackend(), LocalTarget()), ExecutionSpec(("true",)))
     job.add_output_listener(lambda text, kind: received.append((text, kind)))
     job._observed_output("výstup".encode("utf8"), "out")
     assert received == [("výstup", "out")]

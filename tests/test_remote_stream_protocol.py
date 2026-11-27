@@ -7,8 +7,8 @@ import pytest
 
 from kkrunner import ExecutionSpec, Run
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import EndpointClient, SshTransport, StagingSpec
-from kkrunner.transports.implementations.ssh.follow import follow_framed_command
+from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
+from kkrunner.targets.implementations.ssh.follow import follow_framed_command
 from kkrunner.execution import RunState
 from kkrunner.remote.stream import (
     STREAM_MAGIC, StreamProtocolError, encode_stream_frame, encode_terminal_frame,
@@ -153,7 +153,7 @@ class _DiagnosticProcess:
         self._process.kill()
 
 
-class _DiagnosticTransport(SshTransport):
+class _DiagnosticTransport(SshTarget):
     def __init__(self):
         super().__init__("loopback", python_command=(sys.executable,))
 
@@ -170,7 +170,7 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
     workdir = local_root / "calculation"
     workdir.mkdir(parents=True)
     remote_root.mkdir()
-    client = EndpointClient(SupervisedBackend, transport=_DiagnosticTransport())
+    client = ExecutionClient(SupervisedBackend, target=_DiagnosticTransport())
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"),
         directory=workdir,
@@ -178,8 +178,117 @@ def test_ssh_diagnostic_is_not_written_into_calculation_output(tmp_path):
         error_file=workdir / "output.err",
         staging=StagingSpec(local_root=local_root, remote_root=remote_root),
     )
-    assert Run.untracked(client, spec).run().return_code == 0
+    assert client.create_run(spec, persistent=False).run().return_code == 0
     assert (workdir / "output.txt").read_bytes() == b"stdout\n"
     assert (workdir / "output.err").read_bytes() == b"stderr\n"
     assert b"Permanently added" not in (workdir / "output.txt").read_bytes()
     assert b"Permanently added" not in (workdir / "output.err").read_bytes()
+
+
+def test_ssh_supervised_observer_attaches_before_live_only_program_launch(tmp_path, monkeypatch):
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "backend-state"))
+    local_root, remote_root = tmp_path / "local", tmp_path / "remote"
+    workdir = local_root / "calculation"
+    workdir.mkdir(parents=True)
+    remote_root.mkdir()
+    marker = remote_root / "calculation" / "started"
+
+    class NoSecondObserver(_DiagnosticTransport):
+        async def follow(self, operation, identity, on_output, **options):
+            pytest.fail("New supervised submission must not open another SSH FOLLOW")
+
+    client = ExecutionClient(SupervisedBackend, target=NoSecondObserver())
+    spec = ExecutionSpec(
+        argv=(sys.executable, "-c",
+              "from pathlib import Path; import sys; Path('started').touch(); "
+              "print('first'); print('warning', file=sys.stderr)"),
+        directory=workdir,
+        staging=StagingSpec(local_root=local_root, remote_root=remote_root),
+    )
+    seen = {"out": [], "err": []}
+    run = client.create_run(spec, persistent=False,
+                            output_listener=lambda text, kind: seen[kind].append(text))
+    assert run.run().return_code == 0
+    assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {
+        "out": "first\n", "err": "warning\n",
+    }
+    assert marker.exists()
+
+
+def test_ssh_supervised_preflight_failure_reports_no_submission(tmp_path, monkeypatch):
+    from kkrunner.backends.contracts import SubmissionNotStarted
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "backend-state"))
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    client = ExecutionClient(SupervisedBackend, target=_DiagnosticTransport())
+    run = client.create_run(ExecutionSpec(
+        [str(remote / "missing-executable")],
+        directory=local, staging=StagingSpec(local_root=local, remote_root=remote),
+    ), persistent=False)
+    with pytest.raises(SubmissionNotStarted, match="Executable not found"):
+        run.submit()
+    assert run.backend_id is None
+
+
+def test_ssh_observer_eof_closes_helper_without_cancelling_detached_job(tmp_path, monkeypatch):
+    """EOF alone, without terminating SSH, must release a silent observation."""
+    from kkrunner.client.contracts import Operation
+    from kkrunner.targets.implementations.ssh.rpc import operation_command
+    from kkrunner.targets.rpc import operation_payload
+
+    monkeypatch.setenv("KKRunner_REMOTE_STATE_DIR", str(tmp_path / "backend-state"))
+    gate = tmp_path / "release"
+    output = tmp_path / "stdout"
+    error = tmp_path / "stderr"
+
+    async def exercise():
+        request = {
+            "argv": [sys.executable, "-c",
+                     "import time; from pathlib import Path\n"
+                     "while not Path('release').exists(): time.sleep(.01)\n"
+                     "print('finished')"],
+            "directory": str(tmp_path), "detached": True,
+            "output_file": str(output), "error_file": str(error),
+        }
+        command = operation_command(
+            Operation.for_backend(SupervisedBackend, "submit_and_follow"),
+            python=(sys.executable,), framed=True, observe_only=True,
+        )
+        process = await asyncio.create_subprocess_exec(
+            *command, operation_payload((request,), {}),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        remote_id = None
+        frames = read_stream_frames(process.stdout)
+        try:
+            kind, facts = await asyncio.wait_for(anext(frames), 10)
+            assert kind == "started"
+            remote_id = facts["remote_id"]
+            process.stdin.close()
+            # No signal to the helper: closing stdin alone must be sufficient.
+            assert await asyncio.wait_for(process.wait(), 5) == 0
+            assert SupervisedBackend.status(remote_id)["state"] == "running"
+            gate.touch()
+
+            async def finished():
+                while True:
+                    facts = SupervisedBackend.status(remote_id)
+                    if RunState(facts["state"]).is_terminal:
+                        return facts
+                    await asyncio.sleep(.01)
+
+            facts = await asyncio.wait_for(finished(), 5)
+            assert facts["return_code"] == 0
+            assert output.read_bytes() == b"finished\n"
+        finally:
+            gate.touch()
+            await frames.aclose()
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            if remote_id is not None:
+                SupervisedBackend.cancel(remote_id)
+
+    asyncio.run(exercise())

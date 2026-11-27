@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 # Re-export the transport contract for established client imports.
-from kkrunner.transports.contracts import Operation, RunningCommand
+from kkrunner.targets.contracts import Operation, RunningCommand
 
 @dataclass(frozen=True)
 class JobAttachment:

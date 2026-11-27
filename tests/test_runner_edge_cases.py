@@ -4,13 +4,13 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.runs.base import SubmissionNotStarted
 
 
 def test_managed_cancel_before_submit_never_contacts_backend(tmp_path, monkeypatch):
     spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = EndpointClient(SupervisedBackend).create_run_parts(spec).job
+    job = ExecutionClient(SupervisedBackend).create_run_parts(spec).job
 
     def unexpected_cancel(*args, **kwargs):
         pytest.fail("Cancellation of an unsubmitted Job must not reach the backend")

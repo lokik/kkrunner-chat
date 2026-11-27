@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.client.endpoint import EndpointClient
+    from kkrunner.client.execution_client import ExecutionClient
     from kkrunner.client.contracts import (
         JobAttachment,
         JobProtocol,
@@ -11,19 +11,19 @@ if TYPE_CHECKING:
     )
     from kkrunner.client.pool import ClientPool, default_client_pool
     from kkrunner.client.staging import StagingSpec
-    from kkrunner.transports import LocalTransport, SshTransport, Transport
+    from kkrunner.targets import LocalTarget, SshTarget, Target
 
 __all__ = [
-    "EndpointClient", "StagingSpec",
+    "ExecutionClient", "StagingSpec",
     "ClientPool", "JobAttachment", "JobProtocol",
-    "SubmissionContext", "LocalTransport",
-    "SshTransport", "Transport", "default_client_pool",
+    "SubmissionContext", "LocalTarget",
+    "SshTarget", "Target", "default_client_pool",
 ]
 
 
 def __getattr__(name):
-    if name == "EndpointClient":
-        from .endpoint import EndpointClient as value
+    if name == "ExecutionClient":
+        from .execution_client import ExecutionClient as value
     elif name == "StagingSpec":
         from .staging import StagingSpec as value
     elif name in ("JobAttachment", "JobProtocol", "SubmissionContext"):
@@ -32,9 +32,9 @@ def __getattr__(name):
     elif name in ("ClientPool", "default_client_pool"):
         from . import pool
         value = getattr(pool, name)
-    elif name in ("LocalTransport", "SshTransport", "Transport"):
-        from kkrunner import transports
-        value = getattr(transports, name)
+    elif name in ("LocalTarget", "SshTarget", "Target"):
+        from kkrunner import targets
+        value = getattr(targets, name)
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     globals()[name] = value

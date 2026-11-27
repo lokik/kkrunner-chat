@@ -267,7 +267,7 @@ def test_untracked_run_does_not_postprocess_after_failed_local_follow():
 
 def test_incomplete_local_follow_marks_pending_declared_files_failed(tmp_path):
     from kkrunner.backends import DirectBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.files.manifest import FileManifest
 
     spec = ExecutionSpec(
@@ -279,7 +279,7 @@ def test_incomplete_local_follow_marks_pending_declared_files_failed(tmp_path):
     job.spec = spec
     job.state = RunState.FINISHED
     job.output_error = OSError("FOLLOW stream truncated")
-    files = EndpointClient(DirectBackend).file_session(spec)
+    files = ExecutionClient(DirectBackend).file_session(spec)
     files._files = FileManifest.from_spec(spec).initialize_availability()
     run = Run(job, file_session=files)
     run._finish()
@@ -295,9 +295,9 @@ def test_managed_follow_writer_failure_preserves_native_success(tmp_path):
     """Delivery failure is a client error, not a false backend failure."""
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.backend_execution import ManagedExecution
-    from kkrunner.transports import LocalTransport
+    from kkrunner.targets import LocalTarget
 
-    class FollowTransport(LocalTransport):
+    class FollowTransport(LocalTarget):
         async def follow(self, operation, identity, on_output, **options):
             assert identity == "opaque"
             on_output(b"data", "out")
@@ -330,11 +330,11 @@ def test_managed_stop_observation_does_not_cancel_native_job(tmp_path, when):
 
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client.backend_execution import ManagedExecution
-    from kkrunner.transports import LocalTransport
+    from kkrunner.targets import LocalTarget
 
     started, stopped = Event(), Event()
 
-    class FollowTransport(LocalTransport):
+    class FollowTransport(LocalTarget):
         async def follow(self, operation, identity, on_output, **options):
             started.set()
             try:

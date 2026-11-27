@@ -3,9 +3,9 @@
 import sys
 
 from kkrunner import ExecutionSpec, Run
-from kkrunner.client import EndpointClient, StagingSpec
+from kkrunner.client import ExecutionClient, StagingSpec
 from kkrunner.backends import DirectBackend
-from kkrunner.client import SshTransport
+from kkrunner.client import SshTarget
 
 
 def test_raw_local_paths_and_stdin_are_materialized_at_submission(tmp_path):
@@ -19,7 +19,7 @@ def test_raw_local_paths_and_stdin_are_materialized_at_submission(tmp_path):
         output_file="stdout.txt",
         error_file="stderr.txt",
     )
-    run = Run.untracked(EndpointClient(DirectBackend), spec)
+    run = ExecutionClient(DirectBackend).create_run(spec, persistent=False)
     assert not (tmp_path / "stdout.txt").exists()
     assert run.run().return_code == 0
     assert (tmp_path / "stdout.txt").read_text() == "answer\n"
@@ -30,7 +30,7 @@ def test_raw_remote_paths_work_with_only_runner_on_target(tmp_path):
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
     remote.mkdir()
-    class LoopbackSshTransport(SshTransport):
+    class LoopbackSshTransport(SshTarget):
         def __init__(self):
             super().__init__("loopback", python_command=(sys.executable,))
 
@@ -38,14 +38,14 @@ def test_raw_remote_paths_work_with_only_runner_on_target(tmp_path):
             assert cwd is None
             return tuple(argv)
 
-    client = EndpointClient(DirectBackend, transport=LoopbackSshTransport())
+    client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
     spec = ExecutionSpec(
         [sys.executable, "-c", "print(42)"],
         directory=local,
         output_file="stdout.txt",
         staging=StagingSpec(local_root=local, remote_root=remote),
     )
-    run = Run.untracked(client, spec)
+    run = client.create_run(spec, persistent=False)
     assert not (local / "stdout.txt").exists()
     assert run.run().return_code == 0
     assert (local / "stdout.txt").read_text() == "42\n"

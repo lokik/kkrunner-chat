@@ -1,11 +1,11 @@
 """Assemble one-shot SSH Python operation scripts."""
 
 from __future__ import annotations
-from kkrunner.transports.contracts import Operation
+from kkrunner.targets.contracts import Operation
 from .bootstrap import _json_call, _stream_call, _framed_call
 from .helpers import ssh_helper
 
-def operation_command(operation: Operation, *, python=("python3",), streaming=False, framed=False):
+def operation_command(operation: Operation, *, python=("python3",), streaming=False, framed=False, observe_only=False):
     """Compile the selected source and its invocation protocol into Python argv."""
     import ast
 
@@ -32,7 +32,7 @@ def operation_command(operation: Operation, *, python=("python3",), streaming=Fa
         from kkrunner.remote.stream import stream_protocol
         protocol_name = unused_name("_kkrunner_protocol")
         definition += function_definition(stream_protocol, name=protocol_name)
-        options = f", {protocol_name}"
+        options = f", {protocol_name}, {observe_only!r}"
     script = (
         definition + function_definition(bootstrap, name=bootstrap_name)
         + f"{bootstrap_name}({entrypoint}{options})\n"

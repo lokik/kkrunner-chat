@@ -9,7 +9,7 @@ from kkrunner import RunState, RunStore
 from kkrunner.backends import PsijBackend, SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
 from kkrunner.backends.config import BackendConfig
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.client.backend_execution import ManagedExecution
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest
@@ -18,10 +18,10 @@ from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
 
 
 def _client_and_attachment(tmp_path, monkeypatch, backend_type=SupervisedBackend):
-    client = EndpointClient(backend_type)
+    client = ExecutionClient(backend_type)
     backend_id = "test-backend-id"
     execution = ExecutionMetadata(
-        client.transport, WorkingDirectory(str(tmp_path)),
+        client.target, WorkingDirectory(str(tmp_path)),
         backend_id, backend=client.backend_config,
     )
     files = FileManifest(stdout=FileEntry(local_path=str(tmp_path / "run.out")))
@@ -54,7 +54,7 @@ def test_manager_attach_forwards_initial_output_listener(tmp_path, monkeypatch, 
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
         directory=tmp_path, backend=client.backend_config,
-        transport=client.transport, files=attachment.files,
+        target=client.target, files=attachment.files,
     )
     manager.store.save(replace(
         record, state=RunState.RUNNING,

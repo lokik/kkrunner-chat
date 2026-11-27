@@ -16,14 +16,14 @@ from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, RecoveryDisposition, UnsupportedCapability
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.pool import default_client_pool
-from kkrunner.transports import (
-    LocalTransport,
-    SshTransport,
-    require_persistable_transport,
+from kkrunner.targets import (
+    LocalTarget,
+    SshTarget,
+    require_persistable_target,
 )
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.files.versions import FileState
-from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, RunStatus
+from kkrunner.runs.base import FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
 from kkrunner.runs.files import RunFiles, capture_result_files, file_is_current, sync_result_files
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
@@ -99,8 +99,7 @@ class RunManager:
         with RunManager._default_lock:
             if RunManager._fallback is None:
                 from kkrunner.runs.records import RunStore
-                root = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
-                RunManager._fallback = RunManager(RunStore(Path(root) / "kkrunner" / "runs"))
+                RunManager._fallback = RunManager(RunStore())
             return RunManager._fallback
 
     @classmethod
@@ -141,12 +140,12 @@ class RunManager:
         return tuple(stores[key] for key in sorted(stores))
 
     def register_client(self, client):
-        key = (require_persistable_transport(client.transport), client.backend_config)
+        key = (require_persistable_target(client.target), client.backend_config)
         self.client_pool.get(key, lambda: client)
         return key
 
     def client_for(self, record):
-        return self.client_pool.for_config(record.execution.transport, record.execution.backend)
+        return self.client_pool.for_config(record.execution.target, record.execution.backend)
 
     def input_file_is_current(self, run):
         """Whether the local primary input matches its captured version."""
@@ -183,7 +182,7 @@ class RunManager:
                 self, project_id=record.project_id,
                 directory=execution.directory.local,
                 remote_directory=execution.directory.remote,
-                transport=execution.transport,
+                target=execution.target,
                 backend=execution.backend,
                 files=FileManifest(
                     inputs=tuple(FileEntry(remote_path=entry.remote_path) for entry in entries
@@ -203,7 +202,7 @@ class RunManager:
         self,
         *,
         directory,
-        transport=None,
+        target=None,
         backend=None,
         remote_directory=None,
         files=None,
@@ -224,7 +223,7 @@ class RunManager:
             metadata={} if metadata is None else metadata,
             processing_required=processing_required,
             execution=ExecutionMetadata(
-                LocalTransport() if transport is None else transport,
+                LocalTarget() if target is None else target,
                 WorkingDirectory(local, remote_directory),
                 submission_key=submission_key,
                 backend=backend or BackendConfig(),
@@ -379,7 +378,7 @@ class RunManager:
             submitted_at=record.updated_at,
         )
         if recovery.disposition is RecoveryDisposition.FOUND:
-            config = record.execution.transport
+            config = record.execution.target
             if recovery.ref.backend != record.execution.backend.name:
                 raise ValueError("Recovered job belongs to a different backend")
             execution = record.execution.submitted(recovery.ref.token)
@@ -389,7 +388,7 @@ class RunManager:
                     directory=WorkingDirectory(execution.directory.local, recovery.directory),
                 )
             files = record.files
-            if isinstance(config, SshTransport):
+            if isinstance(config, SshTarget):
                 files = files.with_remote_stream_paths(
                     stdout=recovery.output_file, stderr=recovery.error_file,
                 )
@@ -553,7 +552,7 @@ class RunManager:
     def _observed_run_state(record, status):
         from kkrunner.runs.states import project_run_state
         return project_run_state(status.state,
-                                 files_pending=isinstance(record.execution.transport, SshTransport) and status.files is None,
+                                 files_pending=isinstance(record.execution.target, SshTarget) and status.files is None,
                                  processing_pending=record.processing_required and status.return_code == 0,
                                  failure_phase=status.failure_phase)
 
@@ -637,7 +636,7 @@ class RunManager:
         if status is None:
             return record
         if (
-            isinstance(record.execution.transport, LocalTransport)
+            isinstance(record.execution.target, LocalTarget)
             and status.state.is_terminal and status.files is None
         ):
             # Backend status contains execution facts only. The client-side
@@ -647,7 +646,7 @@ class RunManager:
         if (
             retrieve_ended
             and record.execution.backend.name == "direct"
-            and isinstance(record.execution.transport, SshTransport)
+            and isinstance(record.execution.target, SshTarget)
             and (status.state == RunState.CANCELLED or (
                 status.state == RunState.FINISHED and status.return_code is None
             ))
@@ -955,41 +954,6 @@ class RunManager:
             # The receipt remains recoverable until a subsequent refresh.
             pass
 
-    def create_run(
-        self, client, spec, *, process_result=None, metadata=None,
-        processing_required=None, callback=None, run_id=None, detached=None,
-        owned_resources=None, preprocess=None,
-    ):
-        """Create one tracked Run through the configured client."""
-        from kkrunner.runs.run import Run
-        if isinstance(spec, ExecutionSpec):
-            spec.require_complete()
-        if processing_required is False and process_result is not None:
-            raise ValueError("A result callback requires processing_required=True")
-        config = require_persistable_transport(client.transport)
-        detached = client.default_detached if detached is None else detached
-        submission_key = uuid4().hex
-        parts = client.create_run_parts(spec, submission_key=submission_key)
-        record = self.new_record(
-            metadata=metadata,
-            processing_required=(process_result is not None if processing_required is None else processing_required),
-            directory=spec.directory,
-            transport=config,
-            backend=client.backend_config,
-            remote_directory=(None if config.is_local else client.submission_directory(spec)),
-            files=parts.files.files,
-            run_id=run_id,
-            submission_key=submission_key,
-            detached=detached,
-        )
-        self.register_client(client)
-        parts.configure_detached(detached)
-        return Run(
-            parts.job, client=client, manager=self, record=record,
-            process_result=process_result, callback=callback, parts=parts, owned_resources=owned_resources,
-            preprocess=preprocess,
-        )
-
     def refresh(self, records=None, *, on_error=None, retrieve_ended=False):
         """Refresh statuses; opt in to ended Direct SSH output retrieval."""
 
@@ -1060,7 +1024,7 @@ class RunManager:
                         )
                     continue
                 if len(statuses) != len(guarded):
-                    raise RuntimeError("Transport returned wrong number of run statuses")
+                    raise RuntimeError("Target returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):
                     if client.backend.name == "direct":
                         updated = self._record_observation(record, status, retrieve_ended=retrieve_ended)

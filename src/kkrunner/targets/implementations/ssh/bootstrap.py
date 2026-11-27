@@ -47,7 +47,7 @@ def _stream_call(function):
 
 
 @portable
-def _framed_call(function, protocol_factory):
+def _framed_call(function, protocol_factory, observe_only=False):
     """Portable invocation carrying accepted identity, output and backend status."""
     import asyncio
     import json
@@ -100,12 +100,41 @@ def _framed_call(function, protocol_factory):
         async def started(facts):
             await write(protocol.encode("started", facts))
 
-        try:
-            await write(protocol.magic)
-            facts = await function(
+        async def invoke():
+            return await function(
                 *payload["args"], **payload["kwargs"],
                 stdout=Sink("out"), stderr=Sink("err"), started=started,
             )
+
+        try:
+            await write(protocol.magic)
+            if observe_only:
+                # A passive call receives no input. Readability therefore
+                # signals EOF (or invalid input), even if the job is silent.
+                disconnected = loop.create_future()
+                fd = sys.stdin.fileno()
+
+                def readable():
+                    loop.remove_reader(fd)
+                    disconnected.set_result(None)
+
+                loop.add_reader(fd, readable)
+                running = asyncio.create_task(invoke())
+                try:
+                    done, _ = await asyncio.wait(
+                        (running, disconnected), return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if running not in done:
+                        if os.read(fd, 1):
+                            raise ValueError("Observation-only call received unexpected input")
+                        return
+                    facts = running.result()
+                finally:
+                    loop.remove_reader(fd)
+                    running.cancel()
+                    await asyncio.gather(running, return_exceptions=True)
+            else:
+                facts = await invoke()
             await write(protocol.encode("terminal", facts))
         finally:
             os.set_blocking(descriptor, blocking)

@@ -6,7 +6,7 @@ import pytest
 
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
 from kkrunner import ExecutionSpec
@@ -57,7 +57,7 @@ class _RawRunner:
         pass
 
 
-class _Executor(EndpointClient):
+class _Executor(ExecutionClient):
     def __init__(self):
         super().__init__(SupervisedBackend)
 
@@ -79,9 +79,8 @@ def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store)
     finished = Event()
-    run = manager.create_run(
-        _Executor(),
-        ExecutionSpec(argv=("unused",), directory=str(tmp_path)),
+    run = _Executor().create_run(
+        ExecutionSpec(argv=("unused",), directory=str(tmp_path)), persistent=manager,
         process_result=lambda outcome: outcome,
         callback=lambda result: finished.set(),
         metadata={"example": {"task": "DOS".upper()}},
@@ -101,9 +100,8 @@ def test_result_processor_failure_is_postprocessing_failure(tmp_path):
     def fail(_outcome):
         raise ValueError("result parsing failed")
 
-    run = manager.create_run(
-        executor,
-        ExecutionSpec(argv=("unused",), directory=str(tmp_path)),
+    run = executor.create_run(
+        ExecutionSpec(argv=("unused",), directory=str(tmp_path)), persistent=manager,
         process_result=fail,
         metadata={"example": {"task": "DOS".upper()}},
     )

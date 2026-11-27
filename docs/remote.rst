@@ -1,7 +1,7 @@
 Remote execution
 ==================
 
-``EndpointClient`` uses its transport to select the execution location. The backend independently
+``ExecutionClient`` uses its transport to select the execution location. The backend independently
 selects direct execution, a KKRunner supervisor or PSI/J. Direct execution
 needs Python on the target. Supervisor and PSI/J helpers import the installed
 KKRunner library there; PSI/J also needs its optional dependency and scheduler.
@@ -12,22 +12,22 @@ No separate agent endpoint or persistent agent service is required.
    from pathlib import Path
    from kkrunner import ExecutionSpec, RunManager, RunStore
    from kkrunner.backends import SupervisedBackend
-   from kkrunner.client import EndpointClient, StagingSpec
-   from kkrunner.transports import SshTransport
+   from kkrunner.client import ExecutionClient, StagingSpec
+   from kkrunner.targets import SshTarget
 
    directory = Path("remote-example").absolute()
    directory.mkdir(exist_ok=True)
    manager = RunManager(RunStore(directory / "runs"))
-   client = EndpointClient(SupervisedBackend, transport=SshTransport("user@cluster"))
+   client = ExecutionClient(SupervisedBackend, target=SshTarget("user@cluster"))
    spec = ExecutionSpec(
        ["python3", "-c", "print(42)"], directory=directory, output_file="stdout.txt",
        staging=StagingSpec(local_root=directory, remote_root="/absolute/remote/work"),
    )
-   run = manager.create_run(client, spec)
+   run = client.create_run(spec, persistent=manager)
    run.run()
 
-For a one-shot command use ``EndpointClient(DirectBackend, transport=transport)``.
-For a scheduler use ``EndpointClient(PsijBackend(executor_name="slurm"), transport=transport)``.
+For a one-shot command use ``ExecutionClient(DirectBackend, target=transport)``.
+For a scheduler use ``ExecutionClient(PsijBackend(executor_name="slurm"), target=transport)``.
 The client and file session stay the same. Direct local process identities use
 PID and start time, but direct execution currently offers no independent
 reattachment or authoritative exit status after losing its observer.
@@ -36,9 +36,9 @@ Select the target Python environment on the transport:
 
 .. code-block:: python
 
-   client = EndpointClient(
+   client = ExecutionClient(
        SupervisedBackend,
-       transport=SshTransport("user@cluster", python_command=("/opt/kkrunner/bin/python",)),
+       target=SshTarget("user@cluster", python_command=("/opt/kkrunner/bin/python",)),
    )
 
 Select storage identity in the run's file mapping, independently of this
@@ -71,7 +71,7 @@ The sessions are independent of persistent run records and require only
 Python on the remote machine. Long-lived streaming FOLLOW/execution observers
 and bulk shell-based transfers continue using independent SSH commands; they
 do not consume RPC worker capacity. Set ``pool_size=0`` to use one-shot RPCs,
-or configure ``pool_size`` and ``pool_idle_seconds`` on ``SshTransport``.
+or configure ``pool_size`` and ``pool_idle_seconds`` on ``SshTarget``.
 Portable code is immutable for the lifetime of a pool: restart the pool after
 reloading code. Closing the client or transport closes its shared pool.
 
@@ -93,7 +93,7 @@ stdout/stderr use nonblocking descriptor writes so output backpressure cannot
 stall its cancellation reader. Pending output may continue draining after
 calculation termination.
 
-Transport operations are asynchronous and transfer exact files. Wildcards are
+Target operations are asynchronous and transfer exact files. Wildcards are
 expanded on the source side and paths remain relative to the selected root.
 Durable run completion, synchronization and receipt acknowledgements remain
 client responsibilities. See :doc:`persistent-runs` for recovery requirements.
@@ -111,7 +111,7 @@ source/destination pairs, with one directory per filesystem. For example::
     )
 
 The same contract applies to ``get_files()``. The file context expands patterns;
-transports never expand them a second time. SSH streams the compact file list
+targets never expand them a second time. SSH streams the compact file list
 through standard input, not command-line arguments, and sends one archive per
 batch. Each received file is staged on its destination filesystem and published
 only after the archive is complete. Publication is atomic per file, not a
@@ -120,7 +120,7 @@ filesystem-wide transaction.
 SSH archive compression
 -----------------------
 
-``SshTransport(compression="auto")`` selects Zstandard if the actual local and
+``SshTarget(compression="auto")`` selects Zstandard if the actual local and
 configured remote Python both support tarfile's streaming Zstandard codec
 (Python 3.14 or newer), otherwise gzip. The remote capability probe is cached
 for the life of the transport. Explicit options are ``"gz"``, ``"bz2"``,

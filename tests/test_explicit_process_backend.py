@@ -3,38 +3,38 @@
 import pytest
 
 from kkrunner import ExecutionSpec, RunManager, RunStore
-from kkrunner.client import EndpointClient, LocalTransport
+from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client.job import Job
 from kkrunner.backends.config import BackendConfig
 
 
 def test_direct_mode_never_switches_implicitly(tmp_path):
-    backend = EndpointClient()
+    backend = ExecutionClient()
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
     assert isinstance(backend.create_run_parts(spec).job, Job)
     assert isinstance(backend.create_run_parts(spec, submission_key="run-id").job, Job)
     manager = RunManager(RunStore(tmp_path / "runs"))
-    assert manager.create_run(backend, spec).record is not None
+    assert backend.create_run(spec, persistent=manager).record is not None
 
 
 def test_supervised_mode_is_explicit_and_persistable(tmp_path):
-    backend = EndpointClient(SupervisedBackend)
+    backend = ExecutionClient(SupervisedBackend)
     spec = ExecutionSpec(("echo", "example"), directory=str(tmp_path))
     assert isinstance(backend.create_run_parts(spec).job, Job)
     assert isinstance(backend.create_run_parts(spec, submission_key="run-id").job, Job)
-    assert backend.transport == LocalTransport()
+    assert backend.target == LocalTarget()
     assert backend.backend_config == BackendConfig("kkrunner")
-    restored = EndpointClient.from_config(backend.transport.to_dict(), backend.backend_config)
+    restored = ExecutionClient.from_config(backend.target.to_dict(), backend.backend_config)
     assert isinstance(restored.backend, SupervisedBackend)
-    assert isinstance(EndpointClient.from_config(LocalTransport().to_dict(), BackendConfig()).backend,
-                      type(EndpointClient().backend))
-    assert backend.backend_config != EndpointClient().backend_config
+    assert isinstance(ExecutionClient.from_config(LocalTarget().to_dict(), BackendConfig()).backend,
+                      type(ExecutionClient().backend))
+    assert backend.backend_config != ExecutionClient().backend_config
 
 
 def test_native_client_capabilities_match_backend(tmp_path):
-    direct = EndpointClient()
-    supervised = EndpointClient(SupervisedBackend)
+    direct = ExecutionClient()
+    supervised = ExecutionClient(SupervisedBackend)
     assert direct.backend.execution_mode == "direct"
     assert callable(supervised.open_run_parts)
 

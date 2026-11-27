@@ -144,7 +144,7 @@ class RunFiles:
         self.client_pool = client_pool
 
     def _client_for(self, record):
-        return self.client_pool.for_config(record.execution.transport, record.execution.backend)
+        return self.client_pool.for_config(record.execution.target, record.execution.backend)
 
     def input_file_is_current(self, run):
         record = resolve_record(run, self.store)

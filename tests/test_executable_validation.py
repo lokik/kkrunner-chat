@@ -13,9 +13,9 @@ from kkrunner.backends.contracts import SubmissionNotStarted
 from kkrunner.backends.support.process import prepare_mpi, validate_executable
 from kkrunner.client.contracts import Operation
 from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.transports import LocalTransport
-from kkrunner.transports.implementations.ssh.rpc import operation_command
-from kkrunner.transports.rpc import operation_result
+from kkrunner.targets import LocalTarget
+from kkrunner.targets.implementations.ssh.rpc import operation_command
+from kkrunner.targets.rpc import operation_result
 
 
 def mpi_request(directory, executable):
@@ -95,7 +95,7 @@ def test_missing_mpi_program_survives_source_delivery_without_installed_kkrunner
 def test_local_transport_preserves_missing_program_message(tmp_path):
     operation = Operation.for_backend(DirectBackend, "prepare_mpi")
     with pytest.raises(FileNotFoundError, match="Executable not found"):
-        asyncio.run(LocalTransport().call(operation, mpi_request(tmp_path, "missing-program")))
+        asyncio.run(LocalTarget().call(operation, mpi_request(tmp_path, "missing-program")))
 
 
 @pytest.mark.parametrize("use_mpi", [False, True])
@@ -103,8 +103,8 @@ def test_client_reports_missing_program_before_opening_execution_stream(monkeypa
     async def unexpected_stream(*_args, **_kwargs):
         pytest.fail("A missing MPI program must not reach the execution stream")
 
-    monkeypatch.setattr(LocalTransport, "open_call", unexpected_stream)
-    execution = DirectExecution(DirectBackend(), LocalTransport())
+    monkeypatch.setattr(LocalTarget, "open_call", unexpected_stream)
+    execution = DirectExecution(DirectBackend(), LocalTarget())
     missing = tmp_path / "embscfMPI"
     request = mpi_request(tmp_path, missing)
     if not use_mpi:

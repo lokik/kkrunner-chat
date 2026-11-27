@@ -9,7 +9,7 @@ from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.backends.contracts import BackendCapability
-from kkrunner.client import EndpointClient, SshTransport
+from kkrunner.client import ExecutionClient, SshTarget
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.files import FileEntry, FileManifest, FileMapping
 from kkrunner.runs import ExecutionMetadata, WorkingDirectory
@@ -18,7 +18,7 @@ from kkrunner.runs.base import FailurePhase
 
 @pytest.fixture
 def ssh_loopback(monkeypatch):
-    original = SshTransport._command
+    original = SshTarget._command
 
     def command(self, argv, cwd=None):
         if self.host == "loopback":
@@ -26,8 +26,8 @@ def ssh_loopback(monkeypatch):
             return tuple(argv)
         return original(self, argv, cwd=cwd)
 
-    monkeypatch.setattr(SshTransport, "_command", command)
-    return SshTransport("loopback", python_command=(sys.executable,))
+    monkeypatch.setattr(SshTarget, "_command", command)
+    return SshTarget("loopback", python_command=(sys.executable,))
 
 
 def _linux_ref(pid):
@@ -80,10 +80,10 @@ def test_recycled_pid_does_not_make_old_direct_job_run_again(process):
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux procfs identity")
 def test_ssh_status_uses_portable_operation_and_no_supervisor(process, tmp_path, ssh_loopback):
     ref = _linux_ref(process.pid)
-    endpoint = EndpointClient(DirectBackend, transport=ssh_loopback)
+    endpoint = ExecutionClient(DirectBackend, target=ssh_loopback)
     attachment = JobAttachment(
         ExecutionMetadata(
-            endpoint.transport, WorkingDirectory(str(tmp_path), str(tmp_path)),
+            endpoint.target, WorkingDirectory(str(tmp_path), str(tmp_path)),
             ref, backend=BackendConfig("direct"),
         ),
         FileManifest(),
@@ -171,7 +171,7 @@ def test_ssh_refresh_collects_available_outputs_without_exit_code(process, tmp_p
     remote.mkdir()
     (remote / "out.log").write_text("remote output\\n")
     (remote / "result.dat").write_text("partial result")
-    endpoint = EndpointClient(DirectBackend, transport=ssh_loopback)
+    endpoint = ExecutionClient(DirectBackend, target=ssh_loopback)
     manager = RunManager(RunStore(tmp_path / "runs"))
     manager.register_client(endpoint)
     manifest = FileManifest(
@@ -185,7 +185,7 @@ def test_ssh_refresh_collects_available_outputs_without_exit_code(process, tmp_p
         mapping=FileMapping(local_root=str(local), remote_root=str(remote)),
     )
     record = manager.new_record(
-        directory=local, remote_directory=str(remote), transport=endpoint.transport,
+        directory=local, remote_directory=str(remote), target=endpoint.target,
         backend=endpoint.backend_config, files=manifest, processing_required=True,
     )
     record = manager.transition(
@@ -217,7 +217,7 @@ def test_unreachable_direct_status_does_not_claim_completion(tmp_path, monkeypat
     )
     def unreachable(self, *attachments):
         raise OSError("Host unreachable")
-    monkeypatch.setattr(EndpointClient, "status", unreachable)
+    monkeypatch.setattr(ExecutionClient, "status", unreachable)
     refreshed = manager.refresh((record,))[0]
     assert refreshed.state == RunState.UNKNOWN
     assert "Host unreachable" in refreshed.message
@@ -256,7 +256,7 @@ def test_update_only_persists_supplied_status(tmp_path, monkeypatch):
     ))
     record = manager.new_record(
         directory=local, remote_directory=str(remote),
-        transport=SshTransport("example"), backend=BackendConfig("direct"),
+        target=SshTarget("example"), backend=BackendConfig("direct"),
         files=manifest,
     )
     record = manager.transition(

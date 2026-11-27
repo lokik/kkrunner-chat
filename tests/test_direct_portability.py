@@ -14,7 +14,7 @@ import pytest
 
 from kkrunner.backends.implementations.direct.backend import DirectBackend
 from kkrunner.client.contracts import Operation
-from kkrunner.transports.implementations.ssh.rpc import operation_command
+from kkrunner.targets.implementations.ssh.rpc import operation_command
 from kkrunner.support.decorators import portable
 
 

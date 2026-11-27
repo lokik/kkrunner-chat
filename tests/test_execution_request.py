@@ -78,3 +78,35 @@ def test_file_declaration_metadata_agrees_with_manifest(tmp_path):
     assert manifest.outputs[1].kind == "directory" and not manifest.outputs[1].collect
     assert manifest.caches[0].file.optional
     assert execution_request(spec)["output_directories"] == [str(tmp_path / "tree")]
+
+
+@pytest.mark.parametrize("command", ["program with spaces", Path("program with spaces")])
+def test_single_argument_and_file_declarations(command):
+    from kkrunner import TaskFile
+    from kkrunner.execution import MpiSpec
+
+    artifact = TaskFile("cache.bin", optional=True)
+    spec = ExecutionSpec(
+        command, mpi_argv=Path("mpi-program"), mpi=8,
+        input_files="input.dat", output_files=Path("result.dat"), cache_files=artifact,
+    )
+    assert spec.argv == ("program with spaces",)
+    assert spec.mpi_argv == ("mpi-program",)
+    assert spec.mpi == MpiSpec.from_value(8)
+    assert spec.input_files == ("input.dat",)
+    assert spec.output_files == ("result.dat",)
+    assert spec.cache_files == (artifact,)
+
+
+@pytest.mark.parametrize("mpi", [None, False, True, 4, "auto", "mpiexec", ("mpiexec", "-n", "4")])
+def test_mpi_shortcuts_normalize_to_mpi_spec(mpi):
+    from kkrunner.execution import MpiSpec
+
+    assert ExecutionSpec("program", mpi=mpi).mpi == MpiSpec.from_value(mpi)
+
+
+def test_default_run_store_uses_existing_user_state_directory(tmp_path, monkeypatch):
+    from kkrunner import RunStore
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert RunStore().directory == tmp_path / "kkrunner" / "runs"

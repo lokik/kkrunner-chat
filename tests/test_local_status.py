@@ -1,6 +1,6 @@
 """Process backend status and recoverable submission identity."""
 
-from kkrunner.client import EndpointClient, LocalTransport
+from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.backends.config import BackendConfig
 from types import SimpleNamespace
 
@@ -18,7 +18,7 @@ from kkrunner.runs import ExecutionMetadata, FailurePhase, RunRecord, WorkingDir
 
 
 def test_disappeared_local_process_is_unknown(monkeypatch):
-    executor = EndpointClient(SupervisedBackend)
+    executor = ExecutionClient(SupervisedBackend)
     handle = encode_handle({
         "kind": "kkrunner",
         "identity": {"pid": 12345, "start_time": 0, "time_basis": "linux-boot"},
@@ -30,7 +30,7 @@ def test_disappeared_local_process_is_unknown(monkeypatch):
         state=RunState.RUNNING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=ExecutionMetadata(LocalTransport(), WorkingDirectory("/tmp"), handle, backend=BackendConfig("kkrunner")),
+        execution=ExecutionMetadata(LocalTarget(), WorkingDirectory("/tmp"), handle, backend=BackendConfig("kkrunner")),
         files=FileManifest(),
         metadata={"test": {"task": "SCF"}},
         processing_required=True,
@@ -76,9 +76,9 @@ def test_local_status_projection_and_identity_recovery_are_independent(
         "status",
         staticmethod(lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity")),
     )
-    endpoint = EndpointClient(SupervisedBackend)
+    endpoint = ExecutionClient(SupervisedBackend)
     queried = endpoint.status(JobAttachment(
-        ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("kkrunner")), files,
+        ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("kkrunner")), files,
     ))[0]
     from kkrunner.files.availability import local_manifest
     projected = local_manifest(files, queried) if state.is_terminal else None
@@ -93,10 +93,10 @@ def test_local_status_projection_and_identity_recovery_are_independent(
 
     monkeypatch.setattr(SupervisedBackend, "recover", staticmethod(recover))
     submission = JobAttachment(
-        ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), backend=BackendConfig("kkrunner")),
+        ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), backend=BackendConfig("kkrunner")),
         files,
     )
-    recovered = EndpointClient(SupervisedBackend).recover_submission(
+    recovered = ExecutionClient(SupervisedBackend).recover_submission(
         "test-run", SubmissionContext(submission.execution),
     )
     assert recovered.disposition is RecoveryDisposition.FOUND
@@ -118,10 +118,10 @@ def test_local_status_without_manifest_keeps_backend_facts(monkeypatch, tmp_path
     facts = {"state": "finished", "return_code": 0, "error": None, "failure_phase": None}
     monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda backend_id: facts))
     attachment = JobAttachment(
-        ExecutionMetadata(LocalTransport(), WorkingDirectory(str(tmp_path)), "opaque", backend=BackendConfig("kkrunner")),
+        ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), "opaque", backend=BackendConfig("kkrunner")),
         FileManifest(),
     )
-    status = EndpointClient(SupervisedBackend).status(attachment)[0]
+    status = ExecutionClient(SupervisedBackend).status(attachment)[0]
     assert status.state == RunState.FINISHED
     assert status.backend_id == "opaque"
     assert status.files is None

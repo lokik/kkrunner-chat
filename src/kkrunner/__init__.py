@@ -4,7 +4,12 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kkrunner._version import __version__
-    from kkrunner.execution import RunState
+    from kkrunner.execution import MpiSpec, RunState
+    from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
+    from kkrunner.client import ExecutionClient, StagingSpec
+    from kkrunner.targets import Target, LocalTarget, SshTarget
+    from kkrunner.projects import ProjectRepository, ProjectRunManager
+    from kkrunner._convenience import run, submit
     from kkrunner.files.task_file import TaskFile
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec
     from kkrunner.runs.manager import RunManager
@@ -16,6 +21,8 @@ if TYPE_CHECKING:
 __all__ = [
     "ExecutionOutcome", "ExecutionSpec", "ProcessingPending",
     "Run", "RunManager", "RunState", "RunStore", "MemoryRunStore", "TaskFile", "__version__",
+    "run", "submit", "ExecutionClient", "StagingSpec", "MpiSpec", "Target", "LocalTarget", "SshTarget",
+    "DirectBackend", "SupervisedBackend", "PsijBackend", "ProjectRepository", "ProjectRunManager",
 ]
 
 
@@ -30,8 +37,24 @@ def __getattr__(name):
     ):
         from .runs import base
         value = getattr(base, name)
-    elif name == "RunState":
-        from .execution import RunState as value
+    elif name in ("RunState", "MpiSpec"):
+        from . import execution
+        value = getattr(execution, name)
+    elif name in ("run", "submit"):
+        from . import _convenience
+        value = getattr(_convenience, name)
+    elif name in ("ExecutionClient", "StagingSpec"):
+        from . import client
+        value = getattr(client, name)
+    elif name in ("Target", "LocalTarget", "SshTarget"):
+        from . import targets
+        value = getattr(targets, name)
+    elif name in ("DirectBackend", "SupervisedBackend", "PsijBackend"):
+        from . import backends
+        value = getattr(backends, name)
+    elif name in ("ProjectRepository", "ProjectRunManager"):
+        from . import projects
+        value = getattr(projects, name)
     elif name == "Run":
         from .runs.run import Run as value
     elif name == "RunManager":

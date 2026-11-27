@@ -52,8 +52,8 @@ class Run:
         from kkrunner.client.run_parts import RunParts
         if parts is None:
             if file_session is None:
-                from kkrunner.client.endpoint import EndpointClient
-                client = client if client is not None else EndpointClient()
+                from kkrunner.client.execution_client import ExecutionClient
+                client = client if client is not None else ExecutionClient()
                 file_session = client.file_session(job.spec)
             parts = RunParts(job, file_session)
         self._parts = parts
@@ -92,11 +92,38 @@ class Run:
 
     @classmethod
     def create(
-        cls, client, spec, *, persistent=None, detached=None,
-        process_result=None, callback=None, owned_resources=None, preprocess=None, **record_options,
+        cls, spec, *, target=None, backend=None, persistent=None, detached=None, process_result=None,
+        callback=None, output_listener=None, owned_resources=None, preprocess=None,
+        metadata=None, processing_required=None, run_id=None,
     ):
-        """Create one Run; persistence never selects its execution mechanism."""
+        """Create an unstarted Run using a new execution client."""
+        from kkrunner.client.execution_client import ExecutionClient
+
+        return cls._create(
+            ExecutionClient(backend, target=target), spec,
+            persistent=persistent, detached=detached, process_result=process_result,
+            callback=callback, output_listener=output_listener, owned_resources=owned_resources,
+            preprocess=preprocess, metadata=metadata, processing_required=processing_required,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def _create(
+        cls, client, spec, *, persistent=None, detached=None, process_result=None,
+        callback=None, output_listener=None, owned_resources=None, preprocess=None,
+        metadata=None, processing_required=None, run_id=None,
+    ):
+        """Assemble a new Run through one path, with optional tracking."""
+        from uuid import uuid4
+
+        from kkrunner.files.task_file import TaskFile
+        from kkrunner.runs.base import ExecutionSpec
         from kkrunner.runs.manager import RunManager
+        from kkrunner.targets import require_persistable_target
+
+        if not isinstance(spec, ExecutionSpec):
+            spec = ExecutionSpec(spec)
+        spec.require_complete()
 
         if persistent is None:
             persistent = client.default_persistent
@@ -114,36 +141,48 @@ class Run:
         if type(detached) is not bool:
             raise TypeError("detached must be None or bool")
 
-        if manager is not None:
-            return manager.create_run(
-                client, spec, process_result=process_result,
-                callback=callback, detached=detached, owned_resources=owned_resources, preprocess=preprocess,
-                **record_options,
+        if manager is None:
+            if preprocess is not None or any(
+                isinstance(value, TaskFile) and value.write
+                for value in (spec.input_file, spec.stdin, *spec.input_files)
+            ):
+                raise ValueError("Preprocessing requires a reserved Run")
+            if metadata is not None or processing_required is not None or run_id is not None:
+                raise ValueError("Record metadata requires a RunManager")
+            parts = client.create_run_parts(spec)
+            record = None
+        else:
+            if manager.store is None:
+                raise ValueError("A tracked Run requires a RunManager with a store")
+            if processing_required is False and process_result is not None:
+                raise ValueError("A result callback requires processing_required=True")
+            config = require_persistable_target(client.target)
+            submission_key = uuid4().hex
+            record = manager.new_record(
+                metadata=metadata,
+                processing_required=process_result is not None if processing_required is None else processing_required,
+                directory=spec.directory,
+                target=config,
+                backend=client.backend_config,
+                remote_directory=None if config.is_local else client.submission_directory(spec),
+                run_id=run_id,
+                submission_key=submission_key,
+                detached=detached,
             )
-        if preprocess is not None:
-            raise ValueError("Preprocessing requires a reserved Run")
-        if record_options:
-            raise ValueError("Record metadata requires a persistent RunManager")
-        return cls.untracked(client, spec, process_result=process_result,
-                          callback=callback, detached=detached, owned_resources=owned_resources)
+            from dataclasses import replace
 
-    @classmethod
-    def untracked(
-        cls, client, spec, *, process_result=None, callback=None, detached=None, owned_resources=None,
-    ):
-        """Create one untracked Run with the same client lifecycle."""
-        from kkrunner.files.task_file import TaskFile
-        if any(isinstance(value, TaskFile) and value.write
-               for value in (spec.input_file, spec.stdin, *spec.input_files)):
-            raise ValueError("Preprocessing requires a reserved Run")
-        parts = client.create_run_parts(spec)
-        # Live descriptors of an explicitly untracked run remain the caller's
-        # responsibility until the run actually acquires them.
-        detached = client.default_detached if detached is None else detached
+            parts = client.create_run_parts(spec, submission_key=submission_key)
+            record = replace(record, files=parts.files.files)
+            manager.register_client(client)
+
         parts.configure_detached(detached)
-        return cls(parts.job, client=client, parts=parts,
-                   process_result=process_result, callback=callback, owned_resources=owned_resources,
-                   detached=detached)
+        if output_listener is not None:
+            parts.job.add_output_listener(output_listener)
+        return cls(
+            parts.job, client=client, manager=manager, record=record, parts=parts,
+            process_result=process_result, callback=callback, detached=detached,
+            owned_resources=owned_resources, preprocess=preprocess,
+        )
 
     @property
     def id(self):

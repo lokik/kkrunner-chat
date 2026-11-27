@@ -1,11 +1,11 @@
-from kkrunner.transports import LocalTransport
+from kkrunner.targets import LocalTarget
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
 
 
 def _record(manager, tmp_path):
     return manager.new_record(
-        directory=tmp_path, transport=LocalTransport(), metadata={"test": {"task": "DOS"}}, processing_required=True
+        directory=tmp_path, target=LocalTarget(), metadata={"test": {"task": "DOS"}}, processing_required=True
     )
 
 

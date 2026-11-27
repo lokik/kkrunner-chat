@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from kkrunner import ExecutionSpec, RunManager, RunState, RunStore, TaskFile
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.runs import DuplicateSubmissionError
 from kkrunner.runs.base import FailurePhase
 from kkrunner.files import FileManifest
@@ -17,13 +17,13 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
     manager = RunManager(RunStore(store), submitting_grace=0)
     other = RunManager(RunStore(store), submitting_grace=0)
     input_file = tmp_path / "generated.inp"
-    client = EndpointClient()
+    client = ExecutionClient()
     spec = ExecutionSpec(
         (sys.executable, "-c", "from pathlib import Path; print(Path('generated.inp').read_text())"),
         directory=tmp_path, input_file=TaskFile(input_file, write=True), output_file="out",
     )
     competitor_spec = replace(spec, output_file="other.out", input_file=input_file)
-    competitor = other.create_run(client, competitor_spec)
+    competitor = client.create_run(competitor_spec, persistent=other)
 
     def preprocess():
         assert run.state == RunState.PREPROCESSING
@@ -34,7 +34,7 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
             competitor.submit()
         input_file.write_text("generated")
 
-    run = manager.create_run(client, spec, preprocess=preprocess)
+    run = client.create_run(spec, persistent=manager, preprocess=preprocess)
     assert not input_file.exists()
     run.run()
     assert run.state == RunState.FINISHED
@@ -44,7 +44,7 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
 
 def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    client = EndpointClient()
+    client = ExecutionClient()
     spec = ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path, output_file="out",
         input_files=(TaskFile("generated.inp", write=True),),
@@ -53,7 +53,7 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     def preprocess():
         raise ValueError("invalid input")
 
-    run = manager.create_run(client, spec, preprocess=preprocess)
+    run = client.create_run(spec, persistent=manager, preprocess=preprocess)
     with pytest.raises(ValueError, match="invalid input"):
         run.submit()
     assert run.backend_id is None
@@ -62,7 +62,7 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     assert record.failure_phase == FailurePhase.PREPROCESSING
     assert record.files.captured_at is None
     assert not (tmp_path / "out").exists()
-    replacement = manager.create_run(client, replace(spec, input_files=()))
+    replacement = client.create_run(replace(spec, input_files=()), persistent=manager)
     replacement.run()
     assert replacement.state == RunState.FINISHED
 
@@ -88,8 +88,8 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
     persistent = RunManager(disk, conflict_stores=(memory,))
     spec = ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path,
                          output_file="out", input_files=(TaskFile("input", write=True),))
-    client = EndpointClient()
-    competitor = persistent.create_run(client, replace(spec, input_files=()))
+    client = ExecutionClient()
+    competitor = client.create_run(replace(spec, input_files=()), persistent=persistent)
 
     def preprocess():
         assert run.record.store is memory
@@ -98,7 +98,7 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
         with pytest.raises(DuplicateSubmissionError):
             competitor.submit()
 
-    run = ephemeral.create_run(client, spec, preprocess=preprocess)
+    run = client.create_run(spec, persistent=ephemeral, preprocess=preprocess)
     run.start()
     run.wait()
     assert run.state == RunState.FINISHED
@@ -136,9 +136,9 @@ def test_save_only_reservation_is_memory_only(tmp_path):
 def test_staging_of_preprocessed_run_does_not_appear_as_native_submission(tmp_path, monkeypatch):
     manager = RunManager(RunStore(tmp_path / "runs"), submitting_grace=0)
     other = RunManager(RunStore(tmp_path / "runs"), submitting_grace=0)
-    run = manager.create_run(EndpointClient(), ExecutionSpec(
+    run = ExecutionClient().create_run(ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path, input_files=(TaskFile("input", write=True),),
-    ), preprocess=lambda: (tmp_path / "input").write_text("prepared"))
+    ), persistent=manager, preprocess=lambda: (tmp_path / "input").write_text("prepared"))
     prepare = run._file_session.prepare_submission
 
     def observe():
@@ -201,9 +201,9 @@ def test_scoped_save_does_not_accumulate_history_or_locks(tmp_path):
 
 def test_staging_failure_is_preprocessing_even_without_callback(tmp_path, monkeypatch):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(EndpointClient(), ExecutionSpec(
+    run = ExecutionClient().create_run(ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path,
-    ))
+    ), persistent=manager)
     def reject():
         assert run.record.state == RunState.PREPROCESSING
         raise OSError("staging failed")
@@ -249,8 +249,7 @@ def test_terminal_publication_follows_actual_resource_cleanup(tmp_path, outcome)
         return result
 
     resource = Resource()
-    run = manager.create_run(
-        EndpointClient(), spec, preprocess=preprocess,
+    run = ExecutionClient().create_run(spec, persistent=manager, preprocess=preprocess,
         process_result=process if outcome in ("processing", "parser-error") else None,
         owned_resources=ExecutionResources(resource, on_detach=resource.detach),
     )
@@ -273,8 +272,8 @@ def test_backend_terminal_observation_cannot_finish_live_run(tmp_path):
     from kkrunner.backends import SupervisedBackend
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    client = EndpointClient(SupervisedBackend)
-    record = manager.new_record(directory=tmp_path, transport=client.transport,
+    client = ExecutionClient(SupervisedBackend)
+    record = manager.new_record(directory=tmp_path, target=client.target,
                                 backend=client.backend_config)
     active = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("job"))
@@ -288,8 +287,8 @@ def test_attachment_cannot_open_files_owned_by_another_client(tmp_path, monkeypa
     from kkrunner.backends import SupervisedBackend
 
     manager = RunManager(RunStore(tmp_path / "runs"))
-    client = EndpointClient(SupervisedBackend)
-    record = manager.new_record(directory=tmp_path, transport=client.transport,
+    client = ExecutionClient(SupervisedBackend)
+    record = manager.new_record(directory=tmp_path, target=client.target,
                                 backend=client.backend_config)
     active = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("job"))
@@ -314,8 +313,7 @@ def test_cleanup_error_is_visible_to_completion_callback_without_wait(tmp_path):
         seen.append((run.state, run.record.state, run.failure_phase))
         done.set()
 
-    run = manager.create_run(
-        EndpointClient(), ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path),
+    run = ExecutionClient().create_run(ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path), persistent=manager,
         owned_resources=ExecutionResources(Resource()), callback=completed,
     )
     run.submit()
@@ -338,10 +336,9 @@ def test_memory_run_can_delete_owned_temporary_files_on_completion(tmp_path):
             assert output.read_text().strip() == "result"
             output.unlink()
 
-    run = manager.create_run(
-        EndpointClient(), ExecutionSpec(
+    run = ExecutionClient().create_run(ExecutionSpec(
             (sys.executable, "-c", "print('result')"), directory=tmp_path, output_file=output,
-        ),
+        ), persistent=manager,
         owned_resources=ExecutionResources(Resource(), on_detach=lambda: pytest.fail("unexpected detach")),
     )
     run.run()
@@ -375,9 +372,9 @@ def test_rejected_run_does_not_flush_or_close_borrowed_file(tmp_path, role):
         stream.write("buffered")
         with manager.store.observation_lock(reserved):
             reserved = manager.reserve(reserved, preprocessing=True)
-            run = manager.create_run(EndpointClient(), ExecutionSpec(
+            run = ExecutionClient().create_run(ExecutionSpec(
                 argv=(sys.executable, "-c", "pass"), directory=tmp_path, **{role: stream},
-            ))
+            ), persistent=manager)
             assert path.read_text() == "original"
             with pytest.raises(DuplicateSubmissionError):
                 run.submit()

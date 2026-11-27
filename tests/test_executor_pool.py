@@ -7,12 +7,12 @@ from kkrunner.client.pool import ClientPool
 
 def test_client_profile_identity_normalizes_backend_options_without_host_resolution():
     from kkrunner.backends.config import BackendConfig
-    from kkrunner.transports import LocalTransport, SshTransport
+    from kkrunner.targets import LocalTarget, SshTarget
 
     assert BackendConfig("psij") == BackendConfig("psij", {"executor_name": "slurm"})
-    assert SshTransport("cluster") == SshTransport("cluster", python_command=("python3",))
-    assert SshTransport("cluster") != SshTransport("cluster.example.org")
-    assert LocalTransport() != SshTransport("cluster")
+    assert SshTarget("cluster") == SshTarget("cluster", python_command=("python3",))
+    assert SshTarget("cluster") != SshTarget("cluster.example.org")
+    assert LocalTarget() != SshTarget("cluster")
 
 
 
@@ -49,13 +49,13 @@ def test_client_pool_close_attempts_all_after_failure():
 
 
 def test_client_pool_discard_closes_client_and_recreates_it():
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
 
     pool = ClientPool()
-    client = pool.get("local", EndpointClient)
+    client = pool.get("local", ExecutionClient)
     assert pool.discard("local") is client
     assert pool.discard("local") is None
-    assert pool.get("local", EndpointClient) is not client
+    assert pool.get("local", ExecutionClient) is not client
     pool.close()
 
 

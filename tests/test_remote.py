@@ -7,21 +7,21 @@ import pytest
 
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.backends import SupervisedBackend
-from kkrunner.client import EndpointClient, StagingSpec, SshTransport, LocalTransport
+from kkrunner.client import ExecutionClient, StagingSpec, SshTarget, LocalTarget
 from kkrunner.client.file_context import FileContext
 from kkrunner.client.file_session import FileSession
 from kkrunner.runs.base import ExecutionSpec, FailurePhase, RunState, SubmissionNotStarted
 from kkrunner.runs.run import Run
 
 
-class _OperationLoopbackTransport(LocalTransport):
+class _OperationLoopbackTransport(LocalTarget):
     """Local subprocess and file transport viewed as a remote SSH target."""
 
     host = "loopback"
     is_local = False
     python_command = (sys.executable,)
-    start_operation = SshTransport.start_operation
-    follow = SshTransport.follow
+    start_operation = SshTarget.start_operation
+    follow = SshTarget.follow
 
 
 class _SpyTransport(_OperationLoopbackTransport):
@@ -47,12 +47,12 @@ def _processed_run(executor, spec):
         error = b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes()
         return SimpleNamespace(return_code=outcome.return_code, output=output, error=error)
 
-    return Run.untracked(executor, spec, process_result=process)
+    return executor.create_run(spec, persistent=False, process_result=process)
 
 
-def _executor(transport=None, **kwargs):
+def _executor(target=None, **kwargs):
     backend = kwargs.pop("backend", SupervisedBackend)
-    return EndpointClient(backend, transport=transport or _OperationLoopbackTransport(), **kwargs)
+    return ExecutionClient(backend, target=target or _OperationLoopbackTransport(), **kwargs)
 
 
 def _launch(local_root, remote_root, *, input_files=FileSyncPolicy.CHANGED, output_files=FileSyncPolicy.CHANGED):
@@ -61,7 +61,7 @@ def _launch(local_root, remote_root, *, input_files=FileSyncPolicy.CHANGED, outp
 
 def _text_run(
     tmp_path,
-    transport=None,
+    target=None,
     *,
     declared_input_files=(),
     declared_output_files=(),
@@ -79,7 +79,7 @@ def _text_run(
     input_file.seek(0)
     output_file = (workdir / "output.txt").open("wb")
     remote_root = tmp_path / "remote"
-    executor = _executor(transport=transport, **executor_kwargs)
+    executor = _executor(target=target, **executor_kwargs)
     spec = ExecutionSpec(
         argv=(sys.executable, "-c", code or "print('ok')"),
         input_file=input_file,
@@ -119,7 +119,7 @@ def test_remote_provenance_uses_target_input_and_final_cache_without_sync(tmp_pa
             return query_files(sources, root=root, digest=digest)
 
     client, spec, local, remote = _text_run(
-        tmp_path, transport=FilesOnlyTransport(),
+        tmp_path, target=FilesOnlyTransport(),
         input_files=FileSyncPolicy.NEVER, output_files=FileSyncPolicy.NEVER,
         declared_cache_files=("cache.dat",),
     )
@@ -168,14 +168,14 @@ def test_remote_executor_local_transport_streams_output(tmp_path):
     assert runner.backend_id is not None
     # An untracked loopback transport is intentionally not persistable;
     # inspect the runtime binding and mapped workspace, not a RunRecord.
-    assert runner._job.execution.transport is executor.transport
+    assert runner._job.execution.target is executor.target
     assert Path(runner._file_session.remote_directory) == remote_root
 
 
 def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
     transport = _SpyTransport()
     executor, spec, _, remote_root = _text_run(tmp_path, transport)
-    runner = Run.untracked(executor, spec)
+    runner = executor.create_run(spec, persistent=False)
 
     try:
         runner._file_session.prepare_submission()
@@ -557,7 +557,7 @@ def test_remote_none_stream_files_are_live_only(tmp_path):
         staging=_launch(tmp_path, tmp_path / "remote"),
     )
     observed = []
-    runner = Run.untracked(executor, spec)
+    runner = executor.create_run(spec, persistent=False)
     runner.add_output_listener(lambda text, kind: observed.append((kind, text)))
     outcome = runner.run()
     assert runner.state == RunState.FINISHED
@@ -648,7 +648,7 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
         output_file=None,
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote"), input_sync="always"),
     )
-    runner = Run.untracked(_executor(), spec)
+    runner = _executor().create_run(spec, persistent=False)
     if preflight:
         with pytest.raises(SubmissionNotStarted, match="Local input file"):
             runner._file_session.prepare_submission()
@@ -679,14 +679,14 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
         output_file=None,
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    executor = EndpointClient(SupervisedBackend, transport=_OperationLoopbackTransport())
-    runner = Run.untracked(executor, spec)
+    executor = ExecutionClient(SupervisedBackend, target=_OperationLoopbackTransport())
+    runner = executor.create_run(spec, persistent=False)
 
-    def fail_after_preparation(_request):
+    async def fail_after_preparation(_request, **_kwargs):
         raise OSError("backend submission uncertain")
 
-    # Submission now belongs to the selected backend, not EndpointClient.
-    monkeypatch.setattr(SupervisedBackend, "submit", staticmethod(fail_after_preparation))
+    # Submission now belongs to the selected backend, not ExecutionClient.
+    monkeypatch.setattr(SupervisedBackend, "submit_and_follow", staticmethod(fail_after_preparation))
     if preflight:
         runner._file_session.prepare_submission()
     with pytest.raises(OSError, match="backend submission uncertain"):

@@ -64,7 +64,7 @@ def test_status_validates_execution_facts_without_client_phases():
 def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
     from kkrunner.backends.contracts import Backend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.client.job import Job
     from kkrunner.runs.base import ExecutionSpec
 
@@ -72,14 +72,14 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
         assert issubclass(backend, Backend)
         assert not hasattr(backend, "create_job")
         assert not hasattr(backend, "create_run_parts")
-        endpoint = EndpointClient(backend)
+        endpoint = ExecutionClient(backend)
         assert callable(endpoint.create_run_parts)
         job = endpoint.create_run_parts(
             ExecutionSpec(("true",), directory=str(tmp_path))
         ).job
         assert type(job) is Job
         assert job.execution.backend is endpoint.backend
-        assert job.execution.transport is endpoint.transport
+        assert job.execution.target is endpoint.target
         assert all(hasattr(job, name) for name in ("submit", "wait", "cancel", "status", "ref"))
 
     assert DirectBackend().execution_mode == "direct"
@@ -88,16 +88,16 @@ def test_backends_are_namespaces_and_endpoints_own_jobs(tmp_path):
 
 def test_direct_reattachment_does_not_imply_submission_recovery():
     from kkrunner.backends import DirectBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
 
-    capabilities = EndpointClient(DirectBackend).backend.supports
+    capabilities = ExecutionClient(DirectBackend).backend.supports
     assert BackendCapability.REATTACH in capabilities
     assert BackendCapability.RECOVER not in capabilities
 
 
 def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):
     from kkrunner.backends import SupervisedBackend
-    from kkrunner.client import EndpointClient, SshTransport, StagingSpec
+    from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
     from kkrunner.client.job import Job
     from kkrunner.runs.base import ExecutionSpec
 
@@ -105,20 +105,20 @@ def test_local_and_ssh_managed_endpoints_use_one_client_job_class(tmp_path):
         ("true",), directory=str(tmp_path),
         staging=StagingSpec(local_root=str(tmp_path), remote_root=str(tmp_path / "remote")),
     )
-    local = EndpointClient(SupervisedBackend).create_run_parts(spec).job
-    remote = EndpointClient(SupervisedBackend, transport=SshTransport("example")).create_run_parts(spec).job
+    local = ExecutionClient(SupervisedBackend).create_run_parts(spec).job
+    remote = ExecutionClient(SupervisedBackend, target=SshTarget("example")).create_run_parts(spec).job
     assert type(local) is type(remote) is Job
-    assert local.execution.transport.is_local
-    assert not remote.execution.transport.is_local
+    assert local.execution.target.is_local
+    assert not remote.execution.target.is_local
     assert local.execution.backend.name == remote.execution.backend.name == "kkrunner"
 
 
 def test_managed_job_rejects_direct_detached_configuration(tmp_path):
     from kkrunner.backends import SupervisedBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.runs.base import ExecutionSpec
 
-    parts = EndpointClient(SupervisedBackend).create_run_parts(
+    parts = ExecutionClient(SupervisedBackend).create_run_parts(
         ExecutionSpec(("true",), directory=str(tmp_path))
     )
     parts.configure_detached(True)
@@ -128,14 +128,14 @@ def test_managed_job_rejects_direct_detached_configuration(tmp_path):
 
 def test_client_execution_binding_provides_backend_identity_for_job_ref(tmp_path):
     from kkrunner.backends import PsijBackend
-    from kkrunner.client import EndpointClient
+    from kkrunner.client import ExecutionClient
     from kkrunner.client.backend_execution import bind_execution
     from kkrunner.client.job import Job
     from kkrunner.runs.base import ExecutionSpec
 
-    endpoint = EndpointClient(PsijBackend)
+    endpoint = ExecutionClient(PsijBackend)
     execution = bind_execution(
-        endpoint.backend, endpoint.transport,
+        endpoint.backend, endpoint.target,
         ref=JobRef("psij", "opaque-id"), status={"state": "running"},
     )
     job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))

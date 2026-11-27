@@ -8,18 +8,18 @@ import pytest
 
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.backends import DirectBackend, SupervisedBackend
-from kkrunner.client import EndpointClient, SshTransport
+from kkrunner.client import ExecutionClient, SshTarget
 from kkrunner.runs import FailurePhase, RunStatus
 from kkrunner.client.pool import ClientPool
 from kkrunner.runs.run import Run
 from kkrunner.runs.manager import RunManager
 
 
-class _Executor(EndpointClient):
+class _Executor(ExecutionClient):
     def __init__(self, status, *, remote=False, backend=SupervisedBackend, failure_phase=FailurePhase.EXECUTION):
         super().__init__(
             backend,
-            transport=SshTransport("cluster") if remote else None,
+            target=SshTarget("cluster") if remote else None,
         )
         self.status_value = status
         self.failure_phase = failure_phase
@@ -48,9 +48,9 @@ def _record(tmp_path, executor, state=RunState.RUNNING):
     manager.register_client(executor)
     record = manager.new_record(
         directory=str(tmp_path),
-        transport=executor.transport,
+        target=executor.target,
         backend=executor.backend_config,
-        remote_directory="/remote/job" if not executor.transport.is_local else None,
+        remote_directory="/remote/job" if not executor.target.is_local else None,
         metadata={"test": {"task": "DOS"}},
         processing_required=True,
     )
@@ -88,9 +88,8 @@ def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
         assert release.wait(5), "Postprocessing was never released"
         return outcome
 
-    run = Run.untracked(
-        EndpointClient(DirectBackend),
-        ExecutionSpec((sys.executable, "-c", "print('complete')"), directory=str(tmp_path)),
+    run = ExecutionClient(DirectBackend).create_run(
+        ExecutionSpec((sys.executable, "-c", "print('complete')"), directory=str(tmp_path)), persistent=False,
         process_result=process,
     )
     try:
@@ -104,9 +103,8 @@ def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
 
 
 def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable(tmp_path, monkeypatch):
-    run = Run.untracked(
-        EndpointClient(DirectBackend),
-        ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path)),
+    run = ExecutionClient(DirectBackend).create_run(
+        ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path)), persistent=False,
     )
 
     def fail_wait():

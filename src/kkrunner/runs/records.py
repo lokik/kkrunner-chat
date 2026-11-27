@@ -96,7 +96,13 @@ class RunRecord:
         if self.project_id is not None:
             object.__setattr__(self, "project_id", str(self.project_id))
         if isinstance(self.execution, dict):
-            object.__setattr__(self, "execution", ExecutionMetadata(**self.execution))
+            execution = dict(self.execution)
+            # The version-1 JSON field is independent of the Python attribute name.
+            if "transport" in execution:
+                if "target" in execution:
+                    raise ValueError("Duplicate execution target declaration")
+                execution["target"] = execution.pop("transport")
+            object.__setattr__(self, "execution", ExecutionMetadata(**execution))
         if isinstance(self.files, dict):
             object.__setattr__(self, "files", FileManifest(**self.files))
         if not isinstance(self.execution, ExecutionMetadata):
@@ -126,7 +132,8 @@ class RunRecord:
             },
         )
         del data["store"]
-        data["execution"]["transport"] = self.execution.transport.to_dict()
+        data["execution"].pop("target")
+        data["execution"]["transport"] = self.execution.target.to_dict()
         return data
 
 
@@ -152,8 +159,11 @@ class RunStore:
 
     durable = True
 
-    def __init__(self, directory):
-        """Store runs in an explicit directory, with optional project membership per record."""
+    def __init__(self, directory=None):
+        """Store runs in an explicit directory or the default user state directory."""
+        if directory is None:
+            root = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+            directory = Path(root) / "kkrunner" / "runs"
         self.directory = Path(directory).expanduser().resolve()
         self._lock = RLock()
 

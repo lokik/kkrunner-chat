@@ -16,7 +16,7 @@ from kkrunner.runs.base import RunStatus
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
 
-class EndpointClient:
+class ExecutionClient:
     """Compose backend access, transport and per-run client resources.
 
     Instances can serve many runs. Execution lifetime belongs to backend
@@ -25,29 +25,97 @@ class EndpointClient:
 
     supports_result_file_retrieval = True
 
-    def __init__(self, backend=None, *, transport=None, backend_options=None):
-        from kkrunner.transports import LocalTransport
+    def __init__(self, backend=None, *, target=None, backend_options=None):
+        from kkrunner.targets import LocalTarget, SshTarget
         self.backend = configured_backend(backend, options=backend_options)
-        self.transport = LocalTransport() if transport is None else transport
-        if not self.transport.available:
-            raise ValueError(f"Unsupported transport {self.transport.kind!r}; only local history is available")
-        self.computer = self.transport.host
+        if target is None:
+            target = LocalTarget()
+        elif isinstance(target, str):
+            target = SshTarget(target)
+        self.target = target
+        if not self.target.available:
+            raise ValueError(f"Unsupported transport {self.target.kind!r}; only local history is available")
         self._remote_home_cache = None
+
+    def create_run(
+        self, spec, *, persistent=None, detached=None, process_result=None,
+        callback=None, output_listener=None, owned_resources=None, preprocess=None,
+        metadata=None, processing_required=None, run_id=None,
+    ):
+        """Create an unstarted Run using this configured client."""
+        from kkrunner.runs.run import Run
+
+        return Run._create(
+            self, spec,
+            persistent=persistent, detached=detached, process_result=process_result,
+            callback=callback, output_listener=output_listener, owned_resources=owned_resources,
+            preprocess=preprocess, metadata=metadata, processing_required=processing_required,
+            run_id=run_id,
+        )
+
+    def run(
+        self, argv, *, directory=".", input_file=None, output_file=None,
+        stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
+        mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
+        persistent=None, detached=None, process_result=None, output_listener=None,
+    ):
+        """Run a command and wait, displaying available unredirected output."""
+        return self.submit(
+            argv, directory=directory, input_file=input_file, output_file=output_file,
+            stdin=stdin, error_file=error_file, input_files=input_files,
+            output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
+            mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
+            persistent=persistent, detached=detached, process_result=process_result,
+            output_listener=output_listener,
+        ).wait()
+
+    def submit(
+        self, argv, *, directory=".", input_file=None, output_file=None,
+        stdin=None, error_file=None, input_files=(), output_files=(), cache_files=(),
+        mpi_argv=None, mpi=None, staging=None, mpi_uses_stdin=True,
+        persistent=None, detached=None, process_result=None, output_listener=None,
+    ):
+        """Submit a command and return its Run, displaying available unredirected output."""
+        import sys
+
+        from kkrunner.runs.base import ExecutionSpec
+
+        spec = ExecutionSpec(
+            argv, directory=directory, input_file=input_file, output_file=output_file,
+            stdin=stdin, error_file=error_file, input_files=input_files,
+            output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
+            mpi=mpi, staging=StagingSpec() if staging is None else staging, mpi_uses_stdin=mpi_uses_stdin,
+        )
+        if output_listener is None:
+            def output_listener(text, kind):
+                if kind == "out" and spec.output_file is None:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                elif kind == "err" and spec.error_file is None:
+                    sys.stderr.write(text)
+                    sys.stderr.flush()
+
+        runner = self.create_run(
+            spec, persistent=persistent, detached=detached,
+            process_result=process_result, output_listener=output_listener,
+        )
+        runner.submit()
+        return runner
 
     def close(self):
         """Release transport resources owned by the configured client."""
-        self.transport.close()
+        self.target.close()
 
     @classmethod
-    def from_config(cls, transport, backend):
+    def from_config(cls, target, backend):
         """Reconstruct a client from supported stored connection/backend data."""
-        from kkrunner.transports import require_persistable_transport, transport_from_dict
-        if isinstance(transport, dict):
-            transport = transport_from_dict(transport)
+        from kkrunner.targets import require_persistable_target, target_from_dict
+        if isinstance(target, dict):
+            target = target_from_dict(target)
         if isinstance(backend, dict):
             backend = BackendConfig(**backend)
-        require_persistable_transport(transport)
-        return cls(backend.create(), transport=transport)
+        require_persistable_target(target)
+        return cls(backend.create(), target=target)
 
     @property
     def backend_config(self):
@@ -63,7 +131,7 @@ class EndpointClient:
 
     async def _remote_home(self):
         if self._remote_home_cache is None:
-            self._remote_home_cache = await query_remote_home(self.transport)
+            self._remote_home_cache = await query_remote_home(self.target)
         return self._remote_home_cache
 
     def submission_request(self, prepared_files, *, submission_key=None):
@@ -76,10 +144,10 @@ class EndpointClient:
 
     async def _invoke(self, name, *args, **kwargs):
         operation = Operation.for_backend(type(self.backend), name)
-        return await self.transport.call(operation, *args, **kwargs)
+        return await self.target.call(operation, *args, **kwargs)
 
     def _validate_run(self, run):
-        if run.execution.transport != self.transport or run.execution.backend != self.backend_config:
+        if run.execution.target != self.target or run.execution.backend != self.backend_config:
             raise ValueError("Run belongs to a different transport or backend")
 
     def submission_directory(self, spec):
@@ -176,7 +244,7 @@ class EndpointClient:
         spec.require_complete()
         key = submission_key or uuid4().hex
         files = self.file_session(spec)
-        execution = bind_execution(self.backend, self.transport, local_io=files.local_call_io)
+        execution = bind_execution(self.backend, self.target, local_io=files.local_call_io)
         job = Job(execution, spec, callback=callback)
         return RunParts(
             job, files,
@@ -232,7 +300,7 @@ class EndpointClient:
         files = await FileSession.from_attachment(context, attachment)
         try:
             binding = bind_execution(
-                self.backend, self.transport, ref=JobRef(self.backend.name, execution.backend_id), status=status,
+                self.backend, self.target, ref=JobRef(self.backend.name, execution.backend_id), status=status,
             )
             job = Job(binding, files.spec, callback=callback, output_listener=output_listener)
             return RunParts(job, files)

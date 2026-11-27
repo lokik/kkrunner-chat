@@ -8,14 +8,17 @@ from .follow import follow_framed_command
 class SshCall(_Call):
     """Frame delivery and the SSH command's control/cleanup, without exit-code inference."""
 
-    def __init__(self, process, on_output):
+    def __init__(self, process, on_output, *, observe_only=False):
         super().__init__()
         self._process = process
+        self._observe_only = observe_only
         self._start(follow_framed_command(
             process, on_output, on_started=self._started, close_input=True,
         ))
 
     async def cancel(self):
+        if self._observe_only:
+            raise RuntimeError("Observation-only calls do not accept cancellation commands")
         writer = self._process.stdin
         if writer is None or writer.is_closing():
             raise ConnectionError("Execution control channel is closed")

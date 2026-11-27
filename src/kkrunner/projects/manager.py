@@ -46,7 +46,7 @@ class ProjectRunManager(RunManager):
 
     def new_record(self, **kwargs):
         if self._project_id is None:
-            raise ValueError("Tracked runs require a project")
+            raise ValueError("A tracked run must belong to an existing project")
         return super().new_record(project_id=self._project_id, **kwargs)
 
     def for_project(self, project):
@@ -62,36 +62,4 @@ class ProjectRunManager(RunManager):
             conflict_stores=self.conflict_stores,
             project_repository=self.projects,
             project=current,
-        )
-
-    def create_run(
-        self,
-        client,
-        spec,
-        *,
-        process_result=None,
-        metadata=None,
-        processing_required=None,
-        callback=None,
-        run_id=None,
-        project=None,
-        detached=None,
-        owned_resources=None,
-        preprocess=None,
-    ):
-        manager = self if project is None else self.for_project(project)
-        if manager.project_id is None:
-            raise ValueError("A tracked run must belong to an existing project")
-        return RunManager.create_run(
-            manager,
-            client,
-            spec,
-            process_result=process_result,
-            metadata=metadata,
-            processing_required=processing_required,
-            callback=callback,
-            run_id=run_id,
-            detached=detached,
-            owned_resources=owned_resources,
-            preprocess=preprocess,
         )

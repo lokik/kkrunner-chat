@@ -7,7 +7,7 @@ from kkrunner.client.run_parts import RunParts
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobStatus
-from kkrunner.client import EndpointClient
+from kkrunner.client import ExecutionClient
 from kkrunner.client.pool import ClientPool
 from kkrunner import ExecutionSpec
 from kkrunner.runs.manager import RunManager
@@ -76,7 +76,7 @@ class _RawRunner:
         pass
 
 
-class _Executor(EndpointClient):
+class _Executor(ExecutionClient):
     def __init__(self):
         super().__init__(SupervisedBackend)
         self.runners = []
@@ -112,9 +112,8 @@ def _manager(tmp_path):
 def test_submit_persists_submitting_before_backend_call(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
-    run = manager.create_run(
-        executor,
-        _spec(tmp_path),
+    run = executor.create_run(
+        _spec(tmp_path), persistent=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "ARPES", "dataset": "case"}},
     )
@@ -142,9 +141,8 @@ def test_completion_postprocesses_only_successful_execution(tmp_path, return_cod
     manager = _manager(tmp_path)
     executor = _Executor()
     processed = []
-    run = manager.create_run(
-        executor,
-        _spec(tmp_path),
+    run = executor.create_run(
+        _spec(tmp_path), persistent=manager,
         process_result=lambda outcome: processed.append(outcome) or outcome,
         metadata={"test": {"task": "DOS"}},
     )
@@ -171,7 +169,7 @@ def test_refresh_batches_status_queries(tmp_path):
     for index in range(2):
         record = manager.new_record(
             directory=tmp_path / str(index),
-            transport=executor.transport, backend=executor.backend_config,
+            target=executor.target, backend=executor.backend_config,
             metadata={"test": {"task": "DOS"}},
             processing_required=True,
         )
@@ -185,16 +183,14 @@ def test_refresh_batches_status_queries(tmp_path):
 def test_duplicate_submission_is_blocked_by_persisted_namespace(tmp_path):
     manager = _manager(tmp_path)
     executor = _Executor()
-    first = manager.create_run(
-        executor,
-        _spec(tmp_path),
+    first = executor.create_run(
+        _spec(tmp_path), persistent=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )
     first.submit()
-    second = manager.create_run(
-        executor,
-        _spec(tmp_path),
+    second = executor.create_run(
+        _spec(tmp_path), persistent=manager,
         process_result=lambda outcome: outcome,
         metadata={"test": {"task": "DOS", "dataset": "case"}},
     )

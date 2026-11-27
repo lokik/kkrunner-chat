@@ -1,6 +1,6 @@
 """Behavioral contracts introduced by the extraction, without application imports."""
 
-from kkrunner.client import EndpointClient, StagingSpec
+from kkrunner.client import ExecutionClient, StagingSpec
 import json
 import subprocess
 import sys
@@ -126,13 +126,12 @@ def test_modified_artifacts_are_not_reprocessed(tmp_path):
 def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(
-        EndpointClient(SupervisedBackend),
+    run = ExecutionClient(SupervisedBackend).create_run(
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
             output_file=tmp_path / "stdout.txt",
-        ),
+        ), persistent=manager,
     )
     assert isinstance(run.run(), ExecutionOutcome)
     record = manager.store.get(run.id)
@@ -143,13 +142,12 @@ def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
 def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(
-        EndpointClient(SupervisedBackend),
+    run = ExecutionClient(SupervisedBackend).create_run(
         ExecutionSpec(
             [sys.executable, "-c", "print(42)"],
             directory=tmp_path,
             output_file=tmp_path / "stdout.txt",
-        ),
+        ), persistent=manager,
         processing_required=True,
     )
     with pytest.raises(ProcessingPending):
@@ -164,13 +162,12 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
 def test_local_observation_detaches_without_stopping_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(
-        EndpointClient(SupervisedBackend),
+    run = ExecutionClient(SupervisedBackend).create_run(
         ExecutionSpec(
             [sys.executable, "-c", "import time; time.sleep(.4); print(42)"],
             directory=tmp_path,
             output_file=tmp_path / "stdout.txt",
-        ),
+        ), persistent=manager,
     )
     run.submit()
     identity = run.backend_id
@@ -190,7 +187,7 @@ def test_refresh_captures_artifacts_without_result_processor(tmp_path, monkeypat
     from kkrunner.client.pool import ClientPool
 
     manager = RunManager(RunStore(tmp_path / "runs"), client_pool=ClientPool())
-    client = EndpointClient(DirectBackend)
+    client = ExecutionClient(DirectBackend)
     manager.register_client(client)
     output = tmp_path / "stdout.txt"
     output.write_text("42")
@@ -239,7 +236,7 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
 def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
     from kkrunner.backends import SupervisedBackend
-    from kkrunner.client import SshTransport
+    from kkrunner.client import SshTarget
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     local, remote = tmp_path / "local", tmp_path / "remote"
@@ -252,8 +249,8 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     ssh_stub = tmp_path / "ssh-loopback"
     ssh_stub.write_text('#!/bin/sh\nshift\nexec /bin/sh -c "$1"\n')
     ssh_stub.chmod(0o755)
-    transport = SshTransport(host="loopback", ssh=str(ssh_stub), python_command=(sys.executable,))
-    original_get_file = SshTransport.get_file
+    transport = SshTarget(host="loopback", ssh=str(ssh_stub), python_command=(sys.executable,))
+    original_get_file = SshTarget.get_file
     fail_download = True
 
     async def get_file(self, source, destination):
@@ -261,18 +258,17 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
             raise OSError("interrupted download")
         return await original_get_file(self, source, destination)
 
-    monkeypatch.setattr(SshTransport, "get_file", get_file)
-    executor = EndpointClient(SupervisedBackend, transport=transport)
+    monkeypatch.setattr(SshTarget, "get_file", get_file)
+    executor = ExecutionClient(SupervisedBackend, target=transport)
     manager = RunManager(RunStore(tmp_path / "runs"))
-    run = manager.create_run(
-        executor,
+    run = executor.create_run(
         ExecutionSpec(
             [sys.executable, "-c", "from pathlib import Path; Path('answer.txt').write_text('42'); print('done')"],
             directory=local,
             output_file=local / "stdout",
             output_files=(local / "answer.txt",),
             staging=StagingSpec(local_root=local, remote_root=remote),
-        ),
+        ), persistent=manager,
     )
     with pytest.raises(OSError, match="interrupted download"):
         run.run()

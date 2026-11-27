@@ -1,21 +1,21 @@
 # Execution boundary and public contract
 
-KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, EndpointClient,
+KKRunner owns ExecutionSpec/ExecutionOutcome, TaskFile, ExecutionClient,
 RunState/FailurePhase, ExecutionMetadata/WorkingDirectory, RunRecord/RunStore,
 FileEntry/FileMapping/FileManifest, FileState/FileVersion/FileFingerprint,
 ExecutionResources. The root `kkrunner` package exports
 the small, backend-independent API; specialized types live in `kkrunner.runs`,
-`kkrunner.backends`, `kkrunner.client`, `kkrunner.transports` and `kkrunner.files`.
+`kkrunner.backends`, `kkrunner.client`, `kkrunner.targets` and `kkrunner.files`.
 `RunManager` tracks runs in an explicit RunStore without requiring a project.
 `ProjectRunManager` and ProjectRepository organize runs in projects.
 Both managers use the same lifecycle. Each public class has one name that
 describes its role.
 
 Concrete transport implementations live in
-`kkrunner.transports.implementations.local` and
-`kkrunner.transports.implementations.ssh`. Both packages separate their
-transport class (`transport.py`) from the per-execution call (`call.py`);
-shared contracts and invocation helpers remain in `kkrunner.transports`.
+`kkrunner.targets.implementations.local` and
+`kkrunner.targets.implementations.ssh`. Both packages separate their
+transport class (`target.py`) from the per-execution call (`call.py`);
+shared contracts and invocation helpers remain in `kkrunner.targets`.
 
 
 Applications own input preparation, executable selection, file-template
@@ -113,7 +113,7 @@ them. See the application guide for its storage policy and temporary-file rules.
 
 For runs managed through the same RunStore, submission reserves declared file
 paths until the run reaches a terminal state. This applies with or without
-projects; untracked `Run.untracked()` executions do not take these reservations.
+projects; untracked (`persistent=False`) executions do not take these reservations.
 
 Before reservation the SSH client resolves absolute target paths without
 staging or opening outputs. Only after the complete footprint has been durably
@@ -172,20 +172,17 @@ clock change that reverses entirely between sampled reads can evade detection.
 | --- | --- |
 | `kkrunner.runs` | Run contracts, execution identity, immutable metadata, durable records, reservations and processing lifecycle. |
 | `kkrunner.backends` | Flat direct/supervised/PSI-J functional implementations, common process/MPI support, and backend contracts. |
-| `kkrunner.client` | EndpointClient, backend composition, client pools, transports, Job and FileSession. |
+| `kkrunner.client` | ExecutionClient, backend composition, client pools, targets, Job and FileSession. |
 | `kkrunner.remote` | Stateless target protocol service and framed stream delivery; no client execution facade. |
 | `kkrunner.projects` | Project repository, project-bound manager and explicit project-manager resolution. |
 | `kkrunner.files` | TaskFile, manifests, transfer policy, pathname declarations, captured versions and artifact availability. |
 | `kkrunner.support` | Shared durability, locking, asynchronous and growing-stream utilities. |
 
-The root package exports eight backend-independent entry points:
-`ExecutionSpec`, `ExecutionOutcome`, `Run`, `RunManager`, `RunStore`,
-`RunState`, `TaskFile` and `ProcessingPending`. Select a backend class
-(`DirectBackend`, `SupervisedBackend`, `PsijBackend`) from `kkrunner.backends`
-and supply it to `EndpointClient`. Configured backend instances hold immutable
+The root package exposes common execution entry points, including Run,
+ExecutionClient, targets and backends. Configured backend instances hold immutable
 options and capabilities; their classes expose the static target operations.
 
-The three classes declare static target operations. An EndpointClient retains
+The three classes declare static target operations. An ExecutionClient retains
 the configured backend instance; persisted BackendConfig uses a whitelisted
 backend name and options to reconstruct it. Client Jobs, staging, file synchronization and attachment
 belong to `kkrunner.client`.
@@ -207,7 +204,7 @@ returns native status, including confirmed cancellation and launch failures.
 cancel, without inspecting PID, exit codes or backend execution modes.
 `client.backend_execution` binds those operations to the selected transport;
 session-bound and managed semantics are selected once at composition.
-`client.transports.calls` owns local coroutine/control resources or the SSH
+`targets.calls` owns local coroutine/control resources or the SSH
 command and framed delivery. A calculation's exit code is payload data,
 independent of the SSH command's exit status. No additional local interpreter
 or worker thread runs the direct backend.
@@ -221,7 +218,7 @@ without yielding between the EOF check and mode switch.
 
 Local managed FOLLOW awaits the existing backend coroutine. SSH runs a Python
 follower that invokes that coroutine and sends framed calculation output and
-terminal facts; transport stderr carries diagnostics. `client.transports.follow`
+terminal facts; transport stderr carries diagnostics. `targets.follow`
 owns reading and reaping that SSH follower. `Job.stop_observation()` cancels
 only its observation task. The supervisor/calculation survives; `Job.cancel()`
 invokes the separate backend cancellation operation. PSI/J uses native status
@@ -267,8 +264,8 @@ directory/glob queries separately or invalidate the whole cache when a
 filesystem mutation may affect multiple cached entries.
 
 This is a **local filesystem** abstraction, not a transfer session or a
-replacement for `kkrunner.files.queries` and `LocalTransport`/
-`SshTransport`. Their existing asynchronous metadata queries, SSH
+replacement for `kkrunner.files.queries` and `LocalTarget`/
+`SshTarget`. Their existing asynchronous metadata queries, SSH
 portability, remote paths, file transfer, cleanup and run lifecycles remain
 unchanged. Decisions about which scientific result owns a file are made by
 the application, not by FileOperations.
@@ -293,11 +290,11 @@ than treated as absence. A batch is a sequence of observations, not an atomic
 snapshot of the filesystem.
 
 `kkrunner.files.queries` owns these filesystem operations and imports no
-transport, backend, or application code. Local and SSH transports share this
+transport, backend, or application code. Local and SSH targets share this
 implementation. Discovery returns metadata in the same response; cache baselines
 query all patterns and exact paths together in one request instead of probing
 each match. File queries and execution share the command configured on the SSH
-transport or its `EndpointClient`, including custom Python environments.
+transport or its `ExecutionClient`, including custom Python environments.
 
 Single-file uploads retain temporary-file staging and atomic replacement. The
 `finalize-upload` operation uses `os.utime(ns=...)` and `os.replace()` to publish
@@ -321,7 +318,7 @@ before launch, so a failed launch cannot expose output from a previous run.
 
 ## Independent persistence, detachment and recovery
 
-`Run.create(backend, spec, persistent=None, detached=None)` selects client-side
+`Run.create(spec, target=None, backend=None, persistent=None, detached=None)` selects client-side
 record storage and process lifetime independently. `persistent=True` uses
 `RunManager.get_default()`, while an explicit manager (including a project
 manager) controls where the record is stored. `RunManager.as_default(manager)`
@@ -365,7 +362,7 @@ the handle. Native scheduler IDs remain native backend facts.
 `JobAttachment` and `SubmissionContext` are client snapshots of persisted
 execution and file declarations. Clients project the target request and
 stream paths; native operations do not receive a `RunRecord` or `FileManifest`.
-Only a `EndpointClient` creates or reopens `RunParts` (a Job plus file resources).
+Only a `ExecutionClient` creates or reopens `RunParts` (a Job plus file resources).
 Backends do not manufacture client Jobs.
 
 `BackendCapability.REATTACH` explicitly describes native reattachment. Manager
@@ -380,24 +377,24 @@ recovery never authorizes a duplicate submission.
 | --- | --- |
 | Static target operations | `DirectBackend`, `SupervisedBackend`, `PsijBackend` |
 | Client lifecycle, cached backend status, result and listeners | `client.job.Job` |
-| Local and SSH session composition | `EndpointClient` |
+| Local and SSH session composition | `ExecutionClient` |
 | Path previews and resolved manifest projection | `client.file_context.FileContext` |
 | Backend execution semantics bound to a transport | `client.backend_execution`, `client.contracts.BackendExecution` |
-| Live invocation/control resources and transport diagnostics | `client.transports.calls` |
-| Managed output delivery and SSH follower cleanup | `client.transports.follow` |
-| Immutable connection settings, calls and file transport | `client.transports.LocalTransport`, `client.transports.SshTransport` |
+| Live invocation/control resources and transport diagnostics | `targets.calls` |
+| Managed output delivery and SSH follower cleanup | `targets.follow` |
+| Immutable connection settings, calls and file transport | `targets.LocalTarget`, `targets.SshTarget` |
 | Persistence and end-to-end completion | `RunManager`, `Run`, `RunStore` |
 | Reuse of configured clients | `ClientPool` |
 
 The backend contract and pure identity/status/recovery values live in
 `backends.contracts`. Client Job/composition protocols and attachment contexts
 live in `client.contracts`. `Operation` in that module describes which backend
-method or standalone function to call. `client.transports.rpc` assembles remote commands,
+method or standalone function to call. `targets.rpc` assembles remote commands,
 encodes JSON arguments and decodes replies. The actual target-side
 `@portable` entry points (`_json_call`, `_stream_call`, `_framed_call`)
 live in `remote.bootstrap`; their function sources travel with each SSH
 operation without importing KKRunner on the target.
-`client.transports.source` requires an explicit `@portable`
+`targets.source` requires an explicit `@portable`
 marker and extracts the selected function's source and its `@depends_on`
 dependencies when building a remote command. Detailed portability validation
 of direct-backend methods belongs to `tests/test_direct_portability.py`, not
@@ -418,11 +415,11 @@ PSI/J client Job, or process-based local FOLLOW fallback.
 
 ## Orthogonal location and backend selection
 
-`EndpointClient(BackendClass, transport=...)` is the sole standard execution client.
-LocalTransport calls the selected static operation directly; SshTransport delivers
-its actual portable method or import-only helper. ExecutionMetadata.transport holds the
-immutable LocalTransport or SshTransport under client/transports; these serialize
-their connection settings directly. ExecutionMetadata.backend is a separate BackendConfig. Persistent custom transports without a supported reconstruction
+`ExecutionClient(BackendClass, target=...)` is the sole standard execution client.
+LocalTarget calls the selected static operation directly; SshTarget delivers
+its actual portable method or import-only helper. ExecutionMetadata.target holds the
+immutable LocalTarget or SshTarget under client/targets; these serialize
+their connection settings directly. ExecutionMetadata.backend is a separate BackendConfig. Persistent custom targets without a supported reconstruction
 are rejected before creating a Run.
 
 Every Run has one FileSession. It stages files when needed, owns client streams,

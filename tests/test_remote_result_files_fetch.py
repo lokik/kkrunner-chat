@@ -3,7 +3,7 @@ import pytest
 from kkrunner import RunState
 from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 from kkrunner.files.manifest import FileMapping
-from kkrunner.client import EndpointClient, SshTransport, LocalTransport
+from kkrunner.client import ExecutionClient, SshTarget, LocalTarget
 from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 
 
@@ -13,9 +13,9 @@ def loopback_file_transport(monkeypatch):
 
     This test verifies FileAccess path mapping, not the SSH process protocol.
     """
-    monkeypatch.setattr(SshTransport, "expand_files", LocalTransport.expand_files)
-    monkeypatch.setattr(SshTransport, "put_file", LocalTransport.put_file)
-    monkeypatch.setattr(SshTransport, "get_file", LocalTransport.get_file)
+    monkeypatch.setattr(SshTarget, "expand_files", LocalTarget.expand_files)
+    monkeypatch.setattr(SshTarget, "put_file", LocalTarget.put_file)
+    monkeypatch.setattr(SshTarget, "get_file", LocalTarget.get_file)
 
 
 def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
@@ -39,14 +39,14 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
     remote_later.write_text("not part of the historical snapshot")
     local_first = local_directory / "result-1.dat"
     local_first.write_text("keep-local")
-    executor = EndpointClient(transport=SshTransport("loopback"))
+    executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="historical",
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            executor.transport,
+            executor.target,
             WorkingDirectory(str(local_directory), str(remote_directory)),
             "opaque-historical-handle",
         ),
@@ -75,8 +75,8 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
     import os
 
     expanded, downloaded = [], []
-    native_expand = LocalTransport.expand_files
-    native_get = LocalTransport.get_file
+    native_expand = LocalTarget.expand_files
+    native_get = LocalTarget.get_file
 
     async def observed_expand(self, sources, root):
         expanded.append(os.fspath(sources))
@@ -98,14 +98,14 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
     (remote_dir / ".hidden.dat").write_text("hidden")
     existing = local_root / "calc" / "part-a.dat"
     existing.write_text("keep")
-    executor = EndpointClient(transport=SshTransport("loopback"))
+    executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="wildcard-fetch",
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            executor.transport,
+            executor.target,
             WorkingDirectory(str(local_root / "calc"), str(remote_dir)),
             "opaque-handle",
         ),
@@ -113,7 +113,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
         metadata={"example": {"task": "DOS".upper()}},
         processing_required=True,
     )
-    with patch.object(SshTransport, "expand_files", observed_expand), patch.object(SshTransport, "get_file", observed_get):
+    with patch.object(SshTarget, "expand_files", observed_expand), patch.object(SshTarget, "get_file", observed_get):
         executor.fetch_result_files(run, (local_root / "calc" / "exact.dat", local_root / "calc" / "part-*.dat"))
     assert expanded == [str(remote_dir / "exact.dat"), str(remote_dir / "part-*.dat")]
     assert downloaded == [str(remote_dir / "exact.dat"), str(remote_dir / "part-b.dat")]
@@ -135,14 +135,14 @@ def test_remote_staged_result_keeps_canonical_file_absent(tmp_path):
     captured = FileVersion.capture(local, require_digest=True)
     local.unlink()
     (remote_dir / "run.out").write_bytes(b"original result")
-    executor = EndpointClient(transport=SshTransport("loopback"))
+    executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="staged-result",
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            executor.transport, WorkingDirectory(str(local_dir), str(remote_dir)), "backend-id"
+            executor.target, WorkingDirectory(str(local_dir), str(remote_dir)), "backend-id"
         ),
         files=FileManifest(
             mapping=FileMapping(str(local_root), str(remote_root)),
@@ -176,14 +176,14 @@ def test_fetch_rejects_local_symlink_escape(tmp_path, wildcard):
     name = "*.dat" if wildcard else "result.dat"
     local_path = local_root / "alias" / name
     remote_path = remote_dir / name
-    executor = EndpointClient(transport=SshTransport("loopback"))
+    executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="escaped-result",
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            executor.transport, WorkingDirectory(str(local_root), str(remote_root)), "backend-id"
+            executor.target, WorkingDirectory(str(local_root), str(remote_root)), "backend-id"
         ),
         files=FileManifest(
             outputs=(FileEntry(str(local_path), str(remote_path)),),
@@ -211,13 +211,13 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     (remote / "bad" / "output.dat").write_bytes(b"remote")
     canonical = local / "bad" / "output.dat"
     staged = local / "staged-output.dat"
-    executor = EndpointClient(transport=SshTransport("loopback"))
+    executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="escaped-staged",
         state=RunState.FINISHED,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
-        execution=ExecutionMetadata(executor.transport, WorkingDirectory(str(local), str(remote)), "backend-id"),
+        execution=ExecutionMetadata(executor.target, WorkingDirectory(str(local), str(remote)), "backend-id"),
         files=FileManifest(
             outputs=(FileEntry(str(canonical), str(remote / "bad" / "output.dat")),),
             mapping=FileMapping(str(local), str(remote)),
@@ -260,7 +260,7 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
-            SshTransport("loopback"),
+            SshTarget("loopback"),
             WorkingDirectory(str(tmp_path), str(remote)),
             "backend-id",
         ),
@@ -270,7 +270,7 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
     store = RunStore(tmp_path / "runs")
     record = store.save(record)
     manager = RunManager(store)
-    manager.register_client(EndpointClient(transport=SshTransport("loopback")))
+    manager.register_client(ExecutionClient(target=SshTarget("loopback")))
     restored = manager.retrieve_result_files(record)
     assert main.read_bytes() == b"main output"
     assert not auxiliary.exists()
@@ -303,11 +303,11 @@ def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatc
     remote.mkdir()
     source = remote / "result.out"
     source.write_text("wrong version" if concurrent == "mismatch" else "historical")
-    client = EndpointClient(transport=SshTransport("loopback"))
+    client = ExecutionClient(target=SshTarget("loopback"))
     manager.register_client(client)
     record = manager.new_record(
         directory=work, remote_directory=remote,
-        transport=client.transport, backend=client.backend_config,
+        target=client.target, backend=client.backend_config,
         files=FileManifest(
             stdout=FileEntry(str(path), str(source)),
             mapping=FileMapping(str(work), str(remote)),
@@ -324,9 +324,9 @@ def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatc
         assert str(destination) == str(path)
         downloading.set()
         assert release.wait(5), "transfer was not released"
-        await LocalTransport.get_file(self, source_path, destination, **kwargs)
+        await LocalTarget.get_file(self, source_path, destination, **kwargs)
 
-    monkeypatch.setattr(SshTransport, "get_file", download)
+    monkeypatch.setattr(SshTarget, "get_file", download)
 
     def submit():
         if concurrent in ("remote_writer", "remote_reader"):
@@ -338,7 +338,7 @@ def test_historical_transfer_does_not_hold_submission_locks(tmp_path, monkeypatc
                 mapping=FileMapping(str(unrelated.parent), str(remote), input_sync="never"),
             )
             proposed = other.new_record(directory=unrelated.parent, remote_directory=remote,
-                                        transport=client.transport, files=files)
+                                        target=client.target, files=files)
             if concurrent == "remote_writer":
                 with pytest.raises(DuplicateSubmissionError):
                     other.reserve(proposed)
@@ -393,7 +393,7 @@ def test_historical_wildcard_download_uses_transport_staging(tmp_path, monkeypat
         (remote / name).write_text(name)
     pattern = local / "part-*.dat"
     remote_pattern = remote / pattern.name
-    client = EndpointClient(transport=SshTransport("loopback"))
+    client = ExecutionClient(target=SshTarget("loopback"))
     if project_scoped:
         from kkrunner.projects.manager import ProjectRunManager
         from kkrunner.projects.repository import ProjectRepository
@@ -406,7 +406,7 @@ def test_historical_wildcard_download_uses_transport_staging(tmp_path, monkeypat
         manager = creator = RunManager(RunStore(tmp_path / "runs"))
     manager.register_client(client)
     record = creator.new_record(
-        directory=local, transport=client.transport, backend=client.backend_config,
+        directory=local, target=client.target, backend=client.backend_config,
         remote_directory=remote,
         files=FileManifest(
             outputs=(FileEntry(str(pattern), str(remote_pattern)),),
@@ -417,7 +417,7 @@ def test_historical_wildcard_download_uses_transport_staging(tmp_path, monkeypat
                               execution=record.execution.submitted("historical"),
                               artifacts_available=False)
 
-    original = LocalTransport.get_file
+    original = LocalTarget.get_file
 
     async def download(self, source, destination, **kwargs):
         from pathlib import Path
@@ -426,7 +426,7 @@ def test_historical_wildcard_download_uses_transport_staging(tmp_path, monkeypat
         assert kwargs["overwrite"] is False
         await original(self, source, destination, **kwargs)
 
-    monkeypatch.setattr(SshTransport, "get_file", download)
+    monkeypatch.setattr(SshTarget, "get_file", download)
     restored = manager.retrieve_result_files(record)
     assert restored.state == RunState.FAILED
     assert sorted(p.name for p in local.iterdir()) == ["part-a.dat", "part-b.dat"]
@@ -446,10 +446,10 @@ def test_directory_reservation_prevents_historical_download(tmp_path, monkeypatc
     remote = tmp_path / "remote"
     remote.mkdir()
     (remote / path.name).write_text("historical")
-    client = EndpointClient(transport=SshTransport("loopback"))
+    client = ExecutionClient(target=SshTarget("loopback"))
     manager.register_client(client)
     record = manager.new_record(
-        directory=work, remote_directory=remote, transport=client.transport, backend=client.backend_config,
+        directory=work, remote_directory=remote, target=client.target, backend=client.backend_config,
         files=FileManifest(stdout=FileEntry(str(path), str(remote / path.name)),
                            mapping=FileMapping(str(work), str(remote))),
     )
@@ -485,11 +485,11 @@ def test_restore_wildcard_alias_conflicts_with_canonical_destination(tmp_path):
     # The historic mapping refers to actual/, but the alias has moved.
     (local / "alias").symlink_to(local / "changed", target_is_directory=True)
     (remote / "actual" / "result.dat").write_text("historical")
-    client = EndpointClient(transport=SshTransport("loopback"))
+    client = ExecutionClient(target=SshTarget("loopback"))
     manager = RunManager(RunStore(tmp_path / "runs"))
     manager.register_client(client)
     record = manager.new_record(
-        directory=local, remote_directory=remote, transport=client.transport,
+        directory=local, remote_directory=remote, target=client.target,
         backend=client.backend_config, files=FileManifest(
             outputs=(FileEntry(str(local / "alias" / "*.dat"), str(remote / "actual" / "*.dat")),),
             mapping=FileMapping(str(local), str(remote)),
@@ -523,12 +523,12 @@ def test_historical_retrieval_never_replaces_existing_destination(tmp_path, exis
         destination.symlink_to(local / "missing")
     else:
         destination.write_text("current")
-    client = EndpointClient(transport=SshTransport("loopback"))
+    client = ExecutionClient(target=SshTarget("loopback"))
     from kkrunner import RunStore
     from kkrunner.runs.manager import RunManager
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
-        directory=local, remote_directory=remote, transport=client.transport,
+        directory=local, remote_directory=remote, target=client.target,
         backend=client.backend_config, files=FileManifest(
             outputs=(FileEntry(str(destination), str(remote / destination.name)),),
             mapping=FileMapping(str(local), str(remote)),
