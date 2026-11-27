@@ -66,6 +66,32 @@ def test_repository_uses_one_generation_checked_json_per_project(tmp_path):
     assert saved.name == "Renamed"
 
 
+
+def test_unchanged_save_preserves_generation_and_does_not_consume_external_change(tmp_path):
+    directory = tmp_path / "projects"
+    repository = ProjectRepository(directory)
+    original = repository.create("Original")
+    changed = []
+    repository.subscribe(changed.append)
+    repository.refresh()
+
+    assert repository.save(original, expected_generation=original.generation) == original
+    assert changed == []
+
+    writer = ProjectRepository(directory)
+    renamed = writer.save(original.modify(name="Renamed"), expected_generation=original.generation)
+    with pytest.raises(ProjectConflictError):
+        repository.save(original, expected_generation=original.generation)
+
+    # Overwriting with the same contents is also a no-op, even when the
+    # caller's generation is older. It must not consume the external change.
+    assert repository.save(original.modify(name="Renamed"),
+                           expected_generation=original.generation, overwrite=True) == renamed
+    assert changed == []
+    assert repository.refresh() == (renamed,)
+    assert changed == [original.id]
+
+
 def test_stale_save_conflicts_and_explicit_overwrite_replaces_snapshot(tmp_path):
     repository = ProjectRepository(tmp_path / "projects")
     original = repository.create("Original")

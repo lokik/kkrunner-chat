@@ -315,8 +315,9 @@ class ProjectRepository:
                 validate_hierarchy(snapshot)
                 saved = self._save_locked(project, current)
 
-        self._remember_one(saved)
-        self._notify(saved.id)
+        if saved is not current:
+            self._remember_one(saved)
+            self._notify(saved.id)
         return saved
 
     def reassign_runs(
@@ -412,6 +413,8 @@ class ProjectRepository:
         return projects
 
     def _save_locked(self, project: Project, current: Project) -> Project:
+        if replace(project, generation=current.generation) == current:
+            return current
         updated = replace(project, generation=current.generation + 1)
         self._write(updated)
         return updated
