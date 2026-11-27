@@ -125,3 +125,25 @@ def test_local_alias_and_canonical_wildcard_conflict(tmp_path):
                           **({"output_files": (path,)} if output else {"input_files": (path,)}))))
     assert submission_conflicts(record(alias / "*.dat", output=True),
                                 record(actual / "result.dat", output=False))
+
+
+@pytest.mark.parametrize("preprocessing", [False, True])
+def test_reservation_rejects_record_changed_before_atomic_activation(tmp_path, monkeypatch, preprocessing):
+    from kkrunner import RunState
+
+    store = RunStore(tmp_path / "runs")
+    peer = RunStore(store.directory)
+    manager = RunManager(store)
+    record = store.save(manager.new_record(directory=tmp_path))
+    update = store.update
+
+    def change_before_update(record, updater):
+        # A separate history writer does not take the submission lock.
+        # Publish a newer state just before the reservation's atomic update.
+        peer.update(record, lambda latest: replace(latest, state=RunState.FAILED))
+        return update(record, updater)
+
+    monkeypatch.setattr(store, "update", change_before_update)
+    with pytest.raises(ValueError, match="already exists"):
+        manager.reserve(record, preprocessing=preprocessing)
+    assert peer.get(record.id).state == RunState.FAILED

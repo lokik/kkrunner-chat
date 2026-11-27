@@ -490,19 +490,15 @@ class RunManager:
             raise ValueError("Cannot reserve a record owned by another store")
         record = replace(record, store=self.store)
 
-        def activate():
-            try:
-                existing = self.store.get(record.id)
-            except FileNotFoundError:
-                existing = None
-            if existing is not None and (existing != record or existing.state != RunState.NEW):
+        state = RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING
+
+        def activate(latest):
+            if latest != record or latest.state != RunState.NEW:
                 raise ValueError(f"Run id {record.id!r} already exists; use attach()")
-            return self.transition(
-                record, state=RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING,
-            )
+            return replace(latest, state=state, updated_at=_now())
 
         reserve = self._reserve_recovering if recover_conflicts else self._reserve
-        return reserve(record, activate)
+        return reserve(record, lambda: self.store.update(record, activate))
 
     def _reserve(self, record, activate, *, conflict_stores=()):
         """Check the footprint and activate a record under the same store locks."""
