@@ -338,13 +338,21 @@ def test_discarded_reservation_cannot_be_recreated_by_update(store, tmp_path):
 @pytest.mark.parametrize("field, message", [
     ("submission_key", "Submission key"),
     ("backend_id", "Backend identity"),
+    ("target", "Execution target and backend configuration"),
+    ("backend", "Execution target and backend configuration"),
 ])
 def test_execution_identity_is_enforced_by_store(store, tmp_path, field, message):
     manager = RunManager(store)
     record = manager.new_record(directory=tmp_path, submission_key="submission")
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("job"))
-    invalid = replace(record.execution, **{field: "different"})
+    from kkrunner.backends.config import BackendConfig
+    from kkrunner.targets import SshTarget
+
+    value = {"target": SshTarget("another-host"), "backend": BackendConfig("kkrunner")}.get(
+        field, "different",
+    )
+    invalid = replace(record.execution, **{field: value})
     with pytest.raises(ValueError, match=message):
         store.update(record, lambda current: replace(current, execution=invalid))
     with pytest.raises(ValueError, match=message):

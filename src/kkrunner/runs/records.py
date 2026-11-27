@@ -151,6 +151,9 @@ def validate_update(latest, updated):
         or updated.detached != latest.detached
     ):
         raise ValueError("Run update cannot change persistent identity or metadata")
+    if (updated.execution.target != latest.execution.target
+            or updated.execution.backend != latest.execution.backend):
+        raise ValueError("Execution target and backend configuration cannot change")
     if updated.execution.submission_key != latest.execution.submission_key:
         raise ValueError("Submission key cannot change")
     if latest.execution.backend_id is not None and updated.execution.backend_id != latest.execution.backend_id:
