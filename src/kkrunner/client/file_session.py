@@ -301,8 +301,9 @@ class FileSession:
         )
         published = set()
         for entry in entries:
-            if (entry is None or not entry.collect or entry.local_path is None
-                    or entry.remote_path is None or has_file_magic(entry.remote_path)):
+            if (entry is None or not entry.collect or entry.kind != "file"
+                    or entry.local_path is None or entry.remote_path is None
+                    or has_file_magic(entry.remote_path)):
                 continue
             if self._published_locally(entry):
                 published.add(entry.remote_path)

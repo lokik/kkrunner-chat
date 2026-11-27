@@ -1325,3 +1325,31 @@ def test_ended_collection_retry_keeps_published_pattern_members(tmp_path, monkey
     assert (local / "second-1.dat").read_text() == "second-1.dat"
     if kind == "output":
         assert {version.path.name for version in completed.output_versions} == {"first-1.dat", "second-1.dat"}
+
+
+def test_published_directory_does_not_satisfy_required_file_pattern(tmp_path, monkeypatch):
+    from kkrunner.runs import RunManager, RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    (local / "tree.dat").mkdir()
+    target = SshTarget("loopback")
+    record = RunManager().new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            outputs=(
+                FileEntry(local / "tree.dat", remote / "tree.dat", kind="directory",
+                          availability_state="available"),
+                FileEntry(local / "*.dat", remote / "*.dat"),
+            ),
+            mapping=FileMapping(local, remote),
+        ).initialize_availability(),
+    )
+    monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
+    files, error = ExecutionClient(target=target).collect_ended_files(
+        record, RunStatus(RunState.FINISHED, return_code=0),
+    )
+    assert isinstance(error, FileNotFoundError)
+    assert files.outputs[0].availability_state == "available"
+    assert files.outputs[1].availability_state == "failed"
