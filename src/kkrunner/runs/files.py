@@ -96,7 +96,7 @@ class RunFiles:
         record = resolve_record(run, self.store)
         if record.execution.backend_id is None:
             raise RuntimeError(f"Run {record.id} has not been submitted")
-        if record.execution.directory.remote is not None:
+        if record.execution.directory.remote is not None and not record.files.shared_filesystem:
             return self._client_for(record).snapshot_file(record, file, destination=destination)
 
         from kkrunner.files.snapshots import local_snapshot, snapshot_request
@@ -110,6 +110,8 @@ class RunFiles:
         if not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
+        if record.files.shared_filesystem:
+            return record  # There is no separate target copy to restore.
         if record.execution.backend_id is None or not record.execution.available:
             return record
         missing = _missing_result_files(record.files)

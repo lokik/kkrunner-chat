@@ -169,7 +169,7 @@ class RunManager:
                 mapping = FileMapping(execution.directory.local, execution.directory.remote)
             if mapping is not None:
                 mapping = replace(mapping, input_sync=FileSyncPolicy.NEVER,
-                                  output_sync=FileSyncPolicy.NEVER)
+                                  output_sync=FileSyncPolicy.MISSING)
             # This is a temporary reservation, not a new project calculation.
             # An unbound project manager can restore any historical record.
             scope = RunManager.new_record(
@@ -645,7 +645,7 @@ class RunManager:
         if status is None:
             return record
         if (
-            record.execution.target.is_local
+            (record.execution.target.is_local or record.files.shared_filesystem)
             and status.state.is_terminal and status.files is None
         ):
             # Backend status contains execution facts only. The client-side
@@ -722,7 +722,9 @@ class RunManager:
                 # failure; the failed file retains the specific diagnostics.
                 state = RunState.FAILED
                 phase = (
-                    FailurePhase.DOWNLOAD if record.execution.directory.remote is not None else FailurePhase.ARTIFACTS
+                    FailurePhase.DOWNLOAD
+                    if record.execution.directory.remote is not None and not result_files.shared_filesystem
+                    else FailurePhase.ARTIFACTS
                 )
                 message = result_files.availability_message or message
 

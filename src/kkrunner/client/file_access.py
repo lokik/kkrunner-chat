@@ -10,7 +10,7 @@ from kkrunner.client.file_context import FileContext, _relative_local_path
 from kkrunner.client.contracts import Operation
 from kkrunner.files.manifest import FileEntry
 from kkrunner.files.queries import remote_file_cleanup
-from kkrunner.files.snapshots import snapshot_request
+from kkrunner.files.snapshots import local_snapshot, snapshot_request
 from kkrunner.client.staging import StagingSpec
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
@@ -32,6 +32,8 @@ class FileAccess:
         )
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
         _relative_local_path(file, context.local_root)
+        if context.shared_filesystem:
+            return local_snapshot(file, destination=destination)
         remote = entry.remote_path if os.path.abspath(entry.local_path) == file else None
         if remote is None:
             remote = await context.map_path(file)
@@ -54,6 +56,8 @@ class FileAccess:
     async def _resolve_result_files(self, run, files):
         """Read-only discovery: freeze the exact source and destination pairs."""
         context = FileContext(self.client, StagingSpec.from_mapping(run.files.mapping))
+        if context.shared_filesystem:
+            return ()  # No independent target copy exists.
         remote_root = await context._resolved_remote_root()
         declared = {
             entry.local_path: entry for entry in (
@@ -132,8 +136,8 @@ class FileAccess:
 
     async def _remote_cleanup(self, run, paths, *, expected=None):
         """Operate on declared remote files, including TAUDIR outside the run directory."""
-        if self.client.target.is_local:
-            raise ValueError("Remote-file cleanup requires a remote transport")
+        if self.client.target.is_local or run.files.shared_filesystem:
+            raise ValueError("Remote-file cleanup requires a separate target filesystem")
         entries = (
             *run.files.inputs, *run.files.outputs,
             *(cache.file for cache in run.files.caches),

@@ -111,10 +111,13 @@ class FileMapping:
     input_sync: str = FileSyncPolicy.CHANGED.value
     output_sync: str = FileSyncPolicy.CHANGED.value
     filesystem_id: Optional[str] = None
+    shared_filesystem: bool = False
 
     def __post_init__(self):
         import os
 
+        if type(self.shared_filesystem) is not bool:
+            raise TypeError("shared_filesystem must be a bool")
         if self.filesystem_id is not None and (not isinstance(self.filesystem_id, str) or not self.filesystem_id):
             raise ValueError("filesystem_id must be a nonempty string or None")
         object.__setattr__(self, "local_root", os.fspath(self.local_root))
@@ -124,8 +127,8 @@ class FileMapping:
             output_sync = FileSyncPolicy(self.output_sync)
         except ValueError as exc:
             raise ValueError("Invalid file synchronization policy") from exc
-        object.__setattr__(self, "input_sync", input_sync.value)
-        object.__setattr__(self, "output_sync", output_sync.value)
+        object.__setattr__(self, "input_sync", (FileSyncPolicy.NEVER if self.shared_filesystem else input_sync).value)
+        object.__setattr__(self, "output_sync", (FileSyncPolicy.NEVER if self.shared_filesystem else output_sync).value)
 
 
 @dataclass(frozen=True)
@@ -190,8 +193,10 @@ class FileManifest:
         for value in (spec.output_file, spec.error_file):
             if isinstance(value, TaskFile) and not value.collect:
                 raise ValueError("collect=False is not supported for output streams")
-        stdout = file_path(spec.output_file, directory)
-        stderr = file_path(spec.error_file, directory)
+        stdout_entry = declared_entry(spec.output_file)
+        stderr_entry = declared_entry(spec.error_file)
+        stdout = None if stdout_entry is None else stdout_entry.local_path
+        stderr = None if stderr_entry is None else stderr_entry.local_path
 
         outputs = {}
         for value in spec.output_files:
@@ -227,8 +232,8 @@ class FileManifest:
             outputs=tuple(outputs.values()),
             caches=tuple(caches.values()),
             stdin=declared_entry(spec.stdin),
-            stdout=None if stdout is None else FileEntry(local_path=stdout),
-            stderr=None if stderr is None else FileEntry(local_path=stderr),
+            stdout=None if stdout is None else FileEntry(local_path=stdout, write=stdout_entry.write),
+            stderr=None if stderr is None else FileEntry(local_path=stderr, write=stderr_entry.write),
         ).initialize_availability()
 
     def __post_init__(self):
@@ -258,6 +263,10 @@ class FileManifest:
                     for version in getattr(self, name)
                 ),
             )
+
+    @property
+    def shared_filesystem(self):
+        return self.mapping is not None and self.mapping.shared_filesystem
 
     @property
     def artifacts(self):
