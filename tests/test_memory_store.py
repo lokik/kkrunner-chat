@@ -312,3 +312,20 @@ def test_discarded_reservation_cannot_be_recreated_by_update(store, tmp_path):
     with pytest.raises(FileNotFoundError):
         manager.transition(reserved, state=RunState.FAILED)
     assert store.runs() == ()
+
+
+@pytest.mark.parametrize("field, message", [
+    ("submission_key", "Submission key"),
+    ("backend_id", "Backend identity"),
+])
+def test_execution_identity_is_enforced_by_store(store, tmp_path, field, message):
+    manager = RunManager(store)
+    record = manager.new_record(directory=tmp_path, submission_key="submission")
+    record = manager.transition(record, state=RunState.RUNNING,
+                                execution=record.execution.submitted("job"))
+    invalid = replace(record.execution, **{field: "different"})
+    with pytest.raises(ValueError, match=message):
+        store.update(record, lambda current: replace(current, execution=invalid))
+    with pytest.raises(ValueError, match=message):
+        manager.transition(record, execution=invalid)
+    assert store.get(record.id) == record

@@ -258,8 +258,6 @@ class RunManager:
         if isinstance(requested, dict):
             requested = FileManifest(**requested)
         current = latest.files
-        if current is None:
-            return requested
         if current.captured_at is not None:
             # Immutable historical evidence: an old runner must not replace
             # the captured digests with its uncaptured in-memory manifest.
@@ -317,10 +315,6 @@ class RunManager:
             if merged_result_files is not latest.files:
                 changes["files"] = merged_result_files
             if execution is not _UNCHANGED and execution is not None:
-                if latest.execution.backend_id is not None and execution.backend_id != latest.execution.backend_id:
-                    raise ValueError("Backend identity cannot change")
-                if execution.submission_key != latest.execution.submission_key:
-                    raise ValueError("Submission key cannot change")
                 changes["execution"] = execution
             if return_code is not _UNCHANGED and return_code is not None:
                 if not final_locked or latest.return_code is None:
@@ -713,20 +707,19 @@ class RunManager:
         phase = _failure_phase(failure_phase)
         result_files = self._merged_result_files(record, files)
 
-        if result_files is not None and result_files.failed_artifacts:
-            if state == RunState.FINISHED or phase == FailurePhase.POSTPROCESSING:
-                artifacts_available = False
-                # The successful backend does not excuse a required download
-                # failure; the failed file retains the specific diagnostics.
-                state = RunState.FAILED
-                phase = (
-                    FailurePhase.DOWNLOAD
-                    if record.execution.directory.remote is not None and not result_files.shared_filesystem
-                    else FailurePhase.ARTIFACTS
-                )
-                message = result_files.availability_message or message
+        if result_files.failed_artifacts and (state == RunState.FINISHED or phase == FailurePhase.POSTPROCESSING):
+            artifacts_available = False
+            # The successful backend does not excuse a required download
+            # failure; the failed file retains the specific diagnostics.
+            state = RunState.FAILED
+            phase = (
+                FailurePhase.DOWNLOAD
+                if record.execution.directory.remote is not None and not result_files.shared_filesystem
+                else FailurePhase.ARTIFACTS
+            )
+            message = result_files.availability_message or message
 
-        if artifacts_available and result_files is not None:
+        if artifacts_available:
             try:
                 result_files = capture_result_files(
                     result_files, require_outputs=state == RunState.FINISHED and return_code == 0,
@@ -739,11 +732,7 @@ class RunManager:
                     message = capture_error
                 result_files = result_files.fail_pending_artifacts(capture_error)
 
-        if (
-            result_files is not None
-            and result_files.failed_artifacts
-            and state in (RunState.FINISHED, RunState.POSTPROCESSING)
-        ):
+        if result_files.failed_artifacts and state in (RunState.FINISHED, RunState.POSTPROCESSING):
             state, phase = RunState.FAILED, FailurePhase.ARTIFACTS
             message = result_files.availability_message or message
 
@@ -778,7 +767,6 @@ class RunManager:
                 or latest.failure_phase != FailurePhase.DOWNLOAD
                 or latest.return_code != 0
                 or latest.execution.backend_id is None
-                or latest.files is None
                 or latest.files.captured_at is not None
             ):
                 raise ValueError("Only failed downloads of successful backend jobs can be retried")
