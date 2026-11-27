@@ -78,9 +78,24 @@ class OutputObservers:
         self._lock = Lock()
         self._decoders = {}
 
+    @property
+    def has_listeners(self):
+        with self._lock:
+            return bool(self._listeners)
+
     def add(self, callback):
         with self._lock:
             self._listeners.append(callback)
+
+    def remove(self, callback):
+        """Remove a registration, if it is still present."""
+        with self._lock:
+            try:
+                self._listeners.remove(callback)
+            except ValueError:
+                return
+            if not self._listeners:
+                self._decoders.clear()
 
     def add_error_listener(self, callback):
         with self._lock:
@@ -91,6 +106,8 @@ class OutputObservers:
         if not data:
             return
         with self._lock:
+            if not self._listeners:
+                return
             decoder = self._decoders.setdefault(kind, codecs.getincrementaldecoder("utf8")(errors="replace"))
             text = decoder.decode(data)
         if text:
@@ -112,11 +129,8 @@ class OutputObservers:
             try:
                 callback(text, kind)
             except Exception as exc:
+                self.remove(callback)
                 with self._lock:
-                    try:
-                        self._listeners.remove(callback)
-                    except ValueError:
-                        pass
                     handlers = tuple(self._error_listeners)
                 if not handlers:
                     warnings.warn(

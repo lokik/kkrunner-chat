@@ -442,7 +442,7 @@ def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatc
 
     runner = _attached_job(tmp_path)
 
-    async def follow(_on_output):
+    async def follow(_on_output, *, output_requested=None):
         raise StreamProtocolError("Unknown supervisor stream protocol")
 
     async def status():
@@ -496,7 +496,7 @@ def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_
 
     job = _attached_job(tmp_path)
 
-    async def follow(_on_output):
+    async def follow(_on_output, *, output_requested=None):
         return JobStatus(RunState.FINISHED, return_code=0)
 
     async def never_poll():
@@ -519,3 +519,58 @@ def test_initial_supervised_named_streams_are_not_delivered_twice(tmp_path):
     assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {"out": "out\n", "err": "err\n"}
     assert (tmp_path / "out.txt").read_text() == "out\n"
     assert (tmp_path / "err.txt").read_text() == "err\n"
+
+
+def test_remove_last_listener_only_unsubscribes_output(tmp_path, monkeypatch):
+    import asyncio
+    from kkrunner.backends.contracts import JobStatus
+
+    job = _attached_job(tmp_path)
+    received = []
+
+    def listener(text, kind):
+        received.append(text)
+        job.remove_output_listener(listener)
+
+    job.add_output_listener(listener)
+
+    async def observe(on_output, *, output_requested=None):
+        assert output_requested.enabled
+        on_output(b"first", "out")
+        await asyncio.wait_for(output_requested.wait_for_change(True), 1)
+        assert not output_requested.enabled
+        assert not job.state.is_terminal
+        on_output(b"already in flight", "out")
+        job.add_output_listener(listener)
+        await asyncio.wait_for(output_requested.wait_for_change(False), 1)
+        on_output(b"second", "out")
+        return JobStatus(RunState.FINISHED, return_code=0)
+
+    monkeypatch.setattr(job.execution, "observe", observe)
+    asyncio.run(job._monitor())
+    assert job.state is RunState.FINISHED
+    assert job.return_code == 0
+    assert job.output_error is None
+    assert received == ["first", "second"]
+
+
+def test_native_terminal_reply_with_output_error_needs_no_status_query(tmp_path, monkeypatch):
+    import asyncio
+
+    job = _attached_job(tmp_path)
+
+    async def follow(self, operation, identity, on_output, **options):
+        return {"state": "finished", "return_code": 0, "output_error": "cannot read stdout"}
+
+    async def forbidden_status():
+        pytest.fail("Native terminal reply already supplied the outcome")
+
+    monkeypatch.setattr(LocalTarget, "follow", follow)
+    monkeypatch.setattr(job.execution, "status", forbidden_status)
+    asyncio.run(job._monitor())
+    assert job.state is RunState.FINISHED
+    assert job.return_code == 0
+    assert job.failure_phase is None
+    assert job.failure_message is None
+    assert isinstance(job.output_error, OSError)
+    assert str(job.output_error) == "cannot read stdout"

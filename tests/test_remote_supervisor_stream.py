@@ -242,14 +242,26 @@ def test_terminal_drains_slow_client_and_closes_connection(tmp_path):
             finishing = asyncio.create_task(streams.finish())
             await asyncio.sleep(.1)
             assert not finishing.done()
+
+            # A new calculation can use the same path once native completion
+            # was published, while the old subscriber is still draining.
+            second = SupervisorStreams(output, None)
+            await second.start()
+            try:
+                await second.publish("out", b"second calculation")
+                assert output.read_bytes() == b"second calculation"
+            finally:
+                await second.finish()
+
             count = 0
             async for kind, offset, data in receive(reader):
                 if kind == "terminal":
                     assert data["return_code"] == 0
                 else:
                     assert offset == count
+                    assert data == b"x" * len(data)
                     count += len(data)
-            assert count == output.stat().st_size == 1024 * 8192
+            assert count == 1024 * 8192
             # The server closes its end without waiting for client close.
             assert await reader.read() == b""
             await asyncio.wait_for(finishing, 5)
@@ -276,6 +288,9 @@ class _FakeFollowerWriter:
     def __init__(self, buffered=0):
         self.transport = _FakeFollowerTransport(buffered)
         self.frames = []
+
+    def is_closing(self):
+        return self.transport.aborted
 
     def write(self, data):
         self.frames.append(data)
@@ -524,3 +539,85 @@ def test_follow_supports_async_output_sinks_on_both_connections(tmp_path, initia
             await streams.finish()
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_terminal_waiter_and_explicit_subscriber_are_independent(tmp_path, detached):
+    import socket
+    from kkrunner.backends.implementations.supervised.streams import receive
+
+    async def check():
+        streams = SupervisorStreams(tmp_path / "out", detached=detached)
+        await streams.start()
+        connection, supervisor = socket.socketpair()
+        await streams.attach_initial(supervisor, output=False)
+        owner_reader, owner_writer = await asyncio.open_unix_connection(sock=connection)
+        try:
+            await streams.publish("out", b"before")
+            subscriber_reader, subscriber_writer = await asyncio.open_unix_connection(streams.socket_path)
+            try:
+                subscriber_writer.write(b'{"command":"follow","offsets":{"out":0,"err":null}}\n')
+                await subscriber_writer.drain()
+                subscriber = receive(subscriber_reader)
+                assert await asyncio.wait_for(anext(subscriber), 2) == ("out", 0, b"before")
+                subscriber_writer.close()
+                await subscriber_writer.wait_closed()
+                await subscriber.aclose()
+            finally:
+                subscriber_writer.close()
+            await streams.publish("out", b"after")
+            assert not streams.disconnected.is_set()
+            streams.terminal({"state": "finished", "return_code": 0})
+            async def collect():
+                return [kind async for kind, _, _ in receive(owner_reader)]
+            assert await asyncio.wait_for(collect(), 2) == ["terminal"]
+        finally:
+            owner_writer.close()
+            await owner_writer.wait_closed()
+            await streams.finish()
+        assert (tmp_path / "out").read_bytes() == b"beforeafter"
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_supervisor_can_unsubscribe_without_closing_owner_connection(tmp_path, detached):
+    import socket
+    from kkrunner.backends.implementations.supervised.streams import receive
+
+    async def exercise():
+        streams = SupervisorStreams(tmp_path / "out", detached=detached)
+        await streams.start()
+        connection, supervisor = socket.socketpair()
+        await streams.attach_initial(supervisor, output=False)
+        reader, writer = await asyncio.open_unix_connection(sock=connection)
+        frames = receive(reader)
+
+        async def wait_for_unsubscribe():
+            # Synchronize with the receiving event loop, not a sleep.
+            while any(follower.enabled for follower in streams._followers):
+                await asyncio.sleep(0)
+
+        try:
+            await streams.publish("out", b"before")
+            writer.write(b"follow\n")
+            await writer.drain()
+            assert await asyncio.wait_for(anext(frames), 2) == ("out", 0, b"before")
+            writer.write(b"unfollow\n")
+            await writer.drain()
+            await asyncio.wait_for(wait_for_unsubscribe(), 2)
+            await streams.publish("out", b"after")
+            assert not streams.disconnected.is_set()
+            streams.terminal({"state": "finished", "return_code": 0})
+            assert await asyncio.wait_for(anext(frames), 2) == (
+                "terminal", 0, {"state": "finished", "return_code": 0, "output_drained": False},
+            )
+            assert (tmp_path / "out").read_bytes() == b"beforeafter"
+        finally:
+            await frames.aclose()
+            writer.close()
+            await writer.wait_closed()
+            await streams.finish()
+
+    asyncio.run(exercise())
+

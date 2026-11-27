@@ -115,15 +115,15 @@ def _framed_call(function, protocol_factory, mode):
 
         async def invoke():
             options = dict(payload["kwargs"], stdout=Sink("out"), stderr=Sink("err"))
-            if mode != "follow":
+            if mode in ("execute", "submit"):
                 options["started"] = started
-            if mode == "execute":
+            if mode != "follow":
                 options["control"] = control
             return await function(*payload["args"], **options)
 
         try:
             await write(protocol.magic)
-            if mode != "execute":
+            if mode == "follow":
                 running = asyncio.create_task(invoke())
                 disconnected = asyncio.create_task(control.read(1))
                 try:

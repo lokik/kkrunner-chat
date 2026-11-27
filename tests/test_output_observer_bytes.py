@@ -28,18 +28,12 @@ def test_emit_bytes_decodes_nonempty_chunks(data, expected):
 
 
 @pytest.mark.parametrize("kind", ("out", "err"))
-def test_observed_output_delivers_bytes_and_preserves_raw_sink(kind):
-    received, written = [], []
+def test_observed_output_delivers_decoded_bytes(kind):
+    received = []
     job = Job(DirectExecution(DirectBackend(), LocalTarget()), ExecutionSpec(("true",)))
-    job.configure_observation(
-        stream_offsets={"out": 0, "err": 0},
-        stream_writer=lambda data, stream: written.append((data, stream)),
-        stream_paths=(None, None),
-    )
     job.add_output_listener(lambda text, stream: received.append((text, stream)))
     job._observed_output(b"message:\xff", kind)
     job._observed_output(b"", kind)
-    assert written == [(b"message:\xff", kind), (b"", kind)]
     assert received == [("message:�", kind)]
 
 
@@ -65,3 +59,26 @@ def test_observer_failure_does_not_prevent_other_byte_listeners():
     observers.emit_bytes(b"second", "out")
     assert received == [("first", "out"), ("second", "out")]
     assert failures == [(broken, "listener failed")]
+
+
+def test_removing_output_listener_does_not_remove_other_listeners():
+    received = []
+    observers = OutputObservers()
+
+    def removed(text, kind):
+        pytest.fail("Removed listener was called")
+
+    def kept(text, kind):
+        received.append((text, kind))
+
+    observers.add(removed)
+    observers.add(kept)
+    observers.remove(removed)
+    observers.remove(removed)
+    observers.emit_bytes(b"first", "out")
+    assert received == [("first", "out")]
+    assert observers.has_listeners
+    observers.remove(kept)
+    assert not observers.has_listeners
+    observers.emit_bytes(b"second", "out")
+    assert received == [("first", "out")]

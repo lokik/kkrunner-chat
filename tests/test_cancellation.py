@@ -28,6 +28,7 @@ class _ControlledExecution:
     def __init__(self, *, fail_submit=False, already_running=False):
         self.ref = JobRef("process", "job-1") if already_running else None
         self.snapshot = JobStatus(RunState.RUNNING if already_running else RunState.NEW)
+        self.output_error = None
         self.fail_submit = fail_submit
         self.entered = Event()
         self.release = Event()
@@ -41,7 +42,7 @@ class _ControlledExecution:
     def configure_observation(self, *, stream_offsets, stream_paths):
         pass
 
-    async def submit(self, request, on_output):
+    async def submit(self, request, on_output, *, output_requested=None):
         self.entered.set()
         if not await asyncio.to_thread(self.release.wait, 5):
             raise TimeoutError("test did not release submit")
@@ -50,7 +51,7 @@ class _ControlledExecution:
         self.ref = JobRef("process", "job-1")
         return JobStatus(RunState.QUEUED)
 
-    async def observe(self, on_output):
+    async def observe(self, on_output, *, output_requested=None):
         self.observation_calls += 1
         if not await asyncio.to_thread(self.cancelled.wait, 5):
             raise TimeoutError("test did not cancel job")

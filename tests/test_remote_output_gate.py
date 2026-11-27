@@ -51,14 +51,15 @@ class _Transport(LoopbackFileTransfer):
             return self.facts()
         return await super().call(operation, *args, **kwargs)
 
-    async def follow(self, operation, identity, on_output, **options):
+    async def follow(self, operation, identity, on_output, *, subscription=None, **options):
         object.__setattr__(self, "follow_calls", self.follow_calls + 1)
         if self.follow_error is not None:
             raise self.follow_error
         if self.status_error is not None:
             from kkrunner.client.contracts import Operation
             await self.call(Operation.for_backend(SupervisedBackend, "status"), identity)
-        on_output(b"streamed\n", "out")
+        if subscription is None or subscription.enabled:
+            on_output(b"streamed\n", "out")
         return self.facts()
 
 

@@ -12,7 +12,7 @@ from concurrent.futures import Future
 from threading import Event, Lock, Thread
 
 from kkrunner.backends.contracts import SubmissionNotStarted, job_status_from_facts
-from kkrunner.client.contracts import BackendExecution
+from kkrunner.client.contracts import BackendExecution, OutputSubscription
 from kkrunner.runs.base import (
     FailurePhase, OutputObservers, RunState,
     dispatch_cancellation, finish_monitor, wait_for_monitor,
@@ -45,6 +45,7 @@ class Job:
         self._observer = None
         self._observation_stopped = Event()
         self._output_observers = OutputObservers(output_listener)
+        self._output_requested = None
         self._output_error = None
         self._return_code = None
         self._apply_status(execution.snapshot)
@@ -122,6 +123,18 @@ class Job:
 
     def add_output_listener(self, callback):
         self._output_observers.add(callback)
+        self._schedule(self._update_output_subscription)
+
+    def remove_output_listener(self, callback):
+        """Unsubscribe without stopping observation of the calculation."""
+        self._output_observers.remove(callback)
+        self._schedule(self._update_output_subscription)
+
+    def _update_output_subscription(self):
+        if self._output_requested is not None:
+            self._output_requested.set(
+                not self._observation_stopped.is_set() and self._output_observers.has_listeners,
+            )
 
     def add_output_error_listener(self, callback):
         self._output_observers.add_error_listener(callback)
@@ -146,7 +159,11 @@ class Job:
 
     def _observed_output(self, data, kind):
         if not self._observation_stopped.is_set():
-            self._output_observers.emit_bytes(data, kind)
+            try:
+                self._output_observers.emit_bytes(data, kind)
+            finally:
+                # A failed last callback is removed by OutputObservers.
+                self._update_output_subscription()
 
     def submit(self):
         with self._lock:
@@ -169,11 +186,17 @@ class Job:
 
     async def _monitor(self):
         self._loop = asyncio.get_running_loop()
+        with self._lock:
+            self._output_requested = OutputSubscription(
+                not self._observation_stopped.is_set() and self._output_observers.has_listeners,
+            )
         try:
             if self._request is not None:
                 request, self._request = self._request, None
                 try:
-                    status = await self.execution.submit(request, self._observed_output)
+                    status = await self.execution.submit(
+                        request, self._observed_output, output_requested=self._output_requested,
+                    )
                 except BaseException as exc:
                     self._apply_status(self.execution.snapshot)
                     self._submission_error = exc
@@ -186,7 +209,9 @@ class Job:
                 if self._observation_stopped.is_set() and self.execution.can_stop_observation:
                     self._observation_lost("Observation detached")
                     return
-                self._observer = asyncio.create_task(self.execution.observe(self._observed_output))
+                self._observer = asyncio.create_task(self.execution.observe(
+                    self._observed_output, output_requested=self._output_requested,
+                ))
             try:
                 status = await self._observer
             except asyncio.CancelledError:
@@ -205,12 +230,14 @@ class Job:
                 if not self._state.is_terminal:
                     self._observation_lost(str(exc))
                 return
+            self._output_error = self._output_error or self.execution.output_error
             self._apply_status(status)
             if not self._state.is_terminal:
                 self._observation_lost("Observation ended without terminal backend status")
         finally:
             with self._lock:
                 self._observer = None
+                self._output_requested = None
             try:
                 if self._cancel_task is not None:
                     await asyncio.gather(self._cancel_task, return_exceptions=True)
@@ -235,7 +262,8 @@ class Job:
                 self._observation_lost(str(exc))
         finally:
             try:
-                self._output_observers.finish_bytes()
+                if not self._observation_stopped.is_set():
+                    self._output_observers.finish_bytes()
             except BaseException as exc:
                 self._output_error = self._output_error or exc
                 if not self._state.is_terminal:
@@ -294,6 +322,7 @@ class Job:
                 return
             self._observation_stopped.set()
             observer = self._observer
+        self._schedule(self._update_output_subscription)
         if observer is not None and self.execution.can_stop_observation:
             self._schedule(observer.cancel)
 

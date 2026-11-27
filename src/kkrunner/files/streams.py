@@ -9,6 +9,36 @@ from pathlib import Path
 from typing import Any
 
 from kkrunner.files.paths import file_path
+from kkrunner.support.decorators import portable
+
+
+@portable
+def open_new_output(path, mode="wb", *, buffering=-1):
+    """Open a new named output without truncating an earlier reader's inode.
+
+    Each calculation creates a fresh artifact with ordinary creation
+    permissions. Publish it only after opening succeeds, so an earlier
+    reader retains its inode and an unsuccessful replacement leaves the
+    old path intact. Borrowed handles and special files are not replaced.
+    Follow symbolic links as ordinary open() would.
+    """
+    import os
+    from tempfile import TemporaryDirectory
+
+    if not os.path.isfile(path):
+        return open(path, mode, buffering=buffering)
+
+    destination = os.path.realpath(os.fsdecode(path))
+    # Stage on the same filesystem with normal open()/umask semantics.
+    with TemporaryDirectory(dir=os.path.dirname(destination)) as directory:
+        temporary = os.path.join(directory, "output")
+        stream = open(temporary, mode, buffering=buffering)
+        try:
+            os.replace(temporary, destination)
+        except BaseException:
+            stream.close()
+            raise
+        return stream
 
 
 def _close_distinct(resources, *, suppress_errors=False):
@@ -61,7 +91,7 @@ class OutputStreams:
                     path = file_path(value, directory)
                     if path not in opened:
                         Path(os.fsdecode(path)).parent.mkdir(parents=True, exist_ok=True)
-                        opened[path] = acquired.enter_context(open(path, "wb"))
+                        opened[path] = acquired.enter_context(open_new_output(path))
                     value = opened[path]
                 targets[name] = value
             self.output_file = targets["output_file"]

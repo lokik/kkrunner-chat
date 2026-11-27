@@ -18,7 +18,7 @@ from typing import (
 if TYPE_CHECKING:
     from typing_extensions import Unpack
     from kkrunner.backends.support.messages import (
-        AcknowledgeReply, ExecutionRequest, FollowOptions, RecoveryReply, RecoveryRequest,
+        AcknowledgeReply, ExecutionRequest, FollowOptions, ObservationReply, RecoveryReply, RecoveryRequest,
         StatusReply, SubmissionReply, PreparedExecution, ExecutionReply,
     )
 
@@ -214,7 +214,7 @@ class DirectOperations(Protocol):
     @staticmethod
     async def follow(
         job_ref: str, stdout: Union[ByteSink, AsyncByteSink], stderr: Union[ByteSink, AsyncByteSink], **options: Unpack[FollowOptions],
-    ) -> StatusReply: ...
+    ) -> ObservationReply: ...
 
     @staticmethod
     async def stream(
@@ -225,6 +225,7 @@ class DirectOperations(Protocol):
         files: Optional[Mapping[str, BinaryIO]] = None,
         started: Optional[Callable[[ExecutionReply], Union[None, Awaitable[None]]]] = None,
         stdin: Optional[BinaryIO] = None,
+        output: bool = True,
     ) -> ExecutionReply: ...
 
 
@@ -262,10 +263,10 @@ class ManagedOperations(Protocol):
     @staticmethod
     async def follow(
         job_ref: str, stdout: Union[ByteSink, AsyncByteSink], stderr: Union[ByteSink, AsyncByteSink], **options: Unpack[FollowOptions],
-    ) -> StatusReply: ...
+    ) -> ObservationReply: ...
 
     @staticmethod
-    async def stream(job_ref: str, **options: Unpack[FollowOptions]) -> StatusReply: ...
+    async def stream(job_ref: str, **options: Unpack[FollowOptions]) -> ObservationReply: ...
 
 class Backend:
     """Configured native backend with a class-level static-operation interface.

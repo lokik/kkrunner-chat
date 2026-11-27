@@ -174,7 +174,7 @@ def test_single_submission_path_with_and_without_store(tmp_path, tracked):
         assert run.id is None
 
 
-def test_detached_local_uses_shared_file_tail_for_live_observation(tmp_path):
+def test_detached_local_delivers_named_output_on_request(tmp_path):
     spec = ExecutionSpec(
         (sys.executable, "-u", "-c",
          "import sys,time; print('first', flush=True); time.sleep(.15); print('second', file=sys.stderr, flush=True)"),

@@ -40,7 +40,7 @@ def _client_and_attachment(tmp_path, monkeypatch, backend_type=SupervisedBackend
 
 @pytest.fixture
 def replay_observer(monkeypatch):
-    async def observe(self, on_output):
+    async def observe(self, on_output, *, output_requested=None):
         on_output(b"replayed output\n", "out")
         await asyncio.sleep(0)
         return JobStatus(RunState.FINISHED, return_code=0)

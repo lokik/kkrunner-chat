@@ -8,6 +8,7 @@ from pathlib import Path
 
 from kkrunner.backends.support.process import prepare_mpi
 from kkrunner.files.availability import prepare_target_outputs
+from kkrunner.files.streams import open_new_output
 
 from .slurm import submission_marker
 
@@ -56,4 +57,5 @@ def prepare_outputs(request):
     prepare_target_outputs(request)
     for path in {request.get("output_file"), request.get("error_file")} - {None}:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_bytes(b"")
+        with open_new_output(path):
+            pass

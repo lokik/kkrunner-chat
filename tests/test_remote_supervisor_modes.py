@@ -29,7 +29,8 @@ def _initial_connection(spec):
     return client
 
 
-def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch):
+@pytest.mark.parametrize("output", [False, True])
+def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch, output):
 
     async def check():
         captured = []
@@ -38,6 +39,7 @@ def test_attached_run_stops_when_follow_connection_drops(tmp_path, monkeypatch):
         )
         rd, wr = os.pipe()
         spec = _spec(tmp_path, wr, detached=False)
+        spec["initial_output"] = output
         connection = _initial_connection(spec)
         task = asyncio.create_task(remote_process_worker._run(spec))
         with os.fdopen(rd, "rb") as pipe:
@@ -386,7 +388,7 @@ def test_cancel_attached_job_with_backpressured_live_output(tmp_path, monkeypatc
                     count = 0
                     async for kind, offset, data in receive(reader):
                         if kind == "terminal":
-                            assert data == outcome
+                            assert data == dict(outcome, output_drained=True)
                             assert count > 0
                             return
                         assert kind == "out" and offset == count
@@ -654,5 +656,42 @@ def test_initial_observer_lost_before_supervisor_starts(tmp_path, monkeypatch, d
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_supervisor_wait_only_connection_receives_no_output(tmp_path, monkeypatch, detached):
+    from kkrunner.backends.implementations.supervised.streams import receive
+
+    async def check():
+        monkeypatch.setattr(remote_process_worker, "publish_outcome", lambda *args, **kwargs: None)
+        rd, wr = os.pipe()
+        spec = _spec(tmp_path, wr, detached=detached, argv=[
+            sys.executable, "-c",
+            "import sys; sys.stdout.buffer.write(b'x' * 1048576); print('err', file=sys.stderr)",
+        ])
+        spec["initial_output"] = False
+        connection = _initial_connection(spec)
+        task = asyncio.create_task(remote_process_worker._run(spec))
+        try:
+            with os.fdopen(rd, "rb") as pipe:
+                assert await asyncio.to_thread(pipe.readline)
+            reader, writer = await asyncio.open_unix_connection(sock=connection)
+            try:
+                async def collect():
+                    return [kind async for kind, _, _ in receive(reader)]
+                assert await asyncio.wait_for(collect(), 5) == ["terminal"]
+                assert await asyncio.wait_for(task, 5) == 0
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            connection.close()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        assert (tmp_path / "stdout").read_bytes() == b"x" * 1048576
+        assert (tmp_path / "stderr").read_bytes() == b"err\n"
 
     asyncio.run(check())

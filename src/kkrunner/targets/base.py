@@ -40,8 +40,8 @@ class Target:
         return asdict(require_persistable_target(self))
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
-                        tail_paths=None, observe_only=False):
-        """Open an invocation; local I/O and file tails are explicitly requested.
+                        observe_only=False, output=True):
+        """Open an invocation with explicitly requested local I/O and output.
 
         An observation-only invocation has no in-band cancellation commands;
         closing its connection releases the observation.

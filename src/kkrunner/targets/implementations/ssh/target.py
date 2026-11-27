@@ -37,22 +37,34 @@ class SshTarget(Target):
     supports_file_transfer = True
 
     async def open_call(self, operation, request, on_output, *, local_io=None, use_stdin=True,
-                        tail_paths=None, observe_only=False):
+                        observe_only=False, output=True):
         from .call import SshCall
         command = operation_command(operation, python=self.python_command, framed="submit" if observe_only else "execute")
         process = await self.start(
-            (*command, operation_payload((request,), {})), stdin=asyncio.subprocess.PIPE,
+            (*command, operation_payload((request,), {} if output else {"output": False})),
+            stdin=asyncio.subprocess.PIPE,
         )
         return SshCall(process, on_output, observe_only=observe_only)
 
-    async def follow(self, operation, identity, on_output, **options):
+    async def follow(self, operation, identity, on_output, *, subscription=None, **options):
         from .follow import follow_framed_command
-        command = operation_command(operation, python=self.python_command, framed="follow")
+        enabled = True if subscription is None else subscription.enabled
+        if subscription is not None:
+            options["output"] = enabled
+        command = operation_command(operation, python=self.python_command,
+                                    framed="follow" if subscription is None else "observe")
         process = await self.start(
             (*command, operation_payload((identity,), options)),
             stdin=asyncio.subprocess.PIPE,
         )
-        return await follow_framed_command(process, on_output, close_input=True)
+        if subscription is None:
+            return await follow_framed_command(process, on_output, close_input=True)
+        from .call import SshCall
+        call = SshCall(process, on_output, observe_only=True)
+        try:
+            return await call.wait_with_output(subscription, enabled)
+        finally:
+            await call.close()
 
     async def call(self, operation: Operation, *args, **kwargs):
         if self.pool_size and type(self) is SshTarget:

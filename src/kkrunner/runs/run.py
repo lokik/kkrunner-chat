@@ -253,6 +253,9 @@ class Run:
     def add_output_listener(self, callback):
         return self._job.add_output_listener(callback)
 
+    def remove_output_listener(self, callback):
+        return self._job.remove_output_listener(callback)
+
     def add_output_error_listener(self, callback):
         return self._job.add_output_error_listener(callback)
 

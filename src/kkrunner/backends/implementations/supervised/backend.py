@@ -72,7 +72,7 @@ class SupervisedBackend(Backend, ManagedOperations):
         return _submit(request)
 
     @staticmethod
-    async def submit_and_follow(request, *, stdout, stderr, started):
+    async def submit_and_follow(request, *, stdout, stderr, started, output=True, control=None):
         """Launch with an inherited FOLLOW connection; no later attach is needed."""
         try:
             client, supervisor = socket.socketpair()
@@ -84,7 +84,7 @@ class SupervisedBackend(Backend, ManagedOperations):
                 # The launch handshake is bounded by the lifetime of the child
                 # pipe, not by a deadline. The supervisor already owns a socket
                 # endpoint before the program can begin.
-                reply = _submit(request, initial_follower=supervisor)
+                reply = _submit(request, initial_follower=supervisor, initial_output=output)
             except SubmissionNotStarted as exc:
                 return dict(status_reply(RunState.FAILED, failure_phase=FailurePhase.SUBMISSION,
                                          error=str(exc)), remote_id=None)
@@ -92,8 +92,12 @@ class SupervisedBackend(Backend, ManagedOperations):
             if inspect.isawaitable(notification):
                 await notification
             offsets = {"out": 0, "err": 0}
-            return await follow_socket(None, offsets, output_callback(stdout, stderr, offsets),
-                                       connection=client)
+            live_only = tuple(kind for kind, key in (("out", "output_file"), ("err", "error_file"))
+                              if reply.get(key) is None) if control is not None else ()
+            return await follow_socket(
+                None, offsets, output_callback(stdout, stderr, offsets, live_only=live_only),
+                connection=client, output=output, control=control,
+            )
 
     @staticmethod
     def status(remote_id: str) -> StatusReply:
@@ -171,8 +175,10 @@ class SupervisedBackend(Backend, ManagedOperations):
         poll_interval=0.1,
         stdout_path=None,
         stderr_path=None,
+        output=True,
+        control=None,
     ):
-        """Observe one supervisor; cancellation closes only the follower socket."""
+        """Wait for a supervisor; request output only when explicitly selected."""
         handle = decode_handle(remote_id)
         offsets = {"out": stdout_offset, "err": stderr_offset}
         paths = {
@@ -187,19 +193,24 @@ class SupervisedBackend(Backend, ManagedOperations):
         if path is None:
             raise RuntimeError("Backend handle contains no follow socket")
 
-        on_chunk = output_callback(stdout, stderr, offsets)
+        on_chunk = output_callback(
+            stdout, stderr, offsets,
+            live_only=tuple(kind for kind, path in paths.items() if path is None) if control is not None else (),
+        )
 
         requested = dict(offsets)
         if stdout_path is not None and stdout_path == stderr_path:
             requested.pop("err")
         try:
-            return await follow_socket(path, requested, on_chunk)
+            return await follow_socket(path, requested, on_chunk, output=output, control=control)
         except (SupervisorClosedBeforeFollow, SupervisorConnectionError) as exc:
             # A completed supervisor has removed its transient socket. Replay
             # declared spools once, without the historical polling lifecycle.
             facts = SupervisedBackend.status(remote_id)
             if not RunState(facts["state"]).is_terminal:
                 raise
+            if not output:
+                return facts
             # A launch failure has no calculation output to recover.
             if (facts["state"] == RunState.FAILED.value
                     and facts.get("failure_phase") == FailurePhase.LAUNCH.value
@@ -220,33 +231,23 @@ class SupervisedBackend(Backend, ManagedOperations):
                 raise ValueError("Live-only output cannot be recovered after observation was lost")
             if not any(path is not None for path in paths.values()):
                 raise ValueError("Output was live-only and cannot be reattached")
-            seen = set()
-            for kind in ("out", "err"):
-                path = paths[kind]
-                if path is None or path in seen:
-                    continue
-                seen.add(path)
-                with open(path, "rb") as source:
-                    if offsets[kind] is None:
-                        source.seek(0, os.SEEK_END)
-                    else:
-                        if offsets[kind] > os.fstat(source.fileno()).st_size:
-                            raise ValueError("Offset is beyond the spool")
-                        source.seek(offsets[kind])
-                    while True:
-                        data = source.read(65536)
-                        if not data:
-                            break
-                        await on_chunk(kind, source.tell() - len(data), data)
-                        await asyncio.sleep(0)
-            return facts
+            from kkrunner.support.growing_file_tail import controlled_named_files
+
+            # A completed named spool must exist; unlike a growing file it
+            # cannot still be awaiting creation by the calculation.
+            for path in set(paths.values()) - {None}:
+                os.stat(path)
+            return await controlled_named_files(
+                paths, {"out": stdout, "err": stderr}, offsets, lambda: facts,
+                poll_interval, output=output, control=control,
+            )
 
     @staticmethod
     async def stream(job_ref: str, **options):
         import sys
         return await SupervisedBackend.follow(job_ref, sys.stdout.buffer, sys.stderr.buffer, **options)
 
-def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionReply:
+def _submit(request: ExecutionRequest, *, initial_follower=None, initial_output=True) -> SubmissionReply:
     """Submit one process job, preserving the atomic release barrier."""
     if os.name != "posix":
         raise SubmissionNotStarted("Managed local execution requires POSIX process groups and Unix sockets")
@@ -300,6 +301,7 @@ def _submit(request: ExecutionRequest, *, initial_follower=None) -> SubmissionRe
         }
         if initial_follower is not None:
             worker_spec["initial_follower_fd"] = initial_follower.fileno()
+            worker_spec["initial_output"] = initial_output
         env = os.environ.copy()
         env["KKRunner_RUN_ID"] = run_id
 
