@@ -18,7 +18,6 @@ from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.pool import default_client_pool
 from kkrunner.targets import (
     LocalTarget,
-    SshTarget,
     require_persistable_target,
 )
 from kkrunner.files.manifest import FileEntry, FileManifest
@@ -388,7 +387,7 @@ class RunManager:
                     directory=WorkingDirectory(execution.directory.local, recovery.directory),
                 )
             files = record.files
-            if isinstance(config, SshTarget):
+            if not config.is_local:
                 files = files.with_remote_stream_paths(
                     stdout=recovery.output_file, stderr=recovery.error_file,
                 )
@@ -469,7 +468,7 @@ class RunManager:
         """Use the ordinary preprocessing reservation for a synchronous scope."""
         store = self._store_for(record)
         with store.observation_lock(record):
-            reserved = self._reserve(record, lambda: store.save(
+            reserved = self._reserve_recovering(record, lambda: store.save(
                 replace(record, state=RunState.PREPROCESSING, updated_at=_now()),
             ))
             try:
@@ -494,7 +493,8 @@ class RunManager:
                 locks.enter_context(store.submission_lock())
             return self._conflicts(record, stores)
 
-    def reserve(self, record, *, preprocessing=False):
+    def reserve(self, record, *, preprocessing=False, recover_conflicts=False):
+        """Reserve atomically; optionally request a separate conflict recovery first."""
         if self._store_for(record).lock_key != self.store.lock_key:
             raise ValueError("Cannot reserve a record owned by another store")
         record = replace(record, store=self.store)
@@ -506,45 +506,48 @@ class RunManager:
                 existing = None
             if existing is not None and (existing != record or existing.state != RunState.NEW):
                 raise ValueError(f"Run id {record.id!r} already exists; use attach()")
-            if not preprocessing and record.files is not None:
-                sync_result_files(record.files.input_files)
             return self.transition(
                 record, state=RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING,
             )
 
-        return self._reserve(record, activate)
+        reserve = self._reserve_recovering if recover_conflicts else self._reserve
+        return reserve(record, activate)
 
     def _reserve(self, record, activate):
         """Check the footprint and activate a record under the same store locks."""
-        attempted_refresh = set()
         stores = self._reservation_stores()
         owner = self._store_for(record)
         if all(store.lock_key != owner.lock_key for store in stores):
             stores = tuple(sorted((*stores, owner), key=lambda store: store.lock_key))
+        with ExitStack() as locks:
+            for store in stores:
+                locks.enter_context(store.submission_lock())
+            conflicts = self._conflicts(record, stores)
+            if conflicts:
+                raise DuplicateSubmissionError(record, conflicts)
+            return activate()
+
+    def _reserve_recovering(self, record, activate):
+        """Explicit higher-level policy: recover abandoned conflicts outside reservation locks."""
+        attempted_refresh = set()
         while True:
-            with ExitStack() as locks:
-                for store in stores:
-                    locks.enter_context(store.submission_lock())
-                conflicts = self._conflicts(record, stores)
-                if not conflicts:
-                    return activate()
+            try:
+                return self._reserve(record, activate)
+            except DuplicateSubmissionError as exc:
                 refreshable = tuple(
-                    conflict for conflict in conflicts
+                    conflict for conflict in exc.conflicts
                     if self._record_key(conflict) not in attempted_refresh
                     and (
                         conflict.state == RunState.PREPROCESSING
                         or conflict.execution.available and (
                             self._is_stale_submitting(conflict)
-                            or (conflict.execution.backend.name == "direct"
+                            or (conflict.execution.backend.execution_mode == "direct"
                                 and conflict.execution.backend_id is not None)
                         )
                     )
                 )
-
-            if not refreshable:
-                raise DuplicateSubmissionError(record, conflicts)
-            # Recovery is a refresh operation, not a second reservation algorithm.
-            # Recheck the actual store contents, regardless of the refresh result.
+                if not refreshable:
+                    raise
             attempted_refresh.update(self._record_key(conflict) for conflict in refreshable)
             self.refresh(refreshable)
 
@@ -552,7 +555,7 @@ class RunManager:
     def _observed_run_state(record, status):
         from kkrunner.runs.states import project_run_state
         return project_run_state(status.state,
-                                 files_pending=isinstance(record.execution.target, SshTarget) and status.files is None,
+                                 files_pending=not record.execution.target.is_local and status.files is None,
                                  processing_pending=record.processing_required and status.return_code == 0,
                                  failure_phase=status.failure_phase)
 
@@ -636,7 +639,7 @@ class RunManager:
         if status is None:
             return record
         if (
-            isinstance(record.execution.target, LocalTarget)
+            record.execution.target.is_local
             and status.state.is_terminal and status.files is None
         ):
             # Backend status contains execution facts only. The client-side
@@ -645,8 +648,8 @@ class RunManager:
             status = replace(status, files=local_manifest(record.files, status))
         if (
             retrieve_ended
-            and record.execution.backend.name == "direct"
-            and isinstance(record.execution.target, SshTarget)
+            and record.execution.backend.execution_mode == "direct"
+            and not record.execution.target.is_local
             and (status.state == RunState.CANCELLED or (
                 status.state == RunState.FINISHED and status.return_code is None
             ))
@@ -656,7 +659,7 @@ class RunManager:
             # recover cancellation on a later observation, so collect any
             # diagnostics now, under the same ownership as completion.
             try:
-                files = self.client_for(record).collect_ended_direct_files(record, status)
+                files = self.client_for(record).collect_ended_files(record, status)
             except (OSError, RuntimeError, ValueError, SubprocessError) as exc:
                 if status.state != RunState.CANCELLED:
                     return self.transition(
@@ -804,7 +807,7 @@ class RunManager:
             )
 
         with self._history_edit(record) as (store, current):
-            return self._reserve(current, lambda: store.update(current, reopen))
+            return self._reserve_recovering(current, lambda: store.update(current, reopen))
 
     def begin_processing(self, record, *, return_code, files=None, execution=None, retry=False):
         """Claim processing under the caller's existing client ownership.
@@ -834,7 +837,7 @@ class RunManager:
 
         # A historical attempt must first become active. The actual file
         # validation can then run without submission or store locks.
-        claimed = (self._reserve(latest, lambda: store.update(latest, activate))
+        claimed = (self._reserve_recovering(latest, lambda: store.update(latest, activate))
                    if latest.state.is_terminal else latest)
         try:
             manifest = capture_result_files(self._merged_result_files(claimed, files))
@@ -997,7 +1000,7 @@ class RunManager:
             guarded = []
             try:
                 for record in group:
-                    if client.backend.name == "direct":
+                    if client.backend.execution_mode == "direct":
                         ownership = self._store_for(record).observation_lock(record)
                         if not ownership.acquire(blocking=False):
                             # The original observer is alive, possibly already
@@ -1013,20 +1016,18 @@ class RunManager:
                     statuses = client.status(
                         *(JobAttachment(record.execution, record.files) for record in guarded)
                     )
-                except Exception as exc:
-                    if client.backend.name != "direct":
-                        raise
-                    # A lost connection is uncertainty, not proof of exit.
+                except (OSError, SubprocessError) as exc:
+                    # Transport failure is uncertainty, not a native job outcome.
                     for record in guarded:
                         current[self._record_key(record)] = self.transition(
                             record, state=RunState.UNKNOWN,
-                            message=f"Cannot query direct process status: {exc}",
+                            message=f"Cannot query execution status: {exc}",
                         )
                     continue
                 if len(statuses) != len(guarded):
                     raise RuntimeError("Target returned wrong number of run statuses")
                 for record, status in zip(guarded, statuses):
-                    if client.backend.name == "direct":
+                    if client.backend.execution_mode == "direct":
                         updated = self._record_observation(record, status, retrieve_ended=retrieve_ended)
                     else:
                         updated = self._apply_observation(record, status, self._record_observation)

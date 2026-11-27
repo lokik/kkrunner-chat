@@ -495,7 +495,7 @@ class Run:
                 # Keep staging ownership from the instant the reservation becomes visible.
                 self._claim_observation()
                 # Reservation and duplicate-submit checks are atomic at the store.
-                self._record = manager.reserve(self._record, preprocessing=True)
+                self._record = manager.reserve(self._record, preprocessing=True, recover_conflicts=True)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
                 self._state = RunState.PREPROCESSING

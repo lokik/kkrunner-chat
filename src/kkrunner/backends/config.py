@@ -24,6 +24,12 @@ class BackendConfig:
         from kkrunner.backends import available_backend_names
         return self.name in available_backend_names()
 
+    @property
+    def execution_mode(self):
+        """Execution semantics of the configured implementation, without an instance."""
+        from kkrunner.backends import backend_class
+        return backend_class(self.name).execution_mode
+
     def create(self):
         from kkrunner.backends import backend_class
         return backend_class(self.name)(**dict(self.options))

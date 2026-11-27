@@ -116,7 +116,11 @@ def test_refresh_and_reservation_release_ended_unknown_code_job(process, tmp_pat
     competing = manager.new_record(
         directory=tmp_path, backend=BackendConfig("direct"), files=manifest,
     )
-    reserved = manager.reserve(competing)
+    from kkrunner.runs import DuplicateSubmissionError
+    with pytest.raises(DuplicateSubmissionError):
+        manager.reserve(competing)
+    assert manager.store.get(record.id).state == RunState.RUNNING
+    reserved = manager.reserve(competing, recover_conflicts=True)
     assert reserved.state == RunState.SUBMITTING
     completed = manager.store.get(record.id)
     assert completed.state == RunState.FINISHED
@@ -206,10 +210,11 @@ def test_ssh_refresh_collects_available_outputs_without_exit_code(process, tmp_p
     assert finished.files.outputs[1].availability_state == "skipped"
 
 
-def test_unreachable_direct_status_does_not_claim_completion(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ("direct", "kkrunner", "psij"))
+def test_unreachable_status_does_not_claim_completion(tmp_path, monkeypatch, backend):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
-        directory=tmp_path, backend=BackendConfig("direct"),
+        directory=tmp_path, backend=BackendConfig(backend),
     )
     record = manager.transition(
         record, state=RunState.RUNNING,
@@ -241,7 +246,7 @@ def test_live_observer_keeps_reservation_during_postprocess(process, tmp_path):
         assert manager.refresh((original,))[0].state == RunState.RUNNING
         with pytest.raises(DuplicateSubmissionError):
             manager.reserve(replacement)
-    assert manager.reserve(replacement).state == RunState.SUBMITTING
+    assert manager.reserve(replacement, recover_conflicts=True).state == RunState.SUBMITTING
     assert manager.store.get(original.id).state == RunState.FINISHED
 
 

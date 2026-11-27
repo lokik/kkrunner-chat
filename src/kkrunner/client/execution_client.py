@@ -307,15 +307,13 @@ class ExecutionClient:
             files.close()
             raise
 
-    def collect_ended_direct_files(self, record, status):
-        """Recover outputs without reattaching or resubmitting direct execution.
+    def collect_ended_files(self, record, status):
+        """Collect named outputs of an ended execution without opening an observer.
 
         The original observer may have died, but the persisted manifest still
         defines which target files are eligible for retrieval.
         """
         from kkrunner.client.contracts import JobAttachment
-        if self.backend.name != "direct":
-            raise ValueError("Only direct execution uses unobserved file collection")
         self._validate_run(record)
 
         async def collect():
