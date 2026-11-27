@@ -6,12 +6,14 @@ from kkrunner.files import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.runs import FailurePhase
 from kkrunner import RunState, RunStore
 from kkrunner.runs.manager import RunManager
+from kkrunner.targets import LocalTarget, SshTarget
 
 
 def _record(tmp_path):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(
         remote_directory="/remote",
+        target=SshTarget("cluster"),
         directory=tmp_path,
         files=FileManifest(stdout=FileEntry(local_path=str(tmp_path / "run.out"), availability_state="pending")),
         metadata={"test": {"task": "DOS"}},
@@ -274,3 +276,31 @@ def test_failed_launch_is_terminal_without_result_collection(tmp_path, monkeypat
     monkeypatch.setattr(client, "resolve_result_files",
                         lambda *args: pytest.fail("No failed-launch output to restore"))
     assert manager.retrieve_result_files(saved) == saved
+
+
+@pytest.mark.parametrize("mode, expected_phase", [
+    ("local", FailurePhase.ARTIFACTS),
+    ("shared", FailurePhase.ARTIFACTS),
+    ("ssh", FailurePhase.DOWNLOAD),
+])
+def test_completion_failure_phase_follows_file_transfer_capability(tmp_path, mode, expected_phase):
+    from kkrunner.files.manifest import FileMapping
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    target = LocalTarget() if mode == "local" else SshTarget("cluster")
+    mapping = None if mode == "local" else FileMapping(
+        str(tmp_path), "/work", shared_filesystem=mode == "shared",
+    )
+    files = FileManifest(
+        stdout=FileEntry(str(tmp_path / "stdout"), availability_state="failed",
+                         availability_message="output unavailable"),
+        mapping=mapping,
+    )
+    record = manager.new_record(
+        directory=tmp_path, remote_directory=None if mode == "local" else "/work",
+        target=target, files=files,
+    )
+    saved = manager.complete(record, state=RunState.FINISHED, return_code=0, files=files)
+    assert saved.state == RunState.FAILED
+    assert saved.failure_phase == expected_phase
+    assert saved.message == "output unavailable"
