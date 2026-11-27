@@ -74,7 +74,7 @@ def test_local_status_projection_and_identity_recovery_are_independent(
     monkeypatch.setattr(
         SupervisedBackend,
         "status",
-        staticmethod(lambda identity: facts if identity == backend_id else pytest.fail("Unexpected backend identity")),
+        staticmethod(lambda identities: [facts] if identities == [backend_id] else pytest.fail("Unexpected backend identity")),
     )
     endpoint = ExecutionClient(SupervisedBackend)
     queried = endpoint.status(JobAttachment(
@@ -116,7 +116,7 @@ def test_local_status_projection_and_identity_recovery_are_independent(
 
 def test_local_status_without_manifest_keeps_backend_facts(monkeypatch, tmp_path):
     facts = {"state": "finished", "return_code": 0, "error": None, "failure_phase": None}
-    monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda backend_id: facts))
+    monkeypatch.setattr(SupervisedBackend, "status", staticmethod(lambda backend_ids: [facts for backend_id in backend_ids]))
     attachment = JobAttachment(
         ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), "opaque", backend=BackendConfig("kkrunner")),
         FileManifest(),

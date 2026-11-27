@@ -168,7 +168,7 @@ class ExecutionClient:
         return _run_sync(self._invoke("acknowledge", run.execution.backend_id))
 
     def status(self, *runs):
-        """Query each native job; a failed connection leaves only that observation unknown."""
+        """Query one backend batch; replies preserve the order of the requested jobs."""
         if BackendCapability.STATUS not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("This backend has no independent status query")
@@ -178,19 +178,18 @@ class ExecutionClient:
                 raise ValueError("Run lacks a backend identity")
 
         async def query():
-            result = []
-            for run in runs:
-                token = run.execution.backend_id
-                try:
-                    facts = await self._invoke("status", token)
-                except (OSError, SubprocessError) as exc:
-                    result.append(RunStatus(
-                        RunState.UNKNOWN, backend_id=token,
-                        message=f"Cannot query execution status: {exc}",
-                    ))
-                else:
-                    result.append(RunStatus.from_job_status(decode_job_status(facts), backend_id=token))
-            return tuple(result)
+            tokens = [run.execution.backend_id for run in runs]
+            try:
+                replies = await self._invoke("status", tokens)
+            except (OSError, SubprocessError) as exc:
+                return tuple(RunStatus(
+                    RunState.UNKNOWN, backend_id=token,
+                    message=f"Cannot query execution status: {exc}",
+                ) for token in tokens)
+            if len(replies) != len(tokens):
+                raise RuntimeError("Target returned wrong number of job statuses")
+            return tuple(RunStatus.from_job_status(decode_job_status(facts), backend_id=token)
+                         for token, facts in zip(tokens, replies))
 
         return _run_sync(query()) if runs else ()
 

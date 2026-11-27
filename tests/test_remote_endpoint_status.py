@@ -29,7 +29,7 @@ def _attachment(record):
     return JobAttachment(record.execution, record.files)
 
 
-def test_remote_endpoint_status_queries_opaque_handles_individually():
+def test_remote_endpoint_status_queries_opaque_handles_in_one_batch():
     executor = ExecutionClient("psij", target=SshTarget("cluster"))
     calls = []
     replies = {
@@ -43,11 +43,11 @@ def test_remote_endpoint_status_queries_opaque_handles_individually():
 
     async def request(action, *args, **kwargs):
         calls.append((action, args, kwargs))
-        return replies[args[0]]
+        return [replies[token] for token in args[0]]
 
     executor._invoke = request
     statuses = executor.status(*(_attachment(_run(ref)) for ref in ("job-1", "job-2")))
-    assert calls == [("status", ("job-1",), {}), ("status", ("job-2",), {})]
+    assert calls == [("status", (["job-1", "job-2"],), {})]
     assert [status.backend_id for status in statuses] == ["job-1", "job-2"]
     assert [status.state for status in statuses] == [RunState.RUNNING, RunState.FAILED]
     assert statuses[1].failure_phase == FailurePhase.LAUNCH
@@ -60,12 +60,12 @@ def test_remote_terminal_status_does_not_claim_client_completion():
 
     async def request(action, *args, **kwargs):
         calls.append((action, args, kwargs))
-        return {"state": "finished", "return_code": 0}
+        return [{"state": "finished", "return_code": 0}]
 
     executor._invoke = request
     (status,) = executor.status(_attachment(_run("opaque-process", backend="kkrunner")))
     assert status.state == RunState.FINISHED
-    assert calls == [("status", ("opaque-process",), {})]
+    assert calls == [("status", (["opaque-process"],), {})]
 
 
 def test_remote_endpoint_status_rejects_reference_for_other_backend():
@@ -141,8 +141,8 @@ def test_status_reports_backend_facts_without_claiming_client_transfer(facts, ex
 
     async def request(action, *args, **kwargs):
         assert action == "status"
-        assert args == ("opaque-job",)
-        return dict(facts)
+        assert args == (["opaque-job"],)
+        return [dict(facts)]
 
     executor._invoke = request
     (status,) = executor.status(_attachment(_run("opaque-job", backend="kkrunner")))
@@ -152,3 +152,31 @@ def test_status_reports_backend_facts_without_claiming_client_transfer(facts, ex
     assert status.failure_phase == (
         None if facts.get("failure_phase") is None else FailurePhase(facts["failure_phase"])
     )
+
+
+def test_connection_error_marks_the_whole_unobserved_batch_unknown():
+    executor = ExecutionClient("psij", target=SshTarget("cluster"))
+    calls = []
+
+    async def request(action, *args, **kwargs):
+        calls.append((action, args))
+        raise OSError("disconnected")
+
+    executor._invoke = request
+    assert executor.status() == ()
+    statuses = executor.status(*(_attachment(_run(ref)) for ref in ("job-1", "job-2")))
+    assert calls == [("status", (["job-1", "job-2"],))]
+    assert [status.backend_id for status in statuses] == ["job-1", "job-2"]
+    assert all(status.state == RunState.UNKNOWN and "disconnected" in status.message
+               for status in statuses)
+
+
+def test_status_rejects_incomplete_batch():
+    executor = ExecutionClient("psij", target=SshTarget("cluster"))
+
+    async def request(action, *args, **kwargs):
+        return [{"state": "running"}]
+
+    executor._invoke = request
+    with pytest.raises(RuntimeError, match="wrong number"):
+        executor.status(*(_attachment(_run(ref)) for ref in ("job-1", "job-2")))

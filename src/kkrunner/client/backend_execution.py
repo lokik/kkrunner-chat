@@ -121,7 +121,8 @@ class _Execution:
         if (self.ref is None or self.snapshot.state.is_terminal
                 or BackendCapability.STATUS not in self.backend.supports):
             return self.snapshot
-        status = decode_job_status(await self.target.call(self._operation("status"), self.ref.token))
+        (facts,) = await self.target.call(self._operation("status"), [self.ref.token])
+        status = decode_job_status(facts)
         # A concurrent live terminal reply is stronger than a liveness probe.
         return self.snapshot if self.snapshot.state.is_terminal else status
 

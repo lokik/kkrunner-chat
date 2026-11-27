@@ -226,7 +226,7 @@ def test_remote_attach_does_not_use_existing_local_file_as_observation_offset(tm
 
     async def status(name, *args, **kwargs):
         assert name == "status"
-        return {"state": "running"}
+        return [{"state": "running"}]
 
     monkeypatch.setattr(endpoint, "_invoke", status)
     parts = endpoint.open_run_parts(JobAttachment(run.execution, run.files))

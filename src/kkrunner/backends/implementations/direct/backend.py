@@ -31,11 +31,12 @@ class DirectBackend(Backend, DirectOperations):
     @staticmethod
     @portable
     @depends_on(observe_process)
-    def status(remote_id: str):
-        """Observe termination of the whole job, without asserting success."""
-        state, error = observe_process(remote_id)
-        return {"state": state, "return_code": None,
-                "failure_phase": None, "error": error}
+    def status(remote_ids: list[str]):
+        """Observe each process group without asserting success."""
+        return [
+            {"state": state, "return_code": None, "failure_phase": None, "error": error}
+            for state, error in map(observe_process, remote_ids)
+        ]
 
     @staticmethod
     @portable

@@ -137,7 +137,7 @@ def test_status_uses_native_attach_for_non_slurm_scheduler(monkeypatch):
         return native
 
     monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", attach)
-    facts = PsijBackend.status(handle("pbs-123", "pbs"))
+    (facts,) = PsijBackend.status([handle("pbs-123", "pbs")])
     assert calls == [{
         "kind": "psij", "native_id": "pbs-123",
         "executor_name": "pbs", "url": None,
@@ -157,7 +157,7 @@ def test_local_slurm_status_does_not_need_psij_installation(monkeypatch):
             failure_phase=JobFailurePhase.EXECUTION,
         )
     monkeypatch.setattr(slurm, "status", scheduler_status)
-    facts = PsijBackend.status(handle("native-7"))
+    (facts,) = PsijBackend.status([handle("native-7")])
     assert calls == ["native-7"]
     assert facts == {
         "state": "failed", "return_code": 7,
@@ -168,7 +168,7 @@ def test_local_slurm_status_does_not_need_psij_installation(monkeypatch):
 @pytest.mark.parametrize("kind", ("status", "cancel"))
 def test_native_operations_reject_other_backend_handles(kind):
     with pytest.raises(ValueError):
-        getattr(PsijBackend, kind)("not-a-valid-handle")
+        getattr(PsijBackend, kind)(["not-a-valid-handle"] if kind == "status" else "not-a-valid-handle")
 
 
 def test_submit_returns_native_identity_without_creating_client_monitor(monkeypatch, tmp_path):
@@ -285,9 +285,9 @@ def test_cancel_requests_native_job_but_does_not_invent_completion(monkeypatch):
     native.update("ACTIVE")
     monkeypatch.setattr(operations, "_attach_job", lambda identity: native)
     # The backend observes the native scheduler status after cancellation.
-    monkeypatch.setattr(PsijBackend, "status", staticmethod(lambda identity: {
+    monkeypatch.setattr(PsijBackend, "status", staticmethod(lambda identities: [{
         "state": "unknown", "return_code": None, "failure_phase": None, "error": None,
-    }))
+    } for identity in identities]))
     assert PsijBackend.cancel(handle("pbs-1", "pbs"))["state"] == "unknown"
     assert native.status.state.name == "CANCELED"
 
@@ -520,7 +520,7 @@ def test_slurm_status_uses_same_authority_as_follow(monkeypatch):
         return JobStatus(RunState.FINISHED, return_code=0)
 
     monkeypatch.setattr(slurm, "status", scheduler_status)
-    assert PsijBackend.status(handle()) == {
+    assert PsijBackend.status([handle()])[0] == {
         "state": "finished", "return_code": 0, "failure_phase": None, "error": None,
     }
     assert queried == ["123"]
@@ -529,6 +529,63 @@ def test_slurm_status_uses_same_authority_as_follow(monkeypatch):
 def test_psij_backend_is_not_a_client_session():
     assert not hasattr(PsijBackend, "create_job")
     assert not hasattr(PsijBackend, "create_run_parts")
+
+
+def test_slurm_batch_queries_only_requested_jobs_and_preserves_input_order(monkeypatch):
+    commands = []
+    def scheduler(argv):
+        commands.append(argv)
+        if argv[0] == "squeue":
+            return "103|PENDING\n101|RUNNING\n999|RUNNING\n"
+        assert argv[0] == "sacct"
+        return "104|CANCELLED|0:15|\n102|COMPLETED|7:0|\n999|COMPLETED|0:0|\n"
+
+    monkeypatch.setattr(slurm, "_scheduler_output", scheduler)
+    monkeypatch.setattr(slurm, "_slurm_details", lambda _: pytest.fail("No per-job query needed"))
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job",
+                        lambda _: pytest.fail("Slurm status must not attach PSI/J jobs"))
+    refs = [handle(native_id) for native_id in ("101", "102", "103", "104", "101")]
+    facts = PsijBackend.status(refs)
+    assert [item["state"] for item in facts] == ["running", "failed", "queued", "cancelled", "running"]
+    assert [item["return_code"] for item in facts] == [None, 7, None, 0, None]
+    assert len(commands) == 2
+    assert "--jobs=101,102,103,104" in commands[0]
+    assert commands[1][commands[1].index("-j") + 1] == "102,104"
+
+
+def test_slurm_batch_uses_controller_when_accounting_has_not_seen_job(monkeypatch):
+    commands = []
+    def scheduler(argv):
+        commands.append(argv)
+        if argv[0] == "squeue":
+            return "101|RUNNING\n"
+        return ""
+
+    checked = []
+    def details(native_id):
+        checked.append(native_id)
+        return {"JobState": "COMPLETED", "ExitCode": "0:0"} if native_id == "102" else {}
+
+    monkeypatch.setattr(slurm, "_scheduler_output", scheduler)
+    monkeypatch.setattr(slurm, "_slurm_details", details)
+    facts = PsijBackend.status([handle("101"), handle("102"), handle("103")])
+    assert [item["state"] for item in facts] == ["running", "finished", "unknown"]
+    assert checked == ["102", "103"]
+    assert len(commands) == 2
+
+
+def test_non_slurm_batch_isolates_failed_native_observations(monkeypatch):
+    def attach(ref):
+        if ref["native_id"] == "broken":
+            raise OSError("not reachable")
+        native = NativeJob()
+        native.update("ACTIVE")
+        return native
+
+    monkeypatch.setattr("kkrunner.backends.implementations.psij.support._attach_job", attach)
+    facts = PsijBackend.status([handle(native_id, "pbs") for native_id in ("first", "broken", "last")])
+    assert [item["state"] for item in facts] == ["running", "unknown", "running"]
+    assert "not reachable" in facts[1]["error"]
 
 
 def test_psij_subscription_changes_do_not_attach_to_scheduler_again(monkeypatch, tmp_path):

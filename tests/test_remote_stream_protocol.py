@@ -269,12 +269,12 @@ def test_ssh_observer_eof_closes_helper_without_cancelling_detached_job(tmp_path
             process.stdin.close()
             # No signal to the helper: closing stdin alone must be sufficient.
             assert await asyncio.wait_for(process.wait(), 5) == 0
-            assert SupervisedBackend.status(remote_id)["state"] == "running"
+            assert SupervisedBackend.status([remote_id])[0]["state"] == "running"
             gate.touch()
 
             async def finished():
                 while True:
-                    facts = SupervisedBackend.status(remote_id)
+                    facts = SupervisedBackend.status([remote_id])[0]
                     if RunState(facts["state"]).is_terminal:
                         return facts
                     await asyncio.sleep(.01)

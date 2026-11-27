@@ -28,7 +28,7 @@ def submit_remote(request):
 
 
 def status_remote(remote_id):
-    return _backend_for_ref(remote_id).status(remote_id)
+    return _backend_for_ref(remote_id).status([remote_id])[0]
 
 
 def cancel_remote(remote_id):

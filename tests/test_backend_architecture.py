@@ -179,7 +179,7 @@ def test_native_psij_status_contains_only_execution_facts(monkeypatch):
     native_status = SimpleNamespace(state=SimpleNamespace(name="COMPLETED"), exit_code=7, message="native")
     monkeypatch.setattr(psij_support, "_attach_job", lambda identity: SimpleNamespace(status=native_status))
     remote_id = encode_handle({"kind": "psij", "executor_name": "pbs", "url": None, "native_id": "42"})
-    facts = PsijBackend.status(remote_id)
+    (facts,) = PsijBackend.status([remote_id])
     assert facts["state"] == "failed"
     assert facts["return_code"] == 7
     assert facts["error"] == "native"

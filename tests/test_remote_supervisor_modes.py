@@ -446,7 +446,7 @@ def test_natural_exit_releases_attached_backpressure(tmp_path, monkeypatch):
                 return mailbox.read_outcome(spec["receipt_id"])
 
             assert (await asyncio.wait_for(completed(), 5))["state"] == "finished"
-            assert SupervisedBackend.status(remote_id)["state"] == "finished"
+            assert SupervisedBackend.status([remote_id])[0]["state"] == "finished"
             assert not task.done()
             reader, writer = await asyncio.open_unix_connection(sock=client)
             try:
@@ -554,7 +554,7 @@ def test_exited_process_with_open_output_pipe_reports_finishing(tmp_path, monkey
             })
 
             async def finishing():
-                while SupervisedBackend.status(remote_id)["state"] != "finishing":
+                while SupervisedBackend.status([remote_id])[0]["state"] != "finishing":
                     await asyncio.sleep(.01)
 
             await asyncio.wait_for(finishing(), 5)
@@ -562,7 +562,7 @@ def test_exited_process_with_open_output_pipe_reports_finishing(tmp_path, monkey
             assert mailbox.read_outcome(spec["receipt_id"]) is None
             release.touch()
             assert await asyncio.wait_for(task, 5) == 0
-            assert SupervisedBackend.status(remote_id)["state"] == "finished"
+            assert SupervisedBackend.status([remote_id])[0]["state"] == "finished"
         finally:
             release.touch()
             await asyncio.wait_for(task, 5)
@@ -603,9 +603,9 @@ def test_draining_supervisor_serves_output_after_acknowledgement(tmp_path, monke
 
             await asyncio.wait_for(completed(), 5)
             assert not task.done(), "The supervisor must still be serving the slow observer"
-            assert SupervisedBackend.status(remote_id)["state"] == "finished"
+            assert SupervisedBackend.status([remote_id])[0]["state"] == "finished"
             assert SupervisedBackend.acknowledge(remote_id)["acknowledged"]
-            assert SupervisedBackend.status(remote_id)["state"] == "unknown"
+            assert SupervisedBackend.status([remote_id])[0]["state"] == "unknown"
             reader, writer = await asyncio.open_unix_connection(sock=client)
             try:
                 async def drain():

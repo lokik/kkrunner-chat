@@ -801,7 +801,7 @@ def test_follow_recovers_only_empty_handshake_with_launch_failure_receipt(
 
     _, remote_id, _ = _process_handle(tmp_path)
     facts = messages.status_reply(state, 127, failure_phase=phase)
-    monkeypatch.setattr(process_operations.SupervisedBackend, "status", staticmethod(lambda handle: facts))
+    monkeypatch.setattr(process_operations.SupervisedBackend, "status", staticmethod(lambda handles: [facts for handle in handles]))
 
     async def closed_socket(path, offsets, on_chunk):
         reader = asyncio.StreamReader()
@@ -828,7 +828,7 @@ def test_malformed_follow_greeting_is_not_hidden_by_launch_failure_receipt(tmp_p
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
         process_operations.SupervisedBackend, "status",
-        staticmethod(lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH)),
+        staticmethod(lambda handles: [messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH) for handle in handles]),
     )
 
     async def malformed_socket(*args):
@@ -849,7 +849,7 @@ def test_launch_failure_receipt_does_not_mask_rejected_follow_offset(tmp_path, m
     _, remote_id, _ = _process_handle(tmp_path)
     monkeypatch.setattr(
         process_operations.SupervisedBackend, "status",
-        staticmethod(lambda handle: messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH)),
+        staticmethod(lambda handles: [messages.status_reply(RunState.FAILED, 127, failure_phase=FailurePhase.LAUNCH) for handle in handles]),
     )
 
     async def closed_socket(*args):
@@ -870,3 +870,18 @@ def test_standalone_supervisor_submit_rejects_attached_without_observer(tmp_path
             "directory": str(tmp_path),
             "detached": False,
         })
+
+
+def test_supervised_batch_isolates_failed_receipt_read(tmp_path, monkeypatch):
+    handle, remote_id, _ = _process_handle(tmp_path)
+    broken = encode_handle({**handle, "receipt_id": "b" * 32})
+
+    def outcome(receipt_id):
+        if receipt_id == "b" * 32:
+            raise OSError("unreadable receipt")
+        return RunState.FINISHED, 0, None, None
+
+    monkeypatch.setattr(process_operations, "_process_outcome", outcome)
+    facts = process_operations.SupervisedBackend.status([remote_id, broken, remote_id])
+    assert [item["state"] for item in facts] == ["finished", "unknown", "finished"]
+    assert "unreadable receipt" in facts[1]["error"]
