@@ -175,15 +175,23 @@ class RunFiles:
                     record = self.update_artifact_availability(
                         record, path, ArtifactAvailabilityState.FAILED, message,
                     )
+            # Transfer each reserved destination once. Overlapping declarations
+            # describe the same physical transfer, not independent attempts.
+            transfer_errors = {}
+            if by_destination:
+                access.download_result_files(
+                    tuple(by_destination.values()), verify=verify,
+                    on_error=lambda target, exc: transfer_errors.__setitem__(target, str(exc)),
+                )
+            for target in by_destination:
+                if target not in transfer_errors and not os.path.isfile(target):
+                    transfer_errors[target] = f"Historical artifact was not retrieved: {target}"
+
             for path, entries in planned.items():
-                try:
-                    access.download_result_files(entries, verify=verify)
-                    if not all(os.path.isfile(entry.local_path) for entry in entries):
-                        raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
-                except (OSError, RuntimeError) as exc:
-                    state, message = ArtifactAvailabilityState.FAILED, str(exc)
-                else:
-                    state, message = ArtifactAvailabilityState.AVAILABLE, None
+                message = next((transfer_errors[entry.local_path] for entry in entries
+                                if entry.local_path in transfer_errors), None)
+                state = (ArtifactAvailabilityState.AVAILABLE if message is None
+                         else ArtifactAvailabilityState.FAILED)
                 if path in artifact_paths:
                     record = self.update_artifact_availability(record, path, state, message)
         return record

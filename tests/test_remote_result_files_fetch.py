@@ -969,3 +969,49 @@ def test_overlapping_historical_aliases_share_captured_digest(tmp_path):
     assert not alias.exists()
     assert all(entry.availability_state == "failed" for entry in restored.files.outputs)
     assert all("overwritten" in entry.availability_message for entry in restored.files.outputs)
+
+
+
+def test_overlapping_historical_declarations_share_transfer_outcome(tmp_path, monkeypatch):
+    from pathlib import Path
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    bad, good = local / "part-a.dat", local / "part-b.dat"
+    for path in (bad, good):
+        (remote / path.name).write_text(path.name)
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        files=FileManifest(
+            outputs=(
+                FileEntry(str(local / "part-*.dat"), str(remote / "part-*.dat")),
+                FileEntry(str(bad), str(remote / bad.name)),
+                FileEntry(str(good), str(remote / good.name)),
+            ),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    attempts = []
+
+    async def download(self, source, destination, **kwargs):
+        name = Path(source).name
+        attempts.append(name)
+        if name == bad.name and attempts.count(name) == 1:
+            raise OSError("transfer interrupted")
+        return await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+
+    monkeypatch.setattr(SshTarget, "get_file", download)
+    restored = manager.retrieve_result_files(record)
+    assert sorted(attempts) == [bad.name, good.name]
+    assert not bad.exists()
+    assert good.read_text() == good.name
+    pattern, exact_bad, exact_good = restored.files.outputs
+    assert pattern.availability_state == exact_bad.availability_state == "failed"
+    assert pattern.availability_message == exact_bad.availability_message == "transfer interrupted"
+    assert exact_good.availability_state == "available"

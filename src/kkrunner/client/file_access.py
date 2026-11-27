@@ -106,8 +106,8 @@ class FileAccess:
         self._validate_target(run)
         return _run_sync(self._resolve_result_files(run, files))
 
-    async def _download_result_files(self, entries, *, verify=None):
-        """Download exact pairs without re-discovering or re-mapping paths."""
+    async def _download_result_files(self, entries, *, verify=None, on_error=None):
+        """Download exact pairs, optionally reporting each failed destination."""
         downloaded = []
         for entry in entries:
             target = entry.local_path
@@ -121,11 +121,16 @@ class FileAccess:
                 )
             except FileExistsError:
                 continue
+            except (OSError, RuntimeError) as exc:
+                if on_error is None:
+                    raise
+                on_error(target, exc)
+                continue
             downloaded.append(target)
         return tuple(downloaded)
 
-    def download_result_files(self, entries, *, verify=None):
-        return _run_sync(self._download_result_files(entries, verify=verify))
+    def download_result_files(self, entries, *, verify=None, on_error=None):
+        return _run_sync(self._download_result_files(entries, verify=verify, on_error=on_error))
 
     def fetch_result_files(self, run, files, *, destinations=None, verify=None):
         """Convenience for caller-coordinated retrieval outside a RunManager."""
