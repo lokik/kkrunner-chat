@@ -265,6 +265,10 @@ class RunManager:
             # Immutable historical evidence: an old runner must not replace
             # the captured digests with its uncaptured in-memory manifest.
             return current
+        if current.remote_patterns_resolved is not None and requested.remote_patterns_resolved is None:
+            # Backend observations may carry the pre-discovery manifest.
+            # They cannot discard an already decided result file set.
+            return current
         if current.input_versions:
             return replace(requested, input_versions=current.input_versions)
         return requested
@@ -653,8 +657,17 @@ class RunManager:
             # recover cancellation on a later observation, so collect any
             # diagnostics now, under the same ownership as completion.
             from kkrunner.client.file_access import FileAccess
-            files, error = FileAccess(record.execution.target).collect_ended_files(record, status)
+            files, error = FileAccess(record.execution.target).collect_ended_files(
+                record, status, on_resolved=lambda manifest: self.transition(
+                    record, state=RunState.DOWNLOADING, files=manifest,
+                ),
+            )
             if error is not None:
+                if status.state != RunState.CANCELLED and files.remote_patterns_resolved is False:
+                    return self.transition(
+                        record, state=RunState.FAILED, files=files,
+                        failure_phase=FailurePhase.DOWNLOAD, message=str(error),
+                    )
                 if status.state != RunState.CANCELLED:
                     return self.transition(
                         record, state=RunState.DOWNLOADING, files=files,
@@ -769,6 +782,8 @@ class RunManager:
                 or latest.files.captured_at is not None
             ):
                 raise ValueError("Only failed downloads of successful backend jobs can be retried")
+            if latest.files.remote_patterns_resolved is False:
+                raise ValueError("Remote result pattern discovery failed; there is no download plan to retry")
             # Keep already transferred artifacts and all bytes on disk.
             # Only failed transfers become eligible for a fresh attempt.
             files = latest.files.retry_failed_artifacts()
@@ -899,7 +914,8 @@ class RunManager:
         if (not record.state.is_terminal or record.execution.backend_id is None
                 or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return False
-        if record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0:
+        if (record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0
+                and record.files.remote_patterns_resolved is not False):
             # Retry will reattach to download preserved output. Retain the
             # terminal backend receipt until that end-to-end attempt settles.
             return False

@@ -31,7 +31,7 @@ class FileAccess:
         if run.execution.target != self.target:
             raise ValueError("Run belongs to a different transport")
 
-    def collect_ended_files(self, run, status):
+    def collect_ended_files(self, run, status, *, on_resolved=None):
         """Return (manifest, error) after finalizing an ended run's files.
 
         The caller owns the file reservation and any history update. A transfer
@@ -53,7 +53,7 @@ class FileAccess:
                 session = await FileSession.from_attachment(
                     context, replace(run, files=run.files.retry_failed_artifacts()),
                 )
-                return await session.finalize_async(status), None
+                return await session.finalize_async(status, on_resolved=on_resolved), None
             except (OSError, RuntimeError, ValueError) as exc:
                 # A session that failed to initialize has no partial state yet.
                 files = run.files.fail_pending_artifacts(str(exc)) if session is None else session.files

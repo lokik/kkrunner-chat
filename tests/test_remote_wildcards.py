@@ -397,3 +397,19 @@ def test_mapped_wildcard_retains_original_declaration(tmp_path, kind):
     concrete = workdir / "part-one.dat"
     assert declared[str(concrete)].source_pattern == str(pattern)
     assert concrete.read_text() == "result"
+
+
+def test_all_local_patterns_are_resolved_before_upload(tmp_path):
+    from .test_remote import _SpyTransport
+
+    transport = _SpyTransport()
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    (workdir / "present-a.dat").write_text("input")
+    executor, spec, _, _ = _text_run(
+        tmp_path, transport,
+        declared_input_files=(workdir / "present-*.dat", workdir / "missing-*.dat"),
+    )
+    with pytest.raises(SubmissionNotStarted, match="input pattern did not match"):
+        _processed_run(executor, spec).run()
+    assert transport.uploads == []

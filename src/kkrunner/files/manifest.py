@@ -146,6 +146,8 @@ class FileManifest:
     captured_at: Optional[str] = None
     stdin: Optional[FileEntry] = None
     cache_versions: tuple[FileVersion, ...] = ()
+    # None: not attempted; True: complete membership frozen; False: discovery failed.
+    remote_patterns_resolved: Optional[bool] = None
 
     @classmethod
     def from_spec(cls, spec):
@@ -351,6 +353,8 @@ class FileManifest:
 
     def retry_failed_artifacts(self):
         """Reopen failed transfers without retracting published artifacts."""
+        if self.remote_patterns_resolved is False:
+            return self  # A failed discovery is not a retryable transfer.
         return self._map_artifacts(
             lambda item: replace(item, availability_state="pending", availability_message=None)
             if item.availability_state == "failed" else item

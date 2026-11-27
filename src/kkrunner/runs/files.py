@@ -34,13 +34,15 @@ def _missing_result_files(result_files, *, include_outputs=True):
     captured = result_files.captured_at is not None
     versions = result_files.input_versions
     entries = () if captured or versions else result_files.input_entries
-    if include_outputs:
+    if include_outputs and result_files.remote_patterns_resolved is not False:
         if captured:
             versions += result_files.output_versions
         else:
             entries += (
                 result_files.stdout, result_files.stderr,
-                *(entry for entry in result_files.outputs if entry.collect),
+                *(entry for entry in result_files.outputs if entry.collect and entry.local_path is not None
+                  and (result_files.remote_patterns_resolved is not True
+                       or entry.source_pattern is not None or not has_file_magic(entry.local_path))),
             )
 
     # Retrieval needs existence, not content identity. Only verify the
