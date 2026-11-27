@@ -897,3 +897,75 @@ def test_historical_output_glob_excludes_input_and_cache_namespaces(tmp_path):
     )
     pairs = client.resolve_result_files(run, (str(local / "**/*.dat"),))
     assert {pair.local_path for pair in pairs} == {str(local / "result.dat")}
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_restore_captured_inputs_without_captured_outputs(tmp_path, changed):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    original = local / "input-one.dat"
+    original.write_text("original")
+    version = FileVersion.capture(original, require_digest=True)
+    original.unlink()
+    (local / "input-two.dat").write_text("another local input")
+    (remote / original.name).write_text("changed" if changed else "original")
+    (remote / "input-later.dat").write_text("not used by this run")
+    (remote / "output.dat").write_text("diagnostic")
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        files=FileManifest(
+            inputs=(FileEntry(str(local / "input-*.dat"), str(remote / "input-*.dat")),),
+            outputs=(FileEntry(str(local / "output.dat"), str(remote / "output.dat")),),
+            input_versions=(version,),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert original.exists() == (not changed)
+    if not changed:
+        assert original.read_text() == "original"
+    assert not (local / "input-later.dat").exists()
+    assert (local / "input-two.dat").read_text() == "another local input"
+    assert (local / "output.dat").read_text() == "diagnostic"
+    assert restored.files.input_versions == (version,)
+    assert restored.files.outputs[0].availability_state == "available"
+
+
+def test_overlapping_historical_aliases_share_captured_digest(tmp_path):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    (local / "actual").mkdir(parents=True)
+    (remote / "actual").mkdir(parents=True)
+    (local / "alias").symlink_to(local / "actual", target_is_directory=True)
+    alias = local / "alias" / "result.dat"
+    alias.write_text("original")
+    version = FileVersion.capture(alias, require_digest=True)
+    alias.unlink()
+    (remote / "actual" / "result.dat").write_text("changed")
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        files=FileManifest(
+            outputs=(
+                FileEntry(str(local / "actual" / "*.dat"), str(remote / "actual" / "*.dat")),
+                FileEntry(str(alias), str(remote / "actual" / "result.dat")),
+            ),
+            output_versions=(version,),
+            mapping=FileMapping(str(local), str(remote)),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert not alias.exists()
+    assert all(entry.availability_state == "failed" for entry in restored.files.outputs)
+    assert all("overwritten" in entry.availability_message for entry in restored.files.outputs)

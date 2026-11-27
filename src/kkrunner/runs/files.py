@@ -28,31 +28,33 @@ def _unique(values):
 
 
 def _missing_result_files(result_files, *, include_outputs=True):
-    if result_files.captured_at is not None:
-        # Retrieval needs existence, not content identity. Only verify the
-        # contents of files actually being restored.
-        missing = []
-        versions = result_files.input_versions
-        if include_outputs:
-            versions += result_files.output_versions
-        for version in versions:
-            if version.kind != "file":
-                continue
-            try:
-                version.path.stat()
-            except FileNotFoundError:
-                missing.append(os.fspath(version.path))
-            except OSError:
-                continue
-        return _unique(missing)
-
-    entries = result_files.input_entries
+    # Submission captures inputs independently of terminal output capture.
+    # Never expand a historical input glob again once its versions are known.
+    captured = result_files.captured_at is not None
+    versions = result_files.input_versions
+    entries = () if captured or versions else result_files.input_entries
     if include_outputs:
-        entries = (
-            *entries, result_files.stdout, result_files.stderr,
-            *(entry for entry in result_files.outputs if entry.collect),
-        )
-    return _unique(
+        if captured:
+            versions += result_files.output_versions
+        else:
+            entries += (
+                result_files.stdout, result_files.stderr,
+                *(entry for entry in result_files.outputs if entry.collect),
+            )
+
+    # Retrieval needs existence, not content identity. Only verify the
+    # contents of files actually being restored.
+    missing = []
+    for version in versions:
+        if version.kind != "file":
+            continue
+        try:
+            version.path.stat()
+        except FileNotFoundError:
+            missing.append(os.fspath(version.path))
+        except OSError:
+            continue
+    missing.extend(
         entry.local_path for entry in entries
         if entry is not None and entry.kind == "file" and entry.local_path is not None
         and not any(
@@ -63,6 +65,7 @@ def _missing_result_files(result_files, *, include_outputs=True):
             for path in expand_local_candidates(entry.local_path)
         )
     )
+    return _unique(missing)
 
 
 class RunFiles:
@@ -130,11 +133,12 @@ class RunFiles:
         artifact_paths = {entry.local_path for entry in record.files.artifacts}
         artifact_paths.update(os.fspath(version.path) for version in record.files.output_versions)
 
+        expected = {}
+
         def verify(target, temporary):
-            version = versions.get(target)
-            if version is not None and version.digest is not None:
-                if file_digest(temporary) != version.digest:
-                    raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {target}")
+            digest = expected.get(target)
+            if digest is not None and file_digest(temporary) != digest:
+                raise HistoricalFileMismatchError(f"Historical result files have been overwritten: {target}")
 
         # Resolve all concrete pairs before reserving anything. Expansion is
         # read-only; the exact same pairs are passed to the transfer below.
@@ -150,6 +154,15 @@ class RunFiles:
                     previous = by_destination.setdefault(entry.local_path, entry)
                     if previous.remote_path != entry.remote_path:
                         raise ValueError(f"Different historical sources map to {entry.local_path}")
+                    # An exact declaration may retain an alias, whereas a
+                    # wildcard resolves to a canonical transfer destination.
+                    # Every route to that destination must enforce its digest.
+                    for version in (versions.get(path), versions.get(entry.local_path)):
+                        if version is None or version.digest is None:
+                            continue
+                        prior = expected.setdefault(entry.local_path, version.digest)
+                        if prior != version.digest:
+                            raise ValueError(f"Conflicting historical versions map to {entry.local_path}")
                 planned[path] = entries
             except OSError as exc:
                 errors[path] = str(exc)
@@ -164,12 +177,7 @@ class RunFiles:
                     )
             for path, entries in planned.items():
                 try:
-                    # Exact historical entries retain the original captured
-                    # digest even if their local pathname was an alias.
-                    def verify_entry(target, temporary):
-                        verify(target if has_file_magic(path) else path, temporary)
-
-                    access.download_result_files(entries, verify=verify_entry)
+                    access.download_result_files(entries, verify=verify)
                     if not all(os.path.isfile(entry.local_path) for entry in entries):
                         raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
                 except (OSError, RuntimeError) as exc:
