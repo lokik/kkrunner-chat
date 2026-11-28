@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import posixpath
 import subprocess
 from dataclasses import asdict
@@ -65,6 +66,16 @@ class Target:
         if not home or not posixpath.isabs(home):
             raise RuntimeError("Could not determine absolute remote home directory")
         return posixpath.normpath(home)
+
+    async def resolve_path(self, path):
+        """Resolve an already-target-side path, without mapping it again."""
+        if self.is_local:
+            return os.path.abspath(path)
+        path = os.fspath(path)
+        if path == "~" or path.startswith("~/"):
+            home = await self.home_directory()
+            return home if path == "~" else posixpath.normpath(posixpath.join(home, path[2:]))
+        return posixpath.normpath(path)
 
     async def call(self, operation: Operation, *args, **kwargs):
         """Run one context-independent operation and return its JSON result."""

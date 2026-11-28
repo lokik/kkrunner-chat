@@ -212,13 +212,12 @@ class FileAccess:
         paths = tuple(paths)
         if not set(paths).issubset(declared) or len(paths) != len(set(paths)):
             raise ValueError("Only distinct, declared remote manifest paths may be inspected or deleted")
-        context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
         # The manifest is the authority: execution.directory.target is not
         # necessarily the parent of all output files (e.g. TAUDIR under a
         # separate TAUPATH). The target still rejects symlinks, directories,
         # non-absolute paths and changed file identities.
         resolved = tuple(
-            [await context.resolve_target_path(path) for path in paths]
+            [await self.target.resolve_path(path) for path in paths]
         )
         expected_resolved = None if expected is None else {
             resolved_path: (

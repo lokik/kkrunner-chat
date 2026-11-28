@@ -199,3 +199,31 @@ def test_submission_receipt_operations_reject_another_clients_run(tmp_path, monk
         client.recover_submission("submission", SubmissionContext(record.execution))
     with pytest.raises(ValueError, match="different transport or backend"):
         client.acknowledge_submission(record)
+
+
+
+def test_recovery_resolves_target_directory_without_file_staging(tmp_path, monkeypatch):
+    from kkrunner.client.contracts import SubmissionContext
+    from kkrunner.targets import SshTarget
+
+    target = SshTarget("cluster")
+    client = ExecutionClient(SupervisedBackend, target=target)
+    record = RunManager().new_record(
+        directory=tmp_path, remote_directory="~/work",
+        target=target, backend=client.backend_config,
+    )
+
+    async def home(self):
+        return "/remote/home"
+
+    async def invoke(operation, key, request, *, submitted_at):
+        assert operation == "recover"
+        assert key == "submission"
+        assert request["directory"] == "/remote/home/work"
+        return {"remote_id": "native-job"}
+
+    monkeypatch.setattr(SshTarget, "home_directory", home)
+    monkeypatch.setattr(client, "_invoke", invoke)
+    result = client.recover_submission("submission", SubmissionContext(record.execution))
+    assert result.ref == JobRef("kkrunner", "native-job")
+    assert result.directory == "/remote/home/work"
