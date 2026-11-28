@@ -41,9 +41,14 @@ class FileSession:
         self._prepared = None
         self._streams = None
         self._closed = False
-        self.input_file = self._local_path(spec.input_file)
-        self.output_file = self._local_path(spec.output_file)
-        self.error_file = self._local_path(spec.error_file)
+        if not context.target.is_local:
+            for value, entry in (
+                (spec.input_file, self._files.input),
+                (spec.output_file, self._files.stdout),
+                (spec.error_file, self._files.stderr),
+            ):
+                if value is not None and (entry is None or entry.local_path is None):
+                    raise ValueError("Remote execution requires named files")
 
     @property
     def files(self):
@@ -79,14 +84,6 @@ class FileSession:
     @property
     def files_are_local(self):
         return not self.context.transfers_files
-
-    def _local_path(self, value):
-        if value is None:
-            return None
-        try:
-            return file_path(value, self.spec.directory, required=not self.is_local)
-        except ValueError as exc:
-            raise ValueError("Remote execution requires named files") from exc
 
     async def _stage_file(self, entry, used, *, required=True, uploads=None, remote_values=None):
         if entry is None:
