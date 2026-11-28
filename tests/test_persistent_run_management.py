@@ -1,6 +1,7 @@
 """Durable persistent job management after client GUI restart."""
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -27,11 +28,11 @@ def test_cancel_unknown_preserves_running_reply(tmp_path, monkeypatch):
     seen = []
     client = SimpleNamespace(
         backend=SimpleNamespace(supports={BackendCapability.CANCEL}),
-        acknowledge_submission=lambda _record: None,
-        acknowledge=lambda _record: None,
-        cancel=lambda attachment: seen.append(attachment) or RunStatus(
+        acknowledge_submission_async=AsyncMock(return_value=False),
+        acknowledge_async=AsyncMock(return_value=False),
+        cancel_async=AsyncMock(side_effect=lambda attachment: seen.append(attachment) or RunStatus(
             RunState.RUNNING, backend_id="opaque-42",
-        ),
+        )),
     )
     monkeypatch.setattr(manager, "client_for", lambda _record: client)
     latest = manager.cancel(record.id)
@@ -45,26 +46,56 @@ def test_cancel_unknown_accepts_confirmed_terminal_reply(tmp_path, monkeypatch):
     record = stored(manager, tmp_path)
     monkeypatch.setattr(manager, "client_for", lambda _record: SimpleNamespace(
         backend=SimpleNamespace(supports={BackendCapability.CANCEL}),
-        acknowledge_submission=lambda _record: None,
-        acknowledge=lambda _record: None,
-        cancel=lambda _attachment: RunStatus(
+        acknowledge_submission_async=AsyncMock(return_value=False),
+        acknowledge_async=AsyncMock(return_value=False),
+        cancel_async=AsyncMock(return_value=RunStatus(
             RunState.CANCELLED, backend_id="opaque-42",
-        ),
+        )),
     ))
     assert manager.cancel(record.id).state == RunState.CANCELLED
     assert manager.store.get(record.id).state == RunState.CANCELLED
 
 
+def test_cancel_async_uses_callers_loop_and_persists_backend_reply(tmp_path, monkeypatch):
+    import asyncio
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    client = ExecutionClient("kkrunner")
+    manager.register_client(client)
+    record = stored(manager, tmp_path)
+    operations = []
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+
+        async def invoke(name, identity):
+            assert asyncio.get_running_loop() is loop
+            assert identity == record.execution.backend_id
+            operations.append(name)
+            if name == "cancel":
+                return {"state": "cancelled", "return_code": None}
+            assert name == "acknowledge"
+            assert manager.store.get(record.id).state == RunState.CANCELLED
+            return {"acknowledged": True}
+
+        monkeypatch.setattr(client, "_invoke", invoke)
+        return await manager.cancel_async(record)
+
+    assert asyncio.run(exercise()).state == RunState.CANCELLED
+    assert manager.store.get(record.id).state == RunState.CANCELLED
+    assert operations == ["cancel", "acknowledge"]
+
+
 def test_cancellation_connection_error_preserves_unknown(tmp_path, monkeypatch):
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = stored(manager, tmp_path)
-    def unavailable(_attachment):
+    async def unavailable(_attachment):
         raise ConnectionError("ssh unavailable")
     monkeypatch.setattr(manager, "client_for", lambda _record: SimpleNamespace(
         backend=SimpleNamespace(supports={BackendCapability.CANCEL}),
-        acknowledge_submission=lambda _record: None,
-        acknowledge=lambda _record: None,
-        cancel=unavailable,
+        acknowledge_submission_async=AsyncMock(return_value=False),
+        acknowledge_async=AsyncMock(return_value=False),
+        cancel_async=unavailable,
     ))
     with pytest.raises(ConnectionError, match="ssh unavailable"):
         manager.cancel(record.id)

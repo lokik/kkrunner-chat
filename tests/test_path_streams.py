@@ -85,15 +85,18 @@ def test_remote_live_observation_does_not_touch_local_files(tmp_path, monkeypatc
     )
     run = client.create_run(spec, tracked=False,
                             output_listener=lambda text, kind: ready.set() if "ready" in text else None)
-    run.submit()
-    try:
-        assert ready.wait(5)
-        assert (local / "stdout.txt").read_text() == "old"
-        assert not (local / "stderr.txt").exists()
-        assert (remote / "stdout.txt").read_text() == "ready\n"
-    finally:
-        (remote / "release").touch()
-        outcome = run.wait()
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        observed = pool.submit(run.run)
+        try:
+            assert ready.wait(5)
+            assert (local / "stdout.txt").read_text() == "old"
+            assert not (local / "stderr.txt").exists()
+            assert (remote / "stdout.txt").read_text() == "ready\n"
+        finally:
+            (remote / "release").touch()
+        outcome = observed.result(timeout=10)
     assert outcome.return_code == 0
     assert (local / "stdout.txt").read_text() == "ready\ndone\n"
     assert (local / "stderr.txt").read_bytes() == b""
@@ -205,33 +208,39 @@ def test_client_requests_named_output_only_for_a_listener(tmp_path, monkeypatch,
             ready.set()
 
     client = ExecutionClient(backend, target=target)
+    from concurrent.futures import ThreadPoolExecutor
+
     if subscription == "convenience":
         run = client.submit(
             spec.argv, directory=local, output_file="stdout.txt",
             staging=spec.staging, tracked=False, detached=detached,
         )
+        drive = run.wait
     else:
         run = client.create_run(
             spec, tracked=False, detached=detached,
             output_listener=listener if subscription == "before" else None,
         )
-        run.submit()
-    try:
-        deadline = time.monotonic() + 5
-        while not (target_root / "stdout.txt").exists() or (
-            (target_root / "stdout.txt").read_bytes() != b"ready\n"
-        ):
-            assert time.monotonic() < deadline
-            time.sleep(.01)
-        if subscription != "before":
-            assert observed == []
-        if subscription == "during":
-            run.add_output_listener(listener)
-        if subscription in ("before", "during"):
-            assert ready.wait(5)
-    finally:
-        (target_root / "release").touch()
-        outcome = run.wait()
+        drive = run.run
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        observation = pool.submit(drive)
+        try:
+            deadline = time.monotonic() + 5
+            while not (target_root / "stdout.txt").exists() or (
+                (target_root / "stdout.txt").read_bytes() != b"ready\n"
+            ):
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+            if subscription != "before":
+                assert observed == []
+            if subscription == "during":
+                run.add_output_listener(listener)
+            if subscription in ("before", "during"):
+                assert ready.wait(5)
+        finally:
+            (target_root / "release").touch()
+        outcome = observation.result(timeout=10)
     assert outcome.return_code == 0
     assert (local / "stdout.txt").read_bytes() == b"ready\ndone\n"
     if subscription in ("before", "during"):

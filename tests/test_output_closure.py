@@ -91,7 +91,7 @@ def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path,
 
     monkeypatch.setattr(job.execution, "observe", disconnected)
     monkeypatch.setattr(job.execution, "status", unavailable)
-    asyncio.run(job._monitor())
+    job.wait()
     assert job.state is RunState.UNKNOWN
     assert output.close_calls == 0
     files.close()
@@ -104,30 +104,34 @@ def test_unknown_backend_monitor_leaves_stream_closure_to_file_session(tmp_path,
 def test_managed_job_cleanup_attempts_all_stages(tmp_path, monkeypatch, monitor_fails, finish_fails):
     """Output decoder closure runs even when backend observation fails."""
     calls = []
-    errors = (RuntimeError("monitor failed"), OSError("decoder failed"))
+    errors = (asyncio.CancelledError("observation interrupted"), OSError("decoder failed"))
     job = _managed_job(ExecutionSpec(("true",), directory=tmp_path))
 
-    async def monitor():
-        calls.append("monitor")
+    async def observe(*args, **kwargs):
+        calls.append("observe")
         if monitor_fails:
             raise errors[0]
-        job._apply_status(JobStatus(RunState.FINISHED, return_code=0))
+        return JobStatus(RunState.FINISHED, return_code=0)
 
     def finish_bytes():
         calls.append("finish")
         if finish_fails:
             raise errors[1]
 
-    monkeypatch.setattr(job, "_monitor", monitor)
+    monkeypatch.setattr(job.execution, "observe", observe)
     monkeypatch.setattr(job._output_observers, "finish_bytes", finish_bytes)
-    job._thread_main()
-    assert calls == ["monitor", "finish"]
-    assert job._done.is_set()
     if monitor_fails:
-        assert job.exception is errors[0]
+        with pytest.raises(asyncio.CancelledError) as caught:
+            job.wait()
+        assert caught.value is errors[0]
         assert job.state is RunState.UNKNOWN
+        with pytest.raises(asyncio.CancelledError):
+            job.wait()
     else:
-        assert job.state is RunState.FINISHED
+        result = job.wait()
+        assert result.state is RunState.FINISHED
+        assert job.wait() == result
+    assert calls == ["observe", "finish"]
     if finish_fails:
         assert job.output_error is errors[1]
 
@@ -137,21 +141,21 @@ def test_confirmed_native_completion_survives_client_cleanup_error(tmp_path, mon
     error = OSError("output decoder failed")
     job = _managed_job(ExecutionSpec(("true",), directory=tmp_path))
 
-    async def finished():
-        job._apply_status(JobStatus(RunState.FINISHED, return_code=0))
+    async def finished(*args, **kwargs):
+        return JobStatus(RunState.FINISHED, return_code=0)
 
     def close_decoder():
         raise error
 
-    monkeypatch.setattr(job, "_monitor", finished)
+    monkeypatch.setattr(job.execution, "observe", finished)
     monkeypatch.setattr(job._output_observers, "finish_bytes", close_decoder)
-    job._thread_main()
+    result = job.wait()
+    assert job.wait() == result
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
     assert job.failure_phase is None
     assert job.output_error is error
     assert job.exception is None
-    assert job._done.is_set()
 
 
 def test_run_reports_file_session_close_error_without_changing_native_outcome(tmp_path, monkeypatch):
@@ -163,12 +167,11 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     files.prepare_submission()
     job = _managed_job(spec)
 
-    async def finished():
-        job._apply_status(JobStatus(RunState.FINISHED, return_code=0))
+    async def finished(*args, **kwargs):
+        return JobStatus(RunState.FINISHED, return_code=0)
 
-    monkeypatch.setattr(job, "_monitor", finished)
+    monkeypatch.setattr(job.execution, "observe", finished)
     run = Run(RunParts(job, files), client=client)
-    run.start()
     with pytest.raises(OSError, match="cannot close output"):
         run.wait()
     assert job.state is RunState.FINISHED

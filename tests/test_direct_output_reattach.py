@@ -47,6 +47,10 @@ def test_direct_output_attachment_does_not_submit(tmp_path):
         assert parts.job.backend_id == "legacy-opaque-id"
         assert parts.job.spec.argv is None
         assert parts.files.spec.output_file == str(output)
+        parts.configure_observation()
+        status = asyncio.run(asyncio.wait_for(parts.job.wait_async(), timeout=3))
+        assert status.state.value == "unknown"
+        assert "identity" in status.message
     finally:
         parts.close()
 
@@ -139,3 +143,16 @@ def test_direct_follow_waits_for_process_group(tmp_path):
         assert b"".join(received) == b"late output"
     finally:
         leader.wait(timeout=5)
+
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_unverifiable_direct_identity_ends_observation(tmp_path, remote):
+    transport = LoopbackSshTransport() if remote else LocalTarget()
+    result = asyncio.run(asyncio.wait_for(transport.follow(
+        Operation.for_backend(DirectBackend, "follow"), "legacy-opaque-id",
+        lambda *_: None, stdout_path=str(tmp_path / "out"), poll_interval=0.05,
+    ), timeout=3))
+    assert result["state"] == "unknown"
+    assert result["return_code"] is None
+    assert "identity" in result["error"]

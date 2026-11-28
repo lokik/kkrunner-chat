@@ -102,10 +102,15 @@ def test_direct_ssh_cancellation_stops_remote_process(tmp_path):
     run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, tracked=False)
     ready = Event()
     run.add_output_listener(lambda data, kind: ready.set() if "ready" in data else None)
-    run.submit()
-    assert ready.wait(8)
-    run.cancel()
-    run.wait()
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        observation = pool.submit(run.run)
+        try:
+            assert ready.wait(8)
+        finally:
+            run.cancel().result(timeout=8)
+        observation.result(timeout=10)
     assert run.state == RunState.CANCELLED
 
 
@@ -146,7 +151,7 @@ def test_direct_ssh_rejects_merged_streams_before_staging(tmp_path):
     )
     run = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).create_run(spec, tracked=False)
     with pytest.raises(Exception, match="distinct output files"):
-        run.submit()
+        run.run()
     assert not (root / "combined.log").exists()
 
 

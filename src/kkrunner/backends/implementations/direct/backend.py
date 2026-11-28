@@ -11,7 +11,7 @@ from kkrunner.files.streams import open_new_output
 from kkrunner.support.decorators import depends_on, portable
 from kkrunner.support.growing_file_tail import controlled_named_files, observe_file_subscription
 
-from .process import observe_process
+from .process import observe_process, wait_detached_process
 
 if TYPE_CHECKING:
     from typing import Awaitable, BinaryIO, Callable, Mapping, Optional, Union
@@ -48,7 +48,7 @@ class DirectBackend(Backend, DirectOperations):
         """Observe saved direct output without owning or restarting the job.
 
         The operation is source-portable to SSH hosts without kkrunner. A
-        legacy opaque ID can be observed but cannot prove termination.
+        legacy opaque ID cannot prove liveness and returns UNKNOWN.
         Cancelling this observer never signals the calculation.
         """
         if type(poll_interval) not in (int, float) or not 0.05 <= poll_interval <= 10:
@@ -60,10 +60,10 @@ class DirectBackend(Backend, DirectOperations):
             if offset is not None and (type(offset) is not int or offset < 0):
                 raise ValueError(f"Invalid {kind} output offset")
         def terminal():
-            if observe_process(remote_id)[0] == "finished":
-                return {"state": "finished", "return_code": None,
-                        "failure_phase": None,
-                        "error": "Direct process ended; exit code unavailable"}
+            state, message = observe_process(remote_id)
+            if state != "running":
+                return {"state": state, "return_code": None,
+                        "failure_phase": None, "error": message}
 
         return await controlled_named_files(
             paths, sinks, offsets, terminal, poll_interval, output=output, control=control,
@@ -152,7 +152,7 @@ class DirectBackend(Backend, DirectOperations):
 
     @staticmethod
     @portable
-    @depends_on(observe_file_subscription, open_new_output)
+    @depends_on(observe_file_subscription, open_new_output, wait_detached_process)
     async def stream(
         request: ExecutionRequest, *,
         stdout: Union[ByteSink, AsyncByteSink],
@@ -168,8 +168,8 @@ class DirectBackend(Backend, DirectOperations):
         The operation owns the child, its pipe readers and group termination.
         Borrowed sinks may implement synchronous or asynchronous write(). The
         control reader supplies lines: ``cancel`` terminates the process group;
-        EOF does so only for attached execution. For a detached execution
-        "follow" starts optional observation of its named files.
+        EOF terminates the child only for attached execution. For a detached
+        execution it ends observation; "follow" starts optional named-file delivery.
         Calculation stdin is separate.
         Acceptance and completion carry a session identity and native status.
         On Linux, the identity includes PID/start ticks/boot ID for safe later
@@ -179,6 +179,7 @@ class DirectBackend(Backend, DirectOperations):
         import inspect
         import os
         import signal
+        import subprocess
         import sys
         from uuid import uuid4
         from contextlib import ExitStack
@@ -210,6 +211,8 @@ class DirectBackend(Backend, DirectOperations):
                     try:
                         input_stream.fileno()
                     except (AttributeError, OSError, ValueError):
+                        if detached:
+                            raise ValueError("Detached stdin requires a file descriptor")
                         forwarded_input, input_stream = input_stream, asyncio.subprocess.PIPE
                 outputs = dict(files or {})
                 opened = {}
@@ -256,7 +259,8 @@ class DirectBackend(Backend, DirectOperations):
 
                 async def wait_native():
                     nonlocal completed
-                    code = await child.wait()
+                    code = (await wait_detached_process(child) if detached
+                            else await child.wait())
                     if stopping is not None:
                         await stopping
                     completed = True
@@ -274,6 +278,7 @@ class DirectBackend(Backend, DirectOperations):
                         sink.flush()
 
                 async def feed_input():
+                    # Only attached execution can depend on the caller's feeder.
                     try:
                         while True:
                             data = forwarded_input.read(65536)
@@ -289,20 +294,29 @@ class DirectBackend(Backend, DirectOperations):
                         child.stdin.close()
 
                 session_id = uuid4().hex
-                launch = asyncio.create_task(asyncio.create_subprocess_exec(
-                    *request["argv"], cwd=request["directory"], stdin=input_stream,
-                    stdout=outputs.get("out", asyncio.subprocess.DEVNULL) if detached else asyncio.subprocess.PIPE,
-                    stderr=outputs.get("err", asyncio.subprocess.DEVNULL) if detached else asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                ))
                 try:
-                    try:
-                        child = await asyncio.shield(launch)
-                    except asyncio.CancelledError:
-                        # Reclaim a child created concurrently with cancellation.
-                        child = await launch
-                        stop()
-                        raise
+                    if detached:
+                        # Popen does not kill a running child when the caller
+                        # discards its handle or shuts down its event loop.
+                        child = subprocess.Popen(
+                            request["argv"], cwd=request["directory"], stdin=input_stream,
+                            stdout=outputs.get("out", subprocess.DEVNULL),
+                            stderr=outputs.get("err", subprocess.DEVNULL),
+                            start_new_session=True,
+                        )
+                    else:
+                        launch = asyncio.create_task(asyncio.create_subprocess_exec(
+                            *request["argv"], cwd=request["directory"], stdin=input_stream,
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                            start_new_session=True,
+                        ))
+                        try:
+                            child = await asyncio.shield(launch)
+                        except asyncio.CancelledError:
+                            # Reclaim a child created concurrently with cancellation.
+                            child = await launch
+                            stop()
+                            raise
                     identity = session_id
                     # A verified Linux process-group leader can be cancelled
                     # after the original SSH/client session has disappeared.
@@ -316,7 +330,6 @@ class DirectBackend(Backend, DirectOperations):
                         if (
                             int(fields[2]) == child.pid
                             and int(fields[3]) == child.pid
-                            and fields[0] not in ("Z", "X", "x")
                             and str(UUID(boot_id)) == boot_id
                         ):
                             identity = f"direct:{child.pid}:{int(fields[19])}:{boot_id}"
@@ -325,7 +338,6 @@ class DirectBackend(Backend, DirectOperations):
                     if identity == session_id and sys.platform == "darwin":
                         # There is no /proc on macOS. This start-time identity
                         # permits observation, not cancellation by an old client.
-                        import subprocess
                         try:
                             probe = subprocess.run(
                                 ("ps", "-p", str(child.pid), "-o", "lstart=", "-o", "pgid="),
@@ -352,7 +364,6 @@ class DirectBackend(Backend, DirectOperations):
                             {"out": request.get("output_file"), "err": request.get("error_file")},
                             {"out": stdout, "err": stderr}, {"out": 0, "err": 0}, control,
                             output=output, poll_interval=0.2, cancel=cancel,
-                            disconnect_on_eof=False,
                         )
                     else:
                         control_task = asyncio.create_task(read_control())
@@ -382,7 +393,7 @@ class DirectBackend(Backend, DirectOperations):
                         stop()
                     if stopping is not None and child is not None and not completed:
                         await stopping
-                        await child.wait()
+                        await wait_native()
 
         try:
             code = await execute()

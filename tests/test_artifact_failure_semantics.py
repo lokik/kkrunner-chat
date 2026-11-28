@@ -1,5 +1,7 @@
 """Execution outcome and file availability are independent persisted facts."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from kkrunner.files import ArtifactAvailabilityState, FileEntry, FileManifest
@@ -260,10 +262,11 @@ def test_failed_launch_is_terminal_without_result_collection(tmp_path, monkeypat
                                 execution=record.execution.submitted("launch-failed"))
     status = RunStatus(RunState.FAILED, return_code=127, failure_phase=FailurePhase.LAUNCH,
                        message="Executable not found", backend_id="launch-failed")
-    monkeypatch.setattr(client, "status", lambda *args: (status,))
-    monkeypatch.setattr(client, "acknowledge", lambda *args: None)
-    monkeypatch.setattr(client, "collect_ended_files",
-                        lambda *args: pytest.fail("No execution artifacts to retrieve"))
+    monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *args: (status,)))
+    monkeypatch.setattr(client, "acknowledge_async", AsyncMock(side_effect=lambda *args: None))
+    from kkrunner.client.file_access import FileAccess
+    monkeypatch.setattr(FileAccess, "collect_ended_files_async",
+                        AsyncMock(side_effect=AssertionError("No execution artifacts to retrieve")))
     saved = manager.update(record, status) if operation == "update" else manager.refresh((record,), retrieve_ended=True)[0]
     assert saved.state == RunState.FAILED
     assert saved.failure_phase == FailurePhase.LAUNCH

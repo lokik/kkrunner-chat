@@ -214,8 +214,13 @@ the [Python quickstart](docs/quickstart.rst).
 
 These four properties describe different aspects of a job:
 
-- **Waiting:** `run()` waits for the result; `submit()` returns a job you can
-  monitor or wait for later.
+- **Waiting:** `run()` executes and waits in your calling thread.
+  `submit()` starts an independent (detached) execution without monitoring it.
+  `wait()` explicitly observes and finalizes an accepted job. For attached
+  Direct execution use `run()`, or `await run.run_async()` in your own
+  asyncio loop. GUI applications can call `run()` in their own worker.
+  A standalone detached Direct submission releases its live connection;
+  the exit code is not recoverable through a later observation.
 - **Detachment:** the job keeps running when your Python session exits.
   Supervisor and scheduler jobs are detached; direct jobs can opt in with
   `detached=True`.

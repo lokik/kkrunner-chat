@@ -58,10 +58,15 @@ def test_repeated_cancel_schedules_a_single_stop(tmp_path, monkeypatch):
         argv=(sys.executable, "-c", "import time; time.sleep(30)"),
         directory=str(tmp_path), input_file=None, output_file=None,
     ))
-    run.submit()
-    run.cancel()
-    run.cancel()
-    run.wait()
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    accepted = Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run.run, on_submitted=lambda _: accepted.set())
+        assert accepted.wait(5)
+        run.cancel()
+        run.cancel()
+        future.result(timeout=5)
     assert run.state is RunState.CANCELLED
     assert len(calls) == 1
     assert calls[0] > 0
@@ -86,8 +91,7 @@ def test_failed_output_pump_terminates_child_without_wrapper(tmp_path, monkeypat
         argv=(sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"),
         directory=str(tmp_path), input_file=None, output_file=None,
     ))
-    run.submit()
-    result = run.wait()
+    result = run.run()
     assert run.state is RunState.FAILED
     assert run.failure_phase.value == "execution"
     assert "output pump failed" in run.failure_message
@@ -108,8 +112,7 @@ def test_missing_declared_output_fails_run_but_not_backend_job(tmp_path):
     parts.files.prepare_submission()
     parts.prepare_job()
     try:
-        parts.job.submit()
-        assert parts.job.wait().return_code == 0
+        assert parts.job.run().return_code == 0
         assert parts.job.state is RunState.FINISHED
     finally:
         parts.close()
@@ -130,9 +133,7 @@ def test_local_direct_spec_retains_declared_paths_during_execution(tmp_path):
     )
     run = _run(spec)
     assert run.spec is spec
-    run.submit()
-    assert run.spec is spec
-    assert run.wait().return_code == 0
+    assert run.run().return_code == 0
     assert run.spec is spec
     assert run.spec.output_file == str(tmp_path / "stdout.txt")
     assert run.spec.error_file == str(tmp_path / "stderr.txt")

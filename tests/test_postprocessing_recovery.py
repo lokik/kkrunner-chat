@@ -40,12 +40,15 @@ class _RawRunner:
     def status(self):
         return JobStatus(self.state, return_code=self.return_code)
 
-    def submit(self):
+    async def run_async(self, *, on_submitted=None):
         self.backend_id = "job-1"
         self.state = RunState.FINISHED
+        if on_submitted is not None:
+            await on_submitted()
+        return self.status()
 
-    def wait(self):
-        return self.result
+    async def wait_async(self):
+        return self.status()
 
     def cancel(self):
         self.state = RunState.CANCELLED
@@ -61,10 +64,10 @@ class _Executor(ExecutionClient):
     def __init__(self):
         super().__init__(SupervisedBackend)
 
-    def acknowledge_submission(self, record):
+    async def acknowledge_submission_async(self, record):
         pass
 
-    def acknowledge(self, record):
+    async def acknowledge_async(self, record):
         pass
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
@@ -75,7 +78,7 @@ class _Executor(ExecutionClient):
         return parts
 
 
-def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
+def test_finished_run_is_persisted_before_callback(tmp_path):
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store)
     finished = Event()
@@ -85,8 +88,8 @@ def test_finished_run_is_persisted_before_callback_without_wait(tmp_path):
         callback=lambda result: finished.set(),
         metadata={"example": {"task": "DOS".upper()}},
     )
-    run.submit()
-    assert finished.wait(timeout=5), "completion callback was not called"
+    run.run()
+    assert finished.is_set()
     record = store.get(run.id)
     assert record.state == RunState.FINISHED
     assert record.finished_at is not None
@@ -105,9 +108,8 @@ def test_result_processor_failure_is_postprocessing_failure(tmp_path):
         process_result=fail,
         metadata={"example": {"task": "DOS".upper()}},
     )
-    run.submit()
     with pytest.raises(ValueError, match="result parsing failed"):
-        run.wait()
+        run.run()
     record = store.get(run.id)
     assert record.state == RunState.FAILED
     assert record.failure_phase == FailurePhase.POSTPROCESSING

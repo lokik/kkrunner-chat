@@ -42,11 +42,11 @@ def test_prepared_manifest_is_durable_before_remote_backend_submit(tmp_path, mon
     monkeypatch.setattr(FileSession, "_prepare_async", prepared)
     snapshots = []
 
-    def stop_at_submission():
+    async def stop_at_submission(*args, **kwargs):
         snapshots.append(manager.store.get(run.id))
         raise SubmissionNotStarted("test stopped before launching backend")
 
-    monkeypatch.setattr(run._job, "submit", stop_at_submission)
+    monkeypatch.setattr(run._job.execution, "submit", stop_at_submission)
     with pytest.raises(SubmissionNotStarted, match="test stopped"):
         run.submit()
 
@@ -136,26 +136,30 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
         session.close()
 
 
-@pytest.mark.parametrize("method", ("submit", "start"))
-def test_postprocessing_rejected_submit_preserves_error_and_does_not_monitor(tmp_path, monkeypatch, method):
+@pytest.mark.parametrize("method", ("submit", "run"))
+def test_rejected_preflight_preserves_error_without_observation(tmp_path, monkeypatch, method):
     """The original preflight failure survives without a completion observer."""
     failure = SubmissionNotStarted("preflight refused")
-    client = ExecutionClient("direct")
-    run = client.create_run(ExecutionSpec(("ignored",), directory=str(tmp_path)), tracked=False,
-                        process_result=lambda outcome: outcome)
+    client = ExecutionClient("kkrunner")
+    run = client.create_run(
+        ExecutionSpec(("ignored",), directory=str(tmp_path)), tracked=False,
+        process_result=lambda outcome: pytest.fail("No execution to process"),
+    )
 
-    def rejected():
+    async def rejected():
         raise failure
 
-    if method == "submit":
-        monkeypatch.setattr(run._file_session, "prepare_submission", rejected)
-    else:
-        monkeypatch.setattr(run._job, "start", rejected)
+    async def unexpected_submit(*args, **kwargs):
+        pytest.fail("Preflight failed before the native launch")
+
+    monkeypatch.setattr(run._file_session, "prepare_submission_async", rejected)
+    monkeypatch.setattr(run._job.execution, "submit", unexpected_submit)
     with pytest.raises(SubmissionNotStarted, match="preflight refused") as caught:
         getattr(run, method)()
     assert caught.value is failure
-    assert run._started is False
-    assert run._thread is None
+    assert run.backend_id is None
+    assert run.state == RunState.FAILED
+    assert not run._job.observing
 
 
 @pytest.mark.parametrize("conflict", ["mixed_input_optionality", "duplicate_output", "duplicate_cache"])
@@ -227,7 +231,7 @@ def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkey
         return result
 
     monkeypatch.setattr(FileContext, "map_manifest", mapped)
-    def stop():
+    async def stop(*args, **kwargs):
         record = manager.store.get(run.id)
         assert record.files.inputs == calls[0].inputs == run.files.inputs
         assert record.files.stdout == calls[0].stdout == run.files.stdout
@@ -235,9 +239,9 @@ def test_reserved_manifest_is_the_only_mapping_used_for_staging(tmp_path, monkey
         assert (target / "input").read_text() == "data"
         raise SubmissionNotStarted("stop before native execution")
 
-    monkeypatch.setattr(run._job, "submit", stop)
+    monkeypatch.setattr(run._job.execution, "submit", stop)
     with pytest.raises(SubmissionNotStarted, match="stop before native"):
-        run.submit()
+        run.run()
 
 
 def test_prepare_job_requires_explicit_file_staging(tmp_path):
@@ -250,3 +254,16 @@ def test_prepare_job_requires_explicit_file_staging(tmp_path):
         assert session.prepare_job()["directory"] == str(tmp_path)
     finally:
         session.close()
+
+
+
+@pytest.mark.parametrize("backend", ["direct", "kkrunner", "psij"])
+def test_remote_stdin_requires_a_named_file(tmp_path, backend):
+    from io import BytesIO
+
+    client = ExecutionClient(backend, target=SshTarget("cluster"))
+    spec = ExecutionSpec(
+        ("ignored",), directory=tmp_path, stdin=BytesIO(b"required input"),
+    )
+    with pytest.raises(ValueError, match="Remote execution requires named files"):
+        client.create_run(spec)

@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from kkrunner.runs import CorruptRunRecord
@@ -245,7 +247,7 @@ def test_refresh_captures_artifacts_without_result_processor(tmp_path, monkeypat
     pending = manager.update(record, status)
     assert pending.state == RunState.DOWNLOADING
     assert pending.files.captured_at is None
-    monkeypatch.setattr(client, "status", lambda *runs: (status,))
+    monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *runs: (status,)))
     (completed,) = manager.refresh((pending,))
     assert completed.state == RunState.FINISHED
     assert completed.files.captured_at is not None

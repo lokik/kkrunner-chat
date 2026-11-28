@@ -1,10 +1,7 @@
 """Client setup shared by integration tests."""
 
 
-def open_job(endpoint, attachment, *, start=True, **options):
+def open_job(endpoint, attachment, **options):
     parts = endpoint.open_run_parts(attachment, **options)
     parts.configure_observation()
-    job = parts.job
-    if start:
-        job.start()
-    return job
+    return parts.job

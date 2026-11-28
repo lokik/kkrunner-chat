@@ -27,7 +27,7 @@ def test_direct_cancel_before_submit_is_final(tmp_path):
     assert job.state is RunState.CANCELLED
     assert job.wait().return_code is None
     with pytest.raises(RuntimeError, match="cancelled"):
-        job.submit()
+        job.run()
 
 
 def test_direct_failed_launch_retains_launch_failure(tmp_path):
@@ -38,6 +38,6 @@ def test_direct_failed_launch_retains_launch_failure(tmp_path):
     parts.prepare_job()
     job = parts.job
     with pytest.raises(SubmissionNotStarted):
-        job.submit()
+        job.run()
     assert job.state is RunState.FAILED
     assert job.failure_phase is FailurePhase.LAUNCH

@@ -191,9 +191,22 @@ class DirectExecution(_Execution):
         )
 
     async def cancel(self):
-        if self._call is not None:
-            return await self._call.cancel()
-        return await self._cancel_native()
+        call = self._call
+        if call is None:
+            return await self._cancel_native()
+        if not self._detached:
+            return await call.cancel()
+        # A detached caller may close this invocation immediately after
+        # cancellation returns. Keep it alive until the process-owning
+        # operation has handled the request and produced its native outcome.
+        # This also works when independent PID-based cancellation is unavailable.
+        try:
+            await call.cancel()
+        except (ConnectionError, OSError):
+            # The process may already have completed. Read its reply rather
+            # than reporting a failed write as a failed cancellation.
+            pass
+        return decode_job_status(await call.wait())
 
 
 class ManagedExecution(_Execution):

@@ -24,15 +24,15 @@ class _Runner:
         self.submit_calls = 0
         self.on_submit = None
 
-    def submit(self):
+    async def submit_async(self, *, on_submitted=None):
         self.submit_calls += 1
         if self.on_submit:
             self.on_submit()
         self.backend_id = "native-1"
         self.state = RunState.FINISHED
-
-    def wait(self):
-        return self.result
+        if on_submitted is not None:
+            await on_submitted()
+        return self.status()
 
     def configure_detached(self, detached):
         pass
@@ -56,6 +56,9 @@ class _Runner:
 class _Executor(ExecutionClient):
     def __init__(self):
         super().__init__(SupervisedBackend)
+
+    async def acknowledge_submission_async(self, record):
+        return False
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)

@@ -42,6 +42,7 @@ class FileSession:
         self._streams = None
         self._closed = False
         self.input_file = self._local_path(spec.input_file)
+        self._local_path(spec.stdin)  # Reject unmappable stdin just like output streams.
         self.output_file = self._local_path(spec.output_file)
         self.error_file = self._local_path(spec.error_file)
 
@@ -755,9 +756,15 @@ class FileSession:
 
     def submission_footprint(self):
         """Resolve names once, without creating or transferring files."""
-        return _run_sync(self._resolve_footprint())
+        return _run_sync(self.submission_footprint_async())
+
+    async def submission_footprint_async(self):
+        return await self._resolve_footprint()
 
     def prepare_submission(self):
+        return _run_sync(self.prepare_submission_async())
+
+    async def prepare_submission_async(self):
         """Stage files before backend submit; persistent Run records the manifest."""
         if self._prepared is None:
             # Run has acquired its reservation before entering this method.
@@ -765,7 +772,7 @@ class FileSession:
             # or other file use. Path targets are opened only when needed.
             if self._streams is None:
                 self._streams = OutputStreams(self.spec.output_file, self.spec.error_file)
-            request, manifest = _run_sync(self._prepare_async())
+            request, manifest = await self._prepare_async()
             self._prepared = request
             self._remote_directory = request["directory"]
             self._files = manifest
@@ -782,11 +789,15 @@ class FileSession:
 
     def local_call_io(self, detached=False):
         """Borrow local live streams for an in-process backend invocation."""
-        if detached and any(
-            value is not None and not isinstance(value, (str, os.PathLike))
-            for value in (self.spec.output_file, self.spec.error_file)
-        ):
-            raise ValueError("Detached output requires a named file or None")
+        if detached:
+            for value in (self.spec.output_file, self.spec.error_file):
+                if value is None or isinstance(value, (str, bytes, os.PathLike)):
+                    continue
+                file_path(value, self.spec.directory, required=True)
+                try:
+                    os.fstat(value.fileno())
+                except (AttributeError, OSError, ValueError, TypeError) as exc:
+                    raise ValueError("Detached output requires a named file with a file descriptor") from exc
         self._streams.open(self.spec.directory)
         files = {kind: stream for kind, stream in (
             ("out", self._streams.output_file), ("err", self._streams.error_file),

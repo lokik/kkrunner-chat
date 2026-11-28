@@ -212,15 +212,14 @@ def test_none_stream_paths_are_live_only(tmp_path, monkeypatch):
     runner = _managed_job(spec, submission_key=RUN_ID)
     seen = []
     runner.add_output_listener(lambda text, kind: seen.append((text, kind)))
-    runner.submit()
-    assert runner.wait().return_code == 0
+    assert runner.run().return_code == 0
     assert "".join(text for text, kind in seen if kind == "out") == "output\n"
     assert not (tmp_path / "out.txt").exists()
     assert not (tmp_path / "err.txt").exists()
-    attached = open_job(ExecutionClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)), start=False)
+    attached = open_job(ExecutionClient(SupervisedBackend), _attachment(_record(tmp_path, runner.backend_id, stdout=False, stderr=False)))
     assert attached.backend_id == runner.backend_id
-    assert attached.result.output_file is None
-    assert attached.result.error_file is None
+    assert attached.spec.output_file is None
+    assert attached.spec.error_file is None
     assert attached.state == RunState.FINISHED
 
 
@@ -460,7 +459,7 @@ def test_managed_monitor_preserves_malformed_protocol_error(tmp_path, monkeypatc
 
     monkeypatch.setattr(runner.execution, "observe", follow)
     monkeypatch.setattr(runner.execution, "status", status)
-    asyncio.run(runner._monitor())
+    runner.wait()
     assert runner.state is RunState.FINISHED
     assert isinstance(runner.output_error, StreamProtocolError)
 
@@ -514,7 +513,7 @@ def test_local_monitor_uses_in_band_follow_terminal_before_scheduler_status(tmp_
 
     monkeypatch.setattr(job.execution, "observe", follow)
     monkeypatch.setattr(job.execution, "status", never_poll)
-    asyncio.run(job._monitor())
+    job.wait()
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
 
@@ -524,8 +523,7 @@ def test_initial_supervised_named_streams_are_not_delivered_twice(tmp_path):
     runner = _managed_job(spec)
     seen = {"out": [], "err": []}
     runner.add_output_listener(lambda text, kind: seen[kind].append(text))
-    runner.submit()
-    assert runner.wait().return_code == 0
+    assert runner.run().return_code == 0
     assert {kind: "".join(chunks) for kind, chunks in seen.items()} == {"out": "out\n", "err": "err\n"}
     assert (tmp_path / "out.txt").read_text() == "out\n"
     assert (tmp_path / "err.txt").read_text() == "err\n"
@@ -557,7 +555,7 @@ def test_remove_last_listener_only_unsubscribes_output(tmp_path, monkeypatch):
         return JobStatus(RunState.FINISHED, return_code=0)
 
     monkeypatch.setattr(job.execution, "observe", observe)
-    asyncio.run(job._monitor())
+    job.wait()
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
     assert job.output_error is None
@@ -577,7 +575,7 @@ def test_native_terminal_reply_with_output_error_needs_no_status_query(tmp_path,
 
     monkeypatch.setattr(LocalTarget, "follow", follow)
     monkeypatch.setattr(job.execution, "status", forbidden_status)
-    asyncio.run(job._monitor())
+    job.wait()
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
     assert job.failure_phase is None

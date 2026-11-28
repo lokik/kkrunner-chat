@@ -48,7 +48,8 @@ def replay_observer(monkeypatch):
     monkeypatch.setattr(ManagedExecution, "observe", observe)
 
 
-def test_manager_attach_forwards_initial_output_listener(tmp_path, monkeypatch, replay_observer):
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_manager_attach_forwards_initial_output_listener(tmp_path, monkeypatch, replay_observer, asynchronous):
     client, attachment = _client_and_attachment(tmp_path, monkeypatch)
     (tmp_path / "run.out").write_bytes(b"replayed output\n")
     manager = RunManager(RunStore(tmp_path / "runs"))
@@ -61,11 +62,28 @@ def test_manager_attach_forwards_initial_output_listener(tmp_path, monkeypatch, 
         execution=record.execution.submitted(attachment.execution.backend_id),
     ))
     output = []
-    runner = manager.attach(
-        record, client=client,
-        output_listener=lambda text, kind: output.append((text, kind)),
-    )
-    assert runner.wait().return_code == 0
+    options = dict(client=client, output_listener=lambda text, kind: output.append((text, kind)))
+    if asynchronous:
+        original = client._invoke
+
+        async def exercise():
+            loop = asyncio.get_running_loop()
+
+            async def invoke(*args, **kwargs):
+                assert asyncio.get_running_loop() is loop
+                return await original(*args, **kwargs)
+
+            monkeypatch.setattr(client, "_invoke", invoke)
+            runner = await manager.attach_async(record, **options)
+            assert output == []
+            return await runner.wait_async()
+
+        result = asyncio.run(exercise())
+    else:
+        runner = manager.attach(record, **options)
+        assert output == []
+        result = runner.wait()
+    assert result.return_code == 0
     assert output == [("replayed output\n", "out")]
 
 
@@ -78,7 +96,6 @@ def test_attach_listener_is_installed_before_monitor(tmp_path, monkeypatch, repl
     )
     try:
         parts.configure_observation()
-        parts.job.start()
         assert parts.job.wait().return_code == 0
         assert events == [("replayed output\n", "out")]
     finally:
@@ -93,10 +110,9 @@ def test_attach_can_defer_monitor_start(tmp_path, monkeypatch, replay_observer, 
         attachment, output_listener=lambda text, kind: events.append((text, kind)),
     )
     try:
-        assert parts.job._thread is None
+        assert not parts.job.observing
         assert events == []
         parts.configure_observation()
-        parts.job.start()
         assert parts.job.wait().return_code == 0
         assert events == [("replayed output\n", "out")]
     finally:

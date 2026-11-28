@@ -5,9 +5,8 @@ from __future__ import annotations
 import codecs
 import os
 import warnings
-from concurrent.futures import Future
 from dataclasses import dataclass
-from threading import Lock, Thread, current_thread
+from threading import Lock
 from typing import Any, Optional, Sequence
 
 from kkrunner.backends.contracts import SubmissionNotStarted as SubmissionNotStarted
@@ -16,53 +15,6 @@ from kkrunner.execution import FailurePhase, MpiSpec, RunState
 from kkrunner.files.manifest import FileManifest
 from kkrunner.files.streams import _close_distinct
 from kkrunner.runs.model import ExecutionMetadata
-
-
-def dispatch_cancellation(action):
-    """Run a blocking backend cancellation off the calling/GUI thread.
-
-    The returned Future exposes errors, while the normal monitor remains
-    authoritative for the terminal run state.
-    """
-    future = Future()
-
-    def worker():
-        if future.set_running_or_notify_cancel():
-            try:
-                future.set_result(action())
-            except BaseException as exc:
-                future.set_exception(exc)
-
-    Thread(target=worker, daemon=True).start()
-    return future
-
-
-def finish_monitor(runner):
-    """Deliver the callback and unblock waiters after backend-specific cleanup."""
-    try:
-        if runner.callback is not None:
-            runner.callback(runner.result)
-    except BaseException as exc:
-        runner._callback_exception = exc
-    finally:
-        runner._done.set()
-
-
-def wait_for_monitor(runner):
-    """Await a started monitor; propagate execution errors before callback errors."""
-    if runner._thread is None:
-        if runner._state == RunState.NEW:
-            raise RuntimeError("Run has not been submitted")
-        raise RuntimeError("Attached run has not been started")
-    # The monitor delivers its callback before waking ordinary waiters. The
-    # callback may inspect its own result without waiting for itself to return.
-    if current_thread() is not runner._thread:
-        runner._done.wait()
-    if runner._exception is not None:
-        raise runner._exception
-    if runner._callback_exception is not None:
-        raise runner._callback_exception
-    return runner.result
 
 
 class OutputObserverWarning(RuntimeWarning):

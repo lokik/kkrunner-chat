@@ -43,9 +43,12 @@ class _Runner:
     def status(self):
         return JobStatus(self.state, return_code=self.result.return_code)
 
-    def submit(self):
+    async def submit_async(self, *, on_submitted=None):
         self.state = RunState.QUEUED
         self.backend_id = "new-job"
+        if on_submitted is not None:
+            await on_submitted()
+        return self.status()
 
     def wait(self):
         self._done.wait()
@@ -75,13 +78,16 @@ class _RecoveringExecutor(ExecutionClient):
         parts.job = runner
         return parts
 
-    def status(self, *attachments):
+    async def acknowledge_submission_async(self, record):
+        pass
+
+    async def status_async(self, *attachments):
         return tuple(
             RunStatus(RunState.QUEUED, backend_id=item.execution.backend_id)
             for item in attachments
         )
 
-    def recover_submission(self, run_id, submission, *, submitted_at=None):
+    async def recover_submission_async(self, run_id, submission, *, submitted_at=None):
         self.recovery_calls.append((run_id, submission, submitted_at))
         return self.recovered
 
