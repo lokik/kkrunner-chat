@@ -112,10 +112,8 @@ class FileAccess:
             return  # No independent target copy exists.
         remote_root = await context._resolved_remote_root()
         declared = {
-            entry.local_path: entry for entry in (
-                *run.files.input_entries, *run.files.outputs, *(cache.file for cache in run.files.caches),
-                run.files.stdout, run.files.stderr,
-            ) if entry is not None
+            entry.local_path: entry for entry in run.files.entries
+            if entry.local_path is not None
         }
         captured_paths = {os.path.abspath(os.fspath(version.path)) for version in run.files.all_versions}
         for value in files:
@@ -225,14 +223,9 @@ class FileAccess:
         self._validate_target(run)
         if not self.target.transfers_files(shared_filesystem=run.files.shared_filesystem):
             raise ValueError("Remote-file cleanup requires a separate target filesystem")
-        entries = (
-            *run.files.inputs, *run.files.outputs,
-            *(cache.file for cache in run.files.caches),
-            run.files.stdin, run.files.stdout, run.files.stderr,
-        )
         declared = {}
-        for entry in entries:
-            if entry is None or entry.remote_path is None:
+        for entry in run.files.entries:
+            if entry.remote_path is None:
                 continue
             previous = declared.setdefault(entry.remote_path, entry.kind)
             if previous != entry.kind:
