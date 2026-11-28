@@ -39,6 +39,9 @@ class _Runner:
     def configure_submission(self, request, **observation):
         pass
 
+    def configure_observation(self, **observation):
+        pass
+
     def status(self):
         return JobStatus(self.state, return_code=self.return_code)
 
@@ -49,13 +52,15 @@ class _Runner:
         self.backend_id = "job"
         self.state = RunState.QUEUED
 
-    def wait(self):
-        self._done.wait(2)
-        return self.result
-
-    def run(self):
+    async def submit_async(self, *, on_submitted=None):
         self.submit()
-        return self.wait()
+        if on_submitted is not None:
+            await on_submitted()
+        return self.status()
+
+    async def wait_async(self):
+        assert self._done.is_set(), "The test must complete the native job before waiting"
+        return self.result
 
     def cancel(self):
         self.state = RunState.CANCELLED
@@ -77,10 +82,10 @@ class _Executor(ExecutionClient):
         super().__init__(SupervisedBackend)
         self.runners = []
 
-    def acknowledge_submission(self, record):
+    async def acknowledge_submission_async(self, record):
         pass
 
-    def acknowledge(self, record):
+    async def acknowledge_async(self, record):
         pass
 
     def create_run_parts(self, spec, *, submission_key=None, callback=None):

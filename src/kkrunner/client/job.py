@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
-from threading import Event, Lock, Thread
+from threading import Event, Lock
 
 from kkrunner.backends.contracts import SubmissionNotStarted, job_status_from_facts
 from kkrunner.client.contracts import BackendExecution, OutputSubscription
 from kkrunner.runs.base import (
     FailurePhase, OutputObservers, RunState,
-    dispatch_cancellation, finish_monitor, wait_for_monitor,
 )
 from kkrunner.support.async_utils import run_coro_sync as _run_sync
 
@@ -29,10 +28,7 @@ class Job:
         self.callback = callback
         self._state = RunState.NEW
         self._lock = Lock()
-        self._thread = None
-        self._done = Event()
-        self._submitted = Event()
-        self._submission_error = None
+        self._settled = False
         self._exception = None
         self._callback_exception = None
         self._failure_phase = None
@@ -59,7 +55,7 @@ class Job:
 
     @property
     def observing(self):
-        return self._thread is not None
+        return self._loop is not None
 
     @property
     def output_error(self):
@@ -109,6 +105,8 @@ class Job:
             # such an outcome, e.g. supply the Direct process's exit code.
             if self._state.is_terminal and (
                 refresh or not status.state.is_terminal or self._return_code is not None
+                or (self._state == RunState.CANCELLED
+                    and status.state == RunState.FINISHED and status.return_code is None)
             ):
                 return
             self._state = status.state
@@ -150,8 +148,8 @@ class Job:
         self.execution.configure_detached(detached)
 
     def configure_observation(self, *, stream_offsets, stream_paths):
-        if self._thread is not None:
-            raise RuntimeError("Cannot reconfigure a running observer")
+        if self.observing or self._settled:
+            raise RuntimeError("Cannot reconfigure a running or settled observer")
         self.execution.configure_observation(stream_offsets=stream_offsets, stream_paths=stream_paths)
 
     def configure_submission(self, request, **observation):
@@ -169,46 +167,43 @@ class Job:
                 self._update_output_subscription()
 
     def submit(self):
-        with self._lock:
-            if self._state == RunState.CANCELLED and self._thread is None:
-                raise SubmissionNotStarted("Job was cancelled before submission")
-            if self._state != RunState.NEW or self._request is None:
-                raise RuntimeError("Job is not prepared for submission")
-            self._state = RunState.SUBMITTING
-            try:
-                self._start_thread()
-            except Exception as exc:
-                self._state = RunState.FAILED
-                self._failure_phase = FailurePhase.SUBMISSION
-                self._failure_message = str(exc)
-                raise SubmissionNotStarted(str(exc)) from exc
-        self._submitted.wait()
-        if self._submission_error is not None:
-            self._done.wait()
-            raise self._submission_error
+        """Submit independently, without observing the accepted calculation."""
+        return _run_sync(self.submit_async())
 
-    async def _monitor(self):
-        self._loop = asyncio.get_running_loop()
+    async def submit_async(self, *, on_submitted=None):
+        if not self.execution.can_stop_observation:
+            from kkrunner.backends.contracts import UnsupportedCapability
+            raise UnsupportedCapability("This execution requires run() or run_async()")
+        await self._execute(on_submitted=on_submitted, submit_only=True)
+        return self.status()
+
+    async def _monitor(self, on_submitted=None, *, submit_only=False):
         with self._lock:
-            self._output_requested = OutputSubscription(
-                not self._observation_stopped.is_set() and self._output_observers.has_listeners,
+            # Standalone submission does not subscribe, even if listeners
+            # have been registered for a later explicit wait().
+            subscription = OutputSubscription(
+                not submit_only and not self._observation_stopped.is_set()
+                and self._output_observers.has_listeners,
             )
+            self._output_requested = None if submit_only else subscription
         try:
             if self._request is not None:
                 request, self._request = self._request, None
                 try:
                     status = await self.execution.submit(
-                        request, self._observed_output, output_requested=self._output_requested,
+                        request, self._observed_output, output_requested=subscription,
                     )
-                except BaseException as exc:
+                except BaseException:
                     self._apply_status(self.execution.snapshot)
-                    self._submission_error = exc
                     raise
                 self._apply_status(status)
-                self._submitted.set()
+                if on_submitted is not None:
+                    await on_submitted()
             # A cancellation queued during submission must survive a request
             # to detach observation before the observer is created.
             self._ensure_cancel_task(starting=True)
+            if submit_only:
+                return
             with self._lock:
                 detached = self._observation_stopped.is_set() and self.execution.can_stop_observation
                 if not detached:
@@ -240,7 +235,7 @@ class Job:
             self._output_error = self._output_error or self.execution.output_error
             self._apply_status(status)
             if not self._state.is_terminal:
-                self._observation_lost("Observation ended without terminal backend status")
+                self._observation_lost(status.message or "Observation ended without terminal backend status")
         finally:
             with self._lock:
                 self._observer = None
@@ -249,6 +244,10 @@ class Job:
             try:
                 if isinstance(cancel_task, asyncio.Task):
                     await asyncio.gather(cancel_task, return_exceptions=True)
+                elif isinstance(cancel_task, Future):
+                    # An idle cancellation may already have been dispatched
+                    # when this caller starts observing the same execution.
+                    await asyncio.gather(asyncio.wrap_future(cancel_task), return_exceptions=True)
                 try:
                     await self.execution.close()
                 except BaseException as exc:
@@ -257,34 +256,64 @@ class Job:
                         self._observation_lost(str(exc))
             finally:
                 with self._lock:
-                    self._loop = None
-                    future = self._cancel_future if self._cancel_task is None else None
-                    terminal = self._state.is_terminal
-                self._submitted.set()
-                if future is not None and not future.done():
-                    if terminal:
-                        future.set_result(None)
-                    else:
-                        future.set_exception(RuntimeError(
-                            "Observation ended before cancellation was dispatched"
-                        ))
+                    if self._cancel_task is cancel_task and isinstance(cancel_task, asyncio.Task):
+                        self._cancel_task = None
 
-    def _thread_main(self):
+    async def _execute(self, *, on_submitted=None, submit_only=False):
+        with self._lock:
+            if not submit_only and self._settled:
+                return self._result()
+            if self._loop is not None:
+                raise RuntimeError("Job already has an active caller")
+            if submit_only or self.ref is None:
+                if self._state == RunState.CANCELLED:
+                    raise SubmissionNotStarted("Job was cancelled before submission")
+                if self._state != RunState.NEW or self._request is None or self.ref is not None:
+                    raise RuntimeError("Job is not prepared for submission")
+                self._state = RunState.SUBMITTING
+            self._loop = asyncio.get_running_loop()
         try:
-            asyncio.run(self._monitor())
+            await self._monitor(on_submitted, submit_only=submit_only)
         except BaseException as exc:
             self._exception = exc
-            if not self._state.is_terminal:
-                self._observation_lost(str(exc))
+            self._observation_lost(str(exc))
         finally:
-            try:
-                if not self._observation_stopped.is_set():
-                    self._output_observers.finish_bytes()
-            except BaseException as exc:
-                self._output_error = self._output_error or exc
-                if not self._state.is_terminal:
+            if not submit_only or self._exception is not None:
+                try:
+                    if not self._observation_stopped.is_set():
+                        self._output_observers.finish_bytes()
+                except BaseException as exc:
+                    self._output_error = self._output_error or exc
                     self._observation_lost(str(exc))
-            finish_monitor(self)
+                try:
+                    if self.callback is not None:
+                        self.callback(self.result)
+                except BaseException as exc:
+                    self._callback_exception = exc
+                finally:
+                    self._settled = True
+            # The active caller owns the decoder and completion callback as
+            # well as the backend connection. Do not admit a second observer
+            # between transport closure and completion.
+            with self._lock:
+                self._loop = None
+                future = self._cancel_future if self._cancel_task is None else None
+                terminal = self._state.is_terminal
+            if future is not None and not future.done():
+                if terminal:
+                    future.set_result(None)
+                else:
+                    future.set_exception(RuntimeError(
+                        "Observation ended before cancellation was dispatched"
+                    ))
+        return self._result()
+
+    def _result(self):
+        if self._exception is not None:
+            raise self._exception
+        if self._callback_exception is not None:
+            raise self._callback_exception
+        return self.result
 
     def _ensure_cancel_task(self, *, starting=False):
         with self._lock:
@@ -299,8 +328,7 @@ class Job:
                 return
         future.set_result(None)
 
-    @staticmethod
-    def _cancel_completed(task, future):
+    def _cancel_completed(self, task, future):
         # Resolve the particular request, not whichever request is current
         # when this callback runs. A caller may immediately submit another.
         try:
@@ -308,35 +336,57 @@ class Job:
         except BaseException as exc:
             future.set_exception(exc)
         else:
+            self._confirm_cancellation(result)
             future.set_result(result)
 
+    def _confirm_cancellation(self, status):
+        # A confirmed cancellation is execution evidence, unlike acceptance
+        # of a control message. A later liveness-only FINISHED must not erase
+        # it. An already observed native exit code remains authoritative.
+        if status is not None and status.state == RunState.CANCELLED:
+            self._apply_status(status)
+
     def cancel(self):
-        """Share an in-flight cancellation; a completed request is retryable."""
+        """Cancel in the active caller loop, or synchronously when idle."""
         with self._lock:
             future = self._cancel_future
             if future is not None and not future.done():
                 return future
-            if self._state.is_terminal:
-                future = Future()
-                future.set_result(None)
-                return future
-            if self._loop is None and self.ref is not None:
-                future = dispatch_cancellation(lambda: _run_sync(self.execution.cancel()))
-                self._cancel_future = self._cancel_task = future
-                return future
-
             future = Future()
             future.set_running_or_notify_cancel()
+            if self._state.is_terminal:
+                future.set_result(None)
+                return future
             self._cancel_future = future
             self._cancel_task = None
             if self._state == RunState.NEW:
                 self._state = RunState.CANCELLED
                 future.set_result(None)
-            elif self._loop is not None:
+                return future
+            if self._loop is not None:
                 self._schedule(self._ensure_cancel_task)
-            elif self._state != RunState.SUBMITTING:
+                return future
+            if self.ref is None:
                 future.set_exception(RuntimeError("No execution reference available for cancellation"))
-            return future
+                return future
+            self._cancel_task = future  # dispatched outside the observation loop
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                status = _run_sync(self.execution.cancel())
+                self._confirm_cancellation(status)
+                future.set_result(status)
+            except BaseException as exc:
+                future.set_exception(exc)
+        else:
+            task = loop.create_task(self.execution.cancel())
+            task.add_done_callback(lambda task: self._cancel_completed(task, future))
+        return future
+
+    async def cancel_async(self):
+        return await asyncio.wrap_future(self.cancel())
 
     def _schedule(self, action):
         loop = self._loop
@@ -357,31 +407,26 @@ class Job:
         if observer is not None and self.execution.can_stop_observation:
             self._schedule(observer.cancel)
 
-    def start(self):
-        if self._thread is None and self.ref is None:
-            return self.submit()
-        with self._lock:
-            if self._thread is not None:
-                return
-            self._start_thread()
-
-    def _start_thread(self):
-        self._thread = Thread(target=self._thread_main, daemon=True)
-        try:
-            self._thread.start()
-        except BaseException:
-            self._thread = None
-            raise
-
     def wait(self):
-        if self._state == RunState.CANCELLED and self._thread is None:
+        """Explicitly observe an accepted execution in the caller's thread."""
+        if self._settled:
+            return self._result()
+        return _run_sync(self.wait_async())
+
+    async def wait_async(self):
+        if self._settled:
+            return self._result()
+        if self._state == RunState.CANCELLED and self.ref is None:
             return self.result
-        return wait_for_monitor(self)
+        if self.ref is None:
+            raise RuntimeError("Job has not been submitted")
+        return await self._execute()
 
     def run(self):
-        if self._thread is None:
-            self.start()
-        return self.wait()
+        return _run_sync(self.run_async())
 
-    async def run_async(self):
-        return await asyncio.to_thread(self.run)
+    async def run_async(self, *, on_submitted=None):
+        """Drive native submission and observation in the caller's event loop."""
+        if self._settled:
+            return self._result()
+        return await self._execute(on_submitted=on_submitted)

@@ -1,21 +1,17 @@
 """Independent self-review probes; assertions express the intended contract."""
 
 import json
-from pathlib import Path
 from dataclasses import replace
 from threading import Event, Thread
 
 import pytest
 
 from kkrunner.runs import CorruptRunRecord
-from kkrunner import ExecutionOutcome, ExecutionSpec, RunState, RunStore
+from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.client import ExecutionClient, LocalTarget, SshTarget, StagingSpec
-from kkrunner.backends.contracts import JobStatus
 from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.client.run_parts import RunParts
-from kkrunner.runs.run import Run
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs.conflicts import submission_conflicts
 from kkrunner.runs.manager import RunManager
@@ -56,69 +52,22 @@ def test_nested_execution_is_validated(tmp_path):
         manager.store.get(record.id)
 
 
-def test_fast_processor_can_finish_during_submit(tmp_path, monkeypatch):
+def test_fast_execution_does_not_postprocess_until_explicit_wait(tmp_path):
+    import sys
+
     manager = manager_at(tmp_path)
-    entered, release = Event(), Event()
-
-    class Raw:
-        state = RunState.NEW
-        backend_id = None
-        exception = None
-        failure_phase = None
-        failure_message = None
-        return_code = 0
-        result = ExecutionOutcome(return_code=0)
-        output_error = None
-
-        def submit(self):
-            self.backend_id = "instant-job"
-            self.state = RunState.FINISHED
-
-        def wait(self):
-            return self.result
-
-        @property
-        def requires_stream_retrieval(self):
-            return False
-
-        def configure_detached(self, detached):
-            pass
-
-        def configure_submission(self, request, **options):
-            pass
-
-        def status(self):
-            return JobStatus(self.state, return_code=self.return_code)
-
-    class Client(ExecutionClient):
-        def __init__(self):
-            super().__init__(SupervisedBackend)
-
-        def create_run_parts(self, spec, *, submission_key=None, callback=None):
-            parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
-            raw = Raw()
-            raw.spec = spec
-            parts.job = raw
-            return parts
-
-    def process(outcome):
-        entered.set()
-        assert release.wait(3)
-        return 42
-
-    original = Run._start_completion
-
-    def start_and_yield(self):
-        original(self)
-        assert entered.wait(3)
-
-    monkeypatch.setattr(Run, "_start_completion", start_and_yield)
-    run = Client().create_run(ExecutionSpec(["instant"], directory=tmp_path), tracked=manager, process_result=process)
-    try:
-        run.submit()
-    finally:
-        release.set()
+    processed = []
+    run = ExecutionClient(SupervisedBackend).create_run(
+        ExecutionSpec([sys.executable, "-c", "pass"], directory=tmp_path),
+        tracked=manager, process_result=lambda outcome: processed.append(outcome) or 42,
+    )
+    run.submit()
+    assert run.backend_id is not None
+    assert processed == []
+    assert not manager.store.get(run.id).state.is_terminal
     assert run.wait() == 42
+    assert run.wait() == 42
+    assert len(processed) == 1
     assert manager.store.get(run.id).state == RunState.FINISHED
 
 
@@ -130,7 +79,7 @@ def test_cancel_and_failed_submit_do_not_deadlock():
 
     def submit():
         try:
-            job.submit()
+            job.run()
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -149,7 +98,9 @@ def test_cancel_and_failed_submit_do_not_deadlock():
     assert len(errors) == 1
     assert isinstance(errors[0], RuntimeError)
     assert str(errors[0]) == "submission rejected"
-    assert future.result(timeout=3) is None
+    with pytest.raises(RuntimeError, match="before cancellation was dispatched"):
+        future.result(timeout=3)
+    assert execution.cancel_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -195,77 +146,39 @@ def test_remote_preflight_streams_close_on_submit_failure(tmp_path, monkeypatch)
     )
     run = ExecutionClient(DirectBackend, target=_LoopbackSshTransport()).create_run(spec, tracked=False)
 
-    async def rejected(self, request, on_output):
+    async def rejected(self, request, on_output, *, output_requested=None):
         raise RuntimeError("lost submit response")
 
     monkeypatch.setattr(DirectExecution, "submit", rejected)
     with pytest.raises(RuntimeError, match="lost submit response"):
-        run.submit()
+        run.run()
     assert output.closed
 
 
-def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path):
+def test_reused_run_id_is_rejected_before_second_backend_submit(tmp_path, monkeypatch):
+    import sys
+    from kkrunner.client.backend_execution import ManagedExecution
+
     manager = manager_at(tmp_path)
-    release = Event()
+    client = ExecutionClient(SupervisedBackend)
+    submissions = []
+    original = ManagedExecution.submit
 
-    class Raw:
-        state = RunState.NEW
-        backend_id = None
-        exception = None
-        failure_phase = None
-        failure_message = None
-        return_code = 0
-        result = ExecutionOutcome(return_code=0)
-        output_error = None
+    async def submit(self, *args, **kwargs):
+        submissions.append(self)
+        return await original(self, *args, **kwargs)
 
-        def submit(self):
-            backend.submissions += 1
-            self.backend_id = str(backend.submissions)
-            self.state = RunState.RUNNING
-
-        def wait(self):
-            release.wait(3)
-            # This fake backend must publish the declared output before its
-            # FINISHED status can be committed by the client file session.
-            Path(spec.output_file).write_text("written")
-            self.state = RunState.FINISHED
-            return self.result
-
-        @property
-        def requires_stream_retrieval(self):
-            return False
-
-        def configure_detached(self, detached):
-            pass
-
-        def configure_submission(self, request, **options):
-            pass
-
-        def status(self):
-            return JobStatus(self.state, return_code=self.return_code)
-
-    class Client(ExecutionClient):
-        submissions = 0
-
-        def __init__(self):
-            super().__init__(SupervisedBackend)
-
-        def create_run_parts(self, spec, *, submission_key=None, callback=None):
-            parts = super().create_run_parts(spec, submission_key=submission_key, callback=callback)
-            raw = Raw()
-            raw.spec = spec
-            parts.job = raw
-            return parts
-
-    backend = Client()
-    spec = ExecutionSpec(["unused"], directory=tmp_path, output_file=tmp_path / "same-output")
-    first = backend.create_run(spec, tracked=manager, run_id="same-id")
-    second = backend.create_run(spec, tracked=manager, run_id="same-id")
+    monkeypatch.setattr(ManagedExecution, "submit", submit)
+    spec = ExecutionSpec(
+        [sys.executable, "-c", "print('written')"], directory=tmp_path,
+        output_file=tmp_path / "same-output",
+    )
+    first = client.create_run(spec, tracked=manager, run_id="same-id")
+    second = client.create_run(spec, tracked=manager, run_id="same-id")
+    first.submit()
     try:
-        first.submit()
         with pytest.raises((RuntimeError, ValueError)):
             second.submit()
-        assert backend.submissions == 1
+        assert len(submissions) == 1
     finally:
-        release.set()
-        first.wait()
+        assert first.wait().return_code == 0

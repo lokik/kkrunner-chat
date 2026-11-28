@@ -101,3 +101,47 @@ def observe_process(remote_id):
         except (OSError, subprocess.CalledProcessError):
             return "unknown", "Cannot verify process-group members"
     return "finished", "Process ended; exit code unavailable"
+
+
+@portable
+async def wait_detached_process(process):
+    """Wait for an owned Popen child without an asyncio subprocess transport.
+
+    Closing or cancelling this wait releases only the observation resources.
+    On Linux a pidfd becomes readable on exit; older kernels and other
+    platforms use nonblocking Popen.poll().
+    """
+    import asyncio
+    import errno
+    import os
+    import sys
+
+    code = process.poll()
+    if code is not None:
+        return code
+
+    if sys.platform.startswith("linux") and hasattr(os, "pidfd_open"):
+        try:
+            fd = os.pidfd_open(process.pid)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOSYS, errno.EINVAL, errno.EPERM,
+                                 errno.EACCES, errno.ESRCH, errno.ENODEV):
+                raise
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+                ready = asyncio.Event()
+                loop.add_reader(fd, ready.set)
+                try:
+                    await ready.wait()
+                finally:
+                    loop.remove_reader(fd)
+                # Readability means this child has exited; reap it and obtain
+                # its native exit code without blocking on a running process.
+                return process.wait()
+            finally:
+                os.close(fd)
+
+    while (code := process.poll()) is None:
+        await asyncio.sleep(0.1)
+    return code

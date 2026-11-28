@@ -23,14 +23,14 @@ class _Executor(ExecutionClient):
         self.status_value = status
         self.failure_phase = failure_phase
 
-    def acknowledge(self, record):
+    async def acknowledge_async(self, record):
         # This suite verifies state projection, not remote receipt transport.
         return None
 
-    def acknowledge_submission(self, record):
+    async def acknowledge_submission_async(self, record):
         return None
 
-    def status(self, *runs):
+    async def status_async(self, *runs):
         return tuple(
             RunStatus(
                 backend_id=run.execution.backend_id,
@@ -92,13 +92,15 @@ def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
         ExecutionSpec((sys.executable, "-c", "print('complete')"), directory=str(tmp_path)), tracked=False,
         process_result=process,
     )
-    try:
-        run.submit()
-        assert entered.wait(5), "Postprocessing did not begin"
-        assert run.state == RunState.POSTPROCESSING
-    finally:
-        release.set()
-    assert run.wait().return_code == 0
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run.run)
+        try:
+            assert entered.wait(5), "Postprocessing did not begin"
+            assert run.state == RunState.POSTPROCESSING
+        finally:
+            release.set()
+        assert future.result(timeout=5).return_code == 0
     assert run.state == RunState.FINISHED
 
 
@@ -107,17 +109,17 @@ def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable(tmp
         ExecutionSpec((sys.executable, "-c", "pass"), directory=str(tmp_path)), tracked=False,
     )
 
-    def fail_wait():
+    async def fail_wait():
         raise ValueError("original execution failure")
 
-    monkeypatch.setattr(run._job, "wait", fail_wait)
-    run.submit()
+    monkeypatch.setattr(run._job, "wait_async", fail_wait)
     with pytest.raises(ValueError, match="original execution failure"):
-        run.wait()
+        run.run()
     assert run.state == RunState.UNKNOWN
     assert run.failure_phase is None
     assert run.failure_message == "original execution failure"
-    assert run._done.wait(2), "Completion worker must not escape exception handling"
+    with pytest.raises(ValueError, match="original execution failure"):
+        run.wait()
 
 
 def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
@@ -163,7 +165,7 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
         RunState.CANCELLED, backend_id=attachment.execution.backend_id,
     ))
 
-    def collect(access, current, status, *, on_resolved=None):
+    async def collect(access, current, status, *, on_resolved=None):
         assert access.target == record.execution.target
         assert current.id == record.id
         assert status.state == RunState.CANCELLED
@@ -171,7 +173,7 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
         calls.append(current.id)
         return current.files, transfer_error
 
-    monkeypatch.setattr(FileAccess, "collect_ended_files", collect)
+    monkeypatch.setattr(FileAccess, "collect_ended_files_async", collect)
     cancelled = manager.cancel(record.id)
     assert calls == [record.id]
     assert cancelled.state == RunState.CANCELLED
@@ -254,22 +256,26 @@ def test_refresh_observes_native_exit_while_listener_is_stalled(tmp_path, monkey
                       directory=tmp_path, output_file="stdout"),
         tracked=manager if tracked else False, detached=False, output_listener=listener,
     )
-    run.submit()
-    try:
-        assert run.refresh() == RunState.RUNNING
-        gate.touch()
-        assert entered.wait(5)
-        deadline = time.monotonic() + 5
-        while run.refresh() != RunState.FINISHING:
-            assert time.monotonic() < deadline, "Native process exit was not observable"
-            time.sleep(.01)
-        assert run.state == RunState.FINISHING
-        if tracked:
-            assert run.record.state == RunState.FINISHING
-    finally:
-        gate.touch()
-        release.set()
-        outcome = run.wait()
+    from concurrent.futures import ThreadPoolExecutor
+    accepted = Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run.run, on_submitted=lambda _: accepted.set())
+        try:
+            assert accepted.wait(5)
+            assert run.refresh() == RunState.RUNNING
+            gate.touch()
+            assert entered.wait(5)
+            deadline = time.monotonic() + 5
+            while run.refresh() != RunState.FINISHING:
+                assert time.monotonic() < deadline, "Native process exit was not observable"
+                time.sleep(.01)
+            assert run.state == RunState.FINISHING
+            if tracked:
+                assert run.record.state == RunState.FINISHING
+        finally:
+            gate.touch()
+            release.set()
+        outcome = future.result(timeout=5)
     assert outcome.return_code == 7
     assert run.state == RunState.FAILED
     assert run.refresh() == RunState.FAILED

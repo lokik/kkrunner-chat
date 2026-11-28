@@ -76,10 +76,10 @@ def test_conflict_recovery_refreshes_foreign_store(tmp_path, monkeypatch, first_
     first, second = (b, a) if first_memory else (a, b)
     files = FileManifest(stdout=FileEntry(str(tmp_path / "out")))
     old = first.reserve(first.new_record(directory=tmp_path, files=files))
-    def recover(record):
+    async def recover(record):
         assert record.store is first.store
         return second.transition(record, state=RunState.FAILED)
-    monkeypatch.setattr(second, "recover_submitting", recover)
+    monkeypatch.setattr(second, "recover_submitting_async", recover)
     new = second.reserve(second.new_record(directory=tmp_path, files=files), recover_conflicts=True)
     assert new.store is second.store
     assert first.store.get(old.id).state == RunState.FAILED
@@ -297,11 +297,11 @@ def test_failed_direct_attach_releases_observation_claim(tmp_path, monkeypatch, 
                                 backend=client.backend_config, detached=True)
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))
-    def fail(*args, **kwargs):
+    async def fail(*args, **kwargs):
         lock = store.observation_lock(record)
         assert not lock.acquire(blocking=False)
         raise OSError("cannot open streams")
-    monkeypatch.setattr(client, "open_run_parts", fail)
+    monkeypatch.setattr(client, "open_run_parts_async", fail)
     with pytest.raises(OSError, match="cannot open streams"):
         manager.attach(record, client=client)
     lock = store.observation_lock(record)
@@ -309,10 +309,11 @@ def test_failed_direct_attach_releases_observation_claim(tmp_path, monkeypatch, 
     lock.release()
 
 
-def test_failed_direct_observer_start_closes_streams_before_releasing_claim(tmp_path, monkeypatch):
-    from kkrunner import ExecutionSpec
+def test_failed_direct_observation_closes_streams_before_releasing_claim(tmp_path, monkeypatch):
     from kkrunner.backends import DirectBackend
     from kkrunner.client import ExecutionClient
+    from kkrunner.client.run_parts import RunParts
+    from kkrunner.client.file_session import FileSession
 
     store = MemoryRunStore()
     manager = RunManager(store)
@@ -321,23 +322,29 @@ def test_failed_direct_observer_start_closes_streams_before_releasing_claim(tmp_
                                 backend=client.backend_config, detached=True)
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native"))
-    parts = client.create_run_parts(ExecutionSpec(("unused",), directory=tmp_path))
-    original_close = parts.files.close
+    original_close = FileSession.close
     closed = []
 
-    def fail():
+    async def invoke(name, identity):
+        assert name == "status"
+        assert identity == record.execution.backend_id
+        return {"state": "running", "return_code": None}
+
+    def fail(self):
         raise OSError("observer configuration failed")
 
-    def close():
+    def close(self):
         assert not store.observation_lock(record).acquire(blocking=False)
-        original_close()
+        original_close(self)
         closed.append(True)
 
-    monkeypatch.setattr(parts, "configure_observation", fail)
-    monkeypatch.setattr(parts.files, "close", close)
-    monkeypatch.setattr(client, "open_run_parts", lambda *args, **kwargs: parts)
+    monkeypatch.setattr(client, "_invoke", invoke)
+    monkeypatch.setattr(RunParts, "configure_observation", fail)
+    monkeypatch.setattr(FileSession, "close", close)
+    run = manager.attach(record, client=client)
+    assert closed == []
     with pytest.raises(OSError, match="observer configuration failed"):
-        manager.attach(record, client=client)
+        run.wait()
     assert closed == [True]
     lock = store.observation_lock(record)
     assert lock.acquire(blocking=False)

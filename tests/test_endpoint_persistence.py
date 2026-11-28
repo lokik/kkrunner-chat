@@ -9,7 +9,6 @@ from kkrunner.client.job import Job
 from kkrunner.client.pool import ClientPool
 from kkrunner.client.run_parts import RunParts
 from kkrunner.runs.manager import RunManager
-from kkrunner.runs.run import Run
 
 
 def test_endpoint_transport_host():
@@ -76,9 +75,8 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
     )
 
     openings = []
-    starts = []
 
-    def fake_open(client, attachment, *, callback=None, output_listener=None):
+    async def fake_open(client, attachment, *, callback=None, output_listener=None):
         openings.append((client, attachment, callback, output_listener))
         spec = ExecutionSpec(argv=None, directory=str(tmp_path))
         files = client.file_session(spec)
@@ -93,8 +91,7 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
         job = Job(binding, spec)
         return RunParts(job, files)
 
-    monkeypatch.setattr(ExecutionClient, "open_run_parts", fake_open)
-    monkeypatch.setattr(Run, "start", lambda self: starts.append(self))
+    monkeypatch.setattr(ExecutionClient, "open_run_parts_async", fake_open)
     pool = RecordingPool()
     restarted = RunManager(store, client_pool=pool)
     attached = restarted.attach(record.id, process_result=lambda outcome: outcome)
@@ -103,10 +100,10 @@ def test_attach_reconstructs_client_and_passes_persisted_attachment(tmp_path, mo
         assert attached.client is openings[0][0]
         assert openings[0][1] == JobAttachment(record.execution, record.files)
         assert openings[0][2:] == (None, None)
-        assert attached._job.backend_id == "native-job-42"
-        assert starts == [attached]
+        assert attached.backend_id == "native-job-42"
+        assert not attached._job.observing
     finally:
-        attached._parts.close()
+        attached.close()
         pool.clear()
 
 

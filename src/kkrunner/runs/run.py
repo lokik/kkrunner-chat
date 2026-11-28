@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
-from threading import Event, Lock, Thread
+from threading import Lock
 
 from kkrunner.runs.base import (
     ExecutionOutcome,
@@ -16,8 +16,6 @@ from kkrunner.runs.base import (
     FailurePhase,
     RunState,
     SubmissionNotStarted,
-    finish_monitor,
-    wait_for_monitor,
 )
 from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, NO_EXECUTION_FAILURES, project_run_state
@@ -55,7 +53,7 @@ class Run:
             raise TypeError("owned_resources must be ExecutionResources or None")
         self._parts = parts
         self._owned_resources = owned_resources
-        self._submitting = False
+        self._busy = False
         self._closed = False
         self._job = parts.job
         self._file_session = parts.files
@@ -77,8 +75,6 @@ class Run:
         self._pending_exception = None
         self._settled = False
         self._started = False
-        self._thread = None
-        self._done = Event()
         self._lock = Lock()
         self._completion_lock = Lock()
         self._completion_persisted = False
@@ -240,7 +236,7 @@ class Run:
             return self._state
         if self._state in (RunState.PREPROCESSING, RunState.DOWNLOADING, RunState.POSTPROCESSING):
             return self._state
-        if self._submitting and not self._started:
+        if self._busy and not self._started:
             return record.state if record is not None else RunState.SUBMITTING
         if self._started and self._job.state.is_terminal:
             # Native execution ended; the observer may still be delivering bytes.
@@ -273,9 +269,30 @@ class Run:
     def _file_failure_phase(self):
         return FailurePhase.ARTIFACTS if self._file_session.files_are_local else FailurePhase.DOWNLOAD
 
-    def _finish(self):
+    async def _finish_async(self, *, on_submitted=None):
+        """Drive a fresh execution or an accepted job, then finalize its result."""
         try:
-            self._job.wait()
+            if on_submitted is None and self._record is not None and self._record.state.is_terminal:
+                # A standalone submit released observation ownership. Another
+                # client may already have finalized the run before this wait.
+                # Its captured result, not this handle's old session, wins.
+                record = self._record
+                self._state = record.state
+                if (record.state == RunState.FINISHED and record.processing_required
+                        and record.return_code == 0):
+                    self._pending_exception = ProcessingPending("Another observer processed this Run")
+                else:
+                    self.result = ExecutionOutcome(
+                        input_file=record.files.input_file,
+                        output_file=record.files.output_file,
+                        error_file=None if record.files.stderr is None else record.files.stderr.local_path,
+                        return_code=record.return_code,
+                    )
+                return
+            if on_submitted is None:
+                await self._job.wait_async()
+            else:
+                await self._job.run_async(on_submitted=on_submitted)
             raw_state = self._job.state
             outcome = ExecutionOutcome(
                 input_file=self._file_session.input_file,
@@ -300,7 +317,7 @@ class Run:
                         with self._completion_lock:
                             self._record = self.manager.transition(self._record, files=files)
 
-                    self._file_session.finalize(
+                    await self._file_session.finalize_async(
                         status, on_resolved=persist_plan if self.manager is not None else None,
                     )
                 except Exception as exc:
@@ -339,7 +356,7 @@ class Run:
             self._state = RunState.POSTPROCESSING
             try:
                 if self._record is not None and self._record.processing_required:
-                    self._record = self.manager.begin_processing(
+                    self._record = await self.manager.begin_processing_async(
                         self._record, return_code=outcome.return_code, files=self._file_session.files,
                         execution=self.execution or self._record.execution,
                     )
@@ -359,6 +376,10 @@ class Run:
                 return
             self._state = RunState.FINISHED
         except BaseException as exc:
+            if on_submitted is not None and not self._started:
+                # The launch was not accepted. The submission path owns its
+                # cleanup and persistence, not result finalization.
+                raise
             self._exception = exc
             try:
                 raw_state = self._job.state
@@ -379,68 +400,64 @@ class Run:
                 self._failure_phase = None
             self._failure_message = self._job.failure_message or str(exc)
         finally:
+            if on_submitted is None or self._started:
+                await self._settle_async()
+
+    async def _settle_async(self):
+        """Release resources and publish the client completion once."""
+        try:
+            self._parts.close()
+        except BaseException as exc:
+            # File cleanup must never prevent completion. For a successful Job, an unflushed
+            # output is a client transfer failure, not Job failure.
+            if self._exception is None:
+                self._exception = exc
+            if self._state == RunState.FINISHED:
+                self._state = RunState.FAILED
+                self._failure_phase = self._file_failure_phase()
+                self._failure_message = str(exc)
+        try:
+            if self.manager is not None:
+                if self._record.state != RunState.NEW:
+                    await self._sync_completion()
+            else:
+                self._release_resources(
+                    preserve=not self._state.is_terminal,
+                    suppress_errors=self.exception is not None or not self._state.is_terminal,
+                )
+        except BaseException as exc:
+            if self._exception is None:
+                self._exception = exc
+            if self.manager is None:
+                self._state = RunState.FAILED
+                self._failure_phase = FailurePhase.ARTIFACTS
+                self._failure_message = str(exc)
+        finally:
+            # A nonterminal observation or a failed persistence operation
+            # may leave resources not yet consumed by completion.
+            if self._owned_resources is not None:
+                self._release_resources(preserve=True, suppress_errors=True)
+        if self.manager is not None and self._record.state == RunState.FINISHED:
+            if self._record.processing_required and self._state != RunState.FINISHED:
+                # An independent observer completed the processing first.
+                self.result = None
+        try:
+            self._release_observation()
+        finally:
             try:
-                self._parts.close()
+                if self.callback is not None:
+                    self.callback(self.result)
             except BaseException as exc:
-                # File cleanup must never prevent finish_monitor from
-                # waking waiters. For a successful Job, an unflushed
-                # output is a client transfer failure, not Job failure.
-                if self._exception is None:
-                    self._exception = exc
-                if self._state == RunState.FINISHED:
-                    self._state = RunState.FAILED
-                    self._failure_phase = self._file_failure_phase()
-                    self._failure_message = str(exc)
-            try:
-                if self.manager is not None:
-                    if self._record.state != RunState.NEW:
-                        self._sync_completion()
-                else:
-                    self._release_resources(
-                        preserve=not self._state.is_terminal,
-                        suppress_errors=self.exception is not None or not self._state.is_terminal,
-                    )
-            except BaseException as exc:
-                if self._exception is None:
-                    self._exception = exc
-                if self.manager is None:
-                    self._state = RunState.FAILED
-                    self._failure_phase = FailurePhase.ARTIFACTS
-                    self._failure_message = str(exc)
-            finally:
-                # A nonterminal observation or a failed persistence operation
-                # may leave resources not yet consumed by completion.
-                if self._owned_resources is not None:
-                    self._release_resources(preserve=True, suppress_errors=True)
-            if self.manager is not None and self._record.state == RunState.FINISHED:
-                if self._record.processing_required and self._state != RunState.FINISHED:
-                    # An independent observer completed the processing first.
-                    self.result = None
-            try:
-                self._release_observation()
+                self._callback_exception = exc
             finally:
                 self._settled = True
-                finish_monitor(self)
-
-    def _start_completion(self):
-        self._started = True
-        self._thread = Thread(target=self._finish, daemon=True)
-        try:
-            self._thread.start()
-        except BaseException:
-            # A monitor that never started cannot own completion or cleanup.
-            # The caller retains the accepted backend identity for recovery.
-            self._thread = None
-            self._started = False
-            raise
 
     def _observed_job_state(self):
         """Persist execution progress, never a premature client completion.
 
-        A backend can finish between submit()/start() and the Run monitor
-        starting. Backend terminal status is only a raw execution fact:
-        output synchronization and optional postprocessing still belong to
-        _finish(), which alone may publish the terminal Run outcome.
+        A backend can finish before observation starts. Backend terminal
+        status is only a raw execution fact: output synchronization and
+        optional postprocessing still belong to client finalization.
         """
         state = self._job.state
         if state.is_terminal:
@@ -457,41 +474,46 @@ class Run:
                 "File cleanup after failed submission also failed: %s", cleanup_error,
             )
 
-    def submit(self, *, validate_inputs=None):
-        """Submit exactly once, whether or not a RunRecord is persisted.
+    def submit(self, *, validate_inputs=None, on_submitted=None):
+        """Launch independently; do not start an observer."""
+        from kkrunner.support.async_utils import run_coro_sync
+        return run_coro_sync(self.submit_async(
+            validate_inputs=validate_inputs, on_submitted=on_submitted,
+        ))
 
-        The irreversible boundary is Job.submit(). File staging precedes it,
-        and accepted backend identity is stored before the completion monitor
-        starts. A lost reply after that boundary is never retried implicitly.
-        An optional validate_inputs callback receives the staged FileManifest
-        immediately before Job.submit().
-        """
+    async def submit_async(self, *, validate_inputs=None, on_submitted=None):
+        if not self.detached:
+            from kkrunner.backends.contracts import UnsupportedCapability
+            raise UnsupportedCapability("This execution requires run() or run_async()")
+        self._begin_submission()
+        try:
+            await self._submit_impl(validate_inputs, observe=False, on_submitted=on_submitted)
+        finally:
+            with self._lock:
+                self._busy = False
+
+    def _begin_submission(self):
         with self._lock:
             if self._closed:
                 raise RuntimeError("Run is closed")
             if self._settled and isinstance(self._exception, asyncio.CancelledError):
                 raise self._exception
-            if self._submitting or self._started or self._settled:
+            if self._busy or self._started or self._settled:
                 raise RuntimeError("Run already submitted")
             if self._record is not None and self._record.state != RunState.NEW:
                 raise RuntimeError(f"Run is already {self._record.state.value}")
             if self._job.state != RunState.NEW:
                 raise RuntimeError(f"Job is already {self._job.state.value}")
-            self._submitting = True
-        try:
-            return self._submit(validate_inputs)
-        finally:
-            with self._lock:
-                self._submitting = False
-
-    def _submit(self, validate_inputs=None):
+            self._busy = True
+ 
+    async def _submit_impl(self, validate_inputs=None, *, observe=True, on_submitted=None):
         manager = self.manager
         submitted = False
         reserved = False
         try:
             if manager is not None:
                 from dataclasses import replace
-                directory, files = self._file_session.submission_footprint()
+                directory, files = await self._file_session.submission_footprint_async()
                 self._record = replace(
                     self._record, files=files,
                     execution=replace(self._record.execution, directory=directory),
@@ -499,7 +521,7 @@ class Run:
                 # Keep staging ownership from the instant the reservation becomes visible.
                 self._claim_observation()
                 # Reservation and duplicate-submit checks are atomic at the store.
-                self._record = manager.reserve(self._record, preprocessing=True, recover_conflicts=True)
+                self._record = await manager.reserve_async(self._record, preprocessing=True, recover_conflicts=True)
                 reserved = True
                 self._monitor_record_version = self._record.updated_at
             self._state = RunState.PREPROCESSING
@@ -511,7 +533,7 @@ class Run:
                 raise asyncio.CancelledError("Run was cancelled during preprocessing")
             # Stage using the same session operations for tracked/untracked
             # execution. Only the optional durable snapshot differs.
-            self._file_session.prepare_submission()
+            await self._file_session.prepare_submission_async()
             if manager is not None:
 
                 self._record = manager.transition(
@@ -534,17 +556,32 @@ class Run:
                 self._monitor_record_version = self._record.updated_at
             self._state = RunState.SUBMITTING
             submitted = True
-            self._job.submit()
-            if manager is not None:
-                # Commit accepted identity and observed state before giving
-                # the completion monitor ownership. ACK follows this commit.
-                self._record = manager.transition(
-                    self._record, state=self._observed_job_state(),
-                    execution=self.execution, files=self.files,
-                    failure_phase=self.failure_phase,
-                )
-                self._monitor_record_version = self._record.updated_at
-            self._start_completion()
+
+            async def accepted():
+                if manager is not None:
+                    self._record = manager.transition(
+                        self._record, state=self._observed_job_state(),
+                        execution=self.execution, files=self.files,
+                        failure_phase=self.failure_phase,
+                    )
+                    self._monitor_record_version = self._record.updated_at
+                self._started = True
+                if manager is not None:
+                    await manager._acknowledge_submission_async(self._record, client=self.client)
+                if on_submitted is not None:
+                    # Notification is not part of the launch transaction.
+                    try:
+                        on_submitted(self)
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception("Submission observer failed")
+
+            if observe:
+                await self._finish_async(on_submitted=accepted)
+            else:
+                await self._job.submit_async(on_submitted=accepted)
+                self._parts.close()
+                self._release_observation()
         except BaseException as exc:
             # A preflight error is provably before Job.submit(). Once the
             # boundary has been crossed, only SubmissionNotStarted proves
@@ -562,11 +599,13 @@ class Run:
                     self._state = RunState.CANCELLED if cancelled else RunState.FAILED
                     self._failure_phase = None if cancelled else phase
                     if reserved:
-                        self._complete_record(
+                        cleanup_error = self._persist_completion(
                             self._record, state=self._state,
                             message=self._failure_message, failure_phase=self._failure_phase,
                         )
                         self._completion_persisted = self._record.state.is_terminal
+                        if cleanup_error is not None:
+                            raise cleanup_error
                     else:
                         self._release_resources(suppress_errors=True)
                 else:
@@ -580,15 +619,11 @@ class Run:
                             execution=self.execution, failure_phase=None,
                         )
             finally:
-                if not self._started:
-                    self._release_observation()
+                self._release_observation()
                 self._settled = True
             if cancelled:
                 raise self._exception from exc
             raise
-
-        if manager is not None:
-            manager._acknowledge_submission(self._record, client=self.client)
 
     def _claim_observation(self):
         if self.manager is not None and self._observation_lock is None:
@@ -600,57 +635,19 @@ class Run:
         if lock is not None:
             lock.release()
 
-    def start(self):
-        if self._closed:
-            raise RuntimeError("Run is closed")
-        if self._started:
-            return
-        if (self._record is None and self.backend_id is None
-                or self._record is not None and self._record.state == RunState.NEW):
-            return self.submit()
-        try:
-            if self._settled:
-                raise RuntimeError("A failed or uncertain Run cannot be restarted")
-            if self._record is not None:
-                if self._record.state.is_terminal:
-                    raise RuntimeError("A completed Run cannot be started again")
-                if self._record.execution.backend_id is None:
-                    raise RuntimeError(
-                        "Run has no persisted backend identity; recover the submission before attaching"
-                    )
-            self._claim_observation()
-            self._parts.configure_observation()
-            self._job.start()
-            self._start_completion()
-        except BaseException:
-            if not self._started:
-                try:
-                    self._parts.close()
-                finally:
-                    try:
-                        self._release_resources(preserve=True, suppress_errors=True)
-                    finally:
-                        self._release_observation()
-            raise
-        if self.manager is None:
-            return
-        with self._completion_lock:
-            state = self._observed_job_state()
-            if not self._completion_persisted and self.backend_id is not None and state != RunState.NEW:
-                self._record = self.manager.transition(
-                    self._record, state=state, execution=self.execution,
-                    failure_phase=self.failure_phase,
-                )
-                self._monitor_record_version = self._record.updated_at
-
     def _release_resources(self, *, preserve=False, suppress_errors=False):
         """Consume this Run's application resource ownership."""
         resources, self._owned_resources = self._owned_resources, None
         if resources is not None:
             resources.close(suppress_errors=suppress_errors, detach=preserve)
 
-    def _complete_record(self, record, **kwargs):
-        """Capture evidence, close resources, then publish the terminal record."""
+    def _persist_completion(self, record, **kwargs):
+        """Capture evidence, close resources, then commit without backend I/O.
+
+        Return a cleanup error only after the resulting failure is persisted.
+        The asynchronous caller can acknowledge the committed record without
+        holding a synchronous lock across a network operation.
+        """
         manager = self.manager
         expected = record if record.state == RunState.POSTPROCESSING else None
         try:
@@ -670,11 +667,10 @@ class Run:
         except BaseException as exc:
             cleanup_error = exc
             fields.update(state=RunState.FAILED, failure_phase=FailurePhase.ARTIFACTS, message=str(exc))
-        self._record = manager.publish_completion(record, expected_record=expected, **fields)
-        if cleanup_error is not None:
-            raise cleanup_error
+        self._record = manager.transition(record, expected_record=expected, **fields)
+        return cleanup_error
 
-    def _sync_completion(self):
+    async def _sync_completion(self):
         if self.manager is None:
             return
         with self._completion_lock:
@@ -702,7 +698,7 @@ class Run:
             if self._state == RunState.FAILED and phase is None:
                 phase = FailurePhase.EXECUTION
             try:
-                self._complete_record(
+                cleanup_error = self._persist_completion(
                     latest, state=self._state, execution=self.execution,
                     return_code=self._job.return_code,
                     message=self._failure_message or self._job.failure_message,
@@ -717,13 +713,17 @@ class Run:
                 raise
             finally:
                 self._completion_persisted = self._record.state.is_terminal
+            committed = self._record
 
-    def wait(self):
-        if not self._started:
-            if self._settled and self._exception is not None:
-                raise self._exception
-            raise RuntimeError("Run has not started")
-        result = wait_for_monitor(self)
+        await self.manager._acknowledge_result_async(committed)
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    def _result_or_raise(self):
+        if self._exception is not None:
+            raise self._exception
+        if self._callback_exception is not None:
+            raise self._callback_exception
         if self._pending_exception is not None:
             raise self._pending_exception
         if (
@@ -733,15 +733,76 @@ class Run:
             and self._state != RunState.FINISHED
         ):
             raise ProcessingPending("Another observer processed this Run")
-        return result
+        return self.result
 
-    def run(self):
-        if not self._started:
-            self.start()
-        return self.wait()
+    def wait(self):
+        """Observe and finalize an already submitted execution in this thread."""
+        from kkrunner.support.async_utils import run_coro_sync
+        if self._settled:
+            return self._result_or_raise()
+        return run_coro_sync(self.wait_async())
 
-    async def run_async(self):
-        return await asyncio.to_thread(self.run)
+    async def wait_async(self):
+        if self._settled:
+            return self._result_or_raise()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Run is closed")
+            if self._busy:
+                raise RuntimeError("Run already has an active caller")
+            if self.backend_id is None:
+                raise RuntimeError("Run has not been submitted")
+            self._busy = True
+        try:
+            self._claim_observation()
+            # A rejected claim has not started an observation and must not
+            # consume this handle's resources. Only the owner may proceed.
+            try:
+                if self.manager is not None:
+                    self._record = resolve_record(self._record, self.manager.store)
+                    self._monitor_record_version = self._record.updated_at
+                if self._record is None or not self._record.state.is_terminal:
+                    self._parts.configure_observation()
+                self._started = True
+                await self._finish_async()
+            except BaseException:
+                if not self._settled:
+                    try:
+                        self._parts.close()
+                    finally:
+                        try:
+                            self._release_resources(preserve=True, suppress_errors=True)
+                        finally:
+                            self._release_observation()
+                raise
+        finally:
+            with self._lock:
+                self._busy = False
+        return self._result_or_raise()
+
+    def run(self, *, validate_inputs=None, on_submitted=None):
+        """Execute in the caller's thread, without starting client monitors."""
+        from kkrunner.support.async_utils import run_coro_sync
+        if self._settled:
+            return self._result_or_raise()
+        return run_coro_sync(self.run_async(
+            validate_inputs=validate_inputs, on_submitted=on_submitted,
+        ))
+
+    async def run_async(self, *, validate_inputs=None, on_submitted=None):
+        """Stage, observe and finalize in the caller's asyncio loop."""
+        if self._settled:
+            return self._result_or_raise()
+        if self._started or self._job.state != RunState.NEW:
+            if self.backend_id is not None:
+                return await self.wait_async()
+        self._begin_submission()
+        try:
+            await self._submit_impl(validate_inputs, on_submitted=on_submitted)
+        finally:
+            with self._lock:
+                self._busy = False
+        return self._result_or_raise()
 
     def refresh(self):
         """Explicitly refresh the lifecycle state, with or without tracking.
@@ -773,25 +834,28 @@ class Run:
         with self._lock:
             if self._closed:
                 return
-            unstarted = not self._started and self._job.state in (RunState.NEW, RunState.CANCELLED)
-            if self._submitting or not (unstarted or self._settled):
+            if self._busy and not self._settled:
                 raise RuntimeError(f"Cannot close resources while Run is {self.state.value}")
             self._closed = True
-        from kkrunner.files.streams import _close_distinct
-        resources, self._owned_resources = self._owned_resources, None
-        _close_distinct((self._parts, resources))
+        try:
+            self._parts.close()
+        finally:
+            try:
+                self._release_resources(preserve=self.backend_id is not None)
+            finally:
+                self._release_observation()
 
     def cancel(self):
         with self._lock:
             if self._record is not None and self._record.state.is_terminal:
-                # A refreshed terminal record can be newer than the old observer.
                 result = Future()
                 result.set_result(None)
                 return result
-            result = self._job.cancel()
+        result = self._job.cancel()
+        with self._lock:
             cancelled_before_submit = (
-                not self._submitting and not self._started and not self._settled
-                and self._job.state == RunState.CANCELLED
+                not self._busy and not self._started and not self._settled
+                and self.backend_id is None and self._job.state == RunState.CANCELLED
             )
             if cancelled_before_submit:
                 self._state = RunState.CANCELLED

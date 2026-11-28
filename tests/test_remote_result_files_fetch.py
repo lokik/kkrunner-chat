@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 from kkrunner import RunState
@@ -1058,9 +1060,9 @@ def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, 
     )
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native-job"))
-    monkeypatch.setattr(client, "status", lambda *runs: (
+    monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *runs: (
         RunStatus(state, backend_id="native-job"),
-    ))
+    )))
     updated = manager.refresh((record,), retrieve_ended=True)[0]
     saved = manager.store.get(record.id)
     assert saved == updated
@@ -1447,9 +1449,9 @@ def test_manager_persists_complete_pattern_plan_before_first_download(tmp_path, 
     )
     record = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("native-job"))
-    monkeypatch.setattr(client, "status", lambda *runs: (
+    monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *runs: (
         RunStatus(RunState.FINISHED, backend_id="native-job"),
-    ))
+    )))
     monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
 
     async def fail_first(self, source, destination, **kwargs):

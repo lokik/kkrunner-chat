@@ -3,6 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from kkrunner import RunState, RunStore
@@ -67,13 +69,13 @@ def test_active_status_refresh_does_not_repeat_submission_ack(tmp_path, monkeypa
     )
     acknowledged = []
     queries = []
-    monkeypatch.setattr(client, "acknowledge_submission", lambda record: acknowledged.append(record.id))
+    monkeypatch.setattr(client, "acknowledge_submission_async", AsyncMock(side_effect=lambda record: acknowledged.append(record.id)))
 
-    def status(*runs):
+    async def status(*runs):
         queries.extend(run.execution.backend_id for run in runs)
         return tuple(RunStatus(RunState.RUNNING, backend_id=run.execution.backend_id) for run in runs)
 
-    monkeypatch.setattr(client, "status", status)
+    monkeypatch.setattr(client, "status_async", status)
     assert manager.refresh()[0].state == RunState.RUNNING
     assert manager.refresh()[0].state == RunState.RUNNING
     assert queries == ["active-job", "active-job"]
@@ -115,21 +117,19 @@ def test_recovery_acknowledges_durable_identity_before_status_query(tmp_path, mo
         directory=tmp_path, target=client.target, backend=client.backend_config,
     )
     record = manager.transition(record, state=RunState.SUBMITTING)
-    monkeypatch.setattr(
-        client, "recover_submission",
-        lambda *args, **kwargs: RecoveryResult.found(JobRef("kkrunner", "recovered-job")),
-    )
+    monkeypatch.setattr(client, "recover_submission_async", AsyncMock(side_effect=lambda *args, **kwargs: RecoveryResult.found(JobRef("kkrunner", "recovered-job")),
+    ))
     acknowledged = []
 
-    def acknowledge(run):
+    async def acknowledge(run):
         assert manager.store.get(run.id).execution.backend_id == "recovered-job"
         acknowledged.append(run.id)
 
-    def status(*runs):
+    async def status(*runs):
         raise OSError("disconnected before status")
 
-    monkeypatch.setattr(client, "acknowledge_submission", acknowledge)
-    monkeypatch.setattr(client, "status", status)
+    monkeypatch.setattr(client, "acknowledge_submission_async", acknowledge)
+    monkeypatch.setattr(client, "status_async", status)
     with pytest.raises(OSError, match="disconnected before status"):
         manager.recover_submitting(record)
     assert acknowledged == [record.id]
@@ -157,13 +157,13 @@ def test_slow_receipt_ack_does_not_block_another_run_completion(tmp_path, monkey
     fast_client, fast = running("fast")
     entered, release, fast_ack = Event(), Event(), Event()
 
-    def acknowledge_slow(record):
+    async def acknowledge_slow(record):
         assert manager.store.get(record.id).state == RunState.FINISHED
         entered.set()
         assert release.wait(5), "Slow ACK was not released"
 
-    monkeypatch.setattr(slow_client, "acknowledge", acknowledge_slow)
-    monkeypatch.setattr(fast_client, "acknowledge", lambda record: fast_ack.set())
+    monkeypatch.setattr(slow_client, "acknowledge_async", acknowledge_slow)
+    monkeypatch.setattr(fast_client, "acknowledge_async", AsyncMock(side_effect=lambda record: fast_ack.set()))
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(manager.complete, slow, state=RunState.FINISHED, return_code=0)
         try:

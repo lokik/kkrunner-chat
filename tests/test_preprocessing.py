@@ -31,7 +31,7 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
         assert other.refresh((run.record,))[0].state == RunState.PREPROCESSING
         assert not input_file.exists()
         with pytest.raises(DuplicateSubmissionError):
-            competitor.submit()
+            competitor.run()
         input_file.write_text("generated")
 
     run = client.create_run(spec, tracked=manager, preprocess=preprocess)
@@ -55,7 +55,7 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
 
     run = client.create_run(spec, tracked=manager, preprocess=preprocess)
     with pytest.raises(ValueError, match="invalid input"):
-        run.submit()
+        run.run()
     assert run.backend_id is None
     assert run.state == RunState.FAILED
     record = manager.store.get(run.id)
@@ -97,11 +97,10 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
         assert run.state == RunState.PREPROCESSING
         assert not disk.runs()
         with pytest.raises(DuplicateSubmissionError):
-            competitor.submit()
+            competitor.run()
 
     run = client.create_run(spec, tracked=ephemeral, preprocess=preprocess)
-    run.start()
-    run.wait()
+    run.run()
     assert run.state == RunState.FINISHED
     assert not disk.runs()
     assert memory.get(run.id).state == RunState.FINISHED
@@ -143,14 +142,14 @@ def test_staging_of_preprocessed_run_does_not_appear_as_native_submission(tmp_pa
     run = ExecutionClient().create_run(ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path, input_files=(TaskFile("input", write=True),),
     ), tracked=manager, preprocess=lambda: (tmp_path / "input").write_text("prepared"))
-    prepare = run._file_session.prepare_submission
+    prepare = run._file_session.prepare_submission_async
 
-    def observe():
+    async def observe():
         assert run.record.state == RunState.PREPROCESSING
         assert other.refresh((run.record,))[0].state == RunState.PREPROCESSING
-        return prepare()
+        return await prepare()
 
-    monkeypatch.setattr(run._file_session, "prepare_submission", observe)
+    monkeypatch.setattr(run._file_session, "prepare_submission_async", observe)
     run.run()
     assert run.state == RunState.FINISHED
 
@@ -212,12 +211,12 @@ def test_staging_failure_is_preprocessing_even_without_callback(tmp_path, monkey
     run = ExecutionClient().create_run(ExecutionSpec(
         (sys.executable, "-c", "pass"), directory=tmp_path,
     ), tracked=manager)
-    def reject():
+    async def reject():
         assert run.record.state == RunState.PREPROCESSING
         raise OSError("staging failed")
-    monkeypatch.setattr(run._file_session, "prepare_submission", reject)
+    monkeypatch.setattr(run._file_session, "prepare_submission_async", reject)
     with pytest.raises(OSError, match="staging failed"):
-        run.submit()
+        run.run()
     assert run.record.failure_phase == FailurePhase.PREPROCESSING
 
 
@@ -306,7 +305,7 @@ def test_attachment_cannot_open_files_owned_by_another_client(tmp_path, monkeypa
             manager.attach(active, client=client)
 
 
-def test_cleanup_error_is_visible_to_completion_callback_without_wait(tmp_path):
+def test_cleanup_error_is_visible_to_completion_callback(tmp_path):
     from threading import Event
     from kkrunner.runs.base import ExecutionResources
 
@@ -324,8 +323,9 @@ def test_cleanup_error_is_visible_to_completion_callback_without_wait(tmp_path):
     run = ExecutionClient().create_run(ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path), tracked=manager,
         owned_resources=ExecutionResources(Resource()), callback=completed,
     )
-    run.submit()
-    assert done.wait(5)
+    with pytest.raises(OSError, match="cleanup error"):
+        run.run()
+    assert done.is_set()
     assert seen == [(RunState.FAILED, RunState.FAILED, FailurePhase.ARTIFACTS)]
     with pytest.raises(OSError, match="cleanup error"):
         run.wait()
@@ -385,7 +385,7 @@ def test_rejected_run_does_not_flush_or_close_borrowed_file(tmp_path, role):
             ), tracked=manager)
             assert path.read_text() == "original"
             with pytest.raises(DuplicateSubmissionError):
-                run.submit()
+                run.run()
             run.close()
             assert not stream.closed
             assert path.read_text() == "original"

@@ -40,15 +40,21 @@ class _RawRunner:
         return JobStatus(self.state, return_code=self.return_code,
                          failure_phase=self.failure_phase, message=self.failure_message)
 
-    def submit(self):
+    async def submit_async(self, *, on_submitted=None):
         if self.on_submit:
             self.on_submit()
         self.backend_id = "native-1"
         self.state = RunState.QUEUED
+        if on_submitted is not None:
+            await on_submitted()
+        return self.status()
 
-    def wait(self):
-        self._done.wait()
-        return self.result
+    def configure_observation(self, **observation):
+        pass
+
+    async def wait_async(self):
+        assert self._done.is_set(), "The test must complete the native job before waiting"
+        return self.status()
 
     def finish(self, return_code=0):
         self.result.return_code = return_code
@@ -88,7 +94,13 @@ class _Executor(ExecutionClient):
         parts.job = runner
         return parts
 
-    def status(self, *runs):
+    async def acknowledge_submission_async(self, record):
+        pass
+
+    async def acknowledge_async(self, record):
+        pass
+
+    async def status_async(self, *runs):
         self.status_calls.append(runs)
         return tuple((RunStatus(RunState.RUNNING, backend_id=run.execution.backend_id) for run in runs))
 
@@ -295,7 +307,7 @@ def test_refresh_uses_assigned_identity_without_preliminary_store_read(tmp_path,
     stale = manager.transition(record, state=RunState.RUNNING,
                                execution=record.execution.submitted("native"))
     current = manager.transition(stale, state=RunState.POSTPROCESSING, return_code=0)
-    status = executor.status
+    status = executor.status_async
     get = manager.store.get
     reads = []
 
@@ -303,11 +315,11 @@ def test_refresh_uses_assigned_identity_without_preliminary_store_read(tmp_path,
         reads.append(run_id)
         return get(run_id)
 
-    def query(*attachments):
+    async def query(*attachments):
         assert not reads
-        return status(*attachments)
+        return await status(*attachments)
 
     monkeypatch.setattr(manager.store, "get", read)
-    monkeypatch.setattr(executor, "status", query)
+    monkeypatch.setattr(executor, "status_async", query)
     assert manager.refresh((stale,)) == (current,)
     assert executor.status_calls == [(JobAttachment(stale.execution, stale.files),)]

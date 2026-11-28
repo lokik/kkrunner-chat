@@ -642,14 +642,14 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
 
     with pytest.raises(SubmissionNotStarted, match="Local input file"):
         runner.submit()
-    assert runner.failure_phase == FailurePhase.SUBMISSION
+    assert runner.failure_phase == FailurePhase.PREPROCESSING
     assert "Local input file" in runner.failure_message
     assert runner.backend_id is None
     assert runner.state == RunState.FAILED
     with pytest.raises(RuntimeError, match="already submitted"):
         runner.submit()
-    with pytest.raises(RuntimeError, match="cannot be restarted"):
-        runner.start()
+    with pytest.raises(SubmissionNotStarted, match="Local input file"):
+        runner.run()
 
 
 @pytest.mark.parametrize("preflight", (False, True))
@@ -681,8 +681,8 @@ def test_remote_submit_failure_is_not_misclassified_as_failed_preparation(tmp_pa
     assert "backend submission uncertain" in runner.failure_message
     with pytest.raises(RuntimeError, match="already submitted"):
         runner.submit()
-    with pytest.raises(RuntimeError, match="cannot be restarted"):
-        runner.start()
+    with pytest.raises(OSError, match="backend submission uncertain"):
+        runner.run()
 
 
 @pytest.mark.parametrize("policy,remote_value,expected,upload", [

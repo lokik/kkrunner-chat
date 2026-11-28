@@ -72,14 +72,14 @@ class ExecutionClient:
         tracked=False, detached=None, process_result=None, output_listener=None,
     ):
         """Run a command and wait; Direct attached displays unredirected output."""
-        return self.submit(
+        return self._command_run(
             argv, directory=directory, input_file=input_file, output_file=output_file,
             stdin=stdin, error_file=error_file, input_files=input_files,
             output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
             mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
             tracked=tracked, detached=detached, process_result=process_result,
             output_listener=output_listener,
-        ).wait()
+        ).run()
 
     def submit(
         self, argv, *, directory=".", input_file=None, output_file=None,
@@ -88,6 +88,22 @@ class ExecutionClient:
         tracked=False, detached=None, process_result=None, output_listener=None,
     ):
         """Submit a command and return its Run; managed output requires a listener."""
+        runner = self._command_run(
+            argv, directory=directory, input_file=input_file, output_file=output_file,
+            stdin=stdin, error_file=error_file, input_files=input_files,
+            output_files=output_files, cache_files=cache_files, mpi_argv=mpi_argv,
+            mpi=mpi, staging=staging, mpi_uses_stdin=mpi_uses_stdin,
+            tracked=tracked, detached=detached, process_result=process_result,
+            output_listener=output_listener,
+        )
+        runner.submit()
+        return runner
+
+    def _command_run(
+        self, argv, *, directory, input_file, output_file, stdin, error_file,
+        input_files, output_files, cache_files, mpi_argv, mpi, staging,
+        mpi_uses_stdin, tracked, detached, process_result, output_listener,
+    ):
         import sys
 
         from kkrunner.runs.base import ExecutionSpec
@@ -111,12 +127,10 @@ class ExecutionClient:
                     sys.stderr.write(text)
                     sys.stderr.flush()
 
-        runner = self.create_run(
+        return self.create_run(
             spec, tracked=tracked, detached=detached,
             process_result=process_result, output_listener=output_listener,
         )
-        runner.submit()
-        return runner
 
     @classmethod
     def from_config(cls, target, backend):
@@ -153,21 +167,30 @@ class ExecutionClient:
         return FileContext(self.target, spec.staging).preview_path(spec.directory)
 
     def acknowledge_submission(self, run):
+        return _run_sync(self.acknowledge_submission_async(run))
+
+    async def acknowledge_submission_async(self, run):
         """Release the submission receipt after the manager persisted acceptance."""
         if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return False
         self._validate_run(run)
         key = run.execution.submission_key or run.id
-        return _run_sync(self._invoke("acknowledge_submission", key))["acknowledged"]
+        return (await self._invoke("acknowledge_submission", key))["acknowledged"]
 
     def acknowledge(self, run):
+        return _run_sync(self.acknowledge_async(run))
+
+    async def acknowledge_async(self, run):
         """Release a delivered receipt after the manager persisted completion."""
         if BackendCapability.ACKNOWLEDGE not in self.backend.supports:
             return False
         self._validate_run(run)
-        return _run_sync(self._invoke("acknowledge", run.execution.backend_id))["acknowledged"]
+        return (await self._invoke("acknowledge", run.execution.backend_id))["acknowledged"]
 
     def status(self, *runs):
+        return _run_sync(self.status_async(*runs))
+
+    async def status_async(self, *runs):
         """Query each native job; a failed connection leaves only that observation unknown."""
         if BackendCapability.STATUS not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
@@ -177,24 +200,25 @@ class ExecutionClient:
             if not run.execution.backend_id:
                 raise ValueError("Run lacks a backend identity")
 
-        async def query():
-            result = []
-            for run in runs:
-                token = run.execution.backend_id
-                try:
-                    facts = await self._invoke("status", token)
-                except (OSError, SubprocessError) as exc:
-                    result.append(RunStatus(
-                        RunState.UNKNOWN, backend_id=token,
-                        message=f"Cannot query execution status: {exc}",
-                    ))
-                else:
-                    result.append(RunStatus.from_job_status(decode_job_status(facts), backend_id=token))
-            return tuple(result)
+        result = []
+        for run in runs:
+            token = run.execution.backend_id
+            try:
+                facts = await self._invoke("status", token)
+            except (OSError, SubprocessError) as exc:
+                result.append(RunStatus(
+                    RunState.UNKNOWN, backend_id=token,
+                    message=f"Cannot query execution status: {exc}",
+                ))
+            else:
+                result.append(RunStatus.from_job_status(decode_job_status(facts), backend_id=token))
+        return tuple(result)
 
-        return _run_sync(query()) if runs else ()
 
     def cancel(self, attachment):
+        return _run_sync(self.cancel_async(attachment))
+
+    async def cancel_async(self, attachment):
         """Cancel an accepted job using its persisted native reference.
 
         Return backend facts, not a synthetic terminal cancellation status.
@@ -207,16 +231,13 @@ class ExecutionClient:
         if native_id is None:
             raise ValueError("Run has no native execution identity")
 
-        async def request():
-            try:
-                reply = await self._invoke("cancel", native_id)
-            except NotImplementedError as exc:
-                raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
-            return RunStatus.from_job_status(
-                decode_job_status(reply), backend_id=native_id,
-            )
-
-        return _run_sync(request())
+        try:
+            reply = await self._invoke("cancel", native_id)
+        except NotImplementedError as exc:
+            raise UnsupportedCapability(f"This backend cannot cancel this run: {exc}") from exc
+        return RunStatus.from_job_status(
+            decode_job_status(reply), backend_id=native_id,
+        )
 
     async def _recover_submission(self, submission_key, submission, *, submitted_at=None):
         context = FileContext(self.target, StagingSpec())
@@ -240,11 +261,14 @@ class ExecutionClient:
         )
 
     def recover_submission(self, submission_key, submission, *, submitted_at=None):
+        return _run_sync(self.recover_submission_async(submission_key, submission, submitted_at=submitted_at))
+
+    async def recover_submission_async(self, submission_key, submission, *, submitted_at=None):
         if BackendCapability.RECOVER not in self.backend.supports:
             from kkrunner.backends.contracts import RecoveryResult
             return RecoveryResult.unsupported("The selected backend has no submission recovery")
         self._validate_run(submission)
-        return _run_sync(self._recover_submission(submission_key, submission, submitted_at=submitted_at))
+        return await self._recover_submission(submission_key, submission, submitted_at=submitted_at)
 
     def file_session(self, spec):
         return FileSession(FileContext(self.target, spec.staging), spec,
@@ -294,7 +318,11 @@ class ExecutionClient:
         from kkrunner.client.file_access import FileAccess
         return FileAccess(self.target).delete_remote_files(run, expected)
 
-    async def _open_run_parts(self, attachment, *, callback=None, output_listener=None):
+    async def open_run_parts_async(self, attachment, *, callback=None, output_listener=None):
+        """Open an existing execution without starting observation."""
+        if BackendCapability.REATTACH not in self.backend.supports:
+            from kkrunner.backends.contracts import UnsupportedCapability
+            raise UnsupportedCapability("The selected backend does not support reattachment")
         self._validate_run(attachment)
         execution = attachment.execution
         if execution.backend_id is None:
@@ -321,7 +349,6 @@ class ExecutionClient:
         return FileAccess(self.target).collect_ended_files(record, status)
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
-        if BackendCapability.REATTACH not in self.backend.supports:
-            from kkrunner.backends.contracts import UnsupportedCapability
-            raise UnsupportedCapability("The selected backend does not support reattachment")
-        return _run_sync(self._open_run_parts(attachment, callback=callback, output_listener=output_listener))
+        return _run_sync(self.open_run_parts_async(
+            attachment, callback=callback, output_listener=output_listener,
+        ))

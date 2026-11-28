@@ -49,9 +49,8 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
 
     runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), tracked=False, process_result=fail)
     raw = runner._job
-    runner.submit()
     with pytest.raises(ValueError, match="parser failed"):
-        runner.wait()
+        runner.run()
     assert raw.state == RunState.FINISHED
     assert runner.state == RunState.FAILED
     assert runner.failure_phase == FailurePhase.POSTPROCESSING
@@ -61,9 +60,8 @@ def test_callback_failure_does_not_change_local_execution_state(tmp_path):
     runner = ExecutionClient(DirectBackend).create_run(_local_spec(tmp_path), tracked=False,
         callback=lambda result: (_ for _ in ()).throw(ValueError("callback failed")),
     )
-    runner.submit()
     with pytest.raises(ValueError, match="callback failed"):
-        runner.wait()
+        runner.run()
     assert runner.state == RunState.FINISHED
 
 
@@ -79,10 +77,14 @@ class _UnknownRunner:
     def configure_submission(self, request, **options):
         pass
 
-    def submit(self):
+    async def run_async(self, *, on_submitted=None):
+        self.backend_id = "native"
         self.state = RunState.UNKNOWN
+        if on_submitted is not None:
+            await on_submitted()
+        return self.result
 
-    def wait(self):
+    async def wait_async(self):
         return self.result
 
     def add_output_listener(self, callback):
@@ -101,9 +103,8 @@ def test_unknown_raw_state_is_preserved_and_not_postprocessed():
     parts.job = raw
     runner = Run(parts, client=client,
                  process_result=lambda outcome: processed.append(outcome))
-    runner.submit()
-    outcome = runner.wait()
-    assert outcome is runner._file_session.result
+    outcome = runner.run()
+    assert outcome.return_code is None
     assert processed == []
     assert runner.result is outcome
     assert runner.state == RunState.UNKNOWN
@@ -124,7 +125,7 @@ class _NotStartedRunner:
     def configure_detached(self, detached):
         pass
 
-    def submit(self):
+    async def run_async(self, *, on_submitted=None):
         raise SubmissionNotStarted("input staging failed")
 
     def add_output_listener(self, callback):
@@ -135,7 +136,7 @@ class _NotStartedRunner:
 
 
 class _UncertainRunner(_NotStartedRunner):
-    def submit(self):
+    async def run_async(self, *, on_submitted=None):
         raise OSError("connection lost during submit")
 
 
@@ -155,7 +156,7 @@ def _project_wrapper(tmp_path, runner):
 def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):
     manager, runner = _project_wrapper(tmp_path, _NotStartedRunner())
     with pytest.raises(SubmissionNotStarted, match="input staging failed"):
-        runner.submit()
+        runner.run()
     record = manager.store.get(runner.id)
     assert record.state == RunState.FAILED
     assert record.failure_phase == FailurePhase.SUBMISSION
@@ -166,7 +167,7 @@ def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):
 def test_uncertain_submit_without_reference_stays_submitting(tmp_path):
     manager, runner = _project_wrapper(tmp_path, _UncertainRunner())
     with pytest.raises(OSError, match="connection lost during submit"):
-        runner.submit()
+        runner.run()
     record = manager.store.get(runner.id)
     assert record.state == RunState.SUBMITTING
     assert record.execution.backend_id is None

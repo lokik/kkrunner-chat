@@ -93,7 +93,6 @@ def _run(tmp_path, state=RunState.FINISHED):
 
 def test_terminal_backend_state_triggers_file_synchronization(tmp_path):
     run, transport, destination = _run(tmp_path)
-    run.start()
     outcome = run.wait()
     assert outcome.return_code == 0
     assert outcome.output_file == str(destination)
@@ -112,7 +111,6 @@ def test_unknown_backend_state_preserves_existing_output_without_downloading(tmp
         raise AssertionError("Unknown execution must not download results")
 
     run._file_session._synchronize = fail_sync
-    run.start()
     outcome = run.wait()
     assert outcome.output_file == str(destination)
     assert run.state == RunState.UNKNOWN
@@ -134,7 +132,6 @@ def test_diagnostic_transfer_error_preserves_backend_outcome(tmp_path, state, ex
         raise OSError("download unavailable")
 
     run._file_session._synchronize = unavailable
-    run.start()
     if state == RunState.FINISHED:
         with pytest.raises(OSError, match="download unavailable"):
             run.wait()
@@ -166,7 +163,6 @@ def test_remote_transport_failure_is_recoverable_unknown(tmp_path, kind):
         object.__setattr__(transport, "follow_error", ConnectionError("SSH disconnected"))
     else:
         object.__setattr__(transport, "status_error", OSError("SSH status unavailable"))
-    run.start()
     result = run.wait()
     assert result.return_code is None
     assert run.state == RunState.UNKNOWN
@@ -178,7 +174,6 @@ def test_lost_follow_with_confirmed_terminal_status_still_downloads_files(tmp_pa
     object.__setattr__(
         transport, "follow_error", subprocess.CalledProcessError(17, ("ssh",)),
     )
-    run.start()
     assert run.wait().return_code == 0
     assert run._job.state == RunState.FINISHED
     assert isinstance(run._job.output_error, subprocess.CalledProcessError)
@@ -191,7 +186,6 @@ def test_lost_follow_with_confirmed_terminal_status_still_downloads_files(tmp_pa
 def test_untracked_refresh_after_observation_loss_reports_pending_download(tmp_path, terminal):
     run, transport, destination = _run(tmp_path, RunState.RUNNING)
     object.__setattr__(transport, "follow_error", ConnectionError("SSH disconnected"))
-    run.start()
     run.wait()
     assert run.state == RunState.UNKNOWN
 

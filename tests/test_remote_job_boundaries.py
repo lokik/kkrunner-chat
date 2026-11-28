@@ -104,6 +104,40 @@ def test_backend_job_status_excludes_download_and_processing(tmp_path):
     assert not hasattr(job, "_sync_output_files")
 
 
+def test_active_caller_owns_job_until_output_decoder_closes(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    execution = _BackendExecution()
+    job = _job(execution, tmp_path)
+    _configure(job, tmp_path)
+    closing, release = Event(), Event()
+    observations = []
+    original_observe = execution.observe
+
+    async def observe(*args, **kwargs):
+        observations.append(True)
+        return await original_observe(*args, **kwargs)
+
+    def finish_bytes():
+        closing.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(execution, "observe", observe)
+    monkeypatch.setattr(job._output_observers, "finish_bytes", finish_bytes)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(job.run)
+        try:
+            assert closing.wait(5)
+            with pytest.raises(RuntimeError, match="active caller"):
+                job.wait()
+        finally:
+            release.set()
+        result = first.result(timeout=5)
+    assert job.wait() == result
+    assert observations == [True]
+
+
 def test_pre_submit_configuration_failure_leaves_no_publishable_request(tmp_path):
     job = _job(_BackendExecution(), tmp_path)
     with pytest.raises(TypeError):
@@ -137,9 +171,19 @@ class _FinishedJob:
         self.events.append("submit")
         self.state = RunState.FINISHED
 
+    async def run_async(self, *, on_submitted=None):
+        self.submit()
+        if on_submitted is not None:
+            await on_submitted()
+        self.events.append("observe")
+        return self.status()
+
     def wait(self):
         self.events.append("wait")
         return ExecutionOutcome(return_code=0)
+
+    async def wait_async(self):
+        return self.wait()
 
     def status(self):
         from kkrunner.backends.contracts import job_status_from_facts
@@ -156,10 +200,16 @@ class _Files:
         self.spec = ExecutionSpec(["true"], directory=tmp_path)
         self.result = ExecutionOutcome(output_file=str(tmp_path / "stdout"), return_code=0)
         self.files = None
-        self.is_local = False  # A failed remote transfer is a DOWNLOAD failure.
+        self.is_local = self.files_are_local = False  # Failed transfer is a DOWNLOAD failure.
+        self.input_file = self.result.input_file
+        self.output_file = self.result.output_file
+        self.error_file = self.result.error_file
 
     def prepare_submission(self):
         self.events.append("stage")
+
+    async def prepare_submission_async(self):
+        self.prepare_submission()
 
     def prepare_job(self):
         self.events.append("prepare")
@@ -169,7 +219,10 @@ class _Files:
         return {"stream_offsets": {},
                 "stream_paths": (None, None)}
 
-    def finalize(self, status):
+    async def finalize_async(self, status, *, on_resolved=None):
+        return self.finalize(status)
+
+    def finalize(self, status, *, on_resolved=None):
         self.events.append("sync")
         assert status.state == RunState.FINISHED
         try:
@@ -204,7 +257,9 @@ def test_run_synchronizes_before_postprocessing(tmp_path):
     assert run.run() == 0
     assert run.state == RunState.FINISHED
     # Owned streams must be flushed/closed before postprocessing sees files.
-    assert events.index("wait") < events.index("sync") < events.index("close") < events.index("process")
+    assert events.index("observe") < events.index("sync") < events.index("close") < events.index("process")
+    assert events.count("observe") == 1
+    assert "wait" not in events
 
 
 def test_download_failure_does_not_change_successful_job_state(tmp_path):
@@ -217,7 +272,6 @@ def test_download_failure_does_not_change_successful_job_state(tmp_path):
     assert job.state == RunState.FINISHED
     assert run.state == RunState.FAILED
     assert run.failure_phase == FailurePhase.DOWNLOAD
-    assert "mark-failed" in events
     assert events[-1] == "close"
 
 def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
@@ -231,7 +285,7 @@ def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
     job = _FinishedJob(events)
     run = _run_with_job(job, files)
     with pytest.raises(SubmissionNotStarted, match="invalid mapped files"):
-        run.submit()
+        run.run()
     assert run.state == RunState.FAILED
     assert "submit" not in events
     assert events == ["stage", "close"]
@@ -256,7 +310,7 @@ def test_local_run_keeps_backend_outcome_despite_observation_failure(
     delivery_error = OSError("local FOLLOW stream interrupted")
     job.output_error = delivery_error
     run = _run_with_job(job)
-    run._finish()
+    asyncio.run(run._finish_async())
     assert job.state is backend_state
     assert run.state is expected_state
     assert run.failure_phase is expected_phase
@@ -272,7 +326,7 @@ def test_untracked_run_postprocesses_confirmed_success_after_failed_local_follow
     job.state = RunState.FINISHED
     job.output_error = RuntimeError("FOLLOW decoder failed")
     run = _run_with_job(job, process_result=lambda outcome: observed.append("processed"))
-    run._finish()
+    asyncio.run(run._finish_async())
     assert run.state is RunState.FINISHED
     assert run.failure_phase is None
     assert observed == ["wait", "processed"]
@@ -295,7 +349,7 @@ def test_incomplete_local_follow_still_collects_backend_files(tmp_path):
     job.output_error = OSError("FOLLOW stream truncated")
     files = ExecutionClient(DirectBackend).file_session(spec)
     run = _run_with_job(job, files)
-    run._finish()
+    asyncio.run(run._finish_async())
     assert run.state is RunState.FINISHED
     assert job.output_error is not None
     assert all(entry.availability_state == "available" for entry in run.files.artifacts)
@@ -330,12 +384,14 @@ def test_managed_stop_observation_does_not_cancel_native_job(tmp_path, when):
     job = Job(execution, ExecutionSpec(("true",), directory=str(tmp_path)))
     if when == "before_start":
         job.stop_observation()
-    job.start()
-    if when == "observing":
-        assert started.wait(5)
-        job.stop_observation()
-        job.stop_observation()
-    assert job.wait().return_code is None
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(job.wait)
+        if when == "observing":
+            assert started.wait(5)
+            job.stop_observation()
+            job.stop_observation()
+        assert future.result(timeout=5).return_code is None
     assert job.state == RunState.UNKNOWN
     assert job.ref == JobRef("kkrunner", "opaque")
     assert started.is_set() == stopped.is_set() == (when == "observing")
@@ -439,7 +495,6 @@ def test_reattached_terminal_result_survives_output_observation_failure(tmp_path
         status={"state": "finished", "return_code": 0},
     )
     job = _job(execution, tmp_path)
-    job.start()
     result = job.wait()
     assert result.state == RunState.FINISHED
     assert result.return_code == 0
@@ -473,6 +528,43 @@ def test_late_cancel_reply_does_not_replace_observed_outcome():
         assert (await cancellation).state == RunState.RUNNING
         assert (await execution.status()) == result
         assert result.return_code == 0
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_live_direct_cancellation_uses_process_owning_call(detached):
+    from kkrunner.backends import DirectBackend
+    from kkrunner.client.backend_execution import DirectExecution
+
+    async def scenario():
+        calls = []
+
+        class Call:
+            async def cancel(self):
+                calls.append("control")
+
+            async def wait(self):
+                calls.append("outcome")
+                return {"state": "cancelled", "return_code": -15}
+
+        class Transport:
+            async def call(self, *args):
+                pytest.fail("A live Direct call owns its native process")
+
+        execution = DirectExecution(DirectBackend(), Transport())
+        execution.configure_detached(detached)
+        # macOS/opaque identities must work while their owning call lives.
+        execution.ref = JobRef("direct", "opaque-job")
+        execution._call = Call()
+        result = await execution.cancel()
+        if detached:
+            assert calls == ["control", "outcome"]
+            assert result.state == RunState.CANCELLED
+            assert result.return_code == -15
+        else:
+            assert calls == ["control"]
+            assert result is None
 
     asyncio.run(scenario())
 
@@ -527,10 +619,12 @@ def test_confirmed_terminal_status_survives_weaker_observer_reply(tmp_path):
     execution.observe = observe
     execution.status = status
     job = _job(execution, tmp_path)
-    job.start()
-    try:
-        assert entered.wait(5)
-        assert job.refresh_status() == JobStatus(RunState.FINISHED, return_code=0)
-    finally:
-        release.set()
-    assert job.wait() == JobStatus(RunState.FINISHED, return_code=0)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(job.wait)
+        try:
+            assert entered.wait(5)
+            assert job.refresh_status() == JobStatus(RunState.FINISHED, return_code=0)
+        finally:
+            release.set()
+        assert future.result(timeout=5) == JobStatus(RunState.FINISHED, return_code=0)

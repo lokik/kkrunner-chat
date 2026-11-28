@@ -55,9 +55,7 @@ def _processed(raw, client):
             error=b"" if outcome.error_file is None else Path(outcome.error_file).read_bytes(),
         )
 
-    runner = Run(raw, client=client, process_result=process)
-    runner.start()
-    return runner
+    return Run(raw, client=client, process_result=process)
 
 
 def _wait_for_state(runner, expected, timeout=5):
@@ -103,28 +101,32 @@ def test_remote_executor_attach_reconnects_running_run_and_restores_stage_out(tm
         spec, tracked=False, process_result=lambda outcome: outcome,
         output_listener=lambda text, kind: original_ready.set() if "ready" in text else None,
     )
-    original.submit()
-    assert original_ready.wait(5)
-    _wait_for_state(original, RunState.RUNNING)
-    run = _record(original)
-    assert run.execution.backend_id is not None
-    executor = _executor()
-    attached_parts = executor.open_run_parts(
-        JobAttachment(run.execution, run.files),
-        output_listener=lambda text, kind: attached_ready.set() if "ready" in text else None,
-    )
-    attached = _processed(attached_parts, executor)
-    try:
-        assert attached_ready.wait(5)
-        assert not output_file.exists()
-        original.stop_observation()
-        original.wait()
-        assert original.state == RunState.UNKNOWN
-        assert not output_file.exists()
-    finally:
-        (remote_root / "calculation" / "release").write_text("go")
-    assert attached.backend_id == run.execution.backend_id
-    result = attached.wait()
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original_result = pool.submit(original.run)
+        try:
+            assert original_ready.wait(5)
+            _wait_for_state(original, RunState.RUNNING)
+            run = _record(original)
+            assert run.execution.backend_id is not None
+            executor = _executor()
+            attached_parts = executor.open_run_parts(
+                JobAttachment(run.execution, run.files),
+                output_listener=lambda text, kind: attached_ready.set() if "ready" in text else None,
+            )
+            attached = _processed(attached_parts, executor)
+            attached_result = pool.submit(attached.wait)
+            assert attached_ready.wait(5)
+            assert not output_file.exists()
+            original.stop_observation()
+            original_result.result(timeout=5)
+            assert original.state == RunState.UNKNOWN
+            assert not output_file.exists()
+        finally:
+            (remote_root / "calculation" / "release").write_text("go")
+        assert attached.backend_id == run.execution.backend_id
+        result = attached_result.result(timeout=10)
     assert attached.state == RunState.FINISHED
     assert result.return_code == 0
     assert result.output == b"ready\ndone\n"

@@ -32,6 +32,9 @@ class FileAccess:
             raise ValueError("Run belongs to a different transport")
 
     def collect_ended_files(self, run, status, *, on_resolved=None):
+        return _run_sync(self.collect_ended_files_async(run, status, on_resolved=on_resolved))
+
+    async def collect_ended_files_async(self, run, status, *, on_resolved=None):
         """Return (manifest, error) after finalizing an ended run's files.
 
         The caller owns the file reservation and any history update. A transfer
@@ -46,22 +49,20 @@ class FileAccess:
         if run.files.captured_at is not None:
             return run.files, None
 
-        async def collect():
-            session = None
-            try:
-                session = FileSession.from_attachment(
-                    self.target, replace(run, files=run.files.retry_failed_artifacts()),
-                )
-                return await session.finalize_async(status, on_resolved=on_resolved), None
-            except (OSError, RuntimeError, ValueError) as exc:
-                # A session that failed to initialize has no partial state yet.
-                files = run.files.fail_pending_artifacts(str(exc)) if session is None else session.files
-                return files, exc
-            finally:
-                if session is not None:
-                    session.close()
+        session = None
+        try:
+            session = FileSession.from_attachment(
+                self.target, replace(run, files=run.files.retry_failed_artifacts()),
+            )
+            return await session.finalize_async(status, on_resolved=on_resolved), None
+        except (OSError, RuntimeError, ValueError) as exc:
+            # A session that failed to initialize has no partial state yet.
+            files = run.files.fail_pending_artifacts(str(exc)) if session is None else session.files
+            return files, exc
+        finally:
+            if session is not None:
+                session.close()
 
-        return _run_sync(collect())
 
     async def _snapshot_file(self, run, file, *, destination=None):
         """Observe target-side content without affecting normal result downloads."""

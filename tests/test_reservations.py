@@ -36,7 +36,7 @@ def test_default_remote_root_resolves_before_reservation_without_staging(tmp_pat
 
     second = client.create_run(spec, tracked=manager)
     with pytest.raises(DuplicateSubmissionError):
-        second.submit()
+        second.run()
     assert resolved.execution.directory.remote == "/home/tester/case"
     assert resolved.files.stdout.remote_path == "/home/tester/case/stdout"
     assert len(calls) == 1  # HOME lookup is cached; no mkdir, upload or submit.

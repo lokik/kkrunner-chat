@@ -108,12 +108,20 @@ def test_ssh_execution_detach_and_reconnect_without_application(docker_execution
         run = executor.create_run(spec, tracked=manager)
         first_output = Event()
         run.add_output_listener(lambda text, kind: first_output.set() if "started" in text else None)
-        run.submit()
         if detach_after_output:
-            assert first_output.wait(10)
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                observation = pool.submit(run.run)
+                try:
+                    assert first_output.wait(10)
+                finally:
+                    run.stop_observation()
+                observation.result(timeout=10)
+        else:
+            run.submit()
+            assert not first_output.is_set()
         backend_id = run.backend_id
-        run.stop_observation()
-        run.wait()
         # The job is deliberately blocked until attachment is established.
         # A terminal RunRecord cannot be reattached, by design.
         record = manager.store.get(run.id)

@@ -1,5 +1,7 @@
 from subprocess import CalledProcessError
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from kkrunner.files import FileEntry, FileManifest
@@ -29,11 +31,11 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
     calls = []
     client = ExecutionClient(SupervisedBackend)
 
-    def acknowledge(record):
+    async def acknowledge(record):
         assert manager.store.get(record.id).state == terminal_state
         calls.append(record.id)
 
-    monkeypatch.setattr(client, "acknowledge", acknowledge)
+    monkeypatch.setattr(client, "acknowledge_async", acknowledge)
     manager.register_client(client)
     record = manager.new_record(
         directory=tmp_path, target=client.target, backend=client.backend_config,
@@ -42,8 +44,8 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
         record, state=RunState.RUNNING, execution=record.execution.submitted("receipt"),
     )
     status = RunStatus(terminal_state, backend_id="receipt", return_code=0)
-    monkeypatch.setattr(client, "status", lambda *runs: (status,))
-    monkeypatch.setattr(client, "acknowledge_submission", lambda run: None)
+    monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *runs: (status,)))
+    monkeypatch.setattr(client, "acknowledge_submission_async", AsyncMock(side_effect=lambda run: None))
     (finished,) = manager.refresh((record,))
     assert finished.state == terminal_state
     assert calls == [record.id]
@@ -65,8 +67,8 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
         ExecutionSpec(["true"], directory=tmp_path), tracked=False,
         callback=completed,
     )
-    run.submit()
-    assert ended.wait(3), "completion callback deadlocked waiting for its own completion event"
+    run.run()
+    assert ended.is_set()
     assert results == [run.result]
 
 
@@ -76,12 +78,12 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
     calls = []
     client = ExecutionClient(SupervisedBackend)
 
-    def acknowledge(record):
+    async def acknowledge(record):
         calls.append(record.id)
         if len(calls) == 1:
             raise error
 
-    monkeypatch.setattr(client, "acknowledge", acknowledge)
+    monkeypatch.setattr(client, "acknowledge_async", acknowledge)
     manager.register_client(client)
     record = manager.new_record(
         directory=tmp_path, target=client.target, backend=client.backend_config,
@@ -122,7 +124,7 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
     manager = RunManager(RunStore(tmp_path / "runs"))
     acknowledgements = []
     client = ExecutionClient(SupervisedBackend)
-    monkeypatch.setattr(client, "acknowledge", lambda record: acknowledgements.append(record.id))
+    monkeypatch.setattr(client, "acknowledge_async", AsyncMock(side_effect=lambda record: acknowledgements.append(record.id)))
     manager.register_client(client)
     path = tmp_path / "out"
     record = manager.new_record(
@@ -176,8 +178,8 @@ def _tracked_test_run(tmp_path, monkeypatch, *, process_result=None):
     """Use real Run/Job/FileSession, intercepting only the native submit boundary."""
     from kkrunner import ExecutionSpec
     client = ExecutionClient(SupervisedBackend)
-    monkeypatch.setattr(client, "acknowledge_submission", lambda record: None)
-    monkeypatch.setattr(client, "acknowledge", lambda record: None)
+    monkeypatch.setattr(client, "acknowledge_submission_async", AsyncMock(side_effect=lambda record: None))
+    monkeypatch.setattr(client, "acknowledge_async", AsyncMock(side_effect=lambda record: None))
     manager = RunManager(RunStore(tmp_path / "runs"))
     run = client.create_run(ExecutionSpec(("instant",), directory=tmp_path), tracked=manager,
         process_result=process_result,
@@ -194,97 +196,89 @@ def _accept_job(job, *, identity="native-1", state=RunState.FINISHED):
     ))
 
 
-@pytest.mark.parametrize("operation", ("submit", "start"))
-def test_raw_terminal_state_is_not_persisted_before_run_completion(tmp_path, monkeypatch, operation):
-    run, manager = _tracked_test_run(
-        tmp_path, monkeypatch, process_result=lambda outcome: outcome,
-    )
+def test_confirmed_identity_is_durable_before_observation(tmp_path, monkeypatch):
+    from kkrunner.backends.contracts import JobStatus
+
+    run, manager = _tracked_test_run(tmp_path, monkeypatch, process_result=lambda outcome: outcome)
     job = run._job
-    monkeypatch.setattr(job, "wait", lambda: job.result)
-    if operation == "submit":
-        monkeypatch.setattr(job, "submit", lambda: _accept_job(job))
-    else:
-        # A reattached Run has already committed a job reference.
-        manager.store.save(run.record)
-        run._record = manager.transition(
-            run.record, state=RunState.RUNNING,
-            execution=run.record.execution.submitted("native-1"),
-        )
-        _accept_job(job, state=RunState.RUNNING)
-        monkeypatch.setattr(job, "start", lambda: _accept_job(job))
-    # Hold the client completion monitor, then drive its result manually.
-    monkeypatch.setattr(run, "_start_completion", lambda: setattr(run, "_started", True))
-    getattr(run, operation)()
-    assert manager.store.get(run.id).state == RunState.RUNNING
-    run._finish()
+    observed = []
+
+    async def submit(request, on_output, *, output_requested=None):
+        _accept_job(job)
+        return job.status()
+
+    async def observe(on_output, *, output_requested=None):
+        observed.append(manager.store.get(run.id))
+        return JobStatus(RunState.FINISHED, return_code=0)
+
+    monkeypatch.setattr(job.execution, "submit", submit)
+    monkeypatch.setattr(job.execution, "observe", observe)
+    run.run()
+    assert len(observed) == 1
+    assert observed[0].state == RunState.FINISHING
+    assert observed[0].execution.backend_id == "native-1"
     assert manager.store.get(run.id).state == RunState.FINISHED
 
 
-def test_confirmed_identity_is_durable_before_client_monitor_starts(tmp_path, monkeypatch):
+def test_observation_interrupted_after_acceptance_is_not_submission_failure(tmp_path, monkeypatch):
+    import asyncio
+
+    run, manager = _tracked_test_run(tmp_path, monkeypatch,
+                                     process_result=lambda outcome: pytest.fail("No confirmed outcome"))
+    callbacks = []
+    run.callback = callbacks.append
+
+    async def submit(*args, **kwargs):
+        _accept_job(run._job, state=RunState.RUNNING)
+        return run._job.status()
+
+    async def observe(*args, **kwargs):
+        assert manager.store.get(run.id).execution.backend_id == "native-1"
+        raise asyncio.CancelledError("observation interrupted")
+
+    monkeypatch.setattr(run._job.execution, "submit", submit)
+    monkeypatch.setattr(run._job.execution, "observe", observe)
+    with pytest.raises(asyncio.CancelledError, match="observation interrupted"):
+        run.run()
+    saved = manager.store.get(run.id)
+    assert saved.execution.backend_id == "native-1"
+    assert saved.state == RunState.UNKNOWN
+    assert saved.failure_phase is None
+    assert callbacks == [None]
+    owner = manager.store.observation_lock(saved)
+    assert owner.acquire(blocking=False)
+    owner.release()
+
+
+def test_missing_submit_identity_does_not_start_observation(tmp_path, monkeypatch):
+    from kkrunner.backends.contracts import ObservationUnavailable
+
     run, manager = _tracked_test_run(tmp_path, monkeypatch)
-    monkeypatch.setattr(run._job, "submit", lambda: _accept_job(run._job))
-    observed = []
 
-    def start_monitor():
-        observed.append(manager.store.get(run.id))
-        run._started = True
+    async def submit(request, on_output, *, output_requested=None):
+        raise ObservationUnavailable("Backend accepted no execution identity")
 
-    monkeypatch.setattr(run, "_start_completion", start_monitor)
-    run.submit()
-    assert len(observed) == 1
-    assert observed[0].state == RunState.SUBMITTING
-    assert observed[0].execution.backend_id == "native-1"
-    assert manager.store.get(run.id).state == RunState.RUNNING
+    async def observe(*args, **kwargs):
+        pytest.fail("No identity to observe")
 
-
-def test_missing_submit_identity_does_not_start_completion(tmp_path, monkeypatch):
-    from kkrunner.backends.contracts import JobStatus
-
-    run, manager = _tracked_test_run(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        run._job, "submit",
-        lambda: run._job._apply_status(JobStatus(RunState.UNKNOWN)),
-    )
-    monkeypatch.setattr(
-        run, "_start_completion",
-        lambda: pytest.fail("Completion must not start without a job identity"),
-    )
-    with pytest.raises(RuntimeError, match="without a job identity"):
-        run.submit()
+    monkeypatch.setattr(run._job.execution, "submit", submit)
+    monkeypatch.setattr(run._job.execution, "observe", observe)
+    with pytest.raises(ObservationUnavailable, match="no execution identity"):
+        run.run()
     assert not run._started
     saved = manager.store.get(run.id)
     assert saved.state == RunState.SUBMITTING
     assert saved.execution.backend_id is None
 
 
-def test_failed_monitor_thread_start_keeps_confirmed_identity(tmp_path, monkeypatch):
-    class FailingThread:
-        def __init__(self, *, target, daemon):
-            pass
-
-        def start(self):
-            raise RuntimeError("client thread unavailable")
-
-    run, manager = _tracked_test_run(tmp_path, monkeypatch)
-    monkeypatch.setattr(run._job, "submit", lambda: _accept_job(run._job))
-    monkeypatch.setattr("kkrunner.runs.run.Thread", FailingThread)
-    with pytest.raises(RuntimeError, match="client thread unavailable"):
-        run.submit()
-    assert not run._started
-    assert run._thread is None
-    saved = manager.store.get(run.id)
-    assert saved.state == RunState.UNKNOWN
-    assert saved.execution.backend_id == "native-1"
-
-
 def test_known_backend_identity_survives_failed_client_submission(tmp_path, monkeypatch):
     run, manager = _tracked_test_run(tmp_path, monkeypatch)
 
-    def accepted_but_reply_lost():
+    async def accepted_but_reply_lost(*args, **kwargs):
         _accept_job(run._job)
         raise ConnectionError("client could not start observer")
 
-    monkeypatch.setattr(run._job, "submit", accepted_but_reply_lost)
+    monkeypatch.setattr(run._job.execution, "submit", accepted_but_reply_lost)
     with pytest.raises(ConnectionError, match="could not start observer"):
         run.submit()
     saved = manager.store.get(run.id)
@@ -293,8 +287,9 @@ def test_known_backend_identity_survives_failed_client_submission(tmp_path, monk
     assert not saved.state.is_terminal
 
 
+@pytest.mark.parametrize("operation", ["run", "submit"])
 def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persistence(
-    tmp_path, monkeypatch, caplog,
+    tmp_path, monkeypatch, caplog, operation,
 ):
     from kkrunner.runs.base import FailurePhase, SubmissionNotStarted
 
@@ -306,13 +301,13 @@ def test_submission_cleanup_failure_cannot_hide_pre_submit_error_or_skip_persist
         close_calls.append(True)
         raise OSError("cleanup also failed")
 
-    def failed_submit():
+    async def failed_submit(*args, **kwargs):
         raise original
 
-    monkeypatch.setattr(run._job, "submit", failed_submit)
+    monkeypatch.setattr(run._job.execution, "submit", failed_submit)
     monkeypatch.setattr(run._parts, "close", failed_cleanup)
     with pytest.raises(SubmissionNotStarted) as caught:
-        run.submit()
+        (run.run if operation == "run" else run.submit)()
     assert "cleanup also failed" in caplog.text
     assert caught.value is original
     assert len(close_calls) == 1
@@ -364,11 +359,11 @@ def test_uncertain_submission_relinquishes_application_resources(tmp_path, monke
     resources = ExecutionResources(on_detach=lambda: calls.append("detached"))
     run._owned_resources = resources
 
-    def accepted_but_reply_lost():
+    async def accepted_but_reply_lost(*args, **kwargs):
         _accept_job(run._job)
         raise ConnectionError("lost reply")
 
-    monkeypatch.setattr(run._job, "submit", accepted_but_reply_lost)
+    monkeypatch.setattr(run._job.execution, "submit", accepted_but_reply_lost)
     with pytest.raises(ConnectionError, match="lost reply"):
         run.submit()
     assert calls == ["detached"]
@@ -397,7 +392,7 @@ def test_completion_failure_relinquishes_handles_without_removing_evidence(tmp_p
     else:
         monkeypatch.setattr(manager, "transition", fail)
     with pytest.raises(OSError, match="history unavailable"):
-        run._complete_record(record, state=RunState.FINISHED, return_code=0,
+        run._persist_completion(record, state=RunState.FINISHED, return_code=0,
                              files=manifest, artifacts_available=True)
     assert calls == ["detach"]
     assert resources.closed
@@ -474,15 +469,15 @@ def test_failed_submission_ack_does_not_prevent_status_refresh(tmp_path, monkeyp
     )
     record = manager.transition(record, state=RunState.QUEUED,
                                 execution=record.execution.submitted("receipt"))
-    monkeypatch.setattr(client, "status", lambda *runs: (RunStatus(RunState.RUNNING, backend_id="receipt"),))
+    monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *runs: (RunStatus(RunState.RUNNING, backend_id="receipt"),)))
     attempts = []
 
-    def acknowledge(run):
+    async def acknowledge(run):
         attempts.append(run.id)
         if len(attempts) == 1:
             raise CalledProcessError(255, ["ssh"])
 
-    monkeypatch.setattr(client, "acknowledge_submission", acknowledge)
+    monkeypatch.setattr(client, "acknowledge_submission_async", acknowledge)
     (running,) = manager.refresh((record,))
     assert running.state == RunState.RUNNING
     assert manager.refresh((running,))[0].state == RunState.RUNNING

@@ -1,38 +1,35 @@
-"""Shared monitor waiting contract for local-process and remote backend jobs."""
+"""Explicit caller-owned Job waiting and completion contracts."""
 
 import asyncio
+import sys
 
 import pytest
 
-from kkrunner.client.job import Job
-from kkrunner.client.backend_execution import DirectExecution
-from kkrunner.targets import LocalTarget
-from kkrunner.backends import DirectBackend
-from kkrunner.runs.base import ExecutionSpec, RunState
+from kkrunner import ExecutionSpec, RunState
+from kkrunner.client import ExecutionClient
 
 
-@pytest.mark.parametrize(
-    "state, message",
-    (
-        (RunState.NEW, "Run has not been submitted"),
-        (RunState.RUNNING, "Attached run has not been started"),
-        (RunState.UNKNOWN, "Attached run has not been started"),
-        (RunState.FINISHED, "Attached run has not been started"),
-    ),
-)
-def test_wait_without_started_monitor_fails_immediately(tmp_path, state, message):
-    spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = Job(DirectExecution(DirectBackend(), LocalTarget()), spec)
-    job._state = state
-    with pytest.raises(RuntimeError, match=message):
+def test_wait_without_native_identity_fails_immediately(tmp_path):
+    spec = ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path)
+    job = ExecutionClient().create_run_parts(spec).job
+    with pytest.raises(RuntimeError, match="Job has not been submitted"):
         job.wait()
+    assert job.state == RunState.NEW
 
 
-def test_wait_and_run_async_return_completed_monitor_result(tmp_path):
-    spec = ExecutionSpec(argv=(), directory=str(tmp_path))
-    job = Job(DirectExecution(DirectBackend(), LocalTarget()), spec)
-    job._state = RunState.FINISHED
-    job._thread = object()
-    job._done.set()
-    assert job.wait() == job.status()
-    assert asyncio.run(job.run_async()) == job.status()
+def test_wait_and_run_async_reuse_completed_result(tmp_path):
+    spec = ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path)
+    seen = []
+    parts = ExecutionClient().create_run_parts(spec, callback=seen.append)
+    try:
+        parts.files.prepare_submission()
+        parts.prepare_job()
+        job = parts.job
+        result = job.run()
+        assert result.state == RunState.FINISHED
+        assert result.return_code == 0
+        assert job.wait() == result
+        assert asyncio.run(job.run_async()) == result
+        assert seen == [result]
+    finally:
+        parts.close()

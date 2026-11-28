@@ -35,9 +35,10 @@ class _ControlledExecution:
         self.cancelled = Event()
         self.cancel_calls = 0
         self.observation_calls = 0
+        self.can_stop_observation = True
 
     def configure_detached(self, detached):
-        pass
+        self.can_stop_observation = detached
 
     def configure_observation(self, *, stream_offsets, stream_paths):
         pass
@@ -93,7 +94,7 @@ def test_public_run_latches_cancel_before_submit(tmp_path):
     assert resource.closed
     assert not execution.entered.is_set()
     with pytest.raises(asyncio.CancelledError):
-        run.submit()
+        run.run()
 
 
 def test_cancel_during_submit_is_dispatched_after_submission():
@@ -102,7 +103,7 @@ def test_cancel_during_submit_is_dispatched_after_submission():
 
     def submit():
         try:
-            job.submit()
+            job.run()
         except BaseException as exc:
             errors.append(exc)
 
@@ -136,29 +137,13 @@ def test_cancel_started_run_does_not_close_owned_resources_before_monitor_finish
     assert execution.cancel_calls == 1
 
 
-def test_attached_job_can_start_after_thread_creation_failure(monkeypatch):
+def test_attached_job_observes_only_in_the_caller():
     job, execution = _controlled_job(already_running=True)
-
-    def fail(_thread):
-        raise RuntimeError("cannot start thread")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Thread, "start", fail)
-        with pytest.raises(RuntimeError, match="cannot start thread"):
-            job.start()
-        assert not job.observing
-
-    job.start()
-    try:
-        job.start()
-        future = job.cancel()
-        future.result(timeout=5)
-        assert job.wait().state == RunState.CANCELLED
-        assert job.cancel().result(timeout=5) is None
-        assert execution.observation_calls == 1
-        assert execution.cancel_calls == 1
-    finally:
-        execution.cancelled.set()
+    assert execution.observation_calls == 0
+    execution.cancelled.set()
+    assert job.wait().state == RunState.CANCELLED
+    assert job.wait().state == RunState.CANCELLED
+    assert execution.observation_calls == 1
 
 
 @pytest.mark.parametrize("observe", [False, True])
@@ -180,29 +165,36 @@ def test_cancel_can_be_retried_while_job_remains_active(observe, first_fails):
         return JobStatus(RunState.CANCELLED)
 
     execution.cancel = cancel
-    if observe:
-        job.start()
-    try:
-        first = job.cancel()
-        assert entered.wait(5)
-        assert job.cancel() is first
-        release.set()
-        if first_fails:
-            with pytest.raises(OSError, match="connection lost"):
-                first.result(timeout=5)
-        else:
-            assert first.result(timeout=5).state == RunState.RUNNING
-        second = job.cancel()
-        assert second is not first
-        assert second.result(timeout=5).state == RunState.CANCELLED
-        assert execution.cancel_calls == 2
-        if observe:
-            assert job.wait().state == RunState.CANCELLED
-            job.cancel().result(timeout=5)
+    async def scenario():
+        observation = asyncio.create_task(job.wait_async()) if observe else None
+        try:
+            if observation is not None:
+                await asyncio.sleep(0)
+            first = job.cancel()
+            assert await asyncio.to_thread(entered.wait, 5)
+            assert job.cancel() is first
+            release.set()
+            if first_fails:
+                with pytest.raises(OSError, match="connection lost"):
+                    await asyncio.wrap_future(first)
+            else:
+                assert (await asyncio.wrap_future(first)).state == RunState.RUNNING
+            second = job.cancel()
+            assert second is not first
+            assert (await asyncio.wrap_future(second)).state == RunState.CANCELLED
             assert execution.cancel_calls == 2
-    finally:
-        release.set()
-        execution.cancelled.set()
+            if observation is not None:
+                assert (await observation).state == RunState.CANCELLED
+                await job.cancel_async()
+                assert execution.cancel_calls == 2
+        finally:
+            release.set()
+            execution.cancelled.set()
+            if observation is not None:
+                await observation
+
+    asyncio.run(scenario())
+
 
 
 def test_cancel_while_observation_closes_reports_undispatched_request():
@@ -219,13 +211,16 @@ def test_cancel_while_observation_closes_reports_undispatched_request():
 
     execution.observe = observe
     execution.close = close
-    job.start()
+    thread = Thread(target=job.wait, daemon=True)
+    thread.start()
     try:
         assert closing.wait(5)
         future = job.cancel()
         release_close.set()
         with pytest.raises(RuntimeError, match="before cancellation was dispatched"):
             future.result(timeout=5)
+        thread.join(5)
+        assert not thread.is_alive()
         assert job.wait().state == RunState.UNKNOWN
         assert execution.cancel_calls == 0
         job.cancel().result(timeout=5)
@@ -245,8 +240,7 @@ def test_cancel_without_execution_reference_does_not_leave_unresolved_future():
 
 def test_cancel_during_submission_survives_detaching_observation():
     job, execution = _controlled_job()
-    execution.can_stop_observation = True
-    thread = Thread(target=job.submit, daemon=True)
+    thread = Thread(target=job.run, daemon=True)
     thread.start()
     try:
         assert execution.entered.wait(5)
@@ -254,6 +248,8 @@ def test_cancel_during_submission_survives_detaching_observation():
         job.stop_observation()
         execution.release.set()
         future.result(timeout=5)
+        thread.join(5)
+        assert not thread.is_alive()
         assert job.wait().state == RunState.UNKNOWN
         assert execution.cancel_calls == 1
         assert execution.observation_calls == 0

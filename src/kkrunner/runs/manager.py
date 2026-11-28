@@ -32,6 +32,7 @@ from kkrunner.runs.processing import ProcessingPending
 from kkrunner.runs.records import RunRecord
 from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, NO_EXECUTION_FAILURES, project_run_state
 from kkrunner.runs.stores import resolve_record, store_for
+from kkrunner.support.async_utils import run_coro_sync
 
 _STATE_RANK = {
     RunState.NEW: 0,
@@ -355,16 +356,19 @@ class RunManager:
         return (now - _timestamp(record.updated_at)).total_seconds() >= self.submitting_grace
 
     def recover_submitting(self, record):
+        return run_coro_sync(self.recover_submitting_async(record))
+
+    async def recover_submitting_async(self, record):
         store = self._store_for(record)
         lock = store.observation_lock(record)
         if not lock.acquire(blocking=False):
             return store.get(record.id)
         try:
-            return self._recover_submitting(record)
+            return await self._recover_submitting(record)
         finally:
             lock.release()
 
-    def _recover_submitting(self, record):
+    async def _recover_submitting(self, record):
         record = resolve_record(record, self.store)
         if not record.execution.available or not self._is_stale_submitting(record):
             return record
@@ -376,7 +380,7 @@ class RunManager:
         client = self.client_for(record)
         from kkrunner.runs.model import WorkingDirectory
         from kkrunner.client.contracts import SubmissionContext
-        recovery = client.recover_submission(
+        recovery = await client.recover_submission_async(
             record.execution.submission_key or record.id,
             SubmissionContext(record.execution),
             submitted_at=record.updated_at,
@@ -399,11 +403,9 @@ class RunManager:
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
             attached = self.transition(record, execution=execution, files=files)
-            self._acknowledge_submission(attached, client=client)
-            return self._record_observation(
-                attached,
-                client.status(JobAttachment(attached.execution, attached.files))[0],
-            )
+            await self._acknowledge_submission_async(attached, client=client)
+            status, = await client.status_async(JobAttachment(attached.execution, attached.files))
+            return await self._record_observation(attached, status)
         if recovery.disposition is RecoveryDisposition.UNSUPPORTED:
             return self.transition(
                 record, state=RunState.UNKNOWN,
@@ -438,11 +440,11 @@ class RunManager:
             latest = store.get(record.id)
             if latest.state != RunState.PREPROCESSING:
                 return latest
-            return self.complete(
+            return self.transition(latest, **self.completion_fields(
                 latest, state=RunState.FAILED, failure_phase=FailurePhase.PREPROCESSING,
                 message="Client preprocessing was interrupted before submission",
                 artifacts_available=False,
-            )
+            ))
         finally:
             lock.release()
 
@@ -499,6 +501,10 @@ class RunManager:
 
     def reserve(self, record, *, preprocessing=False, recover_conflicts=False):
         """Reserve atomically; optionally request a separate conflict recovery first."""
+        if recover_conflicts:
+            return run_coro_sync(self.reserve_async(
+                record, preprocessing=preprocessing, recover_conflicts=True,
+            ))
         if self._store_for(record).lock_key != self.store.lock_key:
             raise ValueError("Cannot reserve a record owned by another store")
         record = replace(record, store=self.store)
@@ -510,8 +516,15 @@ class RunManager:
                 raise ValueError(f"Run id {record.id!r} already exists; use attach()")
             return replace(latest, state=state, updated_at=_now())
 
-        reserve = self._reserve_recovering if recover_conflicts else self._reserve
-        return reserve(record, lambda: self.store.update(record, activate))
+        return self._reserve(record, lambda: self.store.update(record, activate))
+
+    async def reserve_async(self, record, *, preprocessing=False, recover_conflicts=False):
+        def attempt():
+            return self.reserve(record, preprocessing=preprocessing)
+
+        if recover_conflicts:
+            return await self._reserve_recovering(attempt)
+        return attempt()
 
     def _reserve(self, record, activate, *, conflict_stores=()):
         """Check the footprint and activate a record under the same store locks."""
@@ -524,12 +537,12 @@ class RunManager:
                 raise DuplicateSubmissionError(record, conflicts)
             return activate()
 
-    def _reserve_recovering(self, record, activate):
+    async def _reserve_recovering(self, attempt):
         """Explicit higher-level policy: recover abandoned conflicts outside reservation locks."""
         attempted_refresh = set()
         while True:
             try:
-                return self._reserve(record, activate)
+                return attempt()
             except DuplicateSubmissionError as exc:
                 refreshable = tuple(
                     conflict for conflict in exc.conflicts
@@ -548,21 +561,24 @@ class RunManager:
                 if not refreshable:
                     raise
             attempted_refresh.update(self._record_key(conflict) for conflict in refreshable)
-            self.refresh(refreshable)
+            await self.refresh_async(refreshable)
 
-    def _apply_observation(self, record, status, operation, **kwargs):
-        # A native exit is not client completion while a Run is observing it.
+    @contextmanager
+    def _observation_scope(self, record, status):
+        """Yield an existing client's updated record, or grant observation ownership."""
         if not status.state.is_terminal:
-            return operation(record, status, **kwargs)
+            yield None
+            return
         owner = self._store_for(record).observation_lock(record)
         if not owner.acquire(blocking=False):
             # A terminal backend receipt proves the producer is done even
             # when the existing observer still owns client finalization.
-            return self.transition(
+            yield self.transition(
                 record, state=RunState.FINISHING, expected_updated_at=record.updated_at,
             )
+            return
         try:
-            return operation(record, status, **kwargs)
+            yield None
         finally:
             owner.release()
 
@@ -621,7 +637,8 @@ class RunManager:
 
     def update(self, record, status: RunStatus):
         """Apply supplied execution facts; do not query or retrieve artifacts."""
-        return self._apply_observation(record, status, self._update)
+        with self._observation_scope(record, status) as existing:
+            return self._update(record, status) if existing is None else existing
 
     def _update(self, record, status: RunStatus):
         record, status = self._current_observation(record, status)
@@ -641,7 +658,7 @@ class RunManager:
         )
         return self.transition(record, **changes)
 
-    def _record_observation(self, record, status, *, retrieve_ended=False):
+    async def _record_observation(self, record, status, *, retrieve_ended=False):
         """Finalize local artifacts; retrieve unobserved remote output only on request."""
         observed_at = record.updated_at
         record, status = self._current_observation(record, status)
@@ -666,7 +683,7 @@ class RunManager:
             # recover cancellation on a later observation, so collect any
             # diagnostics now, under the same ownership as completion.
             from kkrunner.client.file_access import FileAccess
-            files, error = FileAccess(record.execution.target).collect_ended_files(
+            files, error = await FileAccess(record.execution.target).collect_ended_files_async(
                 record, status, on_resolved=lambda manifest: self.transition(
                     record, state=RunState.DOWNLOADING, files=manifest,
                 ),
@@ -702,10 +719,10 @@ class RunManager:
             and changes["failure_phase"] not in NO_ARTIFACTS_FAILURES
         ):
             changes["files"] = status.files if status.files is not None else record.files
-            updated = self.complete(record, **changes, artifacts_available=True)
+            updated = await self.complete_async(record, **changes, artifacts_available=True)
         else:
             updated = self.transition(record, **changes)
-            self._acknowledge_result(updated)
+            await self._acknowledge_result_async(updated)
         return updated
 
     def completion_fields(
@@ -760,18 +777,17 @@ class RunManager:
         return dict(state=state, execution=execution, return_code=return_code,
                     message=message, failure_phase=phase, files=result_files)
 
-    def publish_completion(self, record, *, expected_record=None, **fields):
-        """Commit a prepared completion and acknowledge its backend receipt."""
-        updated = self.transition(record, expected_record=expected_record, **fields)
-        self._acknowledge_result(updated)
-        return updated
-
     def complete(self, record, *, expected_record=None, **kwargs):
+        return run_coro_sync(self.complete_async(record, expected_record=expected_record, **kwargs))
+
+    async def complete_async(self, record, *, expected_record=None, **kwargs):
         """Complete an operation which owns no application resources."""
-        return self.publish_completion(
+        updated = self.transition(
             record, expected_record=expected_record,
             **self.completion_fields(record, **kwargs),
         )
+        await self._acknowledge_result_async(updated)
+        return updated
 
     def resume_download(self, run):
         """Explicitly reopen a failed post-execution transfer for retry.
@@ -805,9 +821,16 @@ class RunManager:
             )
 
         with self._history_edit(run) as (store, current):
-            return self._reserve_recovering(current, lambda: store.update(current, reopen))
+            return run_coro_sync(self._reserve_recovering(
+                lambda: self._reserve(current, lambda: store.update(current, reopen)),
+            ))
 
     def begin_processing(self, record, *, return_code, files=None, execution=None, retry=False):
+        return run_coro_sync(self.begin_processing_async(
+            record, return_code=return_code, files=files, execution=execution, retry=retry,
+        ))
+
+    async def begin_processing_async(self, record, *, return_code, files=None, execution=None, retry=False):
         """Claim processing under the caller's existing client ownership.
 
         A historical retry must reactivate the same reservation before reading
@@ -847,8 +870,11 @@ class RunManager:
 
         # A historical attempt must first become active. The actual file
         # validation can then run without submission or store locks.
-        claimed = (self._reserve_recovering(latest, lambda: store.update(latest, activate))
-                   if latest.state.is_terminal else latest)
+        claimed = latest
+        if latest.state.is_terminal:
+            claimed = await self._reserve_recovering(
+                lambda: self._reserve(latest, lambda: store.update(latest, activate)),
+            )
         try:
             manifest = capture_result_files(self._merged_result_files(claimed, files))
             if manifest.failed_artifacts:
@@ -918,6 +944,9 @@ class RunManager:
             lock.release()
 
     def _acknowledge_result(self, record):
+        return run_coro_sync(self._acknowledge_result_async(record))
+
+    async def _acknowledge_result_async(self, record):
         """Best-effort ACK after durable completion; failed ACKs remain retryable."""
         if (not record.state.is_terminal or record.execution.backend_id is None
                 or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
@@ -931,7 +960,7 @@ class RunManager:
         # operations or retain a second, process-local history of completions.
         try:
             client = self.client_for(record)
-            return client.acknowledge(record)
+            return await client.acknowledge_async(record)
         except (OSError, SubprocessError, RuntimeError, ValueError):
             return False
 
@@ -948,6 +977,9 @@ class RunManager:
         return tuple(acknowledged)
 
     def _acknowledge_submission(self, record, *, client=None):
+        return run_coro_sync(self._acknowledge_submission_async(record, client=client))
+
+    async def _acknowledge_submission_async(self, record, *, client=None):
         """Discard the submission receipt only after RunStore is durable."""
         if (record.execution.backend_id is None
                 or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
@@ -955,12 +987,17 @@ class RunManager:
         try:
             if client is None:
                 client = self.client_for(record)
-            client.acknowledge_submission(record)
+            await client.acknowledge_submission_async(record)
         except (OSError, SubprocessError, RuntimeError):
             # Explicit receipt reconciliation can retry this cleanup.
             pass
 
     def refresh(self, records=None, *, on_error=None, retrieve_ended=False):
+        return run_coro_sync(self.refresh_async(
+            records, on_error=on_error, retrieve_ended=retrieve_ended,
+        ))
+
+    async def refresh_async(self, records=None, *, on_error=None, retrieve_ended=False):
         """Refresh statuses; opt in to retrieving ended, unobserved remote output."""
 
         options = {} if on_error is None else {"on_error": on_error}
@@ -996,7 +1033,7 @@ class RunManager:
             if not record.execution.available:
                 continue  # Browsable history; no supported target implementation.
             if record.execution.backend_id is None and self._is_stale_submitting(record):
-                current[self._record_key(record)] = self.recover_submitting(record)
+                current[self._record_key(record)] = await self.recover_submitting_async(record)
                 continue  # Recovery already observed a newly discovered backend job.
             if record.execution.backend_id is None or record.state.is_terminal:
                 continue
@@ -1017,15 +1054,17 @@ class RunManager:
                     )
                 continue
             # Query native execution independently of result-file ownership.
-            statuses = client.status(
+            statuses = await client.status_async(
                 *(JobAttachment(record.execution, record.files) for record in group)
             )
             if len(statuses) != len(group):
                 raise RuntimeError("Target returned wrong number of run statuses")
             for record, status in zip(group, statuses):
-                current[self._record_key(record)] = self._apply_observation(
-                    record, status, self._record_observation, retrieve_ended=retrieve_ended,
-                )
+                with self._observation_scope(record, status) as existing:
+                    current[self._record_key(record)] = (
+                        await self._record_observation(record, status, retrieve_ended=retrieve_ended)
+                        if existing is None else existing
+                    )
         return tuple(current[self._record_key(record)] for record in records
                      if self._record_key(record) in current)
 
@@ -1061,6 +1100,9 @@ class RunManager:
             return store.forget(record, force=force)
 
     def cancel(self, run):
+        return run_coro_sync(self.cancel_async(run))
+
+    async def cancel_async(self, run):
         """Ask a persisted backend to cancel a job, without assuming completion."""
         record = resolve_record(run, self.store)
         if record.state.is_terminal:
@@ -1070,16 +1112,25 @@ class RunManager:
         if record.execution.backend_id is None:
             raise UnsupportedCapability("No durable execution reference is available for cancellation")
         client = self.client_for(record)
-        status = client.cancel(JobAttachment(record.execution, record.files))
-        return self._apply_observation(
-            record, status, self._record_observation, retrieve_ended=True,
-        )
+        status = await client.cancel_async(JobAttachment(record.execution, record.files))
+        with self._observation_scope(record, status) as existing:
+            return (await self._record_observation(record, status, retrieve_ended=True)
+                    if existing is None else existing)
 
     def attach(
         self, run, *, process_result=None, client=None,
         callback=None, output_listener=None, owned_resources=None,
     ):
-        """Open a tracked Run without resubmitting its backend job."""
+        return run_coro_sync(self.attach_async(
+            run, process_result=process_result, client=client, callback=callback,
+            output_listener=output_listener, owned_resources=owned_resources,
+        ))
+
+    async def attach_async(
+        self, run, *, process_result=None, client=None,
+        callback=None, output_listener=None, owned_resources=None,
+    ):
+        """Open a tracked Run without resubmitting or observing its backend job."""
         from kkrunner.runs.run import Run
         record = resolve_record(run, self.store) if isinstance(run, str) else run
         owner = self._claim_client_files(record)
@@ -1093,7 +1144,7 @@ class RunManager:
             if record.execution.backend_id is None:
                 raise RuntimeError(f"Run {record.id} has no backend reference")
             client = self.client_for(record) if client is None else client
-            parts = client.open_run_parts(
+            parts = await client.open_run_parts_async(
                 JobAttachment(record.execution, record.files),
                 output_listener=output_listener,
             )
@@ -1110,6 +1161,6 @@ class RunManager:
             finally:
                 owner.release()
             raise
-        # Ownership was transferred to Run; it also handles startup failure.
-        attached.start()
+        # Ownership was transferred to Run. The caller explicitly observes
+        # and finalizes it with wait()/wait_async(); no background work starts.
         return attached
