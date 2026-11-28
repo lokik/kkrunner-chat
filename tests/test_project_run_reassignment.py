@@ -169,3 +169,40 @@ def test_project_move_during_result_processing_preserves_outcome(tmp_path, fails
     assert current.state == (RunState.FAILED if fails else RunState.FINISHED)
     assert current.failure_phase == (FailurePhase.POSTPROCESSING if fails else None)
     assert current.return_code == 0
+
+
+
+def test_historical_retry_after_project_move_uses_current_membership(tmp_path, monkeypatch):
+    from kkrunner.projects import ProjectRunManager
+    from kkrunner.files import FileEntry, FileManifest
+    from kkrunner.runs import FailurePhase
+
+    projects = ProjectRepository(tmp_path / "projects")
+    root = projects.create("Root")
+    first = projects.create("First", parent_id=root.id)
+    second = projects.create("Second", parent_id=root.id)
+    manager = ProjectRunManager(project_repository=projects)
+    bound = manager.for_project(first)
+    output = tmp_path / "stdout"
+    output.write_text("answer")
+    record = bound.new_record(
+        directory=tmp_path, processing_required=True,
+        files=FileManifest(stdout=FileEntry(local_path=str(output))),
+    )
+    failed = bound.complete(
+        record, state=RunState.FAILED, return_code=0,
+        failure_phase=FailurePhase.POSTPROCESSING,
+        execution=record.execution.submitted("native"), artifacts_available=True,
+    )
+    reserve = manager._reserve
+
+    def move_before_reserve(snapshot, activate, **kwargs):
+        projects.reassign_runs((snapshot.id,), second.id)
+        projects.delete(first.id, expected_generation=first.generation)
+        return reserve(snapshot, activate, **kwargs)
+
+    monkeypatch.setattr(manager, "_reserve", move_before_reserve)
+    assert manager.retry_postprocessing(failed, lambda outcome: "parsed") == "parsed"
+    current = manager.store.get(failed.id)
+    assert current.project_id == second.id
+    assert current.state == RunState.FINISHED

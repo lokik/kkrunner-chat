@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from kkrunner.projects.repository import Project, ProjectRepository
 from kkrunner.runs.manager import RunManager
+from kkrunner.runs.base import RunState
 
 
 class ProjectRunManager(RunManager):
@@ -50,10 +51,10 @@ class ProjectRunManager(RunManager):
         return super().new_record(project_id=self._project_id, **kwargs)
 
     def _reserve(self, record, activate, *, conflict_stores=()):
-        # Project deletion uses the same submission lock. Check the owning
-        # project inside the existing atomic reservation, not when a manager
-        # or a Run is constructed. Temporary scopes have no project identity.
-        if (record.project_id is not None
+        # Only a new reservation introduces a project reference. Existing
+        # records can be reassigned independently of lifecycle snapshots;
+        # project deletion and reassignment already use the submission lock.
+        if (record.state == RunState.NEW and record.project_id is not None
                 and self._store_for(record).lock_key == self.store.lock_key):
             def activate_project_run():
                 self.projects.project(record.project_id)
