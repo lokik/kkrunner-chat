@@ -77,7 +77,10 @@ class JobStatus:
 
     def __post_init__(self):
         state = RunState(self.state)
-        if state in (RunState.SUBMITTING, RunState.DOWNLOADING, RunState.POSTPROCESSING):
+        if state in (
+            RunState.PREPROCESSING, RunState.SUBMITTING, RunState.FINISHING,
+            RunState.DOWNLOADING, RunState.POSTPROCESSING,
+        ):
             raise ValueError(f"{state.value} is a client lifecycle phase, not a JobStatus")
         object.__setattr__(self, "state", state)
         if self.failure_phase is not None and not isinstance(self.failure_phase, JobFailurePhase):
