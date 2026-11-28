@@ -214,8 +214,13 @@ class ProjectRepository:
                 self._known[project.id] = project
 
     def projects(self) -> tuple[Project, ...]:
-        """Load the complete project forest."""
-        return self._read_projects()
+        """Load a structurally consistent project forest."""
+        if not self.directory.exists():
+            return ()
+        # Create, move and delete all hold this same lock. Reading individual
+        # JSON documents atomically is not enough to validate their hierarchy.
+        with self._hierarchy_lock():
+            return self._read_projects()
 
     def project(self, project_id: str) -> Project:
         """Load one project by UUID."""
