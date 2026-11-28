@@ -97,3 +97,45 @@ def test_distinct_local_paths_conflict_on_same_target_path(tmp_path):
     assert details[0].namespace == "target"
     assert details[0].first_path == details[0].second_path == "/work/result"
     assert details[0].first_access == details[0].second_access == "write"
+
+
+@pytest.mark.parametrize("name,other,expected", [
+    ("result[1].log", "result1.log", False),
+    ("result[1].log", "result[1].log", True),
+    ("result*.log", "result2.log", False),
+    ("result?.log", "result?.log", True),
+])
+def test_named_stream_reservations_are_literal(tmp_path, name, other, expected):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    first = manager.new_record(directory=tmp_path, files=FileManifest(
+        stdout=FileEntry(str(tmp_path / name))))
+    second = manager.new_record(directory=tmp_path, files=FileManifest(
+        stdout=FileEntry(str(tmp_path / other))))
+    assert submission_conflicts(first, second) == expected
+    assert bool(conflicting_files(first, second)) == expected
+
+
+def test_literal_stream_conflicts_with_matching_output_glob(tmp_path):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    first = manager.new_record(directory=tmp_path, files=FileManifest(
+        stdout=FileEntry(str(tmp_path / "result[1].log"))))
+    second = manager.new_record(directory=tmp_path, files=FileManifest(
+        outputs=(FileEntry(str(tmp_path / "result*.log")),)))
+    assert submission_conflicts(first, second)
+    assert submission_conflicts(second, first)
+
+
+def test_literal_directory_reserves_its_tree_not_a_similarly_named_tree(tmp_path):
+    from kkrunner.runs.conflicts import referenced_paths
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    directory = tmp_path / "tree[1]"
+    first = manager.new_record(directory=tmp_path, files=FileManifest(
+        outputs=(FileEntry(str(directory), kind="directory"),)))
+    references = referenced_paths(first)
+    for path, expected in ((directory / ".hidden" / "data", True),
+                           (tmp_path / "tree1" / "data", False)):
+        second = manager.new_record(directory=tmp_path, files=FileManifest(
+            stdout=FileEntry(str(path))))
+        assert submission_conflicts(first, second) == expected
+        assert any(file_reference_overlaps(str(path), ref) for ref in references) == expected

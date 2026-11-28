@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import glob
 import os
 from dataclasses import dataclass
 
 from kkrunner.targets import LocalTarget, SshTarget
-from kkrunner.files.paths import declaration_paths, paths_overlap
+from kkrunner.files.paths import declaration_paths, local_path_identities, paths_overlap
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.runs.records import RunRecord
 
@@ -44,9 +45,12 @@ def _manifest_accesses(record, *, remote=None):
                 continue
             # Include the spelling and canonical local identity. An alias
             # may be replaced as a directory entry or opened through its target.
-            identities = (target,) if remote else (target, os.path.realpath(target))
+            identities = (target,) if remote else local_path_identities(target)
             for identity in identities:
-                result.update(declaration_paths(identity, directory=entry.kind == "directory"))
+                result.add((identity, files.is_pattern(entry)))
+                if entry.kind == "directory":
+                    _, descendants = declaration_paths(identity, directory=True)
+                    result.add((descendants, True))
         return result
 
     caches = tuple(cache.file for cache in files.caches)
@@ -69,7 +73,7 @@ def _manifest_accesses(record, *, remote=None):
     elif files.mapping is not None and files.mapping.input_sync != FileSyncPolicy.NEVER:
         # Uploads may replace target inputs even when the local source is read-only.
         writes |= accesses(files.input_entries)
-    return reads - {None}, writes - {None}
+    return reads, writes
 
 
 def filesystem_namespace(record):
@@ -87,9 +91,13 @@ def filesystem_namespace(record):
 
 
 def referenced_paths(record):
-    """All declared reads and writes on the execution filesystem, including globs."""
+    """Glob expressions for all execution-filesystem references.
+
+    Concrete names are quoted so consumers can match them as patterns without
+    interpreting their literal metacharacters.
+    """
     reads, writes = _manifest_accesses(record)
-    return reads | writes
+    return {path if pattern else glob.escape(path) for path, pattern in reads | writes}
 
 
 def _compare_target_filesystems(left, right):
@@ -103,14 +111,14 @@ def _compare_target_filesystems(left, right):
 def file_reference_overlaps(path, reference, *, directory=False):
     """Whether removing a file/directory would affect a declared reference."""
     path, reference = os.path.normpath(path), os.path.normpath(reference)
-    if paths_overlap(path, reference):
+    if paths_overlap(path, reference, first_pattern=False):
         return True
-    if directory and paths_overlap(os.path.join(path, "**"), reference):
+    if directory and paths_overlap(os.path.join(glob.escape(path), "**"), reference):
         return True
     # A declaration can also reference a containing directory (or its glob).
     parent = os.path.dirname(path)
     while parent and parent != path:
-        if paths_overlap(parent, reference):
+        if paths_overlap(parent, reference, first_pattern=False):
             return True
         path, parent = parent, os.path.dirname(parent)
     return False
@@ -137,9 +145,9 @@ def _conflicting_accesses(left, right):
             ("write", writes1, "read", reads2),
             ("read", reads1, "write", writes2),
         ):
-            for path1 in paths1:
-                for path2 in paths2:
-                    if paths_overlap(path1, path2):
+            for path1, pattern1 in paths1:
+                for path2, pattern2 in paths2:
+                    if paths_overlap(path1, path2, first_pattern=pattern1, second_pattern=pattern2):
                         yield FileConflict(namespace, path1, access1, path2, access2)
 
     yield from matches(

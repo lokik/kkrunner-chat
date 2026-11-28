@@ -134,10 +134,13 @@ def declaration_matches(path, declaration, *, pattern=False, directory=False, in
     return path == declaration
 
 
-def paths_overlap(first, second):
-    """Conservative overlap: exact/glob uses the shared component matcher."""
+def paths_overlap(first, second, *, first_pattern=None, second_pattern=None):
+    """Conservative overlap, retaining explicit concrete pathname semantics."""
     first, second = os.path.normpath(first), os.path.normpath(second)
-    first_magic, second_magic = has_file_magic(first), has_file_magic(second)
+    first_magic = first_pattern is not False and has_file_magic(first)
+    second_magic = second_pattern is not False and has_file_magic(second)
+    if not first_magic and not second_magic:
+        return first == second
     if not first_magic:
         return path_matches(first, second, include_hidden=True)
     if not second_magic:
@@ -157,4 +160,4 @@ def paths_overlap(first, second):
 def declaration_paths(path, *, directory=False):
     """An exact directory reserves the entire tree, including hidden files."""
     path = os.path.normpath(path)
-    return (path, os.path.join(path, "**")) if directory else (path,)
+    return (path, os.path.join(glob.escape(path), "**")) if directory else (path,)
