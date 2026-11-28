@@ -413,3 +413,30 @@ def test_all_local_patterns_are_resolved_before_upload(tmp_path):
     with pytest.raises(SubmissionNotStarted, match="input pattern did not match"):
         _processed_run(executor, spec).run()
     assert transport.uploads == []
+
+
+
+def test_staged_literal_wildcard_member_is_protected_during_output_cleanup(tmp_path):
+    from kkrunner.files.availability import prepare_target_outputs
+
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    original = workdir / "file[1].dat"
+    original.write_text("input")
+    remote_workdir = tmp_path / "remote" / "calculation"
+    remote_workdir.mkdir(parents=True)
+    stale = remote_workdir / "file1.dat"
+    stale.write_text("stale")
+    client, spec, _, _ = _text_run(
+        tmp_path, declared_input_files=("file*.dat",),
+        declared_output_files=("*.dat",),
+    )
+    session = client.file_session(spec)
+    try:
+        session.prepare_submission()
+        prepare_target_outputs(session.prepare_job())
+        assert (remote_workdir / original.name).read_text() == "input"
+        assert not stale.exists()
+        assert session.files.input_version(original).is_current()
+    finally:
+        session.close()

@@ -30,9 +30,8 @@ def prepare_target_outputs(request):
     streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
     protected_declarations = [
         *request.get("input_files", ()),
-        request.get("stdin"),
-        request.get("input_file"),
         *request.get("cache_files", ()),
+        *(glob.escape(path) for path in (request.get("stdin"), request.get("input_file")) if path),
     ]
     def directory_entry(path):
         # Resolve parent aliases but retain the name of the directory entry.
