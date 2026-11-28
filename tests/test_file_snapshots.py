@@ -313,3 +313,23 @@ def test_remote_snapshot_with_literal_mapped_root(tmp_path):
     ))
     (new_source / "stdout[1].log").write_bytes(b"literal")
     assert manager.snapshot_file(run, "stdout[1].log") == b"literal"
+
+
+
+def test_snapshot_destination_uses_literal_file_and_directory_identity(tmp_path):
+    from kkrunner.files.snapshots import check_destination
+
+    source = tmp_path / "result.dat"
+    stream = tmp_path / "stream[1].log"
+    tree = tmp_path / "tree[1]"
+    manifest = FileManifest(
+        stdout=FileEntry(stream),
+        outputs=(FileEntry(source),),
+        caches=(CacheEntry(FileEntry(tree, kind="directory")),),
+    )
+    for forbidden in (stream, tree, tree / ".hidden" / "data"):
+        with pytest.raises(ValueError, match="overlaps"):
+            check_destination(manifest, source, forbidden)
+    for allowed in (tmp_path / "stream1.log", tmp_path / "tree1" / "data",
+                    tmp_path / "tree[2]" / "data"):
+        assert check_destination(manifest, source, allowed) == allowed

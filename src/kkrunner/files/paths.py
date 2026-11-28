@@ -109,6 +109,17 @@ def path_matches(path, pattern, *, include_hidden=False):
     return match(0, 0)
 
 
+def declaration_matches(path, declaration, *, pattern=False, directory=False, include_hidden=False):
+    """Test a concrete pathname against a file, directory tree or glob."""
+    path, declaration = os.path.normpath(path), os.path.normpath(declaration)
+    if directory:
+        # Directory declarations are literal, including hidden descendants.
+        return path == declaration or PurePath(declaration) in PurePath(path).parents
+    if pattern:
+        return path_matches(path, declaration, include_hidden=include_hidden)
+    return path == declaration
+
+
 def paths_overlap(first, second):
     """Conservative overlap: exact/glob uses the shared component matcher."""
     first, second = os.path.normpath(first), os.path.normpath(second)
