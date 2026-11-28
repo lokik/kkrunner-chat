@@ -8,6 +8,7 @@ guessed from the file handle's local .name.
 
 from __future__ import annotations
 
+import glob
 import os
 from dataclasses import asdict
 from typing import Callable
@@ -64,13 +65,21 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
     def paths(values):
         return [path(value) for value in values if value is not None]
 
+    def protected_paths(values):
+        # The target consumes glob declarations for input/cache protection.
+        # Directory declarations are concrete names, not glob patterns.
+        return [
+            glob.escape(path(value)) if isinstance(value, TaskFile) and value.kind == "directory"
+            else path(value) for value in values if value is not None
+        ]
+
     return target_request(
         spec, target_dir, input_file=path(spec.input_file), stdin=path(spec.stdin),
         output_file=path(spec.output_file), error_file=path(spec.error_file),
-        input_files=paths(spec.input_files), output_files=paths(spec.output_files),
+        input_files=protected_paths(spec.input_files), output_files=paths(spec.output_files),
         output_directories=paths(
             value for value in spec.output_files if isinstance(value, TaskFile) and value.kind == "directory"
-        ), cache_files=paths(spec.cache_files),
+        ), cache_files=protected_paths(spec.cache_files),
     )
 
 

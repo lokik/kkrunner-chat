@@ -2,6 +2,7 @@
 
 import glob
 import os
+import posixpath
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import Path, PurePath
@@ -67,6 +68,13 @@ def declared_file_paths(values, directory, *, excluded=()):
 def has_file_magic(path):
     """Return whether *path* contains shell-style wildcard characters."""
     return glob.has_magic(os.fspath(path))
+
+
+def rooted_literal_pattern(path, root):
+    """Quote a concrete target name for a rooted query, leaving the root literal."""
+    if not posixpath.isabs(path):
+        return glob.escape(path)
+    return posixpath.join(root, glob.escape(posixpath.relpath(path, root)))
 
 
 def expand_local_candidates(path):

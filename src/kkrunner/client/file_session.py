@@ -18,7 +18,7 @@ from kkrunner.files.manifest import (
     FileManifest,
     FileSyncPolicy,
 )
-from kkrunner.files.paths import file_path, has_file_magic, path_matches
+from kkrunner.files.paths import file_path, path_matches, rooted_literal_pattern
 from kkrunner.files.queries import directory_digest, local_file_signature
 from kkrunner.files.streams import OutputStreams
 from kkrunner.files.versions import FileVersion, file_digest
@@ -219,7 +219,7 @@ class FileSession:
 
         for cache in manifest.caches:
             entry = cache.file
-            if has_file_magic(entry.local_path):
+            if manifest.is_pattern(entry):
                 patterns.append(entry.remote_path)
                 await self._stage_input_pattern(
                     input_patterns[entry.local_path], used, remote_root, required=False,
@@ -236,7 +236,8 @@ class FileSession:
         if self.context.output_files != FileSyncPolicy.NEVER and (patterns or exact):
             # Capture pre-run baselines after staging in one metadata request.
             entries = await self.context.target.query_files(
-                [*patterns, *exact], root=remote_root,
+                [*patterns, *(rooted_literal_pattern(path, remote_root) for path in exact)],
+                root=remote_root,
             )
             signatures = {
                 item["path"]: (item["size"], item["mtime_ns"])
@@ -581,7 +582,7 @@ class FileSession:
         # staging routines below consume only these exact source/target pairs.
         input_patterns = {}
         for entry in (*manifest.inputs, *(cache.file for cache in manifest.caches)):
-            if entry is primary or not has_file_magic(entry.local_path):
+            if entry is primary or not manifest.is_pattern(entry):
                 continue
             if entry.local_path not in input_patterns:
                 input_patterns[entry.local_path] = self.context.expand_input(
@@ -606,7 +607,7 @@ class FileSession:
             if entry is primary:
                 continue
             required = not entry.optional
-            if has_file_magic(entry.local_path):
+            if manifest.is_pattern(entry):
                 await self._stage_input_pattern(
                     input_patterns[entry.local_path], used, manifest.mapping.remote_root,
                     required=required,
@@ -630,7 +631,10 @@ class FileSession:
             output_file=output_target, error_file=error_target,
             output_files=(entry.remote_path for entry in manifest.outputs),
             output_directories=(entry.remote_path for entry in manifest.outputs if entry.kind == "directory"),
-            cache_files=(cache.file.remote_path for cache in manifest.caches),
+            cache_files=(
+                cache.file.remote_path if manifest.is_pattern(cache.file)
+                else glob.escape(cache.file.remote_path) for cache in manifest.caches
+            ),
             # Target cleanup consumes glob declarations. These staged paths
             # are already concrete and must not be interpreted a second time.
             input_files=(glob.escape(target) for target in used),

@@ -8,7 +8,7 @@ from dataclasses import replace
 from functools import partial
 
 from kkrunner.client.file_context import FileContext
-from kkrunner.files.paths import relative_local_path
+from kkrunner.files.paths import relative_local_path, rooted_literal_pattern
 from kkrunner.client.contracts import Operation
 from kkrunner.files.manifest import FileEntry
 from kkrunner.files.queries import remote_file_cleanup
@@ -21,13 +21,6 @@ def _destination_path(path):
     """Canonicalize the parent without following the final directory entry."""
     path = os.fspath(path)
     return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
-
-
-def _literal_source(path, root):
-    """Escape a concrete source name, leaving the query's root literal."""
-    if not posixpath.isabs(path):
-        return glob.escape(path)
-    return posixpath.join(root, glob.escape(posixpath.relpath(path, root)))
 
 
 class FileAccess:
@@ -87,7 +80,7 @@ class FileAccess:
             raise ValueError(f"Remote snapshot path is outside mapped root: {remote}")
         # Also reject remote symlinks that escape the mapped filesystem root.
         # query_files checks real path containment without requiring a stable file.
-        observed = await self.target.query_files([_literal_source(normalized, root)], root=root)
+        observed = await self.target.query_files([rooted_literal_pattern(normalized, root)], root=root)
         if not observed or observed[0]["status"] == "missing":
             raise FileNotFoundError(normalized)
         if observed[0]["type"] != "file":
@@ -127,7 +120,7 @@ class FileAccess:
                     remote = context._map_path(local, remote_root)
                 concrete = local in captured_paths or (entry is not None and not run.files.is_pattern(entry))
                 wildcard = not concrete and glob.has_magic(remote)
-                source = _literal_source(remote, remote_root) if concrete else remote
+                source = rooted_literal_pattern(remote, remote_root) if concrete else remote
                 for matched in await self.target.expand_files(source, remote_root):
                     destination = os.fspath(context._unmap_path(matched, remote_root)) if wildcard else local
                     if (entry is not None and entry in run.files.outputs and wildcard
