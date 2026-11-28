@@ -5,6 +5,7 @@ from threading import Barrier
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import MemoryRunStore, RunManager, RunState, RunStore
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.runs import DuplicateSubmissionError, ForgottenRunError, RunRecord
@@ -78,11 +79,11 @@ def test_conflict_recovery_refreshes_foreign_store(tmp_path, monkeypatch, first_
     old = first.reserve(first.new_record(directory=tmp_path, files=files))
     async def recover(record):
         assert record.store is first.store
-        return second.transition(record, state=RunState.FAILED)
+        return second.transition(record, file_state=RunFileState.FAILED)
     monkeypatch.setattr(second, "recover_submitting_async", recover)
     new = second.reserve(second.new_record(directory=tmp_path, files=files), recover_conflicts=True)
     assert new.store is second.store
-    assert first.store.get(old.id).state == RunState.FAILED
+    assert first.store.get(old.id).file_state == RunFileState.FAILED
     assert second.store.get(new.id).state == RunState.SUBMITTING
 
 def test_inspect_and_forget_foreign_conflict(tmp_path):
@@ -138,7 +139,7 @@ def test_store_contract(store, tmp_path):
     from kkrunner.runs import ActiveRunDeletionError
     manager = RunManager(store)
     first = store.save(manager.new_record(directory=tmp_path))
-    second = manager.transition(manager.new_record(directory=tmp_path), state=RunState.FAILED)
+    second = manager.transition(manager.new_record(directory=tmp_path), state=RunState.FAILED, file_state=RunFileState.DONE)
     assert store.save(first) == first
     assert store.runs(active=True) == (first,)
     assert store.runs(active=False) == (second,)
@@ -179,7 +180,7 @@ def test_file_operations_follow_record_owner(tmp_path):
     record = b.new_record(directory=tmp_path, run_id="same", files=FileManifest(
         inputs=(FileEntry(str(path)),), input_versions=(FileVersion.capture(path),),
     ))
-    record = b.transition(record, state=RunState.FAILED)
+    record = b.transition(record, state=RunState.FAILED, file_state=RunFileState.DONE)
     assert a.input_file_is_current(record)
     assert a.retrieve_result_files(record).store is memory
     assert not a.input_file_is_current("same")
@@ -191,7 +192,7 @@ def test_history_retrieval_reads_current_bound_record_under_ownership(store, tmp
     record = manager.new_record(directory=tmp_path)
     stale = manager.transition(record, state=RunState.RUNNING,
                                execution=record.execution.submitted("native"))
-    current = manager.transition(stale, state=RunState.FINISHED, return_code=0)
+    current = manager.transition(stale, state=RunState.FINISHED, file_state=RunFileState.DONE, return_code=0)
     original_get = store.get
     owner = store.observation_lock(stale)
     reads = []
@@ -216,8 +217,8 @@ def test_foreign_postprocessing_retry_keeps_owner(tmp_path):
     out.write_text("result")
     record = b.new_record(directory=tmp_path, run_id="same", processing_required=True,
                           files=FileManifest(stdout=FileEntry(str(out))))
-    record = b.complete(record, state=RunState.FAILED, return_code=0,
-                        failure_phase=FailurePhase.POSTPROCESSING,
+    record = b.complete(record, state=RunState.FINISHED, return_code=0,
+                        file_state=RunFileState.FAILED, file_failure_phase=FailurePhase.POSTPROCESSING,
                         files=capture_result_files(record.files))
     assert a.retry_postprocessing(record, lambda outcome: "parsed") == "parsed"
     assert memory.get(record.id).state == RunState.FINISHED
@@ -278,8 +279,8 @@ def test_attach_does_not_create_client_until_observation_is_claimed(store, tmp_p
         with pytest.raises(RuntimeError, match="A live client owns this run"):
             manager.attach(stale)
 
-    manager.transition(stale, state=RunState.FINISHED, return_code=0)
-    with pytest.raises(RuntimeError, match="already terminal"):
+    manager.transition(stale, state=RunState.FINISHED, file_state=RunFileState.DONE, return_code=0)
+    with pytest.raises(RuntimeError, match="already finalized"):
         manager.attach(stale)
     owner = store.observation_lock(stale)
     assert owner.acquire(blocking=False)
@@ -358,7 +359,7 @@ def test_discarded_reservation_cannot_be_recreated_by_update(store, tmp_path):
         reserved = manager.reserve(record, preprocessing=True)
         store.discard(reserved)
     with pytest.raises(FileNotFoundError):
-        manager.transition(reserved, state=RunState.FAILED)
+        manager.transition(reserved, state=RunState.FAILED, file_state=RunFileState.DONE)
     assert store.runs() == ()
 
 

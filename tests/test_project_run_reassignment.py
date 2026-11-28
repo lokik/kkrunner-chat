@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import RunState
 from kkrunner.projects import ProjectRepository, ProjectRepositoryError
 from kkrunner.runs.manager import RunManager
@@ -17,7 +18,7 @@ def _run(store, directory, *, project_id, state=RunState.FINISHED):
         metadata={"ase2sprkkr": {"task": "SCF"}},
     )
     record = store.save(record)
-    return store.update(record, lambda current: replace(current, state=state))
+    return store.update(record, lambda current: replace(current, state=state, file_state=RunFileState.DONE if state.is_terminal else RunFileState.WAITING))
 
 
 def test_move_completed_run_between_projects_preserves_identity_and_files(tmp_path):
@@ -54,7 +55,7 @@ def test_move_running_and_completed_runs_preserves_live_status_updates(tmp_path)
     # A live monitor may hold a stale pre-move snapshot. Its lifecycle update
     # must merge the latest record without reverting the new project identity.
     completed = RunManager(store).transition(
-        running, state=RunState.FINISHED, return_code=0
+        running, state=RunState.FINISHED, file_state=RunFileState.DONE, return_code=0
     )
     assert completed.project_id == second.id
     assert completed.state == RunState.FINISHED
@@ -149,7 +150,7 @@ def test_project_move_during_result_processing_preserves_outcome(tmp_path, fails
         files=FileManifest(stdout=FileEntry(local_path=str(output))),
     )
     pending = manager.complete(
-        record, state=RunState.POSTPROCESSING, return_code=0,
+        record, state=RunState.FINISHED, file_state=RunFileState.POSTPROCESSING, return_code=0,
         execution=record.execution.submitted("native"), artifacts_available=True,
     )
 
@@ -166,6 +167,7 @@ def test_project_move_during_result_processing_preserves_outcome(tmp_path, fails
         assert manager.retry_postprocessing(pending, process) == "parsed"
     current = manager.store.get(pending.id)
     assert current.project_id == second.id
-    assert current.state == (RunState.FAILED if fails else RunState.FINISHED)
-    assert current.failure_phase == (FailurePhase.POSTPROCESSING if fails else None)
+    assert current.state == RunState.FINISHED
+    assert current.file_state == (RunFileState.FAILED if fails else RunFileState.POSTPROCESSED)
+    assert current.file_failure_phase == (FailurePhase.POSTPROCESSING if fails else None)
     assert current.return_code == 0

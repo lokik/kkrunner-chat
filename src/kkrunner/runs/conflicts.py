@@ -6,13 +6,14 @@ import os
 from dataclasses import dataclass
 
 from kkrunner.targets import LocalTarget, SshTarget
+from kkrunner.execution import RunFileState
 from kkrunner.files.paths import declaration_paths, paths_overlap
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.runs.records import RunRecord
 
 
-def _manifest_accesses(record, *, remote=None):
-    """Resolve declared read/write paths on the execution host."""
+def _manifest_accesses(record, *, remote=None, collecting=False):
+    """Resolve producer or collection accesses in the requested filesystem."""
     files = record.files
     directory = record.execution.directory
     remote = directory.remote is not None if remote is None else remote
@@ -52,6 +53,18 @@ def _manifest_accesses(record, *, remote=None):
     caches = tuple(cache.file for cache in files.caches)
     outputs = tuple(entry for entry in (files.stdout, files.stderr, *files.outputs)
                     if entry is not None)
+    if collecting:
+        # Collection only reads the producer's published artifacts. The
+        # client may still need local inputs for subsequent interpretation.
+        artifacts = (*(entry for entry in outputs if entry.collect), *caches)
+        separate = directory.remote is not None and not files.shared_filesystem
+        if remote and separate:
+            return accesses(artifacts), set()
+        reads = accesses(files.input_entries)
+        if separate and (files.mapping is None or files.mapping.output_sync != FileSyncPolicy.NEVER):
+            return reads, accesses(artifacts)
+        return reads | accesses(artifacts), set()
+
     reads = accesses((*files.input_entries, *caches))
     if (not remote and directory.remote is not None and files.mapping is not None
             and not files.shared_filesystem):
@@ -70,6 +83,31 @@ def _manifest_accesses(record, *, remote=None):
         # Uploads may replace target inputs even when the local source is read-only.
         writes |= accesses(files.input_entries)
     return reads - {None}, writes - {None}
+
+
+def _reservation_accesses(record, *, remote=None):
+    """Reserve the accesses of the current file phase, not historical references."""
+    files = record.files
+    if record.file_state == RunFileState.COLLECTING:
+        return _manifest_accesses(record, remote=remote, collecting=True)
+    if (record.file_state not in (RunFileState.READY, RunFileState.POSTPROCESSING)
+            or files.captured_at is None):
+        return _manifest_accesses(record, remote=remote)
+    remote = record.execution.directory.remote is not None if remote is None else remote
+    if remote:
+        if not files.shared_filesystem:
+            return set(), set()
+        # Shared files may be accessed through a different local mount by
+        # another client. Retain the declared target aliases conservatively.
+        reads, writes = _manifest_accesses(record, remote=True)
+        return reads | writes, set()
+
+    reads = set()
+    for version in (*files.input_versions, *files.output_versions, *files.cache_versions):
+        path = os.fspath(version.path)
+        for identity in (path, os.path.realpath(path)):
+            reads.update(declaration_paths(identity, directory=version.kind == "directory"))
+    return reads, set()
 
 
 def _paths_overlap(first, second):
@@ -154,13 +192,13 @@ def conflicting_files(left: RunRecord, right: RunRecord) -> tuple[FileConflict, 
         return result
 
     collisions = matches(
-        _manifest_accesses(left, remote=False),
-        _manifest_accesses(right, remote=False),
+        _reservation_accesses(left, remote=False),
+        _reservation_accesses(right, remote=False),
         "local",
     )
     if _compare_target_filesystems(left, right):
         collisions.extend(matches(
-            _manifest_accesses(left), _manifest_accesses(right),
+            _reservation_accesses(left), _reservation_accesses(right),
             "target",
         ))
     return tuple(dict.fromkeys(collisions))
@@ -175,7 +213,7 @@ def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
         return _paths_overlap(left_writes, right_reads | right_writes) or _paths_overlap(right_writes, left_reads)
 
     # Shared target files are also represented by their mapped local paths.
-    if overlaps(_manifest_accesses(left, remote=False), _manifest_accesses(right, remote=False)):
+    if overlaps(_reservation_accesses(left, remote=False), _reservation_accesses(right, remote=False)):
         return True
 
-    return _compare_target_filesystems(left, right) and overlaps(_manifest_accesses(left), _manifest_accesses(right))
+    return _compare_target_filesystems(left, right) and overlaps(_reservation_accesses(left), _reservation_accesses(right))

@@ -377,7 +377,7 @@ class ProjectRepository:
             run_store = self.run_store
             with run_store.submission_lock(), ExitStack() as owners:
                 histories = tuple(record for record in run_store.runs() if record.project_id == canonical)
-                if any(not record.state.is_terminal for record in histories):
+                if any(record.is_active for record in histories):
                     raise ProjectDeleteError("Cannot delete a project with active runs")
                 # Match RunManager.forget(): a live client still owns its
                 # history even after publishing a terminal state. Never wait

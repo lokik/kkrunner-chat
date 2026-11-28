@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner import RunState, RunStore
 from kkrunner.runs import RunStatus
@@ -22,7 +23,8 @@ def test_missing_output_respects_optionality(tmp_path, optional):
         files=FileManifest(outputs=(FileEntry(local_path=str(tmp_path / "never-created"), optional=optional),)),
     )
     record = manager.complete(record, state=RunState.FINISHED, return_code=0, artifacts_available=True)
-    assert record.state == (RunState.FINISHED if optional else RunState.FAILED)
+    assert record.state == RunState.FINISHED
+    assert record.file_state == (RunFileState.DONE if optional else RunFileState.FAILED)
 
 
 @pytest.mark.parametrize("terminal_state", [RunState.FINISHED, RunState.FAILED, RunState.CANCELLED])
@@ -33,6 +35,9 @@ def test_refresh_acknowledges_terminal_receipt_after_commit(tmp_path, monkeypatc
 
     async def acknowledge(record):
         assert manager.store.get(record.id).state == terminal_state
+        lock = manager.store.observation_lock(record)
+        assert lock.acquire(blocking=False)
+        lock.release()
         calls.append(record.id)
 
     monkeypatch.setattr(client, "acknowledge_async", acknowledge)
@@ -60,7 +65,7 @@ def test_completion_callback_can_read_its_own_finished_result(tmp_path):
     run = None
 
     def completed(outcome):
-        results.append(run.wait())
+        results.append(run.result)
         ended.set()
 
     run = ExecutionClient(DirectBackend).create_run(
@@ -82,6 +87,7 @@ def test_failed_ack_is_reconciled_without_changing_terminal_outcome(tmp_path, mo
         calls.append(record.id)
         if len(calls) == 1:
             raise error
+        return True
 
     monkeypatch.setattr(client, "acknowledge_async", acknowledge)
     manager.register_client(client)
@@ -107,7 +113,7 @@ def test_failed_artifact_observation_prevents_processing_success(tmp_path):
     record = manager.new_record(
         directory=tmp_path, processing_required=True, files=FileManifest(stdout=FileEntry(str(path)))
     )
-    record = manager.complete(record, state=RunState.POSTPROCESSING, return_code=0, artifacts_available=True)
+    record = manager.complete(record, state=RunState.FINISHED, file_state=RunFileState.POSTPROCESSING, return_code=0, artifacts_available=True)
 
     def process(outcome):
         manager.update_artifact_availability(record, path, ArtifactAvailabilityState.FAILED, "lost artifact")
@@ -115,7 +121,8 @@ def test_failed_artifact_observation_prevents_processing_success(tmp_path):
 
     with pytest.raises(OSError, match="lost artifact"):
         manager.retry_postprocessing(record.id, process)
-    assert manager.store.get(record.id).state != RunState.FINISHED
+    assert manager.store.get(record.id).state == RunState.FINISHED
+    assert manager.store.get(record.id).file_state == RunFileState.FAILED
 
 
 def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypatch):
@@ -135,16 +142,16 @@ def test_download_retry_retains_backend_receipt_until_success(tmp_path, monkeypa
     )
     failed = manager.complete(
         record,
-        state=RunState.FAILED,
+        state=RunState.FINISHED,
         return_code=0,
-        failure_phase=FailurePhase.DOWNLOAD,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.DOWNLOAD,
         execution=record.execution.submitted("receipt"),
     )
     assert acknowledgements == []
     assert manager.reconcile_acknowledgements() == ()
-    downloading = manager.resume_download(failed)
     path.write_text("retried output")
-    completed = manager.complete(downloading, state=RunState.FINISHED, return_code=0, artifacts_available=True)
+    completed = manager.collect_files(failed)
     assert completed.state == RunState.FINISHED
     assert acknowledgements == [record.id]
 
@@ -154,7 +161,7 @@ def test_attach_rejects_durable_terminal_record_before_backend_access(tmp_path, 
     manager = RunManager(RunStore(tmp_path / "runs"))
     stale = manager.new_record(directory=tmp_path)
     manager.complete(stale, state=state, return_code=0)
-    with pytest.raises(RuntimeError, match="already terminal"):
+    with pytest.raises(RuntimeError, match="already finalized"):
         manager.attach(stale)
 
 
@@ -168,7 +175,7 @@ def test_completed_durable_result_cannot_be_postprocessed_again(tmp_path):
     assert completed.state == RunState.FINISHED
 
     called = []
-    with pytest.raises(ValueError, match="Only postprocessing failures"):
+    with pytest.raises(ValueError, match="Only ready, failed or interrupted postprocessing"):
         manager.retry_postprocessing(completed.id, lambda outcome: called.append(outcome))
     assert called == []
     assert manager.store.get(completed.id).state == RunState.FINISHED
@@ -215,7 +222,8 @@ def test_confirmed_identity_is_durable_before_observation(tmp_path, monkeypatch)
     monkeypatch.setattr(job.execution, "observe", observe)
     run.run()
     assert len(observed) == 1
-    assert observed[0].state == RunState.FINISHING
+    assert observed[0].state == RunState.FINISHED
+    assert observed[0].file_state == RunFileState.WAITING
     assert observed[0].execution.backend_id == "native-1"
     assert manager.store.get(run.id).state == RunState.FINISHED
 
@@ -331,8 +339,9 @@ def test_historical_retry_uses_the_same_conflict_reservation(tmp_path, operation
     record = manager.new_record(directory=tmp_path, files=manifest,
                                 processing_required=operation == "processing")
     failed = manager.complete(
-        record, state=RunState.FAILED, return_code=0,
-        failure_phase=FailurePhase.POSTPROCESSING if operation == "processing" else FailurePhase.DOWNLOAD,
+        record, state=RunState.FINISHED, return_code=0,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.POSTPROCESSING if operation == "processing" else FailurePhase.DOWNLOAD,
         execution=record.execution.submitted("receipt"), artifacts_available=operation == "processing",
     )
     active = other.reserve(other.new_record(directory=tmp_path, files=manifest), preprocessing=True)
@@ -342,13 +351,13 @@ def test_historical_retry_uses_the_same_conflict_reservation(tmp_path, operation
             if operation == "processing":
                 manager.retry_postprocessing(failed, lambda outcome: pytest.fail("parser started"))
             else:
-                manager.resume_download(failed)
+                manager.collect_files(failed)
         assert disk.get(failed.id) == failed
     other.complete(active, state=RunState.FAILED)
     if operation == "processing":
         assert manager.retry_postprocessing(failed, lambda outcome: "parsed") == "parsed"
     else:
-        assert manager.resume_download(failed).state == RunState.DOWNLOADING
+        assert manager.collect_files(failed).file_state == RunFileState.DONE
 
 
 def test_uncertain_submission_relinquishes_application_resources(tmp_path, monkeypatch):
@@ -371,7 +380,7 @@ def test_uncertain_submission_relinquishes_application_resources(tmp_path, monke
     assert manager.store.get(run.id).state == RunState.UNKNOWN
 
 
-@pytest.mark.parametrize("failure", ["capture", "persist"])
+@pytest.mark.parametrize("failure", ["prepare_record", "persist"])
 def test_completion_failure_relinquishes_handles_without_removing_evidence(tmp_path, monkeypatch, failure):
     from kkrunner.runs.base import ExecutionResources
 
@@ -387,13 +396,13 @@ def test_completion_failure_relinquishes_handles_without_removing_evidence(tmp_p
     def fail(*args, **kwargs):
         raise OSError("history unavailable")
 
-    if failure == "capture":
+    if failure == "prepare_record":
         monkeypatch.setattr(manager, "completion_fields", fail)
     else:
-        monkeypatch.setattr(manager, "transition", fail)
+        monkeypatch.setattr(manager.store, "update", fail)
     with pytest.raises(OSError, match="history unavailable"):
         run._persist_completion(record, state=RunState.FINISHED, return_code=0,
-                             files=manifest, artifacts_available=True)
+                             files=manifest, file_state=RunFileState.DONE)
     assert calls == ["detach"]
     assert resources.closed
     assert path.read_text() == "answer"
@@ -482,3 +491,24 @@ def test_failed_submission_ack_does_not_prevent_status_refresh(tmp_path, monkeyp
     assert running.state == RunState.RUNNING
     assert manager.refresh((running,))[0].state == RunState.RUNNING
     assert attempts == [record.id, record.id]
+
+
+def test_refresh_of_old_snapshot_does_not_repeat_result_ack(tmp_path, monkeypatch):
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    client = ExecutionClient(SupervisedBackend)
+    manager.register_client(client)
+    calls = []
+
+    async def acknowledge(record):
+        calls.append(record.id)
+
+    monkeypatch.setattr(client, "acknowledge_async", acknowledge)
+    stale = manager.new_record(directory=tmp_path, target=client.target, backend=client.backend_config)
+    stale = manager.transition(stale, state=RunState.RUNNING, file_state=RunFileState.WAITING,
+                               execution=stale.execution.submitted("receipt"))
+    status = RunStatus(RunState.FINISHED, backend_id="receipt", return_code=0)
+    monkeypatch.setattr(client, "status_async", AsyncMock(return_value=(status,)))
+    finished, = manager.refresh((stale,))
+    assert finished.file_state == RunFileState.DONE
+    assert manager.refresh((stale,)) == (finished,)
+    assert calls == [finished.id]

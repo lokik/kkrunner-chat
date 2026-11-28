@@ -36,6 +36,16 @@ def _facts(status):
     }
 
 
+def _record_facts(record):
+    return {
+        "state": record.state.value, "file_state": record.file_state.value,
+        "return_code": record.return_code, "error": record.message,
+        "failure_phase": None if record.failure_phase is None else record.failure_phase.value,
+        "file_failure_phase": None if record.file_failure_phase is None else record.file_failure_phase.value,
+        "file_error": record.file_message,
+    }
+
+
 def _record(args):
     if args.store is None:
         raise ValueError("run_id requires --store pointing to the client RunStore")
@@ -93,12 +103,13 @@ def _follow_remote(transport, command, remote_id, from_start, stdout_path, stder
 def _persisted(args):
     from kkrunner.client.contracts import JobAttachment
     from kkrunner.client import ExecutionClient
+    from kkrunner.runs.manager import RunManager
     record = _record(args)
     if args.host:
         raise ValueError("--host is only for --remote-id; persisted runs use their recorded transport")
     if args.action == "follow" and (args.stdout_path or args.stderr_path):
         raise ValueError("Explicit stream paths require --remote-id")
-    if record.state.is_terminal:
+    if record.state.is_terminal and (args.action != "follow" or not record.is_active):
         if args.action == "follow":
             if args.from_start:
                 seen = set()
@@ -110,24 +121,19 @@ def _persisted(args):
                             while data := source.read(65536):
                                 output.write(data)
                                 output.flush()
-        elif args.action == "cancel":
-            return {"state": record.state.value, "return_code": record.return_code,
-                    "error": record.message}
-        return {"state": record.state.value, "return_code": record.return_code,
-                "error": record.message}
+        return _record_facts(record)
     if record.execution.backend_id is None:
         if args.action == "follow" or args.action == "cancel":
             raise RuntimeError("Run has not been submitted")
-        return {"state": record.state.value, "return_code": record.return_code,
-                "error": record.message}
+        return _record_facts(record)
     client = ExecutionClient.from_config(record.execution.target, record.execution.backend)
     attachment = JobAttachment(record.execution, record.files)
     if args.action == "status":
-        return _facts(client.status(attachment)[0])
+        return {**_record_facts(record), **_facts(client.status(attachment)[0])}
     from kkrunner.support.async_utils import run_coro_sync
     if args.action == "cancel":
-        return run_coro_sync(client._cancel(record.execution.directory.target,
-                                           record.execution.backend_id))
+        updated = RunManager(record.store).cancel(record)
+        return _record_facts(updated)
     offset = 0 if args.from_start else None
     def output(data, kind):
         stream = sys.stderr.buffer if kind == "err" else sys.stdout.buffer

@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.backends import DirectBackend
 from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.client.execution_request import command_request, execution_request
@@ -52,8 +53,9 @@ def test_postprocessing_failure_does_not_change_raw_execution_state(tmp_path):
     with pytest.raises(ValueError, match="parser failed"):
         runner.run()
     assert raw.state == RunState.FINISHED
-    assert runner.state == RunState.FAILED
-    assert runner.failure_phase == FailurePhase.POSTPROCESSING
+    assert runner.state == RunState.FINISHED
+    assert runner.file_state == RunFileState.FAILED
+    assert runner.file_failure_phase == FailurePhase.POSTPROCESSING
 
 
 def test_callback_failure_does_not_change_local_execution_state(tmp_path):
@@ -158,10 +160,11 @@ def test_definite_pre_submit_failure_becomes_submission_failure(tmp_path):
     with pytest.raises(SubmissionNotStarted, match="input staging failed"):
         runner.run()
     record = manager.store.get(runner.id)
-    assert record.state == RunState.FAILED
-    assert record.failure_phase == FailurePhase.SUBMISSION
+    assert record.state == RunState.NEW
+    assert record.file_state == RunFileState.FAILED
+    assert record.file_failure_phase == FailurePhase.PREPROCESSING
     assert record.execution.backend_id is None
-    assert record.message == "input staging failed"
+    assert record.file_message == "input staging failed"
 
 
 def test_uncertain_submit_without_reference_stays_submitting(tmp_path):
@@ -171,6 +174,9 @@ def test_uncertain_submit_without_reference_stays_submitting(tmp_path):
     record = manager.store.get(runner.id)
     assert record.state == RunState.SUBMITTING
     assert record.execution.backend_id is None
+    assert record.message == "connection lost during submit"
+    assert runner.state == record.state
+    assert runner.failure_message == record.message
 
 
 def test_artifact_availability_failure_does_not_change_finished_state(tmp_path):
@@ -182,7 +188,7 @@ def test_artifact_availability_failure_does_not_change_finished_state(tmp_path):
         processing_required=True,
     )
     record = manager.store.save(record)
-    record = manager.transition(record, state=RunState.FINISHED)
+    record = manager.transition(record, state=RunState.FINISHED, file_state=RunFileState.DONE)
     record = manager.update_artifact_availability(
         record, str(tmp_path / "out"), ArtifactAvailabilityState.FAILED, "ssh disconnected"
     )

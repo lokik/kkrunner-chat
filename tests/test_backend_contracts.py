@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from kkrunner.runs.states import RunState
+from kkrunner.execution import RunState
 
 from kkrunner.backends.contracts import (
     BackendCapability,
@@ -18,12 +18,9 @@ from kkrunner.backends.contracts import (
 
 
 
-@pytest.mark.parametrize("state", (
-    RunState.PREPROCESSING, RunState.SUBMITTING, RunState.FINISHING,
-    RunState.DOWNLOADING, RunState.POSTPROCESSING,
-))
+@pytest.mark.parametrize("state", ("preprocessing", "collecting", "postprocessing", "submitting"))
 def test_client_phases_are_not_backend_statuses(state):
-    with pytest.raises(ValueError, match="client lifecycle phase"):
+    with pytest.raises(ValueError):
         JobStatus(state)
 
 

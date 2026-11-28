@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.files.versions import FileVersion, file_digest
 from kkrunner.targets import LocalTarget, SshTarget
 
@@ -931,7 +932,7 @@ def test_historical_retrieval_continues_after_ssh_command_failure(tmp_path, monk
             mapping=FileMapping(str(local), str(remote)),
         ),
     )
-    record = manager.transition(record, state=RunState.FAILED,
+    record = manager.transition(record, state=RunState.FAILED, file_state=RunFileState.DONE,
                                 execution=record.execution.submitted("historical"))
     restored = manager.retrieve_result_files(record)
     assert not bad.exists()

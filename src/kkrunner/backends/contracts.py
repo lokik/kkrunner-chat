@@ -74,15 +74,19 @@ class JobStatus:
     return_code: Optional[int] = None
     failure_phase: Optional[JobFailurePhase] = None
     message: Optional[str] = None
+    # Native producer has exited, but its output is not yet safe to collect.
+    output_pending: bool = False
+    file_error: Optional[str] = None
 
     def __post_init__(self):
         state = RunState(self.state)
-        if state in (
-            RunState.PREPROCESSING, RunState.SUBMITTING, RunState.FINISHING,
-            RunState.DOWNLOADING, RunState.POSTPROCESSING,
-        ):
-            raise ValueError(f"{state.value} is a client lifecycle phase, not a JobStatus")
+        if state == RunState.SUBMITTING:
+            raise ValueError("Submitting is a client launch boundary, not a JobStatus")
         object.__setattr__(self, "state", state)
+        if type(self.output_pending) is not bool or (self.output_pending and not state.is_terminal):
+            raise ValueError("Pending output requires a confirmed native exit")
+        if self.file_error is not None and not isinstance(self.file_error, str):
+            raise TypeError("file_error must be a string or None")
         if self.failure_phase is not None and not isinstance(self.failure_phase, JobFailurePhase):
             object.__setattr__(self, "failure_phase", JobFailurePhase(self.failure_phase))
         if self.return_code is not None and type(self.return_code) is not int:
@@ -143,7 +147,8 @@ class RecoveryResult:
         return cls(RecoveryDisposition.UNSUPPORTED, message=message)
 
 
-def job_status_from_facts(state, *, return_code=None, failure_phase=None, message=None):
+def job_status_from_facts(state, *, return_code=None, failure_phase=None, message=None,
+                          output_pending=False, file_error=None):
     """Translate execution facts into the backend-only status vocabulary.
 
     Staging and postprocessing are client concerns, not Job states. This
@@ -164,7 +169,7 @@ def job_status_from_facts(state, *, return_code=None, failure_phase=None, messag
         state=RunState(value),
         return_code=return_code,
         failure_phase=phase,
-        message=message,
+        message=message, output_pending=output_pending, file_error=file_error,
     )
 
 
@@ -173,6 +178,7 @@ def decode_job_status(reply):
     return job_status_from_facts(
         reply.get("state", "unknown"), return_code=reply.get("return_code"),
         failure_phase=reply.get("failure_phase"), message=reply.get("error"),
+        output_pending=reply.get("output_pending", False), file_error=reply.get("file_error"),
     )
 
 

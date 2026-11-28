@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionOutcome, ExecutionSpec, Run, RunState
 from kkrunner.backends.contracts import JobRef, JobStatus
 from kkrunner.client.job import Job
@@ -199,7 +200,8 @@ class _Files:
         self.error = error
         self.spec = ExecutionSpec(["true"], directory=tmp_path)
         self.result = ExecutionOutcome(output_file=str(tmp_path / "stdout"), return_code=0)
-        self.files = None
+        from kkrunner.files import FileManifest
+        self.files = FileManifest()
         self.is_local = self.files_are_local = False  # Failed transfer is a DOWNLOAD failure.
         self.input_file = self.result.input_file
         self.output_file = self.result.output_file
@@ -270,8 +272,9 @@ def test_download_failure_does_not_change_successful_job_state(tmp_path):
     with pytest.raises(OSError, match="download unavailable"):
         run.run()
     assert job.state == RunState.FINISHED
-    assert run.state == RunState.FAILED
-    assert run.failure_phase == FailurePhase.DOWNLOAD
+    assert run.state == RunState.FINISHED
+    assert run.file_state == RunFileState.FAILED
+    assert run.file_failure_phase == FailurePhase.DOWNLOAD
     assert events[-1] == "close"
 
 def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
@@ -286,7 +289,8 @@ def test_file_preparation_failure_does_not_attempt_backend_submission(tmp_path):
     run = _run_with_job(job, files)
     with pytest.raises(SubmissionNotStarted, match="invalid mapped files"):
         run.run()
-    assert run.state == RunState.FAILED
+    assert run.state == RunState.NEW
+    assert run.file_state == RunFileState.FAILED
     assert "submit" not in events
     assert events == ["stage", "close"]
 
@@ -628,3 +632,93 @@ def test_confirmed_terminal_status_survives_weaker_observer_reply(tmp_path):
         finally:
             release.set()
         assert future.result(timeout=5) == JobStatus(RunState.FINISHED, return_code=0)
+
+
+@pytest.mark.parametrize("final", [
+    JobStatus(RunState.FAILED, return_code=7),
+    JobStatus(RunState.FINISHED),
+    JobStatus(RunState.UNKNOWN, file_error="publisher lost"),
+])
+def test_output_publication_cannot_replace_known_exit(tmp_path, final):
+    execution = _BackendExecution()
+    execution.ref = JobRef("kkrunner", "existing")
+    execution.snapshot = JobStatus(RunState.FINISHED, return_code=0, output_pending=True)
+
+    async def status():
+        return final
+
+    execution.status = status
+    job = _job(execution, tmp_path)
+    observed = job.refresh_status()
+    assert observed.state == RunState.FINISHED
+    assert observed.return_code == 0
+    assert not observed.output_pending
+    assert observed.file_error == final.file_error
+
+
+def test_liveness_only_exit_is_refined_by_later_native_code(tmp_path):
+    execution = _BackendExecution()
+    execution.ref = JobRef("kkrunner", "existing")
+    execution.snapshot = JobStatus(RunState.FINISHED)
+
+    async def status():
+        return JobStatus(RunState.FAILED, return_code=7, failure_phase="execution")
+
+    execution.status = status
+    job = _job(execution, tmp_path)
+    assert job.refresh_status().return_code == 7
+    assert job.state == RunState.FAILED
+
+
+def test_cancellation_reply_can_report_already_completed_execution(tmp_path):
+    execution = _BackendExecution()
+    execution.ref = JobRef("kkrunner", "existing")
+    execution.snapshot = JobStatus(RunState.RUNNING)
+
+    async def cancel():
+        return JobStatus(RunState.FINISHED, return_code=0)
+
+    execution.cancel = cancel
+    job = _job(execution, tmp_path)
+    assert job.cancel().result().return_code == 0
+    assert job.status() == JobStatus(RunState.FINISHED, return_code=0)
+
+
+def test_cancelled_job_keeps_outcome_when_observer_supplies_code(tmp_path):
+    execution = _BackendExecution()
+    execution.ref = JobRef("kkrunner", "existing")
+    execution.snapshot = JobStatus(RunState.CANCELLED)
+
+    async def observe(*args, **kwargs):
+        return JobStatus(RunState.FAILED, return_code=-15, failure_phase="execution")
+
+    execution.observe = observe
+    job = _job(execution, tmp_path)
+    assert job.wait() == JobStatus(RunState.CANCELLED, return_code=-15)
+
+
+def test_late_nonterminal_refresh_does_not_replace_newer_observation(tmp_path):
+    from threading import Event, Thread
+
+    execution = _BackendExecution()
+    execution.ref = JobRef("kkrunner", "existing")
+    execution.snapshot = JobStatus(RunState.QUEUED)
+    entered, release = Event(), Event()
+
+    async def status():
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        return JobStatus(RunState.QUEUED)
+
+    execution.status = status
+    job = _job(execution, tmp_path)
+    query = Thread(target=job.refresh_status)
+    query.start()
+    try:
+        assert entered.wait(5)
+        job._apply_status(JobStatus(RunState.RUNNING))
+    finally:
+        release.set()
+        query.join(5)
+    assert not query.is_alive()
+    assert job.state == RunState.RUNNING

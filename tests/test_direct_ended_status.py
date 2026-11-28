@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.backends import DirectBackend
 from kkrunner.backends.config import BackendConfig
@@ -120,12 +121,15 @@ def test_refresh_and_reservation_release_ended_unknown_code_job(process, tmp_pat
     with pytest.raises(DuplicateSubmissionError):
         manager.reserve(competing)
     assert manager.store.get(record.id).state == RunState.RUNNING
-    reserved = manager.reserve(competing, recover_conflicts=True)
-    assert reserved.state == RunState.SUBMITTING
+    with pytest.raises(DuplicateSubmissionError):
+        manager.reserve(competing, recover_conflicts=True)
     completed = manager.store.get(record.id)
     assert completed.state == RunState.FINISHED
     assert completed.return_code is None
     assert completed.files.stdout.availability_state == "skipped"
+    assert completed.file_state == RunFileState.READY
+    manager.retry_postprocessing(completed, lambda outcome: None)
+    assert manager.reserve(competing).state == RunState.SUBMITTING
 
 
 def test_uncertain_exit_can_be_refined_by_authoritative_outcome(tmp_path):
@@ -148,20 +152,21 @@ def test_unverified_completion_does_not_claim_postprocessing(tmp_path):
     record = manager.transition(record, state=RunState.RUNNING)
     from kkrunner.runs.base import RunStatus
     pending = manager.update(record, RunStatus(RunState.FINISHED, return_code=None))
-    assert pending.state == RunState.DOWNLOADING
+    assert pending.state == RunState.FINISHED
+    assert pending.file_state == RunFileState.COLLECTING
     assert pending.return_code is None
     finished = manager.complete(pending, state=RunState.FINISHED, artifacts_available=True)
     assert finished.state == RunState.FINISHED
     assert finished.return_code is None
 
 
-@pytest.mark.parametrize("code,expected", ((0, RunState.DOWNLOADING), (7, RunState.FAILED)))
+@pytest.mark.parametrize("code,expected", ((0, RunState.FINISHED), (7, RunState.FAILED)))
 def test_liveness_observation_preserves_known_exit_outcome(tmp_path, code, expected):
     from kkrunner.runs.base import RunStatus
 
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(directory=tmp_path, processing_required=True)
-    record = manager.transition(record, state=RunState.DOWNLOADING, return_code=code)
+    record = manager.transition(record, state=expected, file_state=RunFileState.COLLECTING, return_code=code)
     observed = manager.update(record, RunStatus(RunState.FINISHED, return_code=None))
     assert observed.return_code == code
     assert observed.state == expected
@@ -199,7 +204,8 @@ def test_ssh_refresh_collects_available_outputs_without_exit_code(process, tmp_p
     process.terminate()
     process.wait(timeout=5)
     pending = manager.refresh((record,))[0]
-    assert pending.state == RunState.DOWNLOADING
+    assert pending.state == RunState.FINISHED
+    assert pending.file_state == RunFileState.COLLECTING
     assert not (local / "out.log").exists()
     assert not (local / "result.dat").exists()
     finished = manager.refresh((pending,), retrieve_ended=True)[0]
@@ -245,7 +251,8 @@ def test_live_observer_keeps_reservation_during_postprocess(process, tmp_path):
         process.terminate()
         process.wait(timeout=5)
         pending = manager.refresh((original,))[0]
-        assert pending.state == RunState.FINISHING
+        assert pending.state == RunState.FINISHED
+        assert pending.is_active
         assert pending.return_code is None
         with pytest.raises(DuplicateSubmissionError):
             manager.reserve(replacement)
@@ -278,7 +285,8 @@ def test_update_only_persists_supplied_status(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "client_for", unexpected)
     monkeypatch.setattr("kkrunner.runs.manager.capture_result_files", unexpected)
     updated = manager.update(record, RunStatus(RunState.FINISHED))
-    assert updated.state == RunState.DOWNLOADING
+    assert updated.state == RunState.FINISHED
+    assert updated.file_state == RunFileState.COLLECTING
     assert updated.files == record.files
     assert manager.store.get(record.id) == updated
     assert not local.exists()

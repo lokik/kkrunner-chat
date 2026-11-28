@@ -191,9 +191,9 @@ def test_untracked_refresh_after_observation_loss_reports_pending_download(tmp_p
 
     for native, expected in (
         (RunState.RUNNING, RunState.RUNNING),
-        (RunState.FINISHING, RunState.FINISHING),
+        (RunState.RUNNING, RunState.RUNNING),
         (RunState.UNKNOWN, RunState.UNKNOWN),
-        (terminal, RunState.DOWNLOADING),
+        (terminal, terminal),
     ):
         object.__setattr__(transport, "backend_state", native)
         assert run.refresh() == expected
@@ -201,7 +201,7 @@ def test_untracked_refresh_after_observation_loss_reports_pending_download(tmp_p
         assert destination.read_bytes() == b"old local output"
         assert run.files.stdout.availability_state == "pending"
     assert run.return_code == (0 if terminal == RunState.FINISHED else 17 if terminal == RunState.FAILED else None)
-    assert run.refresh() == RunState.DOWNLOADING
+    assert run.refresh() == terminal
     assert transport.follow_calls == 1
 
 

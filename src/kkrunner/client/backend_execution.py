@@ -89,21 +89,16 @@ class _Execution:
             facts = await self._call.wait()
         else:
             facts = await self._call.wait_with_output(output_requested, self._initial_output)
-        observed = decode_job_status(facts)
-        if self.snapshot.state.is_terminal and (
-            not observed.state.is_terminal
-            or self.snapshot.return_code is not None
-        ):
-            status = self.snapshot
-        else:
-            status = self._record(facts)
+        # Retain the actual invocation reply, not a second interpretation of
+        # the calculation's state. Job merges it with other observations.
+        status = self._record(facts)
         if facts.get("output_error") is not None:
             self.output_error = OSError(facts["output_error"])
             return status
         # A late request can cross the terminal frame. Complete named-stream
         # replay from the bytes already delivered, without another backend wait.
         if (output_requested is not None and output_requested.enabled
-                and output_requested.enabled_late and observed.state.is_terminal
+                and output_requested.enabled_late and status.state.is_terminal
                 and facts.get("output_drained") is not True
                 and status.failure_phase not in (JobFailurePhase.LAUNCH, JobFailurePhase.SUBMISSION)):
             paths = {name: self._follow_options.get(name + "_path") for name in ("stdout", "stderr")}
@@ -121,12 +116,10 @@ class _Execution:
 
     async def status(self):
         """Query native facts without replacing the live call's outcome."""
-        if (self.ref is None or self.snapshot.state.is_terminal
+        if (self.ref is None or (self.snapshot.state.is_terminal and not self.snapshot.output_pending)
                 or BackendCapability.STATUS not in self.backend.supports):
             return self.snapshot
-        status = decode_job_status(await self.target.call(self._operation("status"), self.ref.token))
-        # A concurrent live terminal reply is stronger than a liveness probe.
-        return self.snapshot if self.snapshot.state.is_terminal else status
+        return decode_job_status(await self.target.call(self._operation("status"), self.ref.token))
 
     async def _cancel_native(self):
         if self.ref is None or BackendCapability.CANCEL not in self.backend.supports:

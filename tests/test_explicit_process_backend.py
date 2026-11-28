@@ -46,4 +46,4 @@ def test_backend_status_uses_shared_state_enum_without_client_phases():
     assert RunState is SharedState
     assert JobStatus("running").state is RunState.RUNNING
     with pytest.raises(ValueError, match="client lifecycle phase"):
-        JobStatus(RunState.DOWNLOADING)
+        JobStatus("collecting")

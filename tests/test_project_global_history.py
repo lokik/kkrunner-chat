@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.files import FileEntry, FileManifest
 from kkrunner.projects.manager import ProjectRunManager
 from kkrunner.projects.repository import ProjectDeleteError, ProjectRepository
@@ -107,7 +108,7 @@ def test_unknown_run_prevents_project_deletion_until_terminal(tmp_path):
     with pytest.raises(ProjectDeleteError, match="active"):
         projects.delete(project.id, expected_generation=project.generation)
     assert manager.store.get(record.id).state == RunState.UNKNOWN
-    manager.store.update(record, lambda latest: replace(latest, state=RunState.FINISHED))
+    manager.store.update(record, lambda latest: replace(latest, state=RunState.FINISHED, file_state=RunFileState.DONE))
     projects.delete(project.id, expected_generation=project.generation)
     assert manager.store.runs() == ()
 

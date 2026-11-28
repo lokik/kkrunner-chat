@@ -13,6 +13,7 @@ from kkrunner.backends.support.process import pump_stream, stop_local_process
 from kkrunner.backends.implementations.supervised.streams import SupervisorStreams
 from kkrunner.backends.implementations.supervised.mailbox import publish_outcome
 from kkrunner.execution import FailurePhase, RunState
+from kkrunner.backends.support.messages import status_reply
 
 _SPEC_ENV = "KKRunner_REMOTE_PROCESS_SPEC"
 _START_FD_ENV = "KKRunner_REMOTE_PROCESS_START_FD"
@@ -60,10 +61,10 @@ async def _start_process(spec, stdin, streams, exited):
     return asyncio.subprocess.Process(transport, protocol, loop)
 
 
-def _set_active_state(active, state):
+def _set_active_state(active, state, return_code=None, **facts):
     """Change the transient execution state without a gap in status queries."""
     temporary = active.with_suffix(".next")
-    temporary.write_text(state.value)
+    temporary.write_text(json.dumps(status_reply(state, return_code, **facts)))
     temporary.replace(active)
 
 
@@ -75,6 +76,7 @@ async def _run(spec):
         socket_dir=spec.get("socket_dir"),
     )
     state, phase, return_code, message = RunState.FAILED, FailurePhase.LAUNCH, 127, None
+    file_error = None
     opened = []
     process = None
     streams_started = False
@@ -128,7 +130,12 @@ async def _run(spec):
         async def finish_output():
             await exited
             streams.release_backpressure()
-            _set_active_state(active, RunState.FINISHING)
+            code = process.returncode
+            native = (RunState.CANCELLED if state == RunState.CANCELLED else
+                      RunState.FINISHED if code == 0 else RunState.FAILED)
+            _set_active_state(active, native, code,
+                              failure_phase=FailurePhase.EXECUTION if native == RunState.FAILED else None,
+                              output_pending=True)
             return await asyncio.gather(*pumps, return_exceptions=True)
 
         completion = asyncio.create_task(finish_output())
@@ -154,9 +161,8 @@ async def _run(spec):
                 next((value for value in pump_results if isinstance(value, BaseException)), None)
             )
             if pump_error is not None:
-                state, phase = RunState.FAILED, FailurePhase.EXECUTION
-                message = f"Failed to write process output: {pump_error}"
-            elif state == RunState.RUNNING:
+                file_error = f"Failed to write process output: {pump_error}"
+            if state == RunState.RUNNING:
                 state = RunState.FINISHED if return_code == 0 else RunState.FAILED
                 phase = None if return_code == 0 else FailurePhase.EXECUTION
         finally:
@@ -185,30 +191,23 @@ async def _run(spec):
                 # Failure to close stdin must not suppress the primary launch
                 # error or prevent the durable terminal outcome from being
                 # published. On an otherwise successful run it is a failure.
-                if state == RunState.FINISHED:
-                    state, phase = RunState.FAILED, FailurePhase.EXECUTION
-                    message = f"Failed to close process input: {exc}"
-                elif message is None:
-                    message = f"Failed to close process input: {exc}"
+                if file_error is None:
+                    file_error = f"Failed to close process input: {exc}"
         if streams_started:
             try:
                 streams.sync()
             except OSError as exc:
-                state, phase = RunState.FAILED, FailurePhase.ARTIFACTS
-                message = f"Failed to sync process output: {exc}"
-        outcome = {
-            "state": state.value,
-            "return_code": return_code,
-            "failure_phase": None if phase is None else phase.value,
-            "error": message,
-        }
+                if file_error is None:
+                    file_error = f"Failed to sync process output: {exc}"
+        outcome = status_reply(state, return_code, failure_phase=phase,
+                               error=message, file_error=file_error)
         try:
             publish_outcome(
                 spec["receipt_id"],
                 state,
                 return_code,
                 phase,
-                error=message,
+                error=message, file_error=file_error,
             )
         except OSError as exc:
             # No durable terminal receipt exists. The client must preserve its

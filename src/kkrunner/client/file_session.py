@@ -834,8 +834,8 @@ class FileSession:
 
     async def finalize_async(self, status, *, on_resolved=None):
         """Finalize owned files on the existing event loop, if any."""
-        if not status.state.is_terminal:
-            raise RuntimeError("Cannot finalize files before terminal backend status")
+        if not status.state.is_terminal or status.output_pending:
+            raise RuntimeError("Cannot finalize files before backend output is ready")
         from kkrunner.runs.states import NO_EXECUTION_FAILURES
 
         try:
@@ -851,19 +851,22 @@ class FileSession:
             if self.files_are_local:
                 from kkrunner.files.availability import local_manifest
                 self._files = local_manifest(self._files, status)
-                if required and self._files.failed_artifacts:
-                    raise FileNotFoundError(self._files.availability_message)
             else:
                 await self._resolve_result_patterns(
                     required and self.context.output_files != FileSyncPolicy.NEVER, on_resolved,
                 )
                 await self._synchronize(required=required)
-            from kkrunner.files.availability import capture_result_files
+            if self._files.failed_artifacts:
+                error = FileNotFoundError if self.files_are_local else OSError
+                raise error(self._files.availability_message or "File collection failed")
+            from kkrunner.files.availability import snapshot_result_files
 
-            self._files = capture_result_files(
-                self._files, require_outputs=required,
+            self._files = snapshot_result_files(
+                self._files,
                 cache_versions=None if self.files_are_local else await self._target_cache_versions(),
             )
+            if self._files.failed_artifacts:
+                raise OSError(self._files.availability_message or "File capture failed")
             return self._files
         except Exception as exc:
             self._files = self._files.fail_pending_artifacts(str(exc))

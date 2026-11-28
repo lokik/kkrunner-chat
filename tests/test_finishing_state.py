@@ -5,6 +5,7 @@ from threading import Event
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionSpec, RunState, RunStore
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.client import ExecutionClient, SshTarget
@@ -64,7 +65,8 @@ def test_refresh_maps_raw_success_to_postprocessing(tmp_path):
     executor = _Executor(RunState.FINISHED)
     manager, record = _record(tmp_path, executor)
     (refreshed,) = manager.refresh((record,))
-    assert refreshed.state == RunState.POSTPROCESSING
+    assert refreshed.state == RunState.FINISHED
+    assert refreshed.file_state == RunFileState.READY
     assert refreshed.return_code == 0
     assert refreshed in manager.store.runs(active=True)
 
@@ -76,7 +78,8 @@ def test_refresh_keeps_raw_execution_failure_terminal(tmp_path):
     assert refreshed.state == RunState.FAILED
     assert refreshed.failure_phase == FailurePhase.EXECUTION
     assert refreshed.return_code == 1
-    assert refreshed in manager.store.runs(active=False)
+    assert refreshed.file_state == RunFileState.READY
+    assert refreshed in manager.store.runs(active=True)
 
 
 def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
@@ -97,7 +100,8 @@ def test_postprocessing_is_observable_until_processor_finishes(tmp_path):
         future = pool.submit(run.run)
         try:
             assert entered.wait(5), "Postprocessing did not begin"
-            assert run.state == RunState.POSTPROCESSING
+            assert run.state == RunState.FINISHED
+            assert run.file_state == RunFileState.POSTPROCESSING
         finally:
             release.set()
         assert future.result(timeout=5).return_code == 0
@@ -112,7 +116,12 @@ def test_failed_wait_keeps_original_error_when_backend_status_is_unavailable(tmp
     async def fail_wait():
         raise ValueError("original execution failure")
 
-    monkeypatch.setattr(run._job, "wait_async", fail_wait)
+    async def fail_run(*, on_submitted=None):
+        run._job._state = RunState.RUNNING
+        await on_submitted()
+        run._job._observation_lost("original execution failure")
+        await fail_wait()
+    monkeypatch.setattr(run._job, "run_async", fail_run)
     with pytest.raises(ValueError, match="original execution failure"):
         run.run()
     assert run.state == RunState.UNKNOWN
@@ -126,22 +135,24 @@ def test_manager_refresh_owns_remote_transfer_boundary(tmp_path):
     executor = _Executor(RunState.FINISHED, remote=True)
     manager, record = _record(tmp_path, executor)
     (refreshed,) = manager.refresh((record,))
-    assert refreshed.state == RunState.DOWNLOADING
+    assert refreshed.state == RunState.FINISHED
+    assert refreshed.file_state == RunFileState.COLLECTING
     assert refreshed.return_code == 0
     assert refreshed in manager.store.runs(active=True)
 
 
 @pytest.mark.parametrize("phase,expected_state", (
-    (FailurePhase.EXECUTION, RunState.DOWNLOADING),
-    (FailurePhase.PREPROCESSING, RunState.FAILED),
-    (FailurePhase.SUBMISSION, RunState.FAILED),
-    (FailurePhase.LAUNCH, RunState.FAILED),
+    (FailurePhase.EXECUTION, RunFileState.COLLECTING),
+    (FailurePhase.PREPROCESSING, RunFileState.DONE),
+    (FailurePhase.SUBMISSION, RunFileState.DONE),
+    (FailurePhase.LAUNCH, RunFileState.DONE),
 ))
 def test_remote_failure_only_downloads_after_execution_started(tmp_path, phase, expected_state):
     executor = _Executor(RunState.FAILED, remote=True, failure_phase=phase)
     manager, record = _record(tmp_path, executor)
     (refreshed,) = manager.refresh((record,))
-    assert refreshed.state == expected_state
+    assert refreshed.state == RunState.FAILED
+    assert refreshed.file_state == expected_state
     assert refreshed in manager.store.runs(active=not expected_state.is_terminal)
 
 
@@ -149,7 +160,8 @@ def test_cancelled_remote_job_keeps_transfer_reservation(tmp_path):
     executor = _Executor(RunState.CANCELLED, remote=True)
     manager, record = _record(tmp_path, executor)
     (refreshed,) = manager.refresh((record,))
-    assert refreshed.state == RunState.DOWNLOADING
+    assert refreshed.state == RunState.CANCELLED
+    assert refreshed.file_state == RunFileState.COLLECTING
     assert refreshed in manager.store.runs(active=True)
 
 
@@ -161,24 +173,29 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
     manager, record = _record(tmp_path, executor)
     calls = []
 
-    monkeypatch.setattr(executor, "cancel", lambda attachment: RunStatus(
-        RunState.CANCELLED, backend_id=attachment.execution.backend_id,
-    ))
+    async def cancel(attachment):
+        return RunStatus(RunState.CANCELLED, backend_id=attachment.execution.backend_id)
+    monkeypatch.setattr(executor, "cancel_async", cancel)
 
     async def collect(access, current, status, *, on_resolved=None):
         assert access.target == record.execution.target
         assert current.id == record.id
         assert status.state == RunState.CANCELLED
-        assert manager.store.get(record.id).state == RunState.RUNNING
+        assert manager.store.get(record.id).state == RunState.CANCELLED
         calls.append(current.id)
-        return current.files, transfer_error
+        from kkrunner.files.availability import capture_result_files
+        files = current.files if transfer_error is not None else capture_result_files(current.files, require_outputs=False)
+        return files, transfer_error
 
     monkeypatch.setattr(FileAccess, "collect_ended_files_async", collect)
     cancelled = manager.cancel(record.id)
     assert calls == [record.id]
     assert cancelled.state == RunState.CANCELLED
     if transfer_error is not None:
-        assert str(transfer_error) in cancelled.message
+        assert str(transfer_error) in cancelled.file_message
+        assert cancelled.file_state == RunFileState.FAILED
+    else:
+        assert cancelled.file_state == RunFileState.READY
     (refreshed,) = manager.refresh((cancelled,))
     assert refreshed.state == RunState.CANCELLED
     assert calls == [record.id]
@@ -188,7 +205,9 @@ def test_direct_remote_cancellation_preserves_confirmed_outcome(tmp_path, monkey
 def test_stale_backend_status_does_not_replace_postprocessing(tmp_path, observe):
     executor = _Executor(RunState.FAILED)
     manager, stale = _record(tmp_path, executor)
-    current = manager.transition(stale, state=RunState.POSTPROCESSING, return_code=0)
+    current = manager.complete(stale, state=RunState.FINISHED,
+                               file_state=RunFileState.POSTPROCESSING, return_code=0,
+                               artifacts_available=True)
     if observe == "update":
         result = manager.update(stale, RunStatus(RunState.FAILED, return_code=1))
     else:
@@ -211,7 +230,8 @@ def test_update_reserves_local_diagnostics_until_refresh(tmp_path, state):
     status, = executor.status(record)
 
     updated = manager.update(record, status)
-    assert updated.state == RunState.DOWNLOADING
+    assert updated.state == state
+    assert updated.file_state == RunFileState.COLLECTING
     assert updated.files.captured_at is None
     assert updated in manager.store.runs(active=True)
 
@@ -219,14 +239,17 @@ def test_update_reserves_local_diagnostics_until_refresh(tmp_path, state):
     assert refreshed.state == state
     assert refreshed.files.captured_at is not None
     assert len(refreshed.files.output_versions) == 1
-    assert refreshed in manager.store.runs(active=False)
+    assert refreshed.file_state == RunFileState.READY
+    assert refreshed in manager.store.runs(active=True)
 
 
-def test_lost_supervisor_during_finishing_can_become_unknown(tmp_path):
+def test_lost_supervisor_cannot_retract_confirmed_native_exit(tmp_path):
     executor = _Executor(RunState.UNKNOWN)
-    manager, record = _record(tmp_path, executor, state=RunState.FINISHING)
+    manager, record = _record(tmp_path, executor, state=RunState.FINISHED)
+    record = manager.transition(record, file_state=RunFileState.COLLECTING)
     (refreshed,) = manager.refresh((record,))
-    assert refreshed.state == RunState.UNKNOWN
+    assert refreshed.state == RunState.FINISHED
+    assert refreshed.file_state == RunFileState.READY
     assert refreshed in manager.store.runs(active=True)
 
 
@@ -266,12 +289,13 @@ def test_refresh_observes_native_exit_while_listener_is_stalled(tmp_path, monkey
             gate.touch()
             assert entered.wait(5)
             deadline = time.monotonic() + 5
-            while run.refresh() != RunState.FINISHING:
+            while not run.refresh().is_terminal:
                 assert time.monotonic() < deadline, "Native process exit was not observable"
                 time.sleep(.01)
-            assert run.state == RunState.FINISHING
+            assert run.state.is_terminal
+            assert run.file_state == RunFileState.WAITING
             if tracked:
-                assert run.record.state == RunState.FINISHING
+                assert run.record.state.is_terminal
         finally:
             gate.touch()
             release.set()
@@ -279,3 +303,50 @@ def test_refresh_observes_native_exit_while_listener_is_stalled(tmp_path, monkey
     assert outcome.return_code == 7
     assert run.state == RunState.FAILED
     assert run.refresh() == RunState.FAILED
+
+
+def test_live_job_facts_are_not_masked_by_previous_run_refresh(tmp_path, monkeypatch):
+    from kkrunner.backends.contracts import JobRef, JobStatus
+    from kkrunner.client import ExecutionClient
+    from kkrunner.backends import DirectBackend
+
+    run = ExecutionClient(DirectBackend).create_run(
+        ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path), tracked=False,
+    )
+    job = run._job
+    job.execution.ref = JobRef("direct", "native")
+    job._apply_status(JobStatus(RunState.UNKNOWN, message="old connection error"))
+
+    async def unknown():
+        return JobStatus(RunState.UNKNOWN, message="old connection error")
+
+    monkeypatch.setattr(job.execution, "status", unknown)
+    assert run.refresh() == RunState.UNKNOWN
+    assert run.failure_message == "old connection error"
+    job._apply_status(JobStatus(RunState.FAILED, return_code=7, failure_phase="execution",
+                                message="process exited with 7"))
+    assert run.state == RunState.FAILED
+    assert run.return_code == 7
+    assert run.failure_phase == FailurePhase.EXECUTION
+    assert run.failure_message == "process exited with 7"
+    run.close()
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_prelaunch_failure_is_not_replaced_by_refresh(tmp_path, tracked):
+    manager = RunManager(RunStore(tmp_path / "runs")) if tracked else False
+
+    def preprocess():
+        raise ValueError("invalid input")
+
+    run = ExecutionClient(DirectBackend).create_run(
+        ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path),
+        tracked=manager, preprocess=preprocess,
+    )
+    with pytest.raises(ValueError, match="invalid input"):
+        run.run()
+    assert run.refresh() == RunState.NEW
+    assert run.file_state == RunFileState.FAILED
+    assert run.file_failure_phase == FailurePhase.PREPROCESSING
+    assert run.file_message == "invalid input"
+    assert run.failure_message is None

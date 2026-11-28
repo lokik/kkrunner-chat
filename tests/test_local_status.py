@@ -1,5 +1,6 @@
 """Process backend status and recoverable submission identity."""
 
+from kkrunner import RunFileState
 from kkrunner.client import ExecutionClient, LocalTarget
 from kkrunner.backends.config import BackendConfig
 from types import SimpleNamespace
@@ -27,7 +28,7 @@ def test_disappeared_local_process_is_unknown(monkeypatch):
     })
     record = RunRecord(
         id="run",
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(LocalTarget(), WorkingDirectory("/tmp"), handle, backend=BackendConfig("kkrunner")),

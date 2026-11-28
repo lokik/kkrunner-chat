@@ -5,7 +5,7 @@ from dataclasses import replace
 from threading import Lock, RLock
 from weakref import WeakValueDictionary
 
-from kkrunner.execution import RunState
+from kkrunner.execution import RunFileState, RunState
 from kkrunner.runs.records import (
     ActiveRunDeletionError, ForgottenRunError, RunRecord, validate_update, validate_run_id,
 )
@@ -66,7 +66,7 @@ class MemoryRunStore:
             latest = self._records.get(record.id)
             exists = latest is not None
             if latest is None:
-                if record.state != RunState.NEW:
+                if record.state != RunState.NEW or record.file_state != RunFileState.NEW:
                     raise FileNotFoundError(record.id)
                 latest = replace(record, store=self)
             if latest.created_at != record.created_at:
@@ -83,9 +83,9 @@ class MemoryRunStore:
         with self._lock:
             records = sorted(self._records.values(), key=lambda record: record.created_at, reverse=newest)
             if active is True:
-                records = [record for record in records if not record.state.is_terminal]
+                records = [record for record in records if record.is_active]
             elif active is False:
-                records = [record for record in records if record.state.is_terminal]
+                records = [record for record in records if not record.is_active]
             return tuple(records[:limit])
 
     def discard(self, record):
@@ -101,7 +101,7 @@ class MemoryRunStore:
         run_id = run if isinstance(run, str) else run.id
         with self._lock:
             record = self.get(run_id)
-            if not record.state.is_terminal and not force:
+            if record.is_active and not force:
                 raise ActiveRunDeletionError(f"Run {run_id!r} is {record.state.value}; its process may still be active")
             self._forgotten.add(run_id)
             del self._records[run_id]

@@ -319,7 +319,7 @@ class ExecutionClient:
         return FileAccess(self.target).delete_remote_files(run, expected)
 
     async def open_run_parts_async(self, attachment, *, callback=None, output_listener=None):
-        """Open an existing execution without starting observation."""
+        """Open an existing execution for observation."""
         if BackendCapability.REATTACH not in self.backend.supports:
             from kkrunner.backends.contracts import UnsupportedCapability
             raise UnsupportedCapability("The selected backend does not support reattachment")
@@ -327,26 +327,17 @@ class ExecutionClient:
         execution = attachment.execution
         if execution.backend_id is None:
             raise ValueError("Run lacks a backend identity")
-        status = await self._invoke("status", execution.backend_id)
+        facts = await self._invoke("status", execution.backend_id)
         files = FileSession.from_attachment(self.target, attachment)
         try:
             binding = bind_execution(
-                self.backend, self.target, ref=JobRef(self.backend.name, execution.backend_id), status=status,
+                self.backend, self.target, ref=JobRef(self.backend.name, execution.backend_id), status=facts,
             )
             job = Job(binding, files.spec, callback=callback, output_listener=output_listener)
             return RunParts(job, files)
         except BaseException:
             files.close()
             raise
-
-    def collect_ended_files(self, record, status):
-        """Finalize ended files without observing a job; return (manifest, error).
-
-        The caller must own the file reservation. Error is None on success;
-        otherwise the returned manifest retains the partial collection.
-        """
-        from kkrunner.client.file_access import FileAccess
-        return FileAccess(self.target).collect_ended_files(record, status)
 
     def open_run_parts(self, attachment, *, callback=None, output_listener=None):
         return _run_sync(self.open_run_parts_async(

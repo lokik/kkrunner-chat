@@ -150,13 +150,16 @@ def test_client_parser_uses_persisted_run_id_or_explicit_handle():
 
 def test_client_status_from_persisted_record(monkeypatch, capsys):
     from kkrunner_cli import client
-    from kkrunner.runs.base import RunState
+    from kkrunner import RunFileState, RunState
     record = SimpleNamespace(id="run-abc", state=RunState.FINISHED,
-                             return_code=0, message=None)
+                             file_state=RunFileState.COLLECTING,
+                             return_code=0, message=None, failure_phase=None,
+                             file_failure_phase=None, file_message=None)
     monkeypatch.setattr(client, "_record", lambda args: record)
     client.main(["--store", "/runs", "status", "run-abc"])
     assert json.loads(capsys.readouterr().out) == {
-        "state": "finished", "return_code": 0, "error": None,
+        "state": "finished", "file_state": "collecting", "return_code": 0, "error": None,
+        "failure_phase": None, "file_failure_phase": None, "file_error": None,
     }
 
 

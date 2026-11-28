@@ -2,10 +2,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import RunState
 from kkrunner.files import FileEntry, FileManifest, FileState, FileVersion
 from kkrunner.files.manifest import FileMapping
-from kkrunner.client import ExecutionClient, SshTarget, LocalTarget
+from kkrunner.client import ExecutionClient, FileAccess, SshTarget, LocalTarget
 from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 
 from .transfer_helpers import LoopbackFileTransfer
@@ -46,7 +47,7 @@ def test_remote_executor_fetches_only_requested_historical_files(tmp_path):
     executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="historical",
-        state=RunState.FINISHED,
+        state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
@@ -105,7 +106,7 @@ def test_remote_fetch_uses_transport_expansion_for_exact_and_wildcard(tmp_path):
     executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="wildcard-fetch",
-        state=RunState.FINISHED,
+        state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
@@ -142,7 +143,7 @@ def test_remote_staged_result_keeps_canonical_file_absent(tmp_path):
     executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="staged-result",
-        state=RunState.FINISHED,
+        state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
@@ -183,7 +184,7 @@ def test_fetch_rejects_local_symlink_escape(tmp_path, wildcard):
     executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="escaped-result",
-        state=RunState.FINISHED,
+        state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
@@ -218,7 +219,7 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     executor = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
         id="escaped-staged",
-        state=RunState.FINISHED,
+        state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(executor.target, WorkingDirectory(str(local), str(remote)), "backend-id"),
@@ -260,7 +261,7 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
         captured_at="2026-10-13T08:00:00+00:00",
     )
     record = RunRecord(
-        id="missing-auxiliary", state=RunState.FINISHED,
+        id="missing-auxiliary", state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
@@ -490,7 +491,7 @@ def test_directory_reservation_prevents_historical_download(tmp_path, monkeypatc
         manager.retrieve_result_files(record)
     assert manager.store.get(abandoned.id) == abandoned
     assert not path.exists()
-    assert manager.refresh((abandoned,))[0].state == RunState.FAILED
+    assert manager.refresh((abandoned,))[0].file_state == RunFileState.FAILED
     proposed = manager.new_record(directory=work, files=reader.files)
 
     async def download(self, source, destination, **kwargs):
@@ -696,7 +697,7 @@ def test_staged_result_destinations_must_be_distinct(tmp_path, collision):
     (remote / second.name).write_text("second")
     client = ExecutionClient(target=SshTarget("loopback"))
     run = RunRecord(
-        id="staged-collision", state=RunState.FINISHED,
+        id="staged-collision", state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(client.target, WorkingDirectory(str(local), str(remote)), "job"),
@@ -863,7 +864,7 @@ def test_restore_results_without_original_execution_backend(tmp_path, monkeypatc
             mapping=FileMapping(str(local), str(remote)),
         ),
     )
-    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+    record = manager.transition(record, state=RunState.FINISHED, file_state=RunFileState.DONE, return_code=0,
                                 execution=record.execution.submitted("historical"))
     assert not record.execution.available
     reader = manager if default_store else RunManager()
@@ -889,7 +890,7 @@ def test_historical_output_glob_excludes_input_and_cache_namespaces(tmp_path):
     def entry(name, **kwargs):
         return FileEntry(str(local / name), str(remote / name), **kwargs)
     run = RunRecord(
-        id="protected-glob", state=RunState.FINISHED,
+        id="protected-glob", state=RunState.FINISHED, file_state=RunFileState.DONE,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(client.target, WorkingDirectory(str(local), str(remote)), "job"),
@@ -930,7 +931,7 @@ def test_restore_captured_inputs_without_captured_outputs(tmp_path, changed):
             mapping=FileMapping(str(local), str(remote)),
         ),
     )
-    record = manager.transition(record, state=RunState.FAILED,
+    record = manager.transition(record, state=RunState.FAILED, file_state=RunFileState.DONE,
                                 execution=record.execution.submitted("historical"))
     restored = manager.retrieve_result_files(record)
     assert original.exists() == (not changed)
@@ -976,7 +977,7 @@ def test_overlapping_historical_aliases_share_captured_digest(tmp_path, monkeypa
             mapping=FileMapping(str(local), str(remote)),
         ),
     )
-    record = manager.transition(record, state=RunState.FAILED,
+    record = manager.transition(record, state=RunState.FAILED, file_state=RunFileState.DONE,
                                 execution=record.execution.submitted("historical"))
     restored = manager.retrieve_result_files(record)
     assert not alias.exists()
@@ -1011,7 +1012,7 @@ def test_history_does_not_claim_file_created_during_retrieval(tmp_path, monkeypa
             mapping=FileMapping(str(local), str(remote)),
         ),
     )
-    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+    record = manager.transition(record, state=RunState.FINISHED, file_state=RunFileState.DONE, return_code=0,
                                 execution=record.execution.submitted("historical"))
 
     async def concurrent_writer(self, source, destination, **kwargs):
@@ -1027,7 +1028,8 @@ def test_history_does_not_claim_file_created_during_retrieval(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("state", [RunState.CANCELLED, RunState.FINISHED])
-def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, state):
+@pytest.mark.parametrize("subprocess_error", [False, True])
+def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, state, subprocess_error):
     from kkrunner import RunStore
     from kkrunner.runs import RunManager, RunStatus
     from kkrunner.client.pool import ClientPool
@@ -1040,9 +1042,13 @@ def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
 
+    from subprocess import CalledProcessError
+    error = (CalledProcessError(255, ["ssh", "download"]) if subprocess_error
+             else OSError("stderr transfer failed"))
+
     async def download(self, source, destination, **kwargs):
         if str(source) == str(remote / "stderr"):
-            raise OSError("stderr transfer failed")
+            raise error
         await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
 
     monkeypatch.setattr(SshTarget, "get_file", download)
@@ -1066,29 +1072,25 @@ def test_ended_file_collection_persists_partial_manifest(tmp_path, monkeypatch, 
     updated = manager.refresh((record,), retrieve_ended=True)[0]
     saved = manager.store.get(record.id)
     assert saved == updated
-    assert saved.state == (RunState.CANCELLED if state == RunState.CANCELLED else RunState.DOWNLOADING)
+    assert saved.state == state
+    assert saved.file_state == RunFileState.FAILED
     assert (local / "stdout").read_text() == "stdout"
     assert not (local / "stderr").exists()
     assert saved.files.stdout.availability_state == "available"
     assert saved.files.stderr.availability_state == "failed"
-    assert saved.files.stderr.availability_message == "stderr transfer failed"
-    if state == RunState.CANCELLED:
-        assert saved.files.captured_at is not None
-        assert {v.path.name for v in saved.files.output_versions} == {"stdout"}
-    else:
-        assert saved.files.captured_at is None
-        # The first attempt already published stdout. Retrying stderr must
-        # not invalidate that result if its target-side copy has disappeared.
-        (remote / "stdout").unlink()
-        monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
-        finished = manager.refresh((saved,), retrieve_ended=True)[0]
-        assert finished.state == RunState.FINISHED
-        assert finished.files.stderr.availability_state == "available"
-        assert (local / "stderr").read_text() == "stderr"
-        assert finished.files.stdout.availability_state == "available"
-        assert (local / "stdout").read_text() == "stdout"
-        assert {v.path.name for v in finished.files.output_versions} == {"stdout", "stderr"}
-        assert finished.message == "Process ended; exit code unavailable"
+    assert saved.files.stderr.availability_message == str(error)
+    assert saved.files.captured_at is None
+    # Both cancelled and successful jobs can retry diagnostic collection.
+    (remote / "stdout").unlink()
+    monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
+    finished = manager.collect_files(saved)
+    assert finished.state == state
+    assert finished.file_state == RunFileState.DONE
+    assert finished.files.stderr.availability_state == "available"
+    assert (local / "stderr").read_text() == "stderr"
+    assert finished.files.stdout.availability_state == "available"
+    assert (local / "stdout").read_text() == "stdout"
+    assert {v.path.name for v in finished.files.output_versions} == {"stdout", "stderr"}
 
 
 def test_client_collects_ended_files_without_original_backend(tmp_path, monkeypatch):
@@ -1112,7 +1114,7 @@ def test_client_collects_ended_files_without_original_backend(tmp_path, monkeypa
         ).initialize_availability(),
     )
     # File collection needs neither a backend reference nor an installed backend.
-    files, error = client.collect_ended_files(record, RunStatus(RunState.CANCELLED))
+    files, error = FileAccess(client.target).collect_ended_files(record, RunStatus(RunState.CANCELLED))
     assert error is None
     assert (local / "stdout").read_text() == "result"
     assert files.stdout.availability_state == "available"
@@ -1167,7 +1169,9 @@ def test_ended_collection_retry_rechecks_failed_pattern_members(tmp_path, monkey
         ),
     )
     monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
-    files, error = client.collect_ended_files(record, RunStatus(RunState.FINISHED))
+    from dataclasses import replace
+    record = replace(record, files=record.files.retry_failed_artifacts())
+    files, error = FileAccess(client.target).collect_ended_files(record, RunStatus(RunState.FINISHED))
     assert error is None
     assert all(entry.availability_state == "skipped" for entry in files.outputs)
     assert files.captured_at is not None
@@ -1190,7 +1194,7 @@ def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatc
     pattern = local / "*.dat"
     files = capture_result_files(FileManifest(
         stdout=FileEntry(local / "stdout", remote / "stdout",
-                         availability_state="failed", availability_message="original failure"),
+                         availability_state="skipped"),
         outputs=(
             FileEntry(pattern, remote / "*.dat", availability_state="available"),
             FileEntry(output, remote / output.name, source_pattern=pattern,
@@ -1198,6 +1202,8 @@ def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatc
         ),
         mapping=FileMapping(local, remote),
     ), require_outputs=False)
+    # Historical availability can fail after a successful provenance capture.
+    files = files.with_file_availability(str(local / "stdout"), "failed", "original failure")
     target = SshTarget("loopback")
     client = ExecutionClient(target=target)
     record = RunManager(RunStore(tmp_path / "runs")).new_record(
@@ -1213,7 +1219,7 @@ def test_finalization_preserves_captured_manifest_and_files(tmp_path, monkeypatc
     monkeypatch.setattr(SshTarget, "get_files", unexpected_io)
 
     if via_client:
-        finalized, error = client.collect_ended_files(record, status)
+        finalized, error = FileAccess(client.target).collect_ended_files(record, status)
         assert error is None
     else:
         session = FileSession.from_attachment(target, record)
@@ -1259,13 +1265,13 @@ def test_ended_collection_retry_keeps_published_cache(tmp_path, monkeypatch, pol
 
     monkeypatch.setattr(SshTarget, "get_file", download)
     status = RunStatus(RunState.FINISHED)
-    partial, error = client.collect_ended_files(record, status)
+    partial, error = FileAccess(client.target).collect_ended_files(record, status)
     assert isinstance(error, OSError)
     assert partial.caches[0].file.availability_state == "available"
     assert partial.caches[1].file.availability_state == "failed"
 
     fail_second = False
-    completed, error = client.collect_ended_files(replace(record, files=partial), status)
+    completed, error = FileAccess(client.target).collect_ended_files(replace(record, files=partial.retry_failed_artifacts()), status)
     assert error is None
     assert all(cache.file.availability_state == "available" for cache in completed.caches)
     assert calls == [str(remote / name) for name in ("first.cache", "second.cache", "second.cache")]
@@ -1311,7 +1317,7 @@ def test_ended_collection_retry_keeps_published_pattern_members(tmp_path, monkey
 
     monkeypatch.setattr(SshTarget, "get_files", download)
     status = RunStatus(RunState.FINISHED, return_code=0)
-    partial, error = client.collect_ended_files(record, status)
+    partial, error = FileAccess(client.target).collect_ended_files(record, status)
     assert isinstance(error, OSError)
     assert (local / "first-1.dat").read_text() == "first-1.dat"
     assert not (local / "second-1.dat").exists()
@@ -1325,7 +1331,7 @@ def test_ended_collection_retry_keeps_published_pattern_members(tmp_path, monkey
 
     monkeypatch.setattr(SshTarget, "query_files", exact_queries_only)
     fail_second = False
-    completed, error = client.collect_ended_files(replace(record, files=partial), status)
+    completed, error = FileAccess(client.target).collect_ended_files(replace(record, files=partial.retry_failed_artifacts()), status)
     assert error is None
     assert {entry.availability_state for entry in completed.artifacts} == {"available"}
     assert calls == [str(remote / name) for name in ("first-1.dat", "second-1.dat", "second-1.dat")]
@@ -1358,7 +1364,7 @@ def test_published_directory_does_not_satisfy_required_file_pattern(tmp_path, mo
         ).initialize_availability(),
     )
     monkeypatch.setattr(SshTarget, "query_files", LocalTarget.query_files)
-    files, error = ExecutionClient(target=target).collect_ended_files(
+    files, error = FileAccess(target).collect_ended_files(
         record, RunStatus(RunState.FINISHED, return_code=0),
     )
     assert isinstance(error, FileNotFoundError)
@@ -1405,7 +1411,7 @@ def test_failed_pattern_discovery_never_starts_or_retries_transfer(tmp_path, mon
     monkeypatch.setattr(SshTarget, "get_files", unexpected_transfer)
     client = ExecutionClient(target=target)
     status = RunStatus(RunState.FINISHED, return_code=0)
-    files, error = client.collect_ended_files(record, status)
+    files, error = FileAccess(client.target).collect_ended_files(record, status)
     assert isinstance(error, PermissionError)
     assert files.remote_patterns_resolved is False
     assert len(queries) == 2
@@ -1413,7 +1419,7 @@ def test_failed_pattern_discovery_never_starts_or_retries_transfer(tmp_path, mon
     assert all(entry.source_pattern is None for entry in files.artifacts)
 
     (remote / "bad-new.dat").write_text("new")
-    retry, error = client.collect_ended_files(replace(record, files=files), status)
+    retry, error = FileAccess(client.target).collect_ended_files(replace(record, files=files), status)
     assert error is not None
     assert retry == files
     assert len(queries) == 2
@@ -1464,7 +1470,8 @@ def test_manager_persists_complete_pattern_plan_before_first_download(tmp_path, 
 
     monkeypatch.setattr(SshTarget, "get_file", fail_first)
     pending = manager.refresh((record,), retrieve_ended=True)[0]
-    assert pending.state == RunState.DOWNLOADING
+    assert pending.state == RunState.FINISHED
+    assert pending.file_state == RunFileState.FAILED
     assert not tuple(local.iterdir())
     (remote / "empty-new.dat").write_text("unrelated file")
 
@@ -1479,7 +1486,7 @@ def test_manager_persists_complete_pattern_plan_before_first_download(tmp_path, 
     monkeypatch.setattr(SshTarget, "query_files", exact_queries_only)
     monkeypatch.setattr(SshTarget, "get_file", LoopbackFileTransfer.get_file)
     monkeypatch.setattr(SshTarget, "get_files", download)
-    finished = manager.refresh((pending,), retrieve_ended=True)[0]
+    finished = manager.collect_files(pending)
     assert finished.state == RunState.FINISHED
     assert {version.path.name for version in finished.files.output_versions} == {
         "stdout", "first.dat", "second.dat",
@@ -1513,7 +1520,7 @@ def test_frozen_plan_survives_stale_status_and_local_capture(tmp_path):
         concrete, "pending", remote_path=remote / concrete.name,
         source_pattern=pattern,
     ), remote_patterns_resolved=True)
-    record = manager.transition(record, state=RunState.DOWNLOADING, files=frozen)
+    record = manager.transition(record, state=RunState.FINISHED, file_state=RunFileState.COLLECTING, files=frozen)
 
     observed = manager.update(record, RunStatus(RunState.RUNNING, files=declared))
     assert observed.files == frozen
@@ -1558,7 +1565,7 @@ def test_never_sync_compares_only_existing_local_pattern_members(tmp_path, monke
     monkeypatch.setattr(SshTarget, "get_files", unexpected_transfer)
     monkeypatch.setattr(SshTarget, "get_file", unexpected_transfer)
 
-    files, error = ExecutionClient(target=target).collect_ended_files(
+    files, error = FileAccess(target).collect_ended_files(
         record, RunStatus(RunState.FINISHED, return_code=0),
     )
     assert error is None
@@ -1573,7 +1580,7 @@ def test_never_sync_compares_only_existing_local_pattern_members(tmp_path, monke
 
 
 
-@pytest.mark.parametrize("role", ["input", "output", "frozen_output"])
+@pytest.mark.parametrize("role", ["input", "output", "frozen_output", "captured_without_identity"])
 def test_historical_retrieval_uses_literal_discovered_paths(tmp_path, role):
     from kkrunner import RunStore
     from kkrunner.runs import RunManager
@@ -1599,18 +1606,63 @@ def test_historical_retrieval_uses_literal_discovered_paths(tmp_path, role):
         inputs=(declaration,) if role == "input" else (),
         outputs=() if role == "input" else (declaration, member),
         input_versions=(version,) if role == "input" else (),
-        output_versions=(version,) if role == "output" else (),
-        captured_at="2026-10-13T08:00:00+00:00" if role == "output" else None,
+        output_versions=(version,) if role in ("output", "captured_without_identity") else (),
+        captured_at="2026-10-13T08:00:00+00:00" if role in ("output", "captured_without_identity") else None,
         remote_patterns_resolved=True if role != "input" else None,
         mapping=FileMapping(local, remote),
     )
     manager = RunManager(RunStore(tmp_path / "runs"))
     record = manager.new_record(directory=local, remote_directory=remote,
                                 target=SshTarget("loopback"), files=manifest)
-    record = manager.transition(record, state=RunState.FAILED,
-                                execution=record.execution.submitted("historical"))
+    execution = (record.execution if role == "captured_without_identity"
+                 else record.execution.submitted("historical"))
+    record = manager.transition(record, state=RunState.FAILED, file_state=RunFileState.DONE,
+                                execution=execution)
     restored = manager.retrieve_result_files(record)
     assert original.read_text() == "original"
     assert (local / "result1.dat").read_text() == "keep local"
     assert restored.files.input_versions == manifest.input_versions
     assert restored.files.output_versions == manifest.output_versions
+
+
+@pytest.mark.parametrize("operation", ["discover", "download"])
+def test_historical_ssh_error_does_not_prevent_other_file_restoration(tmp_path, monkeypatch, operation):
+    from subprocess import CalledProcessError
+    from kkrunner import RunManager, RunStore
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    for name in ("first", "second"):
+        (remote / name).write_text(name)
+    target = SshTarget("loopback")
+    manager = RunManager(RunStore(tmp_path / "history"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=target,
+        files=FileManifest(
+            outputs=tuple(FileEntry(local / name, remote / name) for name in ("first", "second")),
+            mapping=FileMapping(local, remote),
+        ),
+    )
+    record = manager.transition(record, state=RunState.FINISHED, file_state=RunFileState.DONE,
+                                execution=record.execution.submitted("historical"))
+    error = CalledProcessError(255, ["ssh", "transfer"])
+    if operation == "discover":
+        async def expand(self, source, root):
+            if str(source).endswith("/first"):
+                raise error
+            return await LocalTarget.expand_files(self, source, root)
+        monkeypatch.setattr(SshTarget, "expand_files", expand)
+    else:
+        async def download(self, source, destination, **kwargs):
+            if str(source).endswith("/first"):
+                raise error
+            return await LoopbackFileTransfer.get_file(self, source, destination, **kwargs)
+        monkeypatch.setattr(SshTarget, "get_file", download)
+    restored = manager.retrieve_result_files(record)
+    assert not (local / "first").exists()
+    assert (local / "second").read_text() == "second"
+    assert restored.files.outputs[0].availability_state == "failed"
+    assert restored.files.outputs[0].availability_message == str(error)
+    assert restored.files.outputs[1].availability_state == "available"
+    assert manager.store.get(record.id) == restored

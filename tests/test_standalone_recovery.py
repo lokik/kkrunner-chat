@@ -1,5 +1,6 @@
 """Behavioral contracts introduced by the extraction, without application imports."""
 
+from kkrunner import RunFileState
 from kkrunner.client import ExecutionClient, StagingSpec
 import json
 import subprocess
@@ -31,7 +32,7 @@ def pending(manager, directory):
     )
     return manager.complete(
         record,
-        state=RunState.POSTPROCESSING,
+        state=RunState.FINISHED, file_state=RunFileState.POSTPROCESSING,
         return_code=0,
         execution=record.execution.submitted("test-backend"),
         artifacts_available=True,
@@ -56,7 +57,8 @@ def test_refresh_reads_current_postprocessing_outcome_without_backend(tmp_path, 
     else:
         assert manager.retry_postprocessing(stale, process) == "answer"
     completed = manager.store.get(stale.id)
-    assert completed.state == (RunState.FAILED if fails else RunState.FINISHED)
+    assert completed.state == RunState.FINISHED
+    assert completed.file_state == (RunFileState.FAILED if fails else RunFileState.POSTPROCESSED)
 
     monkeypatch.setattr(manager, "client_for",
                         lambda _: pytest.fail("Postprocessing is not backend state"))
@@ -141,7 +143,8 @@ manager.retry_postprocessing(sys.argv[2], lambda outcome: os._exit(17))
     child = subprocess.run([sys.executable, "-c", script, str(manager.store.directory), record.id], timeout=15)
     assert child.returncode == 17
     interrupted = manager.store.get(record.id)
-    assert interrupted.state == RunState.POSTPROCESSING
+    assert interrupted.state == RunState.FINISHED
+    assert interrupted.file_state == RunFileState.POSTPROCESSING
     assert manager.retry_postprocessing(record.id, lambda outcome: Path(outcome.output_file).read_text()) == "answer"
     completed = manager.store.get(record.id)
     assert completed.state == RunState.FINISHED
@@ -155,7 +158,7 @@ def test_retry_uses_current_processing_eligibility_not_supplied_snapshot(tmp_pat
     assert manager.retry_postprocessing(stale, lambda outcome: "parsed") == "parsed"
     completed = manager.store.get(current.id)
     assert completed.state == RunState.FINISHED
-    with pytest.raises(ValueError, match="Only postprocessing failures"):
+    with pytest.raises(ValueError, match="Only ready, failed or interrupted postprocessing"):
         manager.retry_postprocessing(current, lambda outcome: pytest.fail("Already processed"))
     assert manager.store.get(current.id) == completed
 
@@ -166,7 +169,7 @@ def test_modified_artifacts_are_not_reprocessed(tmp_path):
     Path(record.files.output_file).write_text("different")
     with pytest.raises(ValueError, match="unchanged historical artifacts"):
         manager.retry_postprocessing(record.id, lambda outcome: pytest.fail("unverified callback"))
-    assert manager.store.get(record.id).state == RunState.POSTPROCESSING
+    assert manager.store.get(record.id).file_state == RunFileState.POSTPROCESSING
 
 
 def test_managed_execution_needs_no_result_processor(tmp_path, monkeypatch):
@@ -198,10 +201,15 @@ def test_required_processing_can_be_supplied_after_restart(tmp_path, monkeypatch
     )
     with pytest.raises(ProcessingPending):
         run.run()
-    assert manager.store.get(run.id).state == RunState.POSTPROCESSING
+    assert manager.store.get(run.id).file_state == RunFileState.READY
     other = RunManager(RunStore(manager.store.directory))
-    attached = other.attach(run.id, process_result=lambda outcome: int(Path(outcome.output_file).read_text()))
-    assert attached.wait() == 42
+    def unexpected_backend(*args, **kwargs):
+        pytest.fail("Prepared local files must not require an execution client")
+
+    monkeypatch.setattr(other, "client_for", unexpected_backend)
+    assert other.retry_postprocessing(
+        run.id, lambda outcome: int(Path(outcome.output_file).read_text())
+    ) == 42
     assert other.store.get(run.id).state == RunState.FINISHED
 
 
@@ -245,7 +253,8 @@ def test_refresh_captures_artifacts_without_result_processor(tmp_path, monkeypat
                                 execution=record.execution.submitted("job-1"))
     status = RunStatus(RunState.FINISHED, return_code=0)
     pending = manager.update(record, status)
-    assert pending.state == RunState.DOWNLOADING
+    assert pending.state == RunState.FINISHED
+    assert pending.file_state == RunFileState.COLLECTING
     assert pending.files.captured_at is None
     monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *runs: (status,)))
     (completed,) = manager.refresh((pending,))
@@ -271,7 +280,7 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
     record = pending(manager, tmp_path)
     path = manager.store._path(record)
     data = json.loads(path.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     data[field] = value
     path.write_text(json.dumps(data))
     with pytest.raises(CorruptRunRecord) as error:
@@ -279,7 +288,7 @@ def test_current_schema_rejects_invalid_field_types(tmp_path, field, value):
     assert str(path) in str(error.value)
 
 
-def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, monkeypatch):
+def test_failed_download_can_resume_without_job(tmp_path, monkeypatch):
     from kkrunner.runs import FailurePhase
     from kkrunner.backends import SupervisedBackend
     from kkrunner.client import SshTarget
@@ -319,11 +328,16 @@ def test_failed_download_can_reattach_to_preserved_backend_receipt(tmp_path, mon
     with pytest.raises(OSError, match="interrupted download"):
         run.run()
     failed = manager.store.get(run.id)
-    assert failed.failure_phase == FailurePhase.DOWNLOAD
+    assert failed.state == RunState.FINISHED
+    assert failed.file_failure_phase == FailurePhase.DOWNLOAD
     assert failed.return_code == 0
     fail_download = False
-    manager.resume_download(failed)
-    attached = manager.attach(run.id, client=executor)
-    assert attached.wait().return_code == 0
+    async def unexpected_job(*args, **kwargs):
+        pytest.fail("File collection must not construct a Job")
+
+    monkeypatch.setattr(ExecutionClient, "open_run_parts_async", unexpected_job)
+    completed = manager.collect_files(failed)
+    assert completed.return_code == 0
+    assert completed.file_state == RunFileState.DONE
     assert manager.store.get(run.id).state == RunState.FINISHED
     assert (local / "answer.txt").read_text() == "42"

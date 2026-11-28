@@ -22,31 +22,19 @@ from kkrunner.targets import (
 )
 from kkrunner.files.manifest import FileEntry, FileManifest
 from kkrunner.files.versions import FileState
+from kkrunner.execution import RunFileState, merge_terminal_outcome
 from kkrunner.runs.base import FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
-from kkrunner.files.availability import capture_result_files, file_is_current, sync_result_files
+from kkrunner.files.availability import capture_result_files, sync_result_files
 from kkrunner.runs.files import RunFiles
 from kkrunner.runs.memory_store import MemoryRunStore
 from kkrunner.runs.model import ExecutionMetadata, WorkingDirectory
-from kkrunner.runs.processing import ProcessingPending
+from kkrunner.runs.processing import ProcessingPending, captured_outcome
 from kkrunner.runs.records import RunRecord
-from kkrunner.runs.states import NO_ARTIFACTS_FAILURES, NO_EXECUTION_FAILURES, project_run_state
+from kkrunner.runs.states import NO_EXECUTION_FAILURES
 from kkrunner.runs.stores import resolve_record, store_for
 from kkrunner.support.async_utils import run_coro_sync
 
-_STATE_RANK = {
-    RunState.NEW: 0,
-    RunState.PREPROCESSING: 1,
-    RunState.SUBMITTING: 2,
-    RunState.QUEUED: 3,
-    RunState.RUNNING: 4,
-    RunState.FINISHING: 5,
-    RunState.DOWNLOADING: 6,
-    RunState.POSTPROCESSING: 7,
-    RunState.FINISHED: 8,
-    RunState.FAILED: 8,
-    RunState.CANCELLED: 8,
-}
 _UNCHANGED = object()
 
 # Internal, process-wide reservations are not application run history.
@@ -216,6 +204,7 @@ class RunManager:
         return RunRecord(
             id=run_id or uuid4().hex,
             state=RunState.NEW,
+            file_state=RunFileState.NEW,
             created_at=now,
             updated_at=now,
             metadata={} if metadata is None else metadata,
@@ -238,23 +227,11 @@ class RunManager:
             return latest.state
         requested = RunState(requested)
         if latest.state.is_terminal:
-            # Later authoritative exit codes refine a FINISHED/unknown-code
-            # observation, including a nonzero execution failure.
-            if (
-                latest.state == RunState.FINISHED and latest.return_code is None
-                and return_code is not None and requested.is_terminal
-            ):
-                return requested
-            return latest.state
-        if requested == RunState.UNKNOWN:
-            # Uncertainty cannot retract confirmed execution completion.
-            if latest.state in (RunState.DOWNLOADING, RunState.POSTPROCESSING):
-                return latest.state
-            return requested
-        if latest.state == RunState.UNKNOWN:
-            return requested
-        if _STATE_RANK[requested] < _STATE_RANK[latest.state]:
-            return latest.state
+            return merge_terminal_outcome(
+                latest.state, latest.return_code, requested,
+                return_code if type(return_code) is int else None,
+            )[0]
+        # A scheduler may legitimately requeue a running calculation.
         return requested
 
     @staticmethod
@@ -277,75 +254,132 @@ class RunManager:
         return requested
 
     def transition(
-        self,
-        record,
-        *,
-        state=None,
-        execution=_UNCHANGED,
-        return_code=_UNCHANGED,
-        message=_UNCHANGED,
-        failure_phase=_UNCHANGED,
-        files=_UNCHANGED,
-        expected_updated_at=_UNCHANGED,
-        expected_record=None,
+        self, record, *, file_state=None, files=_UNCHANGED,
+        file_failure_phase=_UNCHANGED, file_message=_UNCHANGED, **native,
     ):
+        """Apply explicit record changes; file mutations require exclusive ownership.
+
+        Native observations are independent of file ownership. Internal lifecycle
+        operations already holding the file lock use _commit() directly.
+        """
+        if (file_state is None and files is _UNCHANGED
+                and file_failure_phase is _UNCHANGED and file_message is _UNCHANGED):
+            return self._commit(record, **native)
+        owner = self._claim_client_files(record)
+        try:
+            return self._commit(
+                record, file_state=file_state, files=files,
+                file_failure_phase=file_failure_phase, file_message=file_message, **native,
+            )
+        finally:
+            owner.release()
+
+    def _commit(
+        self, record, *, state=None, file_state=None, execution=_UNCHANGED,
+        return_code=_UNCHANGED, message=_UNCHANGED, failure_phase=_UNCHANGED,
+        files=_UNCHANGED, file_failure_phase=_UNCHANGED, file_message=_UNCHANGED,
+        observed_from=None, expected_record=None,
+    ):
+        """Merge native facts; the caller must own any file mutation."""
         def merge(latest):
-            if latest.state == RunState.POSTPROCESSING:
-                # Only the client holding observation_lock may advance
-                # processing, using the existing compare-and-update contract.
-                if expected_record is None:
-                    return latest
-                if state == RunState.FINISHED and latest.files.failed_artifacts:
-                    raise OSError(latest.files.availability_message or "Artifacts became unavailable during processing")
-            # Project reassignment is administrative, not a lifecycle update.
             if expected_record is not None and latest != replace(expected_record, project_id=latest.project_id):
-                raise RuntimeError("Run changed during postprocessing retry")
-            if expected_updated_at is not _UNCHANGED and latest.updated_at != expected_updated_at:
-                # An independent refresh has superseded this observation.
-                return latest
-            final_locked = latest.state.is_terminal
-            if final_locked and state is not None and not RunState(state).is_terminal:
-                # A stale progress update cannot refine a published outcome.
-                return latest
-            now = _now()
-            merged_state = self._merged_state(
-                latest, state, return_code=return_code if type(return_code) is int else None,
-            )
-            confirmed_late = (
-                latest.state == RunState.FINISHED and latest.return_code is None
-                and type(return_code) is int and merged_state.is_terminal
-            )
-            if state is not None and RunState(state) == RunState.UNKNOWN and merged_state != RunState.UNKNOWN:
-                # Ignore the entire stale observation, including its message
-                # and artifact metadata, not merely its proposed state.
-                return latest
-            changes = {"state": merged_state, "updated_at": now}
-            if not latest.state.is_terminal and merged_state.is_terminal:
-                changes["finished_at"] = now
-            merged_result_files = self._merged_result_files(latest, files)
-            if merged_result_files is not latest.files:
-                changes["files"] = merged_result_files
+                raise RuntimeError("Run changed during client processing")
+            requested = None if state is None else RunState(state)
+            if requested is not None and not requested.is_terminal:
+                # A nonterminal observation is conditional on the native
+                # facts it started from, not on file or project changes.
+                # Terminal evidence can still refine the record at any time.
+                baseline = record if observed_from is None else observed_from
+                if (self._native_status(latest) != self._native_status(baseline)
+                        or (latest.state not in (RunState.NEW, RunState.SUBMITTING)
+                            and requested in (RunState.NEW, RunState.SUBMITTING))):
+                    requested = None
+            native = self._merged_state(latest, requested, return_code=return_code)
+            # File progress belongs to the owner of the current phase, not to
+            # whichever observer reports the numerically most advanced state.
+            # Native facts may still arrive while that owner is working.
+            same_file_phase = latest.is_active and latest.file_state == record.file_state
+            client = (RunFileState(file_state)
+                      if same_file_phase and file_state is not None else latest.file_state)
+            manifest = self._merged_result_files(latest, files) if same_file_phase else latest.files
+            file_failure = file_failure_phase
+            file_error = file_message
+            if client != latest.file_state:
+                if client in (RunFileState.COLLECTING, RunFileState.READY,
+                              RunFileState.POSTPROCESSING, RunFileState.POSTPROCESSED,
+                              RunFileState.DONE) and not native.is_terminal:
+                    raise ValueError("File finalization requires confirmed native termination")
+                if client == RunFileState.POSTPROCESSED and latest.file_state != RunFileState.POSTPROCESSING:
+                    raise ValueError("Only active postprocessing can become postprocessed")
+                if client in (RunFileState.READY, RunFileState.POSTPROCESSING) and (
+                    not latest.processing_required or manifest.captured_at is None or manifest.failed_artifacts
+                ):
+                    raise ValueError("Postprocessing requires a declared processor and a complete capture")
+                if client in (RunFileState.NEW, RunFileState.PREPROCESSING, RunFileState.WAITING) and (
+                    latest.file_state not in (RunFileState.NEW, RunFileState.PREPROCESSING)
+                    or client == RunFileState.NEW
+                ):
+                    raise ValueError("Cannot reopen file preparation through transition")
+                if client == RunFileState.COLLECTING and latest.file_state in (
+                    RunFileState.READY, RunFileState.POSTPROCESSING,
+                ):
+                    raise ValueError("Cannot collect already captured files")
+                if latest.file_state == RunFileState.POSTPROCESSING and client in (
+                    RunFileState.READY, RunFileState.DONE,
+                ):
+                    raise ValueError("Active postprocessing must finish or fail")
+                if latest.file_state == RunFileState.READY and client == RunFileState.DONE:
+                    raise ValueError("Ready files require postprocessing")
+                if client == RunFileState.POSTPROCESSED and manifest.failed_artifacts:
+                    client = RunFileState.FAILED
+                    file_failure = FailurePhase.POSTPROCESSING
+                    file_error = manifest.availability_message or "Output artifacts unavailable"
+            changes = dict(state=native, file_state=client)
+            if latest.is_active and client.is_terminal:
+                changes["finished_at"] = _now()
             if execution is not _UNCHANGED and execution is not None:
-                changes["execution"] = execution
-            if return_code is not _UNCHANGED and return_code is not None:
-                if not final_locked or latest.return_code is None:
+                # A status response derived from an older attachment must
+                # not revert a directory resolved by submission recovery.
+                if (latest.execution != record.execution
+                        and latest.execution.backend_id is not None
+                        and execution.backend_id in (None, latest.execution.backend_id)):
+                    execution_update = latest.execution
+                else:
+                    execution_update = execution
+                changes["execution"] = execution_update
+            if requested is not None and latest.state.is_terminal:
+                _, code = merge_terminal_outcome(
+                    latest.state, latest.return_code, requested,
+                    return_code if type(return_code) is int else None,
+                )
+                changes["return_code"] = code
+            # Stale/unknown liveness cannot erase known terminal facts.
+            if requested is not None and native == requested:
+                if not latest.state.is_terminal and return_code is not _UNCHANGED and return_code is not None:
                     changes["return_code"] = return_code
-            if message is not _UNCHANGED:
-                if confirmed_late:
+                if message is not _UNCHANGED and (
+                    not latest.state.is_terminal or native != latest.state or latest.message is None
+                    or (latest.return_code is None and type(return_code) is int)
+                ):
                     changes["message"] = message
-                elif message is None and latest.state == RunState.UNKNOWN and merged_state != RunState.UNKNOWN:
-                    # A later scheduler observation supersedes the stale
-                    # connection-error diagnostic.
-                    changes["message"] = None
-                elif message is not None and (not final_locked or latest.message is None):
-                    changes["message"] = message
-            if failure_phase is not _UNCHANGED:
-                normalized = _failure_phase(failure_phase)
-                if confirmed_late or not final_locked or latest.failure_phase is None:
-                    changes["failure_phase"] = normalized
-            if all(getattr(latest, key) == value for key, value in changes.items() if key != "updated_at"):
+                if failure_phase is not _UNCHANGED and (
+                    not latest.state.is_terminal or native != latest.state
+                    or (latest.return_code is None and type(return_code) is int)
+                ):
+                    changes["failure_phase"] = _failure_phase(failure_phase)
+                if native == RunState.CANCELLED:
+                    changes["failure_phase"] = None
+            if same_file_phase:
+                if manifest is not latest.files:
+                    changes["files"] = manifest
+                if file_state is not None:
+                    if file_failure is not _UNCHANGED:
+                        changes["file_failure_phase"] = _failure_phase(file_failure)
+                    if file_error is not _UNCHANGED:
+                        changes["file_message"] = file_error
+            if all(getattr(latest, key) == value for key, value in changes.items()):
                 return latest
-            return replace(latest, **changes)
+            return replace(latest, updated_at=_now(), **changes)
 
         return self._store_for(record).update(record, merge)
 
@@ -364,19 +398,22 @@ class RunManager:
         if not lock.acquire(blocking=False):
             return store.get(record.id)
         try:
-            return await self._recover_submitting(record)
+            recovered, acknowledge = await self._recover_submitting(record)
         finally:
             lock.release()
+        if acknowledge:
+            await self._acknowledge_result_async(recovered)
+        return recovered
 
     async def _recover_submitting(self, record):
         record = resolve_record(record, self.store)
         if not record.execution.available or not self._is_stale_submitting(record):
-            return record
+            return record, False
         if BackendCapability.RECOVER not in record.execution.backend.supports:
-            return self.transition(
+            return self._commit(
                 record, state=RunState.UNKNOWN,
                 message="The selected backend has no submission recovery",
-            )
+            ), False
         client = self.client_for(record)
         from kkrunner.runs.model import WorkingDirectory
         from kkrunner.client.contracts import SubmissionContext
@@ -402,17 +439,17 @@ class RunManager:
                 )
             # Persist identity and stream paths before asking the backend for
             # status. A failed observation must not lose the recovered identity.
-            attached = self.transition(record, execution=execution, files=files)
+            attached = self._commit(record, execution=execution, files=files)
             await self._acknowledge_submission_async(attached, client=client)
             status, = await client.status_async(JobAttachment(attached.execution, attached.files))
-            return await self._record_observation(attached, status)
+            return await self._record_observation_owned(attached, status)
         if recovery.disposition is RecoveryDisposition.UNSUPPORTED:
-            return self.transition(
+            return self._commit(
                 record, state=RunState.UNKNOWN,
                 message=recovery.message or "Submission recovery is not supported by this client",
-            )
+            ), False
         if recovery.disposition is not RecoveryDisposition.ABSENT:
-            return record
+            return record, False
 
         def mark_absent(latest):
             if latest.state != RunState.SUBMITTING or latest.execution.backend_id is not None:
@@ -421,6 +458,7 @@ class RunManager:
             return replace(
                 latest,
                 state=RunState.FAILED,
+                file_state=RunFileState.DONE,
                 updated_at=now,
                 finished_at=now,
                 message="Stale submission was not found by its execution backend",
@@ -428,7 +466,7 @@ class RunManager:
                 files=latest.files.skip_pending_artifacts(),
             )
 
-        return self._store_for(record).update(record, mark_absent)
+        return self._store_for(record).update(record, mark_absent), False
 
     def recover_preprocessing(self, record):
         """Recover abandoned preprocessing without consulting an execution backend."""
@@ -438,21 +476,33 @@ class RunManager:
             return store.get(record.id)
         try:
             latest = store.get(record.id)
-            if latest.state != RunState.PREPROCESSING:
+            if latest.file_state != RunFileState.PREPROCESSING:
                 return latest
-            return self.transition(latest, **self.completion_fields(
-                latest, state=RunState.FAILED, failure_phase=FailurePhase.PREPROCESSING,
-                message="Client preprocessing was interrupted before submission",
-                artifacts_available=False,
-            ))
+            return self._commit(
+                latest, **self.completion_fields(
+                    latest, files=latest.files.skip_pending_artifacts(),
+                    file_state=RunFileState.FAILED,
+                    file_failure_phase=FailurePhase.PREPROCESSING,
+                    file_message="Client preprocessing was interrupted before submission",
+                ),
+            )
         finally:
             lock.release()
 
     def begin_submission(self, record):
+        """Publish the submission boundary with exclusive file ownership."""
+        owner = self._claim_client_files(record)
+        try:
+            return self._begin_submission_owned(record)
+        finally:
+            owner.release()
+
+    def _begin_submission_owned(self, record):
         """Publish the irreversible submission phase immediately before backend submit."""
-        if record.state != RunState.PREPROCESSING:
+        if record.file_state != RunFileState.PREPROCESSING:
             raise ValueError("Run is not preprocessing")
-        return self.transition(record, state=RunState.SUBMITTING, expected_record=record)
+        return self._commit(record, state=RunState.SUBMITTING,
+                               file_state=RunFileState.WAITING, expected_record=record)
 
     @contextmanager
     def preprocessing_reservation(self, spec):
@@ -474,7 +524,7 @@ class RunManager:
         record = replace(record, store=store)
         with store.observation_lock(record):
             reserved = self._reserve(record, lambda: store.save(
-                replace(record, state=RunState.PREPROCESSING, updated_at=_now()),
+                replace(record, file_state=RunFileState.PREPROCESSING, updated_at=_now()),
             ), conflict_stores=conflict_stores)
             try:
                 yield reserved
@@ -509,12 +559,13 @@ class RunManager:
             raise ValueError("Cannot reserve a record owned by another store")
         record = replace(record, store=self.store)
 
-        state = RunState.PREPROCESSING if preprocessing else RunState.SUBMITTING
+        state = RunState.NEW if preprocessing else RunState.SUBMITTING
+        file_state = RunFileState.PREPROCESSING if preprocessing else RunFileState.WAITING
 
         def activate(latest):
-            if latest != record or latest.state != RunState.NEW:
+            if latest != record or latest.state != RunState.NEW or latest.file_state != RunFileState.NEW:
                 raise ValueError(f"Run id {record.id!r} already exists; use attach()")
-            return replace(latest, state=state, updated_at=_now())
+            return replace(latest, state=state, file_state=file_state, updated_at=_now())
 
         return self._reserve(record, lambda: self.store.update(record, activate))
 
@@ -537,6 +588,44 @@ class RunManager:
                 raise DuplicateSubmissionError(record, conflicts)
             return activate()
 
+    @contextmanager
+    def file_mutation(self, entries, *, remote_of=None):
+        """Reserve files for a destructive operation within this client process.
+
+        Entries specify exact local paths (or remote paths in remote_of's
+        target namespace) and file/directory kinds. Check existing tracked
+        reservations, then keep a process-local reservation until the operation
+        returns. Unrelated submissions remain possible. Other processes cannot
+        see the temporary reservation; no run is added to history.
+        """
+        entries = tuple(entries)
+        if remote_of is None:
+            if any(entry.local_path is None or entry.remote_path is not None
+                   or not os.path.isabs(entry.local_path) for entry in entries):
+                raise ValueError("File mutation requires absolute local paths")
+            scope = RunManager.new_record(
+                self, directory=os.getcwd(), files=FileManifest(outputs=entries),
+            )
+            conflict_stores = ()
+        else:
+            execution = remote_of.execution
+            if not execution.target.transfers_files(shared_filesystem=remote_of.files.shared_filesystem):
+                raise ValueError("File mutation requires a separate target filesystem")
+            if execution.directory.remote is None:
+                raise ValueError("Remote file mutation requires a target working directory")
+            if any(entry.remote_path is None or entry.local_path is not None
+                   for entry in entries):
+                raise ValueError("Remote file mutation requires remote-only paths")
+            scope = RunManager.new_record(
+                self, directory=execution.directory.local, remote_directory=execution.directory.remote,
+                target=execution.target,
+                files=FileManifest(outputs=entries, mapping=remote_of.files.mapping),
+            )
+            store = self._store_for(remote_of)
+            conflict_stores = () if store is None else (store,)
+        with self._scoped_reservation(scope, conflict_stores=conflict_stores):
+            yield
+
     async def _reserve_recovering(self, attempt):
         """Explicit higher-level policy: recover abandoned conflicts outside reservation locks."""
         attempted_refresh = set()
@@ -549,7 +638,7 @@ class RunManager:
                     if conflict.store is not _TEMPORARY_RESERVATIONS
                     and self._record_key(conflict) not in attempted_refresh
                     and (
-                        conflict.state == RunState.PREPROCESSING
+                        conflict.file_state == RunFileState.PREPROCESSING
                         or conflict.execution.available and (
                             self._is_stale_submitting(conflict)
                             or (conflict.execution.backend_id is not None
@@ -565,380 +654,386 @@ class RunManager:
 
     @contextmanager
     def _observation_scope(self, record, status):
-        """Yield an existing client's updated record, or grant observation ownership."""
-        if not status.state.is_terminal:
+        """Publish native facts even when another client owns file finalization."""
+        if not status.state.is_terminal and status.file_error is None:
             yield None
             return
         owner = self._store_for(record).observation_lock(record)
         if not owner.acquire(blocking=False):
-            # A terminal backend receipt proves the producer is done even
-            # when the existing observer still owns client finalization.
-            yield self.transition(
-                record, state=RunState.FINISHING, expected_updated_at=record.updated_at,
-            )
+            yield self._record_execution(record, status)
             return
         try:
             yield None
         finally:
             owner.release()
 
-    @staticmethod
-    def _normalize_observed_status(record, status):
-        if status.return_code is None and record.return_code is not None:
-            # Process liveness is weaker evidence than an already known exit
-            # status (e.g. while result retrieval is pending after a failure).
-            failed = status.state == RunState.FINISHED and record.return_code != 0
-            status = replace(
-                status, return_code=record.return_code,
-                state=RunState.FAILED if failed else status.state,
-                failure_phase=(record.failure_phase or FailurePhase.EXECUTION)
-                if failed else status.failure_phase,
-            )
-        return status
-
-    def _observation_changes(self, record, status, *, files_pending):
-        phase = _failure_phase(status.failure_phase)
-        return_code = status.return_code
-        state = project_run_state(
-            status.state, files_pending=files_pending,
-            processing_pending=record.processing_required and return_code == 0,
-            failure_phase=phase,
-        )
+    def _record_execution(self, record, status, *, observed_from=None):
         execution = status.execution
-        if execution is None and status.backend_id is not None:
+        if record.execution.backend_id is not None:
+            # Identity and working directory already belong to the record.
+            # An observation cannot change the execution configuration.
+            if (status.backend_id not in (None, record.execution.backend_id)
+                    or (execution is not None
+                        and execution.backend_id not in (None, record.execution.backend_id))):
+                raise ValueError("Backend status returned another identity")
+            execution = None
+        elif execution is None and status.backend_id is not None:
             execution = record.execution.submitted(status.backend_id)
         elif execution is not None and record.execution.submission_key is not None:
-            # A backend reports execution facts, not the client submission
-            # ticket. Preserve our original ticket, but reject disagreement.
             if execution.submission_key is None:
-                execution = replace(
-                    execution, submission_key=record.execution.submission_key,
-                )
+                execution = replace(execution, submission_key=record.execution.submission_key)
             elif execution.submission_key != record.execution.submission_key:
                 raise ValueError("Backend status returned another submission key")
-        files = status.files
-        if phase in NO_EXECUTION_FAILURES:
-            files = (record.files if files is None else files).skip_pending_artifacts()
-        return dict(
-            state=state,
-            execution=execution,
-            files=files if files is not None else _UNCHANGED,
-            return_code=return_code,
-            message=status.message,
-            failure_phase=phase,
+        return self._commit(
+            record, state=status.state, execution=execution,
+            return_code=status.return_code, message=status.message,
+            failure_phase=status.failure_phase,
+            observed_from=observed_from,
         )
 
-    def _current_observation(self, record, status):
-        """Use current history; ignore backend facts once client processing owns the state."""
-        record = resolve_record(record, self.store)
-        if record.state.is_terminal or record.state in (RunState.PREPROCESSING, RunState.POSTPROCESSING):
-            return record, None
-        return record, self._normalize_observed_status(record, status)
+    @staticmethod
+    def _native_status(record):
+        return RunStatus(
+            record.state, backend_id=record.execution.backend_id,
+            return_code=record.return_code, message=record.message,
+            failure_phase=record.failure_phase,
+        )
+
+    def _apply_observation(self, record, status):
+        """Persist supplied facts only; caller owns file progress, not the backend."""
+        current = self._record_execution(record, status)
+        return self._apply_file_observation(record, current, status)
+
+    def _apply_file_observation(self, record, current, status):
+        if ((not status.state.is_terminal and status.file_error is None) or status.output_pending
+                or not current.is_active or not current.state.is_terminal
+                or current.file_state in (RunFileState.READY, RunFileState.POSTPROCESSING)):
+            return current
+        # COLLECTING proves that publication has already been confirmed. A late
+        # reply about the publisher (e.g. after receipt cleanup) cannot undo it.
+        if current.file_state == RunFileState.COLLECTING and status.file_error is not None:
+            return current
+        # The supplied manifest is a snapshot from the original observation.
+        # A newer file owner may already have frozen a plan or retried it.
+        files = (self._merged_result_files(current, status.files)
+                 if current.file_state == record.file_state and current.files == record.files
+                 else current.files)
+        if status.file_error is not None:
+            return self._commit(
+                current, file_state=RunFileState.FAILED,
+                file_failure_phase=FailurePhase.OUTPUT, file_message=status.file_error,
+                files=files.fail_pending_artifacts(status.file_error),
+            )
+        if current.failure_phase in NO_EXECUTION_FAILURES:
+            return self._commit(current, file_state=RunFileState.DONE,
+                                   files=files.skip_pending_artifacts())
+        if files.failed_artifacts:
+            return self._commit(
+                current, file_state=RunFileState.FAILED,
+                file_failure_phase=self._collection_failure_phase(current, files),
+                file_message=files.availability_message, files=files,
+            )
+        phase = RunFileState.COLLECTING
+        if files.captured_at is not None:
+            phase = RunFileState.READY if current.processing_required else RunFileState.DONE
+        return self._commit(current, file_state=phase, files=files)
 
     def update(self, record, status: RunStatus):
-        """Apply supplied execution facts; do not query or retrieve artifacts."""
+        """Apply supplied facts; never query the backend or collect files."""
         with self._observation_scope(record, status) as existing:
-            return self._update(record, status) if existing is None else existing
+            return self._apply_observation(record, status) if existing is None else existing
 
-    def _update(self, record, status: RunStatus):
-        record, status = self._current_observation(record, status)
-        if status is None:
-            return record
-        # Supplied execution facts alone cannot publish uncaptured diagnostic
-        # or successful output. Keep the reservation until finalization.
-        files = status.files if status.files is not None else record.files
-        transfers_files = record.execution.target.transfers_files(shared_filesystem=files.shared_filesystem)
-        changes = self._observation_changes(
-            record, status,
-            files_pending=(
-                (transfers_files and status.files is None)
-                or files.captured_at is None
-                or (status.state == RunState.FINISHED and bool(files.failed_artifacts))
-            ),
-        )
-        return self.transition(record, **changes)
+    @staticmethod
+    def _collection_failure_phase(record, files):
+        return (FailurePhase.DOWNLOAD
+                if record.execution.target.transfers_files(shared_filesystem=files.shared_filesystem)
+                else FailurePhase.ARTIFACTS)
 
-    async def _record_observation(self, record, status, *, retrieve_ended=False):
-        """Finalize local artifacts; retrieve unobserved remote output only on request."""
-        observed_at = record.updated_at
-        record, status = self._current_observation(record, status)
-        if status is None:
-            return record
-        transfers_files = record.execution.target.transfers_files(shared_filesystem=record.files.shared_filesystem)
-        if not transfers_files and status.state.is_terminal and status.files is None:
-            # Backend status contains execution facts only. The client-side
-            # manifest projection owns streams and application artifacts.
-            from kkrunner.files.availability import local_manifest
-            status = replace(status, files=local_manifest(record.files, status))
-        if (
-            retrieve_ended
-            and BackendCapability.INDEPENDENT_OUTCOME not in record.execution.backend.supports
-            and transfers_files
-            and (status.state == RunState.CANCELLED or (
-                status.state == RunState.FINISHED and status.return_code is None
-            ))
-            and status.files is None
-        ):
-            # No live client owns finalization. A liveness-only status/follow cannot
-            # recover cancellation on a later observation, so collect any
-            # diagnostics now, under the same ownership as completion.
-            from kkrunner.client.file_access import FileAccess
-            files, error = await FileAccess(record.execution.target).collect_ended_files_async(
-                record, status, on_resolved=lambda manifest: self.transition(
-                    record, state=RunState.DOWNLOADING, files=manifest,
-                ),
+    async def _observe_async(self, record, status, *, retrieve_ended=False):
+        """Own file collection only until its changes have been committed."""
+        with self._observation_scope(record, status) as existing:
+            if existing is not None:
+                return existing
+            current, acknowledge = await self._record_observation_owned(
+                record, status, retrieve_ended=retrieve_ended,
             )
-            if error is not None:
-                if status.state != RunState.CANCELLED and files.remote_patterns_resolved is False:
-                    return self.transition(
-                        record, state=RunState.FAILED, files=files,
-                        failure_phase=FailurePhase.DOWNLOAD, message=str(error),
-                    )
-                if status.state != RunState.CANCELLED:
-                    return self.transition(
-                        record, state=RunState.DOWNLOADING, files=files,
-                        message=f"Execution ended; output retrieval pending: {error}",
-                    )
-                # As in Run._finish(), diagnostic transfer failure cannot
-                # change a confirmed cancelled execution into another outcome.
-                status = replace(status, message=f"Execution cancelled; output retrieval failed: {error}")
-            elif status.state == RunState.FINISHED and status.message is None:
-                status = replace(status, message="Process ended; exit code unavailable")
-            status = replace(status, files=files)
-        changes = self._observation_changes(
-            record, status,
-            files_pending=transfers_files and status.files is None,
+        if acknowledge:
+            await self._acknowledge_result_async(current)
+        return current
+
+    async def _record_observation_owned(self, record, status, *, retrieve_ended=False):
+        """Apply supplied facts and collect files, returning whether receipt cleanup is due."""
+        previous = self._record_execution(record, status)
+        current = self._apply_file_observation(record, previous, status)
+        if current.file_state != RunFileState.COLLECTING:
+            return current, current.file_state != previous.file_state
+        if not status.state.is_terminal or status.output_pending or status.file_error is not None:
+            return current, False
+        transfers = current.execution.target.transfers_files(shared_filesystem=current.files.shared_filesystem)
+        # Only a captured manifest can finish collection without I/O.
+        # A supplied but uncaptured status manifest is not a result snapshot.
+        if transfers and not retrieve_ended:
+            return current, False
+        from kkrunner.client.file_access import FileAccess
+        files, error = await FileAccess(current.execution.target).collect_ended_files_async(
+            current, self._native_status(current),
+            on_resolved=lambda manifest: self._commit(current, files=manifest),
         )
-        if changes["state"] == RunState.UNKNOWN:
-            # Uncertainty must not replace a more recent observation or cause
-            # further receipt requests over a possibly unavailable transport.
-            return self.transition(record, expected_updated_at=observed_at, **changes)
-        if changes["state"] in (RunState.FINISHED, RunState.POSTPROCESSING) or (
-            status.state.is_terminal and changes["state"].is_terminal
-            and status.files is not None
-            and changes["failure_phase"] not in NO_ARTIFACTS_FAILURES
-        ):
-            changes["files"] = status.files if status.files is not None else record.files
-            updated = await self.complete_async(record, **changes, artifacts_available=True)
+        if error is not None:
+            fields = self.completion_fields(
+                current, files=files, file_state=RunFileState.FAILED,
+                file_failure_phase=self._collection_failure_phase(current, files),
+                file_message=str(error),
+            )
         else:
-            updated = self.transition(record, **changes)
-            await self._acknowledge_result_async(updated)
-        return updated
+            if files.captured_at is None:
+                raise RuntimeError("Successful file collection did not capture its artifacts")
+            fields = self.completion_fields(
+                current, files=files,
+                file_state=RunFileState.READY if current.processing_required else RunFileState.DONE,
+            )
+        return self._commit(current, **fields), True
 
     def completion_fields(
-        self,
-        record,
-        *,
-        state,
-        execution=None,
-        return_code=None,
-        message=None,
-        failure_phase=None,
-        artifacts_available=False,
-        files=None,
+        self, record, *, file_state, files=None, file_failure_phase=None, file_message=None,
     ):
-        """Resolve the completion data while the artifacts still exist."""
-        state = RunState(state)
-        phase = _failure_phase(failure_phase)
+        """Prepare file-only record changes, without I/O or native state interpretation."""
         result_files = self._merged_result_files(record, files)
-        if phase in NO_EXECUTION_FAILURES:
-            result_files = result_files.skip_pending_artifacts()
-            artifacts_available = False
+        if file_failure_phase == FailurePhase.OUTPUT:
+            result_files = result_files.fail_pending_artifacts(file_message or "Output publication failed")
+        if result_files.failed_artifacts and file_failure_phase is None:
+            file_state = RunFileState.FAILED
+            file_failure_phase = self._collection_failure_phase(record, result_files)
+            file_message = result_files.availability_message or file_message
+        return dict(files=result_files, file_state=file_state,
+                    file_failure_phase=file_failure_phase, file_message=file_message)
 
-        if result_files.failed_artifacts and (state == RunState.FINISHED or phase == FailurePhase.POSTPROCESSING):
+    def _import_completion_fields(
+        self, record, *, state, return_code=None, failure_phase=None,
+        artifacts_available=False, files=None, file_state=None,
+        file_failure_phase=None, file_message=None, **native,
+    ):
+        """Explicitly capture existing local results supplied to complete()."""
+        requested = RunState(state)
+        effective = self._merged_state(record, requested, return_code=return_code)
+        phase = _failure_phase(failure_phase)
+        code = return_code
+        if record.state.is_terminal:
+            _, code = merge_terminal_outcome(record.state, record.return_code, requested, return_code)
+            if effective == record.state and (requested != effective or record.failure_phase is not None):
+                phase = record.failure_phase
+        files = self._merged_result_files(record, files)
+        if file_failure_phase == FailurePhase.OUTPUT or phase in NO_EXECUTION_FAILURES or effective == RunState.NEW:
             artifacts_available = False
-            # The successful backend does not excuse a required download
-            # failure; the failed file retains the specific diagnostics.
-            state = RunState.FAILED
-            phase = (
-                FailurePhase.DOWNLOAD
-                if record.execution.target.transfers_files(shared_filesystem=result_files.shared_filesystem)
-                else FailurePhase.ARTIFACTS
-            )
-            message = result_files.availability_message or message
-
-        if artifacts_available:
+        if file_state is None:
+            file_state = (RunFileState.READY if record.processing_required and artifacts_available
+                          else RunFileState.DONE)
+        if artifacts_available and not files.failed_artifacts and files.captured_at is None:
             try:
-                result_files = capture_result_files(
-                    result_files, require_outputs=state == RunState.FINISHED and return_code == 0,
+                files = capture_result_files(
+                    files, require_outputs=effective == RunState.FINISHED and code == 0,
                 )
             except OSError as exc:
-                capture_error = str(exc)
-                if state in (RunState.FINISHED, RunState.POSTPROCESSING):
-                    state = RunState.FAILED
-                    phase = FailurePhase.ARTIFACTS
-                    message = capture_error
-                result_files = result_files.fail_pending_artifacts(capture_error)
-
-        if result_files.failed_artifacts and state in (RunState.FINISHED, RunState.POSTPROCESSING):
-            state, phase = RunState.FAILED, FailurePhase.ARTIFACTS
-            message = result_files.availability_message or message
-
-        return dict(state=state, execution=execution, return_code=return_code,
-                    message=message, failure_phase=phase, files=result_files)
+                files = files.fail_pending_artifacts(str(exc))
+                file_state, file_failure_phase, file_message = (
+                    RunFileState.FAILED, FailurePhase.ARTIFACTS, str(exc),
+                )
+        if phase in NO_EXECUTION_FAILURES or effective == RunState.NEW:
+            files = files.skip_pending_artifacts()
+        fields = self.completion_fields(
+            record, files=files, file_state=file_state,
+            file_failure_phase=file_failure_phase, file_message=file_message,
+        )
+        return dict(state=requested, return_code=return_code, failure_phase=failure_phase,
+                    **native, **fields)
 
     def complete(self, record, *, expected_record=None, **kwargs):
         return run_coro_sync(self.complete_async(record, expected_record=expected_record, **kwargs))
 
     async def complete_async(self, record, *, expected_record=None, **kwargs):
-        """Complete an operation which owns no application resources."""
-        updated = self.transition(
-            record, expected_record=expected_record,
-            **self.completion_fields(record, **kwargs),
-        )
+        """Record explicit completion, optionally importing existing local artifacts."""
+        owner = self._claim_client_files(record)
+        try:
+            try:
+                current = resolve_record(record, self.store)
+            except FileNotFoundError:
+                # An explicit completion may import a new record.
+                if record.state != RunState.NEW or record.file_state != RunFileState.NEW:
+                    raise
+                current = record
+            if current.file_state.is_terminal:
+                # The file transaction is over, but a delayed native exit
+                # may still refine the independent calculation outcome.
+                return self._commit(
+                    current, expected_record=expected_record,
+                    state=kwargs["state"], execution=kwargs.get("execution", _UNCHANGED),
+                    return_code=kwargs.get("return_code", _UNCHANGED),
+                    message=kwargs.get("message", _UNCHANGED),
+                    failure_phase=kwargs.get("failure_phase", _UNCHANGED),
+                )
+            if current.file_state != record.file_state or current.files != record.files:
+                raise ProcessingPending("File progress changed before completion")
+            updated = self._commit(
+                current, expected_record=expected_record,
+                **self._import_completion_fields(current, **kwargs),
+            )
+        finally:
+            owner.release()
         await self._acknowledge_result_async(updated)
         return updated
 
-    def resume_download(self, run):
-        """Explicitly reopen a failed post-execution transfer for retry.
+    async def _reopen_download_owned_async(self, current):
+        """Restore the reservation under the existing file ownership lock."""
+        store = self._store_for(current)
 
-        This is not an execution resubmit. The original backend handle remains
-        authoritative and the attached raw runner replays/synchronizes files
-        before task postprocessing can finish.
-        """
         def reopen(latest):
-            if (
-                latest.state != RunState.FAILED
-                or latest.failure_phase != FailurePhase.DOWNLOAD
-                or latest.return_code != 0
-                or latest.execution.backend_id is None
-                or latest.files.captured_at is not None
-            ):
-                raise ValueError("Only failed downloads of successful backend jobs can be retried")
+            if (latest.file_state != RunFileState.FAILED
+                    or latest.file_failure_phase != FailurePhase.DOWNLOAD
+                    or not latest.state.is_terminal
+                    or latest.files.captured_at is not None):
+                raise ValueError("Only failed downloads of ended jobs can be retried")
             if latest.files.remote_patterns_resolved is False:
                 raise ValueError("Remote result pattern discovery failed; there is no download plan to retry")
-            # Keep already transferred artifacts and all bytes on disk.
-            # Only failed transfers become eligible for a fresh attempt.
-            files = latest.files.retry_failed_artifacts()
-            return replace(
-                latest,
-                state=RunState.DOWNLOADING,
-                finished_at=None,
-                failure_phase=None,
-                message=None,
-                files=files,
-                updated_at=_now(),
-            )
+            return replace(latest, file_state=RunFileState.COLLECTING, finished_at=None,
+                           file_failure_phase=None, file_message=None,
+                           files=latest.files.retry_failed_artifacts(), updated_at=_now())
 
-        with self._history_edit(run) as (store, current):
-            return run_coro_sync(self._reserve_recovering(
-                lambda: self._reserve(current, lambda: store.update(current, reopen)),
-            ))
+        collecting = replace(current, file_state=RunFileState.COLLECTING)
+        return await self._reserve_recovering(
+            lambda: self._reserve(collecting, lambda: store.update(current, reopen)),
+        )
 
-    def begin_processing(self, record, *, return_code, files=None, execution=None, retry=False):
-        return run_coro_sync(self.begin_processing_async(
-            record, return_code=return_code, files=files, execution=execution, retry=retry,
-        ))
+    def collect_files(self, run):
+        """Finish confirmed output collection, including an explicit download retry.
 
-    async def begin_processing_async(self, record, *, return_code, files=None, execution=None, retry=False):
-        """Claim processing under the caller's existing client ownership.
-
-        A historical retry must reactivate the same reservation before reading
-        or validating artifacts. An interrupted active run already reserves it.
+        Only the filesystem target is required for collection. Native execution
+        is never restarted or observed; postprocessing is a separate operation.
         """
+        return run_coro_sync(self.collect_files_async(run))
+
+    async def collect_files_async(self, run):
+        with self._history_edit(run) as (_, current):
+            if current.file_state in (RunFileState.READY, RunFileState.DONE, RunFileState.POSTPROCESSED):
+                return current
+            if not current.state.is_terminal or not current.execution.target.available:
+                raise ValueError("File collection requires a confirmed exit and an available target")
+            if current.file_state == RunFileState.FAILED:
+                current = await self._reopen_download_owned_async(current)
+            if current.file_state != RunFileState.COLLECTING:
+                raise ValueError("Backend output has not been confirmed ready for collection")
+            current, acknowledge = await self._record_observation_owned(
+                current, self._native_status(current), retrieve_ended=True,
+            )
+        if acknowledge:
+            await self._acknowledge_result_async(current)
+        return current
+
+    async def _begin_processing_async(self, record, *, retry=False):
+        """Enter processing under the caller's existing observation lock."""
         store = self._store_for(record)
         latest = store.get(record.id)
+        if not latest.processing_required or not latest.state.is_terminal:
+            raise ValueError("Processing requires an ended calculation and a declared processor")
         if retry:
-            if (
-                not latest.processing_required
-                or latest.return_code != 0
-                or not (
-                    latest.state == RunState.POSTPROCESSING
-                    or (latest.state == RunState.FAILED and latest.failure_phase == FailurePhase.POSTPROCESSING)
-                )
-            ):
-                raise ValueError("Only postprocessing failures or interrupted processing can be retried")
-            if latest.files.captured_at is None:
-                raise ValueError("Postprocessing retry requires captured artifacts")
-        if latest.state == RunState.FINISHED and latest.return_code is not None:
-            raise ProcessingPending("Result already processed by another observer; load its historical result")
-        if latest.state.is_terminal and not (
-            (retry and latest.state == RunState.FAILED and latest.failure_phase == FailurePhase.POSTPROCESSING)
-            or (latest.state == RunState.FINISHED and latest.return_code is None)
-        ):
-            raise RuntimeError("Run is already terminal")
+            if not (latest.file_state in (RunFileState.READY, RunFileState.POSTPROCESSING)
+                    or (latest.file_state == RunFileState.FAILED
+                        and latest.file_failure_phase == FailurePhase.POSTPROCESSING)):
+                raise ValueError("Only ready, failed or interrupted postprocessing can be retried")
+        elif latest.file_state != RunFileState.READY:
+            raise ProcessingPending("Run files are not awaiting processing")
+        if latest.files.captured_at is None:
+            raise ValueError("Postprocessing requires captured artifacts")
 
         def activate(current):
-            if current.state.is_terminal and current != replace(latest, project_id=current.project_id):
-                raise ProcessingPending("Run changed before processing claim")
-            return replace(
-                current, state=RunState.POSTPROCESSING,
-                updated_at=_now(), finished_at=None,
-                failure_phase=None, message=None, return_code=return_code,
-                execution=current.execution if execution is None else execution,
-            )
+            if current.file_state != latest.file_state:
+                raise ProcessingPending("File phase changed before processing claim")
+            return replace(current, file_state=RunFileState.POSTPROCESSING,
+                           updated_at=_now(), finished_at=None,
+                           file_failure_phase=None, file_message=None)
 
-        # A historical attempt must first become active. The actual file
-        # validation can then run without submission or store locks.
         claimed = latest
-        if latest.state.is_terminal:
+        if not latest.is_active:
+            # Compare the prospective processing footprint, not the ended
+            # calculation's original producer/transfer footprint.
+            processing = replace(latest, file_state=RunFileState.POSTPROCESSING)
             claimed = await self._reserve_recovering(
-                lambda: self._reserve(latest, lambda: store.update(latest, activate)),
+                lambda: self._reserve(processing, lambda: store.update(latest, activate)),
             )
         try:
-            manifest = capture_result_files(self._merged_result_files(claimed, files))
+            # READY means a complete snapshot was committed by collection.
+            # Postprocessing must never create a new provenance baseline.
+            manifest = claimed.files
             if manifest.failed_artifacts:
                 raise OSError(manifest.availability_message or "Output artifacts unavailable")
             if any(v.state() is not FileState.CURRENT for v in manifest.output_versions):
-                if retry:
-                    raise ValueError("Postprocessing retry requires unchanged historical artifacts")
-                raise OSError("Historical artifacts changed before postprocessing")
+                raise ValueError("Postprocessing requires unchanged historical artifacts")
         except BaseException:
-            if latest.state.is_terminal:
-                # Validation did not begin a new processing attempt. Restore
-                # the prior outcome and release the reactivated reservation.
+            if not latest.is_active:
                 store.update(claimed, lambda current: replace(
-                    current, state=latest.state, finished_at=latest.finished_at,
-                    failure_phase=latest.failure_phase, message=latest.message,
-                    return_code=latest.return_code, execution=latest.execution,
+                    current, file_state=latest.file_state, finished_at=latest.finished_at,
+                    file_failure_phase=latest.file_failure_phase, file_message=latest.file_message,
                     updated_at=_now(),
                 ))
             raise
 
-        return store.update(claimed, lambda current: replace(activate(current), files=manifest))
+        if not latest.is_active:
+            return claimed
+        return store.update(claimed, activate)
 
     @staticmethod
-    def process_outcome(record, outcome, process_result):
-        """Invoke a parser, without taking ownership or publishing completion."""
+    def _result_outcome(record, outcome=None):
+        """Return only named artifacts belonging to the captured calculation."""
+        from kkrunner.runs.base import ExecutionOutcome
+
+        files = record.files
+        if outcome is None:
+            outcome = ExecutionOutcome(
+                input_file=files.input_file, output_file=files.output_file,
+                error_file=None if files.stderr is None else files.stderr.local_path,
+            )
+        outcome.state = record.state
+        outcome.return_code = record.return_code
+        return captured_outcome(files, outcome)
+
+    def _process_outcome(self, record, process_result, *, outcome=None):
+        """Interpret the captured files, under the caller's observation lock."""
         if process_result is None:
             raise ProcessingPending("Postprocessing requires a client callback")
-        result = process_result(outcome)
-        if any(v.state() is not FileState.CURRENT for v in record.files.output_versions):
-            raise RuntimeError("Historical artifacts changed during postprocessing retry")
+        if record.files.failed_artifacts:
+            raise OSError(record.files.availability_message or "Output artifacts unavailable")
+        result = process_result(self._result_outcome(record, outcome))
+        latest = self._store_for(record).get(record.id)
+        if latest.files.failed_artifacts:
+            raise OSError(latest.files.availability_message or "Output artifacts unavailable")
+        if any(v.state() is not FileState.CURRENT for v in latest.files.output_versions):
+            raise RuntimeError("Historical artifacts changed during postprocessing")
         return result
 
     def retry_postprocessing(self, run, process_result):
         """Retry a failed or interrupted processing attempt without rerunning a job."""
         if not callable(process_result):
             raise TypeError("Postprocessing retry requires a callable result processor")
-        from kkrunner.runs.base import ExecutionOutcome
-
         record = resolve_record(run, self.store) if isinstance(run, str) else run
         lock = self._store_for(record).observation_lock(record)
         if not lock.acquire(blocking=False):
             raise ProcessingPending("Another client owns postprocessing")
         try:
-            claimed = self.begin_processing(record, return_code=0, retry=True)
-            files = claimed.files
-            outcome = ExecutionOutcome(
-                input_file=(
-                    files.input_file if file_is_current(files, files.input_file, files.input_versions) else None
-                ),
-                output_file=files.output_file,
-                error_file=None if files.stderr is None else files.stderr.local_path,
-                return_code=claimed.return_code,
-            )
+            claimed = run_coro_sync(self._begin_processing_async(record, retry=True))
             try:
-                result = self.process_outcome(claimed, outcome, process_result)
+                result = self._process_outcome(claimed, process_result)
             except ProcessingPending:
                 raise
             except BaseException as exc:
-                self.complete(claimed, state=RunState.FAILED, return_code=outcome.return_code,
-                              message=str(exc), failure_phase=FailurePhase.POSTPROCESSING,
-                              expected_record=claimed)
+                self._commit(
+                    claimed, file_state=RunFileState.FAILED, file_message=str(exc),
+                    file_failure_phase=FailurePhase.POSTPROCESSING,
+                )
                 raise
-            self.complete(claimed, state=RunState.FINISHED, return_code=outcome.return_code,
-                          expected_record=claimed)
+            # Purely local processing; receipt cleanup, if still needed,
+            # belongs to explicit acknowledgement reconciliation.
+            completed = self._commit(claimed, file_state=RunFileState.POSTPROCESSED)
+            if completed.file_state != RunFileState.POSTPROCESSED:
+                raise OSError(completed.file_message or "Postprocessing could not be committed")
             return result
         finally:
             lock.release()
@@ -948,13 +1043,17 @@ class RunManager:
 
     async def _acknowledge_result_async(self, record):
         """Best-effort ACK after durable completion; failed ACKs remain retryable."""
-        if (not record.state.is_terminal or record.execution.backend_id is None
+        # Once the complete manifest is captured, the native receipt is no
+        # longer needed for local processing, even if its reservation is active.
+        prepared = (record.file_state in (RunFileState.READY, RunFileState.POSTPROCESSING)
+                    and record.files.captured_at is not None)
+        if ((record.is_active and not prepared) or not record.state.is_terminal
+                or record.execution.backend_id is None
                 or BackendCapability.ACKNOWLEDGE not in record.execution.backend.supports):
             return False
-        if (record.failure_phase == FailurePhase.DOWNLOAD and record.return_code == 0
+        if (record.file_failure_phase == FailurePhase.DOWNLOAD
                 and record.files.remote_patterns_resolved is not False):
-            # Retry will reattach to download preserved output. Retain the
-            # terminal backend receipt until that end-to-end attempt settles.
+            # Retain the terminal backend receipt until collection settles.
             return False
         # The backend ACK is idempotent. Do not serialize unrelated remote
         # operations or retain a second, process-local history of completions.
@@ -972,7 +1071,7 @@ class RunManager:
             if not record.execution.available:
                 continue
             self._acknowledge_submission(record)
-            if record.state.is_terminal and self._acknowledge_result(record):
+            if self._acknowledge_result(record):
                 acknowledged.append(record.id)
         return tuple(acknowledged)
 
@@ -998,49 +1097,50 @@ class RunManager:
         ))
 
     async def refresh_async(self, records=None, *, on_error=None, retrieve_ended=False):
-        """Refresh statuses; opt in to retrieving ended, unobserved remote output."""
-
+        """Refresh native facts and optionally collect ended jobs' files."""
         options = {} if on_error is None else {"on_error": on_error}
         if records is None:
             records = tuple(self.store.runs(active=True, **options))
         else:
-            # Postprocessing is client-owned state; only history can refresh it.
-            # Otherwise an assigned backend identity is immutable. Preprocessing
-            # recovery resolves the record under observation ownership.
             records = tuple(
                 resolve_record(record, self.store)
-                if record.state == RunState.POSTPROCESSING or (
-                    record.execution.backend_id is None
-                    and not record.state.is_terminal
-                    and record.state not in (RunState.NEW, RunState.PREPROCESSING)
-                )
+                if record.execution.backend_id is None and record.state not in (RunState.NEW,)
+                and record.is_active
                 else record
                 for record in records
             )
         current = {self._record_key(record): record for record in records}
         groups = {}
         for record in tuple(current.values()):
-            if record.state == RunState.PREPROCESSING:
-                key = self._record_key(record)
+            key = self._record_key(record)
+            if record.file_state == RunFileState.PREPROCESSING:
                 try:
                     record = self.recover_preprocessing(record)
                 except FileNotFoundError:
                     current.pop(key, None)
                     continue
                 current[key] = record
-                if record.state == RunState.PREPROCESSING:
+                if record.file_state == RunFileState.PREPROCESSING:
                     continue
-            if not record.execution.available:
-                continue  # Browsable history; no supported target implementation.
-            if record.execution.backend_id is None and self._is_stale_submitting(record):
-                current[self._record_key(record)] = await self.recover_submitting_async(record)
-                continue  # Recovery already observed a newly discovered backend job.
-            if record.execution.backend_id is None or record.state.is_terminal:
+            if record.file_state in (RunFileState.READY, RunFileState.POSTPROCESSING):
+                current[key] = resolve_record(record, self.store)
                 continue
-            if record.state == RunState.POSTPROCESSING:
-                # Execution has already completed and the client owns the
-                # processing attempt. Re-querying backend status could
-                # overwrite local processing state with a stale failure.
+            if record.state.is_terminal and record.file_state == RunFileState.COLLECTING:
+                # The producer's publication is already confirmed. Only the
+                # filesystem target is needed, not a backend or job identity.
+                if record.execution.target.available:
+                    status = self._native_status(record)
+                    current[key] = await self._observe_async(
+                        record, status, retrieve_ended=retrieve_ended,
+                    )
+                continue
+            if not record.execution.available:
+                continue
+            if record.execution.backend_id is None:
+                if record.is_active and self._is_stale_submitting(record):
+                    current[key] = await self.recover_submitting_async(record)
+                continue
+            if record.state.is_terminal and not record.is_active:
                 continue
             client = self.client_for(record)
             groups.setdefault(client, []).append(record)
@@ -1048,23 +1148,20 @@ class RunManager:
         for client, group in groups.items():
             if BackendCapability.STATUS not in client.backend.supports:
                 for record in group:
-                    current[self._record_key(record)] = self.transition(
+                    current[self._record_key(record)] = self._commit(
                         record, state=RunState.UNKNOWN,
                         message="This execution backend has no independent status query",
                     )
                 continue
-            # Query native execution independently of result-file ownership.
             statuses = await client.status_async(
                 *(JobAttachment(record.execution, record.files) for record in group)
             )
             if len(statuses) != len(group):
                 raise RuntimeError("Target returned wrong number of run statuses")
             for record, status in zip(group, statuses):
-                with self._observation_scope(record, status) as existing:
-                    current[self._record_key(record)] = (
-                        await self._record_observation(record, status, retrieve_ended=retrieve_ended)
-                        if existing is None else existing
-                    )
+                current[self._record_key(record)] = await self._observe_async(
+                    record, status, retrieve_ended=retrieve_ended,
+                )
         return tuple(current[self._record_key(record)] for record in records
                      if self._record_key(record) in current)
 
@@ -1092,7 +1189,8 @@ class RunManager:
     def mark_failed(self, run, *, message=None):
         """Explicitly override an unowned record, without asserting process termination."""
         with self._history_edit(run) as (_, record):
-            return self.transition(record, state=RunState.FAILED, expected_record=record, message=message)
+            return self._commit(record, file_state=RunFileState.FAILED,
+                                   expected_record=record, file_message=message)
 
     def forget(self, run, *, force=False):
         """Remove stored history without touching native processes or result files."""
@@ -1103,19 +1201,19 @@ class RunManager:
         return run_coro_sync(self.cancel_async(run))
 
     async def cancel_async(self, run):
-        """Ask a persisted backend to cancel a job, without assuming completion."""
+        """Request native cancellation and record its facts, without collecting files.
+
+        The live observer retains its file ownership. Without one, confirmed
+        publication makes collection available as a separate operation.
+        """
         record = resolve_record(run, self.store)
         if record.state.is_terminal:
             return record
-        if record.state in (RunState.FINISHING, RunState.DOWNLOADING, RunState.POSTPROCESSING):
-            raise RuntimeError("Execution has finished; client finalization cannot be cancelled as a native job")
         if record.execution.backend_id is None:
             raise UnsupportedCapability("No durable execution reference is available for cancellation")
         client = self.client_for(record)
         status = await client.cancel_async(JobAttachment(record.execution, record.files))
-        with self._observation_scope(record, status) as existing:
-            return (await self._record_observation(record, status, retrieve_ended=True)
-                    if existing is None else existing)
+        return self.update(record, status)
 
     def attach(
         self, run, *, process_result=None, client=None,
@@ -1137,8 +1235,12 @@ class RunManager:
         parts = None
         try:
             record = resolve_record(record, self.store)
-            if record.state.is_terminal:
-                raise RuntimeError("Run is already terminal; use explicit retry")
+            if not record.is_active:
+                raise RuntimeError("Run files are already finalized; use explicit retry")
+            if record.file_state in (RunFileState.READY, RunFileState.POSTPROCESSING):
+                raise ProcessingPending("Use retry_postprocessing() for already collected files")
+            if record.file_state == RunFileState.COLLECTING:
+                raise ProcessingPending("Use collect_files() for already published outputs")
             if process_result is not None and not record.processing_required:
                 raise ValueError("This Run did not request postprocessing")
             if record.execution.backend_id is None:

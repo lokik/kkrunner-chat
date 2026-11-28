@@ -7,7 +7,7 @@ when only the execution contracts are required.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kkrunner.execution import FailurePhase, MpiNotFoundWarning, MpiSpec, RunState
+    from kkrunner.execution import FailurePhase, MpiNotFoundWarning, MpiSpec, RunFileState, RunState
     from kkrunner.runs.base import ExecutionOutcome, ExecutionSpec, RunStatus
     from kkrunner.runs.manager import (
         DuplicateSubmissionError,
@@ -38,6 +38,7 @@ __all__ = [
     "RunManager",
     "RunRecord",
     "RunState",
+    "RunFileState",
     "RunStatus",
     "RunStore",
     "MemoryRunStore",
@@ -54,7 +55,7 @@ def __getattr__(name):
     ):
         from . import base
         value = getattr(base, name)
-    elif name in ("FailurePhase", "MpiNotFoundWarning", "MpiSpec", "RunState"):
+    elif name in ("FailurePhase", "MpiNotFoundWarning", "MpiSpec", "RunFileState", "RunState"):
         from kkrunner import execution
         value = getattr(execution, name)
     elif name in (

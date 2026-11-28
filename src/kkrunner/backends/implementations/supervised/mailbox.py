@@ -66,7 +66,7 @@ def acknowledge_submission(run_id):
     return True
 
 
-def publish_outcome(receipt_id, state, return_code, failure_phase=None, *, error=None):
+def publish_outcome(receipt_id, state, return_code, failure_phase=None, *, error=None, file_error=None):
     """Publish once: cancellation must not overwrite natural completion."""
     state = RunState(state)
     if not state.is_terminal:
@@ -82,6 +82,7 @@ def publish_outcome(receipt_id, state, return_code, failure_phase=None, *, error
                 "return_code": None if return_code is None else int(return_code),
                 "failure_phase": None if failure_phase is None else FailurePhase(failure_phase).value,
                 "error": error,
+                **({} if file_error is None else {"file_error": file_error}),
             },
             separators=(",", ":"),
             mode=0o600,

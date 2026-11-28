@@ -17,4 +17,4 @@ def _process_outcome(receipt_id):
         failure_phase = None if raw_phase is None else FailurePhase(raw_phase)
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("Invalid remote process outcome artifact") from exc
-    return state, return_code, failure_phase, data.get("error")
+    return state, return_code, failure_phase, data.get("error"), data.get("file_error")

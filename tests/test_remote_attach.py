@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.backends import SupervisedBackend, PsijBackend
 from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.files.manifest import FileManifest, FileMapping
@@ -36,7 +37,7 @@ def _launch(local_root, remote_root):
 def _record(runner):
     return RunRecord(
         id=runner.backend_id,
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=runner.execution,
@@ -182,7 +183,7 @@ def test_remote_executor_attach_rejects_reference_for_other_backend(tmp_path):
     executor = _executor()
     run = RunRecord(
         id="wrong-backend",
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(
@@ -211,7 +212,7 @@ def test_remote_attach_does_not_use_existing_local_file_as_observation_offset(tm
     endpoint = _executor()
     run = RunRecord(
         id="partial",
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(

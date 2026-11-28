@@ -66,29 +66,27 @@ its missing result processor. The command is not submitted again:
    try:
        run.run()
    except ProcessingPending:
-       print(manager.store.get(run.id).state.value)
+       print(manager.store.get(run.id).file_state.value)
 
    # Recreate the client; the processor is application-owned and not persisted.
    resumed = RunManager(RunStore(directory / "runs"))
-   attached = resumed.attach(
-       run.id,
-       process_result=lambda outcome: int(Path(outcome.output_file).read_text()),
-   )
-   print(attached.wait())
-   print(resumed.store.get(run.id).state.value)
+   print(resumed.retry_postprocessing(
+       run.id, lambda outcome: int(Path(outcome.output_file).read_text()),
+   ))
+   print(resumed.store.get(run.id).file_state.value)
 
 .. testoutput::
 
-   postprocessing
+   ready
    43
-   finished
+   postprocessed
 
 .. testcleanup::
 
    workspace.cleanup()
 
-Processing ownership uses an OS lock and a persisted attempt token. Observing
-or refreshing a record does not take ownership. A crash can cause a later
+Processing ownership uses an OS lock. Publishing native status does not
+require file ownership; collecting and processing files does. A crash can cause a later
 explicit retry to repeat application side effects, so processors should be
 idempotent or use their own transactions. Exactly-once external side effects
 are not guaranteed. The returned Python object is not serialized in the record;
@@ -97,8 +95,15 @@ applications reconstruct historical results from metadata and verified files.
 Lifecycle and recovery decisions
 ----------------------------------
 
-The normal sequence is ``new -> submitting -> queued/running -> downloading``
-when needed, then ``postprocessing`` when required, then ``finished``.
+The native ``state`` and the client ``file_state`` are independent. Native
+execution progresses from ``new`` through submission and running to
+``finished``, ``failed`` or ``cancelled``. The file lifecycle progresses
+through ``preprocessing``, ``waiting``, ``collecting`` and ``ready``;
+processing ends in ``postprocessed`` (with a processor) or ``done``
+(without one). File preparation, transfer or processing failures set
+``file_state`` to ``failed`` without changing the native outcome. A run
+remains active for reservation purposes until its file lifecycle is terminal.
+The processor receives the native outcome, including unsuccessful exits.
 ``failed`` and ``cancelled`` are terminal. ``unknown`` means observation is
 uncertain; it is not evidence that the backend stopped.
 
@@ -117,18 +122,26 @@ Malformed records still raise ``CorruptRunRecord`` by default; an explicit
 
 * ``run.stop_observation()`` detaches this observer without cancelling execution.
 * ``run.cancel()`` requests backend cancellation.
+  ``manager.cancel(id)`` records the native reply without downloading result
+  files. Use the existing observer or ``manager.collect_files(id)`` once
+  output publication is confirmed.
 * ``manager.refresh()`` reconciles backend facts and durable terminal receipts.
 * ``manager.attach(id, process_result=...)`` resumes a nonterminal run.
-* ``manager.resume_download(id)`` reopens a recoverable failed download; attach
-  afterward to resume transfer and completion.
-* ``manager.retry_postprocessing(id, processor)`` retries failed/interrupted
-  processing without submitting the command again.
+* ``manager.collect_files(id)`` completes confirmed output collection or
+  explicitly retries a failed download under one file ownership lock.
+  It does not attach to a backend job. If a processor is required, use
+  ``manager.retry_postprocessing(id, processor)`` after collection.
+* ``manager.retry_postprocessing(id, processor)`` processes ready files or
+  retries failed/interrupted processing without constructing an execution
+  client or submitting the command again. Receipt cleanup can be reconciled
+  separately.
 
 Do not attach a terminal record. Load its historical application result, or use
 the explicit retry operation for a supported failure phase. A recoverable failed
 download retains its backend outcome receipt until retry settles. Other terminal
-outcomes are acknowledged after the durable state is committed; refresh can
-retry a lost acknowledgement.
+outcomes are acknowledged once their durable file snapshot or terminal file
+state is committed. A purely local processing retry need not contact the
+backend; ``manager.reconcile_acknowledgements()`` can retry a lost acknowledgement.
 
 Recovery after a crash during submission depends on the backend. See
 :ref:`backend-recovery` for the distinction between reconnecting with a known
@@ -155,6 +168,12 @@ the first active-only query or write. The migration preserves IDs, contents
 and creation dates. It must complete successfully before conflict checks may
 skip dated history. Upgrade all clients sharing the store before using the
 new layout: older versions do not recognize ``active/``.
+
+Schema 2 is intentionally incompatible with schema 1. Before switching versions,
+finish or recover old active runs with their original KKRunner version. Then
+archive the old store or explicitly select a new empty store. Active records
+from an unsupported schema are not silently ignored during reservation checks:
+doing so could allow another calculation to overwrite their files.
 
 Metadata is namespaced JSON data, recursively immutable after record creation.
 It cannot change run identity, choose parsers, or execute code. Put the
