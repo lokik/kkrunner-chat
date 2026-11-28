@@ -273,3 +273,32 @@ def test_captured_pattern_members_are_literal_names(tmp_path):
         captured = capture_result_files(manifest)
         assert tuple(version.path for version in captured.output_versions) == (literal,)
         assert captured.output_versions[0].is_current()
+
+
+
+def test_published_artifact_cannot_disappear_during_version_capture(tmp_path):
+    import pytest
+    from kkrunner.files.availability import capture_result_files
+
+    for kind, source_pattern in (("file", None), ("file", tmp_path / "*.dat"), ("directory", None)):
+        path = tmp_path / "result.dat"
+        if kind == "directory":
+            path.mkdir()
+        else:
+            path.write_text("result")
+        entry = FileEntry(path, availability_state="available",
+                          source_pattern=source_pattern, kind=kind)
+        files = FileManifest(outputs=(entry,))
+        assert len(capture_result_files(files).output_versions) == 1
+        if kind == "directory":
+            path.rmdir()
+        else:
+            path.unlink()
+        with pytest.raises(OSError):
+            capture_result_files(files)
+
+
+def test_missing_unpublished_input_can_still_be_omitted_from_snapshot(tmp_path):
+    from kkrunner.files.availability import snapshot_file_entries
+
+    assert snapshot_file_entries((FileEntry(tmp_path / "optional", optional=True),)) == ()

@@ -260,15 +260,14 @@ def snapshot_file_entries(entries, *, sync=False):
     for entry in entries:
         if entry.local_path is None:
             continue
-        if entry.kind == "directory":
-            if os.path.isdir(entry.local_path):
-                paths[os.path.abspath(entry.local_path)] = entry.kind
-        elif entry.source_pattern is not None:
-            # Discovery already resolved this pathname, including literal glob characters.
-            if os.path.isfile(entry.local_path):
-                paths[os.path.abspath(entry.local_path)] = "file"
-        else:
+        if entry.kind == "file" and entry.source_pattern is None and has_file_magic(entry.local_path):
             paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,)), "file"))
+            continue
+        # A published concrete artifact must have a version. If it disappeared
+        # or changed kind, strict capture must fail rather than omit it.
+        exists = os.path.isdir if entry.kind == "directory" else os.path.isfile
+        if entry.availability_state == "available" or exists(entry.local_path):
+            paths[os.path.abspath(entry.local_path)] = entry.kind
     versions = []
     for path, kind in sorted(paths.items()):
         if sync and kind == "file":
