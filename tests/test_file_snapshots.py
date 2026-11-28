@@ -79,6 +79,8 @@ def test_snapshot_validates_declarations_and_submission(tmp_path):
         manager.snapshot_file(run, "result.dat")
     with pytest.raises(ValueError, match="concrete file"):
         manager.snapshot_file(run, "*.dat")
+    with pytest.raises(ValueError, match="concrete file"):
+        manager.snapshot_file(run, None)
     new = manager.new_record(
         directory=local, target=run.execution.target, backend=run.execution.backend,
         files=run.files, remote_directory=run.execution.directory.remote,
@@ -242,3 +244,41 @@ def test_snapshot_does_not_depend_on_execution_backend(tmp_path, monkeypatch):
     assert other.snapshot_file(historical, "result.dat") == b"partial output"
     client = ExecutionClient(target=historical.execution.target)
     assert client.snapshot_file(historical, "result.dat") == b"partial output"
+
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_snapshot_uses_literal_discovered_member(tmp_path, remote):
+    manager, run, local, source_root = running_run(tmp_path, remote, "result*.dat")
+    name = "result[1].dat"
+    (source_root / name).write_bytes(b"literal")
+    (source_root / "result1.dat").write_bytes(b"other")
+    declaration = run.files.outputs[0]
+    member = FileEntry(local / name, source_root / name if remote else None,
+                       source_pattern=declaration.local_path)
+    run = manager.store.update(run, lambda latest: replace(
+        latest, files=replace(latest.files, outputs=(declaration, member)),
+    ))
+    client = ExecutionClient(target=run.execution.target)
+    for snapshot in (manager.snapshot_file, client.snapshot_file):
+        assert snapshot(run, name) == b"literal"
+        assert snapshot(run, member) == b"literal"
+        with pytest.raises(ValueError, match="concrete file"):
+            snapshot(run, "result*.dat")
+        # A missing literal path must not pass validation by matching a
+        # different existing file.
+    (source_root / name).unlink()
+    for snapshot in (manager.snapshot_file, client.snapshot_file):
+        with pytest.raises(FileNotFoundError):
+            snapshot(run, name)
+    assert (source_root / "result1.dat").read_bytes() == b"other"
+
+
+def test_discovered_member_is_not_a_snapshot_declaration(tmp_path):
+    from kkrunner.files.snapshots import matching_file
+
+    member = FileEntry(tmp_path / "result[1].dat",
+                       source_pattern=tmp_path / "result*.dat")
+    manifest = FileManifest(outputs=(member,))
+    assert matching_file(manifest, member.local_path) == member
+    assert matching_file(manifest, tmp_path / "result1.dat") is None
