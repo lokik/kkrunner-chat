@@ -233,7 +233,7 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     assert not (outside / "output.dat").exists()
 
 
-def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path):
+def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path, monkeypatch):
     """A vanished optional DOS must not stop restoration of the main SCF output."""
     from dataclasses import replace
     from kkrunner import RunStore
@@ -273,7 +273,17 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
     record = store.save(record)
     manager = RunManager(store)
     manager.register_client(ExecutionClient(target=SshTarget("loopback")))
+    update = store.update
+    writes = []
+
+    def observe(candidate, updater):
+        if candidate.id == record.id:
+            writes.append(candidate.id)
+        return update(candidate, updater)
+
+    monkeypatch.setattr(store, "update", observe)
     restored = manager.retrieve_result_files(record)
+    assert writes == [record.id]
     assert main.read_bytes() == b"main output"
     assert not auxiliary.exists()
     assert restored.files.stdout.availability_state == "available"
@@ -810,8 +820,6 @@ def test_restore_input_does_not_create_output_artifact(tmp_path, captured, remot
 def test_history_write_failure_is_not_a_transfer_failure(tmp_path, monkeypatch):
     from kkrunner import RunStore
     from kkrunner.runs.manager import RunManager
-    from kkrunner.runs.files import RunFiles
-
     local, remote = tmp_path / "local", tmp_path / "remote"
     local.mkdir()
     remote.mkdir()
@@ -830,11 +838,16 @@ def test_history_write_failure_is_not_a_transfer_failure(tmp_path, monkeypatch):
     )
     record = manager.complete(record, state=RunState.FINISHED, return_code=0,
                               execution=record.execution.submitted("historical"))
-    def fail_history_write(self, record, path, state, message=None):
-        assert state == "available"
-        raise OSError("history is read-only")
+    update = manager.store.update
 
-    monkeypatch.setattr(RunFiles, "update_artifact_availability", fail_history_write)
+    def fail_history_write(candidate, updater):
+        if candidate.id == record.id:
+            updated = updater(candidate)
+            assert updated.files.outputs[0].availability_state == "available"
+            raise OSError("history is read-only")
+        return update(candidate, updater)
+
+    monkeypatch.setattr(manager.store, "update", fail_history_write)
     with pytest.raises(OSError, match="history is read-only"):
         manager.retrieve_result_files(record)
     assert output.read_text() == "result"
@@ -1612,3 +1625,34 @@ def test_historical_retrieval_uses_literal_discovered_paths(tmp_path, role):
     assert (local / "result1.dat").read_text() == "keep local"
     assert restored.files.input_versions == manifest.input_versions
     assert restored.files.output_versions == manifest.output_versions
+
+
+
+@pytest.mark.parametrize("role", ("stdin", "stdout", "stderr"))
+def test_uncaptured_stream_history_restores_literal_name(tmp_path, role):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    path = local / "stream[1].dat"
+    (local / "stream1.dat").write_text("unrelated")
+    (remote / "stream1.dat").write_text("unrelated remote")
+    (remote / path.name).write_text("historical")
+    manifest = FileManifest(
+        **{role: FileEntry(path, remote / path.name)},
+        mapping=FileMapping(local, remote),
+    )
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(directory=local, remote_directory=remote,
+                                target=SshTarget("loopback"), files=manifest)
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert path.read_text() == "historical"
+    assert (local / "stream1.dat").read_text() == "unrelated"
+    if role != "stdin":
+        assert getattr(restored.files, role).availability_state == "available"
+    else:
+        assert restored == record
