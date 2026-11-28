@@ -157,3 +157,19 @@ def test_removed_entry_points_are_not_aliases():
     assert not hasattr(RunManager, "create_run")
     assert not hasattr(ProjectRunManager, "create_run")
     assert not hasattr(ExecutionClient(), "computer")
+
+
+@pytest.mark.parametrize("primary", [None, "main.inp"])
+def test_execution_outcome_uses_manifest_roles(tmp_path, primary):
+    (tmp_path / "main.inp").write_text("primary")
+    (tmp_path / "aux.dat").write_text("auxiliary")
+    run = ExecutionClient().create_run(ExecutionSpec(
+        [sys.executable, "-c", "pass"], directory=tmp_path,
+        input_file=primary, input_files=("aux.dat",),
+        output_file="stdout.log", error_file="stderr.log",
+    ))
+    outcome = run.run()
+    assert outcome.input_file == (None if primary is None else str(tmp_path / primary))
+    assert outcome.input_file == run.files.input_file
+    assert outcome.output_file == run.files.output_file == str(tmp_path / "stdout.log")
+    assert outcome.error_file == run.files.stderr.local_path == str(tmp_path / "stderr.log")

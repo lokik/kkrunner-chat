@@ -265,3 +265,15 @@ def test_remote_staging_keeps_literal_directory_inputs_and_cache(tmp_path):
         assert (remote / "cache[1]" / "data.dat").is_file()
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("role", ["input_file", "output_file", "error_file"])
+def test_remote_file_session_still_rejects_anonymous_named_file_roles(tmp_path, role):
+    from io import BytesIO
+
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path, **{role: BytesIO()},
+    )
+    client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
+    with pytest.raises(ValueError, match="Remote execution requires named files"):
+        client.file_session(spec)

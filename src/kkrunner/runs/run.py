@@ -277,10 +277,11 @@ class Run:
         try:
             self._job.wait()
             raw_state = self._job.state
+            files = self._file_session.files
             outcome = ExecutionOutcome(
-                input_file=self._file_session.input_file,
-                output_file=self._file_session.output_file,
-                error_file=self._file_session.error_file,
+                input_file=files.input_file,
+                output_file=files.output_file,
+                error_file=None if files.stderr is None else files.stderr.local_path,
                 return_code=self._job.return_code,
             )
             self.result = outcome
