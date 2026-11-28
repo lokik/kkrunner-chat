@@ -8,28 +8,11 @@ guessed from the file handle's local .name.
 
 from __future__ import annotations
 
-import glob
 import os
 from dataclasses import asdict
 from typing import Callable
 
-from kkrunner.files.paths import file_path
-from kkrunner.files.task_file import TaskFile
-
-
-def _named_path(value, directory, mapping):
-    if value is None:
-        return None
-    # A file object with .name is supported, but an anonymous pipe, fd or
-    # in-memory stream cannot silently become a missing target path.
-    path = file_path(value, directory, required=True)
-    if not isinstance(path, str):
-        path = os.fsdecode(path)
-    if mapping is not None:
-        path = mapping(path)
-    if not isinstance(path, (str, os.PathLike)):
-        raise TypeError("File mapping must return a target pathname")
-    return os.fspath(path)
+from kkrunner.files.manifest import FileManifest
 
 
 def command_request(spec, transform=list):
@@ -43,47 +26,53 @@ def command_request(spec, transform=list):
     }
 
 
-def execution_request(spec, *, directory=None, map_path: Callable | None = None):
+def execution_request(spec, *, directory=None, map_path: Callable | None = None,
+                      manifest=None, allow_live_streams=False):
     """Materialize a JSON-safe target request without mutating *spec*.
 
     For remote execution, *map_path* must resolve each local pathname to the
     staged target path. Without a mapping the request is local-only.
+    The existing manifest, when supplied, owns all file declaration semantics.
+    Only a local in-process invocation may use unnamed live streams.
     """
     spec.require_complete()
     target_dir = os.fspath(spec.directory if directory is None else directory)
     if not target_dir:
         raise ValueError("Execution directory must not be empty")
-    if map_path is None and directory is not None and target_dir != spec.directory:
-        declared = (
-            spec.input_file, spec.stdin, spec.output_file, spec.error_file,
-            *spec.input_files, *spec.output_files, *spec.cache_files,
-        )
-        if any(value is not None for value in declared):
-            raise ValueError("A target path mapping is required for remote file declarations")
-    def path(value):
-        return _named_path(value, spec.directory, map_path)
-    def paths(values):
-        return [path(value) for value in values if value is not None]
+    files = FileManifest.from_spec(spec) if manifest is None else manifest
+    if map_path is None and directory is not None and target_dir != spec.directory and files.entries:
+        raise ValueError("A target path mapping is required for remote file declarations")
+
+    for value, entry, live in (
+        (spec.input_file, files.input, False),
+        (spec.stdin, files.stdin, allow_live_streams),
+        (spec.output_file, files.stdout, allow_live_streams),
+        (spec.error_file, files.stderr, allow_live_streams),
+    ):
+        if value is not None and (entry is None or entry.local_path is None):
+            if not live or map_path is not None or target_dir != spec.directory:
+                raise ValueError("A named file or path is required")
+
+    def path(entry):
+        if entry is None:
+            return None
+        name = os.fsdecode(entry.local_path)
+        if map_path is not None:
+            name = map_path(name)
+        if not isinstance(name, (str, os.PathLike)):
+            raise TypeError("File mapping must return a target pathname")
+        return os.fspath(name)
 
     protected_files, protected_patterns = [], []
-    for value in (*spec.input_files, *spec.cache_files):
-        if value is None:
-            continue
-        name = path(value)
-        if (not (isinstance(value, TaskFile) and value.kind == "directory")
-                and glob.has_magic(file_path(value, spec.directory, required=True))):
-            protected_patterns.append(name)
-        else:
-            protected_files.append(name)
+    for entry in (*files.inputs, *(cache.file for cache in files.caches)):
+        (protected_patterns if files.is_pattern(entry) else protected_files).append(path(entry))
 
     return target_request(
-        spec, target_dir, input_file=path(spec.input_file), stdin=path(spec.stdin),
-        output_file=path(spec.output_file), error_file=path(spec.error_file),
+        spec, target_dir, input_file=path(files.input), stdin=path(files.stdin),
+        output_file=path(files.stdout), error_file=path(files.stderr),
         protected_files=protected_files, protected_patterns=protected_patterns,
-        output_files=paths(spec.output_files),
-        output_directories=paths(
-            value for value in spec.output_files if isinstance(value, TaskFile) and value.kind == "directory"
-        ),
+        output_files=(path(entry) for entry in files.outputs),
+        output_directories=(path(entry) for entry in files.outputs if entry.kind == "directory"),
     )
 
 

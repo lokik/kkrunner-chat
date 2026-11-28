@@ -686,13 +686,9 @@ class FileSession:
         if self.is_local:
             directory, manifest = await self._resolve_footprint()
             from kkrunner.client.execution_request import execution_request
-            declaration = self.spec
-            if self._allow_live_streams:
-                declaration = replace(self.spec, **{
-                    name: file_path(getattr(self.spec, name), self.spec.directory)
-                    for name in ("stdin", "output_file", "error_file")
-                })
-            request = execution_request(declaration)
+            request = execution_request(
+                self.spec, manifest=manifest, allow_live_streams=self._allow_live_streams,
+            )
             try:
                 self._flush_declared_handles()
                 versions = snapshot_file_entries(

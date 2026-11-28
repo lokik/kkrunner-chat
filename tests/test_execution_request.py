@@ -277,3 +277,28 @@ def test_cleanup_rejects_obsolete_protection_contract_before_deleting(tmp_path, 
     with pytest.raises(ValueError, match="requires protected_files"):
         prepare_target_outputs(request)
     assert output.read_text() == "keep"
+
+
+def test_local_request_does_not_reinterpret_duplicate_primary_input_as_glob(tmp_path):
+    from kkrunner import ExecutionClient
+    from kkrunner.files.availability import prepare_target_outputs
+
+    main = tmp_path / "input[1].dat"
+    stale = tmp_path / "input1.dat"
+    main.write_text("primary input")
+    stale.write_text("stale output")
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        input_file=main, input_files=(main,), output_files=(stale,),
+    )
+    session = ExecutionClient().file_session(spec)
+    try:
+        session.prepare_submission()
+        request = session.prepare_job()
+        assert request["input_file"] == str(main)
+        assert not request["protected_patterns"]
+        prepare_target_outputs(request)
+        assert main.read_text() == "primary input"
+        assert not stale.exists()
+    finally:
+        session.close()
