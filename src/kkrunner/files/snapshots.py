@@ -7,7 +7,7 @@ from pathlib import Path
 from kkrunner.files.staging import staged_local_file
 
 from kkrunner.files.manifest import FileEntry
-from kkrunner.files.paths import declaration_matches, file_path, has_file_magic, path_matches, relative_local_path
+from kkrunner.files.paths import declaration_matches, file_path, has_file_magic, local_path_identities, path_matches, relative_local_path
 
 
 def matching_file(manifest, path):
@@ -68,13 +68,13 @@ def check_destination(manifest, source, destination):
     )
     if os.path.realpath(source) == os.path.realpath(target):
         raise ValueError("Snapshot destination overlaps a declared file")
-    targets = (target, os.path.realpath(target))
+    targets = local_path_identities(target)
     for entry in originals:
         if entry is None or entry.local_path is None:
             continue
-        path = os.path.abspath(entry.local_path)
-        for identity in (path, os.path.realpath(path)):
-            if any(declaration_matches(candidate, identity, pattern=manifest.is_pattern(entry),
+        pattern = manifest.is_pattern(entry)
+        for identity in local_path_identities(entry.local_path):
+            if any(declaration_matches(candidate, identity, pattern=pattern,
                                        directory=entry.kind == "directory", include_hidden=True) for candidate in targets):
                 raise ValueError("Snapshot destination overlaps a declared file")
     return Path(destination)

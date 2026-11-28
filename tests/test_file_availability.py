@@ -431,3 +431,22 @@ def test_output_exclusions_use_literal_directory_identity(tmp_path):
     assert files.output_excluded(directory / ".hidden" / "data")
     assert not files.output_excluded(other / "data")
     assert not files.output_excluded(tmp_path / "cache[1]-other" / "data")
+
+
+def test_output_glob_excludes_cache_symlink_by_its_declared_name(tmp_path):
+    target = tmp_path / "source.txt"
+    target.write_text("cache data")
+    link = tmp_path / "cache-link.dat"
+    link.symlink_to(target)
+    result = tmp_path / "result.dat"
+    result.write_text("output data")
+    files = FileManifest(
+        outputs=(FileEntry(tmp_path / "*.dat"),),
+        caches=(CacheEntry(FileEntry(tmp_path / "cache-*.dat")),),
+    )
+    assert files.output_excluded(link)
+    assert not files.output_excluded(result)
+    found = discover_local_files(files)
+    assert {entry.local_path for entry in found.outputs if entry.source_pattern is not None} == {str(result)}
+    assert {entry.file.local_path for entry in found.caches if entry.file.source_pattern is not None} == {str(link)}
+

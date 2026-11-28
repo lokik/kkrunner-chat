@@ -109,6 +109,12 @@ def path_matches(path, pattern, *, include_hidden=False):
     return match(0, 0)
 
 
+def local_path_identities(path):
+    """Preserve both the directory-entry name and the resolved local pathname."""
+    path = os.path.abspath(path)
+    return tuple(dict.fromkeys((path, os.path.realpath(path))))
+
+
 def declaration_matches(path, declaration, *, pattern=False, directory=False, include_hidden=False):
     """Test a concrete pathname against a file, directory tree or glob."""
     path, declaration = os.path.normpath(path), os.path.normpath(declaration)
