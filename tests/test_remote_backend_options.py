@@ -6,7 +6,9 @@ from dataclasses import asdict
 from kkrunner import ExecutionSpec
 from kkrunner.execution import MpiSpec
 from kkrunner.client import ExecutionClient, StagingSpec
-from kkrunner.backends import PsijBackend, DirectBackend
+from kkrunner.backends import PsijBackend, DirectBackend, SupervisedBackend
+
+import pytest
 from kkrunner.files import FileManifest
 
 from .test_transport import _LoopbackSshTransport
@@ -39,7 +41,7 @@ def test_remote_request_carries_target_backend_options_and_mpi_intent(tmp_path):
     )
     parts = client.create_run_parts(spec, submission_key="test-run")
     request, manifest = asyncio.run(parts.files._prepare_async())
-    request = parts.submission_builder(request)
+    request = parts.job.execution._submission_request(request)
     remote_directory = remote_root / "calculation"
     assert request["backend"] == "psij"
     assert request["backend_options"] == {"executor_name": "slurm", "url": None}
@@ -79,7 +81,7 @@ def test_untracked_remote_request_has_no_client_submission_key(tmp_path):
         staging=StagingSpec(local_root=root, remote_root=remote_root),
     ))
     request, _manifest = asyncio.run(parts.files._prepare_async())
-    complete = parts.submission_builder(request)
+    complete = parts.job.execution._submission_request(request)
     assert complete["submission_key"] is None
     assert complete["backend"] == "psij"
 
@@ -101,7 +103,7 @@ def test_remote_file_declarations_are_target_only_and_single_sourced(tmp_path):
     )
     parts = client.create_run_parts(spec)
     request, manifest = asyncio.run(parts.files._prepare_async())
-    complete = parts.submission_builder(request)
+    complete = parts.job.execution._submission_request(request)
     remote_dir = remote_root / "work"
     assert complete["output_files"] == [str(remote_dir / "plot-*.dat")]
     assert complete["protected_files"] == [str(remote_dir / "restart.dat")]
@@ -111,3 +113,20 @@ def test_remote_file_declarations_are_target_only_and_single_sourced(tmp_path):
     assert "staging" not in complete
     assert manifest.outputs[0].remote_path == str(remote_dir / "plot-*.dat")
     assert manifest.caches[0].file.remote_path == str(remote_dir / "restart.dat")
+
+
+@pytest.mark.parametrize("backend,detached", [(DirectBackend, True), (SupervisedBackend, False)])
+def test_submission_binding_owns_effective_detachment(tmp_path, backend, detached):
+    client = ExecutionClient(backend)
+    parts = client.create_run_parts(ExecutionSpec(("true",), directory=tmp_path),
+                                    submission_key="native-submission")
+    parts.configure_detached(detached)
+    parts.files.prepare_submission()
+    prepared = parts.files.prepare_job()
+    assert not {"backend", "backend_options", "submission_key", "detached"}.intersection(prepared)
+    request = parts.job.execution._submission_request(prepared)
+    assert request["backend"] == client.backend.name
+    assert request["backend_options"] == dict(client.backend.options)
+    assert request["submission_key"] == "native-submission"
+    assert request["detached"] is detached
+    parts.close()

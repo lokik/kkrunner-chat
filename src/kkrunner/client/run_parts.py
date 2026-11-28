@@ -6,8 +6,8 @@ lives in this facade; Job observes the selected backend's execution state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kkrunner.client.file_session import FileSession
@@ -20,15 +20,12 @@ class RunParts:
 
     job: "JobProtocol"
     files: "FileSession"
-    submission_builder: Optional[Callable[[dict], dict]] = field(default=None, repr=False)
 
     def prepare_job(self):
         """Wire a staged client file session into its execution mechanism."""
         from kkrunner.runs.base import SubmissionNotStarted
         try:
-            prepared = self.files.prepare_job()
-            request = self.submission_builder(prepared) if self.submission_builder is not None else prepared
-            self.job.configure_submission(request, **self.files.observation())
+            self.job.configure_submission(self.files.prepare_job(), **self.files.observation())
         except SubmissionNotStarted:
             raise
         except Exception as exc:

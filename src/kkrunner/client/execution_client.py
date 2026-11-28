@@ -132,14 +132,6 @@ class ExecutionClient:
     def default_detached(self):
         return self.backend.default_detached
 
-    def submission_request(self, prepared_files, *, submission_key=None):
-        """Add backend configuration to a request prepared by the file service."""
-        return {
-            **prepared_files, "submission_key": submission_key,
-            "backend": self.backend.name, "backend_options": dict(self.backend.options),
-            "detached": self.backend.default_detached,
-        }
-
     async def _invoke(self, name, *args, **kwargs):
         operation = Operation.for_backend(type(self.backend), name)
         return await self.target.call(operation, *args, **kwargs)
@@ -252,12 +244,11 @@ class ExecutionClient:
     def create_run_parts(self, spec, *, submission_key=None, callback=None):
         spec.require_complete()
         files = self.file_session(spec)
-        execution = bind_execution(self.backend, self.target, local_io=files.local_call_io)
-        job = Job(execution, spec, callback=callback)
-        return RunParts(
-            job, files,
-            submission_builder=lambda prepared: self.submission_request(prepared, submission_key=submission_key),
+        execution = bind_execution(
+            self.backend, self.target, local_io=files.local_call_io,
+            submission_key=submission_key,
         )
+        return RunParts(Job(execution, spec, callback=callback), files)
 
     def snapshot_file(self, run, file, *, destination=None):
         from kkrunner.client.file_access import FileAccess

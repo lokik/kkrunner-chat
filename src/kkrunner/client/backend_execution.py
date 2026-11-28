@@ -20,10 +20,11 @@ from kkrunner.execution import MpiNotFoundWarning, RunState
 
 
 class _Execution:
-    def __init__(self, backend, transport, *, ref=None, status=None):
+    def __init__(self, backend, transport, *, ref=None, status=None, submission_key=None):
         self.backend = backend
         self.target = transport
         self.ref = ref
+        self._submission_key = submission_key
         # An observer of an existing job does not own its lifetime.
         self._detached = ref is not None or backend.default_detached
         self.snapshot = JobStatus(RunState.NEW)
@@ -34,6 +35,13 @@ class _Execution:
         self._call = None
         self._initial_output = True
         self._output_offsets = {"out": 0, "err": 0}
+
+    def _submission_request(self, prepared):
+        """Add the selected native execution configuration to staged files."""
+        return dict(
+            prepared, submission_key=self._submission_key, backend=self.backend.name,
+            backend_options=dict(self.backend.options), detached=self._detached,
+        )
 
     def _operation(self, name):
         return Operation.for_backend(type(self.backend), name)
@@ -144,8 +152,8 @@ class _Execution:
 class DirectExecution(_Execution):
     """Backend binding for session-owned execution and its native status messages."""
 
-    def __init__(self, backend, transport, *, local_io=None):
-        super().__init__(backend, transport)
+    def __init__(self, backend, transport, *, local_io=None, submission_key=None):
+        super().__init__(backend, transport, submission_key=submission_key)
         self._local_io = local_io
 
     def configure_observation(self, *, stream_offsets, stream_paths):
@@ -154,7 +162,7 @@ class DirectExecution(_Execution):
         super().configure_observation(stream_offsets=stream_offsets, stream_paths=stream_paths)
 
     async def submit(self, request, on_output, *, output_requested=None):
-        request = dict(request, detached=self._detached)
+        request = self._submission_request(request)
         try:
             prepared = await self.target.call(self._operation("prepare_mpi"), request)
             if prepared["warning"] is not None:
@@ -200,7 +208,7 @@ class ManagedExecution(_Execution):
     """Backend binding for independently observable supervisor/scheduler jobs."""
 
     async def submit(self, request, on_output, *, output_requested=None):
-        request = dict(request, detached=self._detached)
+        request = self._submission_request(request)
         try:
             if BackendCapability.SUBMIT_AND_FOLLOW in self.backend.supports:
                 self._initial_output = output_requested is None or output_requested.enabled
@@ -230,13 +238,13 @@ class ManagedExecution(_Execution):
         return await self._cancel_native()
 
 
-def bind_execution(backend, transport, *, local_io=None, ref=None, status=None):
+def bind_execution(backend, transport, *, local_io=None, ref=None, status=None, submission_key=None):
     """Choose backend semantics once, outside the generic client Job."""
     if backend.execution_mode == "direct":
         if ref is not None:
             # A direct attachment observes saved files; it never submits a job.
             return ManagedExecution(backend, transport, ref=ref, status=status)
-        return DirectExecution(backend, transport, local_io=local_io)
+        return DirectExecution(backend, transport, local_io=local_io, submission_key=submission_key)
     if backend.execution_mode == "managed":
-        return ManagedExecution(backend, transport, ref=ref, status=status)
+        return ManagedExecution(backend, transport, ref=ref, status=status, submission_key=submission_key)
     raise ValueError(f"Unknown backend execution mode: {backend.execution_mode!r}")
