@@ -287,6 +287,12 @@ class FileManifest:
                 continue
             if not remote:
                 declared = os.path.realpath(declared)
+            # Discovered cache members and remote-only cache baselines are
+            # concrete names. They do not declare any additional wildcard.
+            if entry.source_pattern is not None or entry.local_path is None or entry is self.stdin:
+                if path == declared:
+                    return True
+                continue
             directory = entry.kind == "directory"
             if any(path_matches(path, pattern, include_hidden=directory)
                    for pattern in declaration_paths(declared, directory=directory)):

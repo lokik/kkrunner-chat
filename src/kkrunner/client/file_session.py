@@ -363,6 +363,10 @@ class FileSession:
                     if policy == FileSyncPolicy.NEVER and not os.path.exists(entry.local_path):
                         self._set_file_availability(entry.local_path, "skipped", kind=kind)
                         continue
+                    if (kind == "cache" and policy == FileSyncPolicy.MISSING
+                            and local_file_signature(entry.local_path) is not None):
+                        self._set_file_availability(entry.local_path, "skipped", kind=kind)
+                        continue
                     self._set_file_availability(entry.local_path, "pending", kind=kind)
                     candidates.append(entry)
                 # No root argument: query_files treats these names as literals.
@@ -380,9 +384,7 @@ class FileSession:
                     else:
                         signature = ((item["size"], item["mtime_ns"])
                                      if item["status"] == "ok" and item["type"] == "file" else None)
-                        available = transfer = self._cache_file_changed(
-                            local, cache_before.get(remote), signature,
-                        )
+                        available = transfer = signature is not None and signature != cache_before.get(remote)
                     if transfer:
                         downloads.append((remote, local))
                         pending.append(local)
@@ -495,12 +497,6 @@ class FileSession:
         # MISSING can preserve a stale copy which must not become an artifact.
         return local_digest is not None and local_digest == remote_digest, False
 
-    def _cache_file_changed(self, local, before, after):
-        return after is not None and after != before and not (
-            self.context.output_files == FileSyncPolicy.MISSING
-            and local_file_signature(local) is not None
-        )
-
     async def _sync_cache_entry(self, local, remote, before, *, kind="file"):
         """Synchronize one concrete cache using its pre-run signature."""
         try:
@@ -513,29 +509,33 @@ class FileSession:
                 if entry["status"] == "missing":
                     state = "skipped"
                 elif entry["status"] == "ok" and entry["type"] == "directory":
-                    digest = await self.context.target.call(
-                        Operation.standalone(directory_digest), remote,
-                    )
-                    if digest is None:
-                        raise ValueError(f"Cannot identify cache directory contents: {remote}")
-                    if ("directory", digest) == before or (
-                        self.context.output_files == FileSyncPolicy.MISSING
-                        and os.path.isdir(local)
-                    ):
+                    if self.context.output_files == FileSyncPolicy.MISSING and os.path.isdir(local):
                         state = "skipped"
                     else:
-                        available = await self._sync_directory_output(local, remote, remote_digest=digest)
-                        state = "available" if available else "skipped"
+                        digest = await self.context.target.call(
+                            Operation.standalone(directory_digest), remote,
+                        )
+                        if digest is None:
+                            raise ValueError(f"Cannot identify cache directory contents: {remote}")
+                        if ("directory", digest) == before:
+                            state = "skipped"
+                        else:
+                            available = await self._sync_directory_output(local, remote, remote_digest=digest)
+                            state = "available" if available else "skipped"
                 else:
                     raise ValueError(f"Declared directory cache is not a directory: {remote}")
                 self._set_file_availability(local, state, kind="cache")
                 return
-            after = await self.context.target.file_signature(remote)
-            if self._cache_file_changed(local, before, after):
-                await self.context.target.get_file(remote, local)
-                state = "available"
-            else:
+            if (self.context.output_files == FileSyncPolicy.MISSING
+                    and local_file_signature(local) is not None):
                 state = "skipped"
+            else:
+                after = await self.context.target.file_signature(remote)
+                if after is not None and after != before:
+                    await self.context.target.get_file(remote, local)
+                    state = "available"
+                else:
+                    state = "skipped"
         except Exception as exc:
             self._set_file_availability(local, "failed", str(exc), kind="cache")
             raise

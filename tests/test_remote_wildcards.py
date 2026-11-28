@@ -440,3 +440,21 @@ def test_staged_literal_wildcard_member_is_protected_during_output_cleanup(tmp_p
         assert session.files.input_version(original).is_current()
     finally:
         session.close()
+
+
+
+def test_literal_cache_member_does_not_exclude_another_output(tmp_path):
+    workdir = tmp_path / "local" / "calculation"
+    workdir.mkdir(parents=True)
+    (workdir / "cache[1].dat").write_text("cache")
+    client, spec, _, _ = _text_run(
+        tmp_path, declared_cache_files=("cache[[]1].dat",),
+        declared_output_files=("cache*.dat",),
+        code="from pathlib import Path; Path('cache1.dat').write_text('result')",
+    )
+    run = _processed_run(client, spec)
+    assert run.run().return_code == 0
+    assert (workdir / "cache1.dat").read_text() == "result"
+    assert (workdir / "cache[1].dat").read_text() == "cache"
+    assert "cache1.dat" in {version.path.name for version in run.files.output_versions}
+    assert "cache[1].dat" not in {version.path.name for version in run.files.output_versions}
