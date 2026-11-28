@@ -391,3 +391,36 @@ def test_cleanup_refuses_filesystem_root_before_walking(monkeypatch):
         reply = remote_file_cleanup(("/",), kinds={"/": "directory"})[0]
     assert reply["status"] == "skipped"
     assert "filesystem root" in reply["message"]
+
+
+def test_remote_cleanup_distinguishes_pattern_from_concrete_member(tmp_path):
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    pattern = remote / "result*.dat"
+    member = remote / "result[1].dat"
+    pattern.write_text("not a discovered member")
+    member.write_text("actual result")
+    transport = LoopbackSshTransport()
+    client = ExecutionClient(DirectBackend, target=transport)
+    declaration = FileEntry(local / pattern.name, pattern)
+    concrete = FileEntry(local / member.name, member, source_pattern=declaration.local_path)
+    record = SimpleNamespace(
+        execution=SimpleNamespace(
+            target=transport,
+            directory=WorkingDirectory(str(local), str(remote)),
+            backend=client.backend_config,
+        ),
+        files=FileManifest(outputs=(declaration, concrete)),
+    )
+    assert record.files.concrete_entries == (concrete,)
+    with pytest.raises(ValueError, match="declared remote manifest"):
+        client.inspect_remote_files(record, (str(pattern),))
+    with pytest.raises(ValueError, match="declared remote manifest"):
+        client.delete_remote_files(record, {str(pattern): [0, 0, 0, 0]})
+    review = client.inspect_remote_files(record, (str(member),))
+    assert review[0]["status"] == "ok"
+    assert client.delete_remote_files(record, {str(member): _identity(review[0])})[0]["status"] == "deleted"
+    assert pattern.read_text() == "not a discovered member"
+    assert not member.exists()
