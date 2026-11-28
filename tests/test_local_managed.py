@@ -322,8 +322,8 @@ def test_project_request_flushes_each_declared_file_once(tmp_path):
     parts = _managed_parts(spec, submission_key=RUN_ID)
     request = parts.job._request
     assert request["output_files"] == [output.name, str(tmp_path / "a.dat")]
-    assert request["input_files"] == [inp.name, str(tmp_path / "b.inp")]
-    assert request["cache_files"] == [cache.name]
+    assert request["protected_files"] == [inp.name, str(tmp_path / "b.inp"), cache.name]
+    assert request["protected_patterns"] == []
     assert (output.flush_count, inp.flush_count, cache.flush_count) == (1, 1, 1)
 
 
@@ -339,7 +339,7 @@ def test_submission_cleanup_uses_parsed_manifest_and_protects_caches(tmp_path):
         "input_file": "input.dat",
         "stdin": "stdin.dat",
         "output_files": ["*.dat"],
-        "cache_files": ["cache.dat", "sync-cache.dat"],
+        "protected_files": ["cache.dat", "sync-cache.dat"],
     }
     prepare_target_outputs(normalize_request(request))
     assert not (tmp_path / "stale.dat").exists()

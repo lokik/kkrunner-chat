@@ -50,10 +50,10 @@ class ExecutionRequest(_CommandRequest, total=False):
     input_file: Optional[str]
     output_file: Optional[str]
     error_file: Optional[str]
-    input_files: List[str]
+    protected_files: List[str]
+    protected_patterns: List[str]
     output_files: List[str]
     output_directories: List[str]
-    cache_files: List[str]
 
 
 class PreparedExecution(TypedDict):
@@ -154,7 +154,7 @@ def normalize_request(request: ExecutionRequest) -> ExecutionRequest:
 
     for name in ("input_file", "stdin", "output_file", "error_file"):
         result[name] = path(request.get(name))
-    for name in ("input_files", "output_files", "output_directories", "cache_files"):
+    for name in ("protected_files", "protected_patterns", "output_files", "output_directories"):
         values = request.get(name, ())
         if not isinstance(values, (list, tuple)):
             raise TypeError(f"{name} must be a list of target paths")

@@ -6,7 +6,6 @@ Run owns the session and invokes it before and after a distinct Job.
 
 from __future__ import annotations
 
-import glob
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -624,13 +623,12 @@ class FileSession:
             output_file=output_target, error_file=error_target,
             output_files=(entry.remote_path for entry in manifest.outputs),
             output_directories=(entry.remote_path for entry in manifest.outputs if entry.kind == "directory"),
-            cache_files=(
-                cache.file.remote_path if manifest.is_pattern(cache.file)
-                else glob.escape(cache.file.remote_path) for cache in manifest.caches
+            protected_files=(
+                *used, *(cache.file.remote_path for cache in manifest.caches
+                         if not manifest.is_pattern(cache.file)),
             ),
-            # Target cleanup consumes glob declarations. These staged paths
-            # are already concrete and must not be interpreted a second time.
-            input_files=(glob.escape(target) for target in used),
+            protected_patterns=(cache.file.remote_path for cache in manifest.caches
+                                if manifest.is_pattern(cache.file)),
         )
         versions = await self._input_versions(manifest, inputs)
         return request, replace(manifest, caches=caches, input_versions=versions)

@@ -187,7 +187,7 @@ def test_remote_input_file_and_stdin_staged_only_once(tmp_path):
         target = remote_root / "calculation" / "input.txt"
         assert request["input_file"] == str(target)
         assert request["stdin"] == str(target)
-        assert request["input_files"] == [str(target)]
+        assert request["protected_files"] == [str(target)]
         assert [destination for _, destination in transport.uploads] == [target]
     finally:
         spec.input_file.close()

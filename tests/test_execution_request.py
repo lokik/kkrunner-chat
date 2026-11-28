@@ -227,3 +227,53 @@ def test_manifest_persists_primary_input_separately_from_auxiliary_inputs(tmp_pa
     restored = FileManifest(**asdict(files))
     assert restored == files
     assert restored.input_file == primary
+
+
+def test_cleanup_protects_missing_literal_cache_inside_directory_output(tmp_path):
+    from kkrunner import TaskFile
+    from kkrunner.backends.support.messages import normalize_request
+    from kkrunner.files.availability import prepare_target_outputs
+
+    output = tmp_path / "results"
+    output.mkdir()
+    stale = output / "old.dat"
+    stale.write_text("old")
+    cache = output / "cache[1]"
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        cache_files=(TaskFile("results/cache[1]", kind="directory"),),
+        output_files=(TaskFile("results", kind="directory"),),
+    )
+    request = normalize_request(execution_request(spec))
+    assert request["protected_files"] == [str(cache)]
+    assert not request["protected_patterns"]
+    assert not cache.exists()
+    with pytest.raises(ValueError, match="Directory output contains input/cache"):
+        prepare_target_outputs(request)
+    assert stale.read_text() == "old"
+
+
+def test_protection_request_accepts_named_auxiliary_file_handle(tmp_path):
+    path = tmp_path / "input.dat"
+    with path.open("w") as stream:
+        request = execution_request(ExecutionSpec(
+            ("true",), directory=tmp_path, input_files=(stream,),
+        ))
+    assert request["protected_files"] == [str(path)]
+    assert not request["protected_patterns"]
+
+
+@pytest.mark.parametrize("old_field", ["input_files", "cache_files"])
+def test_cleanup_rejects_obsolete_protection_contract_before_deleting(tmp_path, old_field):
+    from kkrunner.backends.support.messages import normalize_request
+    from kkrunner.files.availability import prepare_target_outputs
+
+    output = tmp_path / "result.dat"
+    output.write_text("keep")
+    request = normalize_request({
+        "argv": ["true"], "directory": str(tmp_path),
+        "output_files": [str(output)], old_field: [str(output)],
+    })
+    with pytest.raises(ValueError, match="requires protected_files"):
+        prepare_target_outputs(request)
+    assert output.read_text() == "keep"

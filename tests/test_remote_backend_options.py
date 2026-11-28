@@ -57,7 +57,10 @@ def test_remote_request_carries_target_backend_options_and_mpi_intent(tmp_path):
     assert request["stdin"] == str(remote_directory / "run.inp")
     assert request["output_file"] == str(remote_directory / "run.out")
     assert request["output_files"] == []
-    assert request["cache_files"] == []
+    assert request["protected_patterns"] == []
+    assert set(request["protected_files"]) == {
+        str(remote_directory / "run.inp"), str(remote_directory / "start.pot"),
+    }
     assert (remote_directory / "run.inp").read_text() == "input"
     assert (remote_directory / "start.pot").read_text() == "potential"
     assert manifest.mapping.local_root == str(local_root)
@@ -101,7 +104,8 @@ def test_remote_file_declarations_are_target_only_and_single_sourced(tmp_path):
     complete = parts.submission_builder(request)
     remote_dir = remote_root / "work"
     assert complete["output_files"] == [str(remote_dir / "plot-*.dat")]
-    assert complete["cache_files"] == [str(remote_dir / "restart.dat")]
+    assert complete["protected_files"] == [str(remote_dir / "restart.dat")]
+    assert complete["protected_patterns"] == []
     assert complete["output_file"] == str(remote_dir / "run.out")
     assert "client_sync" not in complete
     assert "staging" not in complete

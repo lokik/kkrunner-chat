@@ -65,26 +65,30 @@ def execution_request(spec, *, directory=None, map_path: Callable | None = None)
     def paths(values):
         return [path(value) for value in values if value is not None]
 
-    def protected_paths(values):
-        # The target consumes glob declarations for input/cache protection.
-        # Directory declarations are concrete names, not glob patterns.
-        return [
-            glob.escape(path(value)) if isinstance(value, TaskFile) and value.kind == "directory"
-            else path(value) for value in values if value is not None
-        ]
+    protected_files, protected_patterns = [], []
+    for value in (*spec.input_files, *spec.cache_files):
+        if value is None:
+            continue
+        name = path(value)
+        if (not (isinstance(value, TaskFile) and value.kind == "directory")
+                and glob.has_magic(file_path(value, spec.directory, required=True))):
+            protected_patterns.append(name)
+        else:
+            protected_files.append(name)
 
     return target_request(
         spec, target_dir, input_file=path(spec.input_file), stdin=path(spec.stdin),
         output_file=path(spec.output_file), error_file=path(spec.error_file),
-        input_files=protected_paths(spec.input_files), output_files=paths(spec.output_files),
+        protected_files=protected_files, protected_patterns=protected_patterns,
+        output_files=paths(spec.output_files),
         output_directories=paths(
             value for value in spec.output_files if isinstance(value, TaskFile) and value.kind == "directory"
-        ), cache_files=protected_paths(spec.cache_files),
+        ),
     )
 
 
 def target_request(spec, directory, *, input_file, stdin, output_file, error_file,
-                   input_files, output_files, output_directories, cache_files, transform=list):
+                   protected_files, protected_patterns, output_files, output_directories, transform=list):
     """Build the wire request from already selected target paths."""
     request = {
         **command_request(spec, transform),
@@ -93,10 +97,10 @@ def target_request(spec, directory, *, input_file, stdin, output_file, error_fil
         "stdin": stdin,
         "output_file": output_file,
         "error_file": error_file,
-        "input_files": list(input_files),
+        "protected_files": list(dict.fromkeys(protected_files)),
+        "protected_patterns": list(dict.fromkeys(protected_patterns)),
         "output_files": list(output_files),
         "output_directories": list(output_directories),
-        "cache_files": list(cache_files),
     }
     import json
     # Validate before contacting a target, not after a possibly accepted submit.

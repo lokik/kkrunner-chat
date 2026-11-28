@@ -126,12 +126,12 @@ def test_remote_file_preparation_uses_validated_manifest(tmp_path):
         assert request["output_files"] == [
             str(remote / "work" / "one.dat"), str(remote / "work" / "cut-*.dat"),
         ]
-        assert request["cache_files"] == [
-            str(remote / "work" / "restart.dat"), str(remote / "work" / "checkpoint-*.dat"),
-        ]
-        assert request["input_files"] == [str(remote / "work" / "restart.dat")]
+        assert request["protected_files"] == [str(remote / "work" / "restart.dat")]
+        assert request["protected_patterns"] == [str(remote / "work" / "checkpoint-*.dat")]
         assert [entry.remote_path for entry in session.files.outputs] == request["output_files"]
-        assert [cache.file.remote_path for cache in session.files.caches] == request["cache_files"]
+        assert [cache.file.remote_path for cache in session.files.caches] == [
+            *request["protected_files"], *request["protected_patterns"],
+        ]
     finally:
         session.close()
 

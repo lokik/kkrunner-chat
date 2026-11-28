@@ -413,7 +413,7 @@ def test_ssh_psij_cleanup_removes_declared_outputs_before_submit(tmp_path, monke
         "directory": str(tmp_path),
         "argv": ["true"],
         "output_files": [str(output)],
-        "cache_files": [str(kept)],
+        "protected_files": [str(kept)],
     }
     response = remote_service.submit_remote(request)
     assert response["remote_id"]
@@ -426,23 +426,17 @@ def test_scheduler_request_protects_remote_cache_wildcards(tmp_path):
         "directory": str(tmp_path),
         "argv": ["program"],
         "input_file": "case.inp",
-        "input_files": ["case.inp"],
+        "protected_files": ["case.inp", "known-restart.pot", "external-cache.pot"],
+        "protected_patterns": ["restart-*.pot"],
         "output_file": "case.out",
         "output_files": ["*.pot", "case.out"],
-        "cache_files": ["known-restart.pot"],
-        "client_sync": {
-            "cache_patterns": ["restart-*.pot"],
-            "cache_files": [{"path": "external-cache.pot", "before": None}],
-        },
     }
     from kkrunner.backends.support.messages import normalize_request
-    request.pop("client_sync")
-    request["cache_files"].extend(("restart-*.pot", "external-cache.pot"))
     normalized = normalize_request(request)
-    assert str(tmp_path / "restart-*.pot") in normalized["cache_files"]
-    assert str(tmp_path / "external-cache.pot") in normalized["cache_files"]
+    assert str(tmp_path / "restart-*.pot") in normalized["protected_patterns"]
+    assert str(tmp_path / "external-cache.pot") in normalized["protected_files"]
     assert str(tmp_path / "*.pot") in normalized["output_files"]
-    assert str(tmp_path / "case.inp") in normalized["input_files"]
+    assert str(tmp_path / "case.inp") in normalized["protected_files"]
 
 
 @pytest.mark.skipif(__import__("os").name != "posix", reason="Supervisor needs POSIX process groups and Unix sockets")
@@ -500,7 +494,7 @@ def test_remote_cleanup_preserves_cache_matches_while_removing_stale_outputs(tmp
     request = normalize_request({
         "directory": str(work), "argv": ["true"], "input_file": "main.inp",
         "output_file": "run.log", "output_files": ["*.out"],
-        "cache_files": ["restart.out"],
+        "protected_files": ["restart.out"],
     })
     prepare_target_outputs(request)
     assert cache.read_text() == "restart.out"
@@ -532,7 +526,7 @@ def test_remote_cleanup_checks_collisions_before_deleting_any_output(tmp_path):
 
     request = normalize_request({
         "directory": str(work), "argv": ["true"],
-        "output_files": ["old.dat", "restart.dat"], "cache_files": ["restart.dat"],
+        "output_files": ["old.dat", "restart.dat"], "protected_files": ["restart.dat"],
     })
     with pytest.raises(ValueError, match="Explicit output conflicts with input/cache"):
         prepare_target_outputs(request)
