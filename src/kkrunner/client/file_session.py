@@ -624,8 +624,10 @@ class FileSession:
             output_files=(entry.remote_path for entry in manifest.outputs),
             output_directories=(entry.remote_path for entry in manifest.outputs if entry.kind == "directory"),
             protected_files=(
-                *used, *(cache.file.remote_path for cache in manifest.caches
-                         if not manifest.is_pattern(cache.file)),
+                *used,
+                *(entry.remote_path
+                  for entry in (*manifest.inputs, *(cache.file for cache in manifest.caches))
+                  if not manifest.is_pattern(entry)),
             ),
             protected_patterns=(cache.file.remote_path for cache in manifest.caches
                                 if manifest.is_pattern(cache.file)),
