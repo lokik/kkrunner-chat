@@ -230,3 +230,38 @@ def test_direct_ssh_preparation_preserves_spec(tmp_path):
     assert parts.job.spec is spec
     assert parts.files.spec is spec
     assert parts.job.execution.target is client.target
+
+
+def test_remote_staging_keeps_literal_directory_inputs_and_cache(tmp_path):
+    from kkrunner import TaskFile
+    from kkrunner.files.availability import prepare_target_outputs
+    from kkrunner.files.queries import directory_digest
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    for name in ("input[1]", "cache[1]"):
+        tree = local / name
+        tree.mkdir(parents=True)
+        (tree / "data.dat").write_text(name)
+    spec = ExecutionSpec(
+        ("true",), directory=local,
+        input_files=(TaskFile("input[1]", kind="directory"),),
+        cache_files=(TaskFile("cache[1]", kind="directory"),),
+        output_files=("**/*.dat",),
+        staging=StagingSpec(local_root=local, remote_root=remote),
+    )
+    session = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).file_session(spec)
+    try:
+        session.prepare_submission()
+        for name in ("input[1]", "cache[1]"):
+            assert (remote / name / "data.dat").read_text() == name
+        cache = session.files.caches[0]
+        assert cache.before == ("directory", directory_digest(remote / "cache[1]"))
+        assert len(session.files.caches) == 1
+        stale = remote / "stale.dat"
+        stale.write_text("stale")
+        prepare_target_outputs(session.prepare_job())
+        assert not stale.exists()
+        assert (remote / "input[1]" / "data.dat").is_file()
+        assert (remote / "cache[1]" / "data.dat").is_file()
+    finally:
+        session.close()

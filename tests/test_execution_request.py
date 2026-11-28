@@ -128,3 +128,25 @@ def test_target_request_normalizes_directory_outputs_before_cleanup(tmp_path):
     assert request["output_files"] == request["output_directories"] == [str(tree)]
     prepare_target_outputs(request)
     assert not tree.exists()
+
+
+def test_local_cleanup_protects_literal_directory_inputs_and_cache(tmp_path):
+    from kkrunner import TaskFile
+    from kkrunner.files.availability import prepare_target_outputs
+
+    for name in ("input[1]", "cache[1]"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "data.dat").write_text(name)
+    stale = tmp_path / "stale.dat"
+    stale.write_text("stale")
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        input_files=(TaskFile("input[1]", kind="directory"),),
+        cache_files=(TaskFile("cache[1]", kind="directory"),),
+        output_files=("**/*.dat",),
+    )
+    prepare_target_outputs(execution_request(spec))
+    assert not stale.exists()
+    for name in ("input[1]", "cache[1]"):
+        assert (tmp_path / name / "data.dat").read_text() == name
