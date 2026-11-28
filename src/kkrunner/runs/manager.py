@@ -137,6 +137,15 @@ class RunManager:
             stores.setdefault(store.lock_key, store)
         return tuple(stores[key] for key in sorted(stores))
 
+    def file_reference_records(self):
+        """Read the reference scope, including transient file reservations.
+
+        These records are for file-reference inspection, not a history listing.
+        The returned snapshot does not reserve files against subsequent changes.
+        """
+        return tuple(record for store in self._reservation_stores()
+                     for record in store.runs())
+
     def register_client(self, client):
         key = (require_persistable_target(client.target), client.backend_config)
         self.client_pool.get(key, lambda: client)

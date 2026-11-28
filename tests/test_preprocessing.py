@@ -491,3 +491,22 @@ def test_save_only_sync_uses_file_declaration_roles(tmp_path, monkeypatch):
         str(tmp_path / name) for name in ("input[1]", "stdout[1].log", "one.aux", "two.aux")
     }
     assert len(synchronized) == 4
+
+
+def test_file_reference_scope_includes_temporary_reservations_and_deduplicates_stores(tmp_path):
+    disk = RunStore(tmp_path / "runs")
+    peer = RunStore(disk.directory)
+    manager = RunManager(disk, conflict_stores=(peer,))
+    saved = manager.new_record(directory=tmp_path)
+    disk.save(saved)
+    spec = ExecutionSpec(argv=(), directory=tmp_path,
+                         input_files=(TaskFile("input", write=True),))
+    with RunManager().preprocessing_reservation(spec):
+        records = manager.file_reference_records()
+        assert len(records) == 2
+        assert sum(record.id == saved.id for record in records) == 1
+        reservation = next(record for record in records if record.id != saved.id)
+        assert reservation.state == RunState.PREPROCESSING
+        assert reservation.files.inputs[0].local_path == str(tmp_path / "input")
+        assert len(disk.runs()) == 1
+    assert tuple(record.id for record in manager.file_reference_records()) == (saved.id,)
