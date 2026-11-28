@@ -75,8 +75,6 @@ def prepare_target_outputs(request):
 
     patterns = request.get("output_files", ())
     directory_outputs = set(request.get("output_directories", ()))
-    if any(glob.has_magic(path) for path in directory_outputs):
-        raise ValueError("Directory outputs must use exact paths")
     execution_dir = os.path.normpath(request.get("directory") or os.getcwd())
     for path in streams:
         if is_protected(path):
@@ -100,7 +98,9 @@ def prepare_target_outputs(request):
             root = os.path.realpath(normalized)
             if any(contains(root, candidate) for candidate in protected):
                 raise ValueError("Directory output contains input/cache: " + declaration)
-        wildcard = glob.has_magic(declaration)
+        # The explicit directory declaration determines the pathname kind.
+        # Its spelling may contain literal glob metacharacters.
+        wildcard = declaration not in directory_outputs and glob.has_magic(declaration)
         matches = glob.glob(declaration, recursive=True) if wildcard else [declaration]
         for path in matches:
             if path in streams:
