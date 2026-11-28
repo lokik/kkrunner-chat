@@ -18,7 +18,10 @@ from kkrunner.backends.contracts import (
 
 
 
-@pytest.mark.parametrize("state", (RunState.SUBMITTING, RunState.DOWNLOADING, RunState.POSTPROCESSING))
+@pytest.mark.parametrize("state", (
+    RunState.PREPROCESSING, RunState.SUBMITTING, RunState.FINISHING,
+    RunState.DOWNLOADING, RunState.POSTPROCESSING,
+))
 def test_client_phases_are_not_backend_statuses(state):
     with pytest.raises(ValueError, match="client lifecycle phase"):
         JobStatus(state)
