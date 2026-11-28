@@ -385,3 +385,29 @@ def test_missing_cache_policy_preserves_local_copies_without_remote_comparison(t
         assert (local / "tree" / "data").read_text() == "local"
     finally:
         session.close()
+
+
+
+@pytest.mark.parametrize("factory", [LocalTarget, _LoopbackSshTransport])
+def test_rooted_query_treats_root_as_literal_directory(tmp_path, factory):
+    import glob
+
+    root = tmp_path / "work[1]"
+    root.mkdir()
+    other = tmp_path / "work1"
+    other.mkdir()
+    literal = root / "file[1].dat"
+    literal.write_text("literal")
+    (other / "file1.dat").write_text("unrelated")
+    (root / "alias").symlink_to(other / "file1.dat")
+
+    async def check():
+        target = factory()
+        assert await target.expand_files(str(root / "*.dat"), root) == (str(literal),)
+        escaped = str(root / glob.escape(literal.name))
+        assert await target.expand_files(escaped, root) == (str(literal),)
+        assert await target.expand_files("file1.dat", root) == ()
+        with pytest.raises((ValueError, subprocess.CalledProcessError)):
+            await target.expand_files("alias", root)
+
+    asyncio.run(check())

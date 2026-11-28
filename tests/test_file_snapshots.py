@@ -298,3 +298,18 @@ def test_named_stream_snapshot_is_literal(tmp_path, remote):
     assert manager.snapshot_file(run, name) == b"stream"
     with pytest.raises(ValueError, match="not a declared"):
         manager.snapshot_file(run, "stdout1.log")
+
+
+
+def test_remote_snapshot_with_literal_mapped_root(tmp_path):
+    manager, run, local, source_root = running_run(tmp_path, True)
+    new_root = source_root.parent.with_name("remote[1]")
+    source_root.parent.rename(new_root)
+    new_source = new_root / source_root.name
+    stream = FileEntry(local / "stdout[1].log", new_source / "stdout[1].log")
+    run = manager.store.update(run, lambda latest: replace(
+        latest, files=replace(latest.files, stdout=stream,
+                              mapping=FileMapping(local.parent, new_root)),
+    ))
+    (new_source / "stdout[1].log").write_bytes(b"literal")
+    assert manager.snapshot_file(run, "stdout[1].log") == b"literal"
