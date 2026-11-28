@@ -156,6 +156,7 @@ class FileManifest:
     cache_versions: tuple[FileVersion, ...] = ()
     # None: not attempted; True: complete membership frozen; False: discovery failed.
     remote_patterns_resolved: Optional[bool] = None
+    input: Optional[FileEntry] = None
 
     @classmethod
     def from_spec(cls, spec):
@@ -238,6 +239,7 @@ class FileManifest:
                 raise ValueError(f"Duplicate file declaration: cache collision {path}")
             caches[path] = CacheEntry(entry)
         return cls(
+            input=None if primary is None else inputs.pop(primary.local_path),
             inputs=tuple(inputs.values()),
             outputs=tuple(outputs.values()),
             caches=tuple(caches.values()),
@@ -254,7 +256,7 @@ class FileManifest:
                 name,
                 tuple(item if isinstance(item, cls) else cls(**item) for item in items),
             )
-        for name in ("stdout", "stderr", "stdin"):
+        for name in ("input", "stdout", "stderr", "stdin"):
             item = getattr(self, name)
             if isinstance(item, dict):
                 object.__setattr__(self, name, FileEntry(**item))
@@ -280,7 +282,7 @@ class FileManifest:
 
     def is_pattern(self, entry):
         """Whether this entry declares a glob rather than a concrete pathname."""
-        return entry.is_pattern() and entry not in (self.stdin, self.stdout, self.stderr)
+        return entry.is_pattern() and entry not in (self.input, self.stdin, self.stdout, self.stderr)
 
     def output_excluded(self, path, *, remote=False):
         """Exclude input/cache namespaces and uncollected outputs from output globs."""
@@ -433,7 +435,7 @@ class FileManifest:
 
     @property
     def input_file(self):
-        return self.inputs[0].local_path if self.inputs else None
+        return None if self.input is None else self.input.local_path
 
     @property
     def output_file(self):
@@ -441,7 +443,8 @@ class FileManifest:
 
     @property
     def input_entries(self):
-        return (*self.inputs, *((self.stdin,) if self.stdin is not None else ()))
+        return (*((self.input,) if self.input is not None else ()), *self.inputs,
+                *((self.stdin,) if self.stdin is not None else ()))
 
     @property
     def entries(self):

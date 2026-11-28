@@ -39,7 +39,7 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
     run.run()
     assert run.state == RunState.FINISHED
     assert (tmp_path / "out").read_text().strip() == "generated"
-    assert manager.store.get(run.id).files.inputs[0].write
+    assert manager.store.get(run.id).files.input.write
 
 
 def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
@@ -362,11 +362,11 @@ def test_writable_input_aliases_merge_and_stream_flush_is_reserved(tmp_path):
             input_files=(TaskFile("input", write=True),),
         )
         manifest = FileManifest.from_spec(spec)
-        assert len(manifest.inputs) == 1
-        assert manifest.inputs[0].write is True
+        assert not manifest.inputs
+        assert manifest.input.write is True
         assert manifest.stdin.write is True
         ordinary = FileManifest.from_spec(replace(spec, input_files=()))
-        assert ordinary.inputs[0].write is True
+        assert ordinary.input.write is True
 
 
 @pytest.mark.parametrize("role", ["input_file", "stdin", "output_file", "error_file"])

@@ -139,3 +139,15 @@ def test_literal_directory_reserves_its_tree_not_a_similarly_named_tree(tmp_path
             stdout=FileEntry(str(path))))
         assert submission_conflicts(first, second) == expected
         assert any(file_reference_overlaps(str(path), ref) for ref in references) == expected
+
+
+def test_primary_input_is_reserved_as_a_concrete_path(tmp_path):
+    from kkrunner import ExecutionSpec
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    first = manager.new_record(directory=tmp_path, files=FileManifest.from_spec(
+        ExecutionSpec(("true",), directory=tmp_path, input_file="input[1]")))
+    for name, expected in (("input[1]", True), ("input1", False)):
+        second = manager.new_record(directory=tmp_path, files=FileManifest(
+            stdout=FileEntry(str(tmp_path / name))))
+        assert submission_conflicts(first, second) == expected
