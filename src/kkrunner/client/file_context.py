@@ -65,16 +65,6 @@ class FileContext:
     async def map_path(self, path):
         return self._map_path(path, await self._resolved_remote_root())
 
-    async def resolve_target_path(self, path):
-        """Resolve an already-target-side path, without mapping it again."""
-        if self.target.is_local:
-            return os.path.abspath(path)
-        path = os.fspath(path)
-        if path == "~" or path.startswith("~/"):
-            home = await self.target.home_directory()
-            return home if path == "~" else posixpath.normpath(posixpath.join(home, path[2:]))
-        return posixpath.normpath(path)
-
     async def map_manifest(self, manifest):
         """Project declared file identities; do not stage files or capture versions."""
         if self.target.is_local:

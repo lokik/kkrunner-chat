@@ -219,8 +219,7 @@ class ExecutionClient:
         return _run_sync(request())
 
     async def _recover_submission(self, submission_key, submission, *, submitted_at=None):
-        context = FileContext(self.target, StagingSpec())
-        directory = await context.resolve_target_path(submission.execution.directory.target)
+        directory = await self.target.resolve_path(submission.execution.directory.target)
         state = await self._invoke(
             "recover", submission_key,
             {"backend": self.backend.name, "backend_options": dict(self.backend.options), "directory": directory},

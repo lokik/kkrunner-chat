@@ -940,3 +940,25 @@ def test_historical_retrieval_continues_after_ssh_command_failure(tmp_path, monk
     assert failed.availability_state == "failed"
     assert "connection lost" in failed.availability_message
     assert available.availability_state == "available"
+
+
+
+def test_native_path_resolution_uses_target_home_only_when_needed(tmp_path, monkeypatch):
+    queries = []
+
+    async def home(self):
+        queries.append(self.host)
+        return "/remote/home"
+
+    monkeypatch.setattr(SshTarget, "home_directory", home)
+
+    async def check():
+        target = SshTarget("cluster")
+        assert await target.resolve_path("/work/../data") == "/data"
+        assert await target.resolve_path("relative/../job") == "job"
+        assert queries == []
+        assert await target.resolve_path("~/work/../job") == "/remote/home/job"
+        assert queries == ["cluster"]
+        assert await LocalTarget().resolve_path(tmp_path / "sub/../job") == str(tmp_path / "job")
+
+    asyncio.run(check())
