@@ -300,3 +300,40 @@ def test_first_refresh_after_subscription_establishes_current_project_forest(tmp
                 expected_generation=project.generation)
     observer.refresh()
     assert changed == [project.id]
+
+
+
+def test_empty_repository_listing_does_not_create_directory(tmp_path):
+    directory = tmp_path / "projects"
+    repository = ProjectRepository(directory)
+    assert repository.projects() == ()
+    assert repository.refresh() == ()
+    assert not directory.exists()
+
+
+def test_forest_listing_serializes_with_hierarchy_changes(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    writer = ProjectRepository(tmp_path / "projects")
+    reader = ProjectRepository(writer.directory)
+    parent = writer.create("Parent")
+    child = writer.create("Child", parent_id=parent.id)
+    started, finished = Event(), Event()
+
+    def read():
+        started.set()
+        try:
+            return reader.projects()
+        finally:
+            finished.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with writer._hierarchy_lock():
+            future = pool.submit(read)
+            assert started.wait(2)
+            assert not finished.wait(0.1)
+            # Simulate the metadata publication of a leaf deletion while
+            # holding the same hierarchy lock as delete().
+            writer._json_path(child.id).unlink()
+        assert future.result(timeout=3) == (parent,)
