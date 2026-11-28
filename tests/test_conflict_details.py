@@ -3,7 +3,7 @@ import pytest
 
 from kkrunner import RunManager, RunStore
 from kkrunner.files import FileEntry, FileManifest
-from kkrunner.runs.conflicts import conflicting_files, file_reference_overlaps, submission_conflicts
+from kkrunner.runs.conflicts import FileReference, conflicting_files, file_reference_overlaps, submission_conflicts
 
 
 def test_file_conflict_details_include_access_and_path(tmp_path):
@@ -40,11 +40,16 @@ def test_unrelated_output_files_have_no_conflict_details(tmp_path):
 
 
 @pytest.mark.parametrize("path,reference,directory,expected", (
-    ("/scratch/Fe.dos", "/scratch/*.dos", False, True),
-    ("/scratch/Fe.dos", "/scratch/*.out", False, False),
-    ("/scratch/job", "/scratch/job/*.dos", True, True),
-    ("/scratch/job/a.dat", "/scratch/job", False, True),
-    ("/scratch/job", "/scratch/job2/a.dat", True, False),
+    ("/scratch/Fe.dos", FileReference("/scratch/*.dos", pattern=True), False, True),
+    ("/scratch/Fe.dos", FileReference("/scratch/*.out", pattern=True), False, False),
+    ("/scratch/job", FileReference("/scratch/job/*.dos", pattern=True), True, True),
+    ("/scratch/job/a.dat", FileReference("/scratch/job", directory=True), False, True),
+    ("/scratch/job", FileReference("/scratch/job2/a.dat"), True, False),
+    ("/scratch/tree1", FileReference("/scratch/tree[1]", directory=True), True, False),
+    ("/scratch/tree[1]", FileReference("/scratch/tree*/**/*.dat", pattern=True), True, True),
+    ("/scratch/tree[1]", FileReference("/scratch/tree2/*.dat", pattern=True), True, False),
+    ("/scratch/tree[1]", FileReference("/scratch/tree[1]/*.dat", pattern=True), True, False),
+    ("/scratch/tree[1]", FileReference("/scratch/tree[[]1]/*.dat", pattern=True), True, True),
 ))
 def test_cleanup_reference_overlap(path, reference, directory, expected):
     assert file_reference_overlaps(path, reference, directory=directory) == expected
@@ -151,3 +156,18 @@ def test_primary_input_is_reserved_as_a_concrete_path(tmp_path):
         second = manager.new_record(directory=tmp_path, files=FileManifest(
             stdout=FileEntry(str(tmp_path / name))))
         assert submission_conflicts(first, second) == expected
+
+
+def test_directory_reservations_and_cleanup_agree_for_literal_names(tmp_path):
+    from kkrunner.runs.conflicts import referenced_paths
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    first = manager.new_record(directory=tmp_path, files=FileManifest(
+        outputs=(FileEntry(tmp_path / "tree[1]", kind="directory"),)))
+    for name, expected in (("tree1", False), ("tree[1]/nested", True)):
+        path = tmp_path / name
+        second = manager.new_record(directory=tmp_path, files=FileManifest(
+            outputs=(FileEntry(path, kind="directory"),)))
+        assert submission_conflicts(first, second) == expected
+        assert any(file_reference_overlaps(str(path), ref, directory=True)
+                   for ref in referenced_paths(first, remote=False)) == expected

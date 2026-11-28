@@ -90,15 +90,17 @@ def expand_local_candidates(path):
 
 
 
-def path_matches(path, pattern, *, include_hidden=False):
-    """Match a concrete pathname using filesystem glob component semantics."""
+def path_matches(path, pattern, *, include_hidden=False, prefix=False):
+    """Match a pathname, or test whether a glob can reach inside its tree."""
     path, pattern = os.path.normpath(path), os.path.normpath(pattern)
     if not has_file_magic(pattern):
-        return path == pattern
+        return path == pattern or (prefix and PurePath(path) in PurePath(pattern).parents)
     components, parts = PurePath(path).parts, PurePath(pattern).parts
 
     @lru_cache(None)
     def match(i, j):
+        if prefix and i == len(components):
+            return True
         if j == len(parts):
             return i == len(components)
         if parts[j] == "**":
@@ -134,11 +136,21 @@ def declaration_matches(path, declaration, *, pattern=False, directory=False, in
     return path == declaration
 
 
-def paths_overlap(first, second, *, first_pattern=None, second_pattern=None):
-    """Conservative overlap, retaining explicit concrete pathname semantics."""
+def paths_overlap(first, second, *, first_pattern=None, second_pattern=None,
+                  first_directory=False, second_directory=False):
+    """Conservative overlap of exact files, directory trees and glob declarations."""
     first, second = os.path.normpath(first), os.path.normpath(second)
-    first_magic = first_pattern is not False and has_file_magic(first)
-    second_magic = second_pattern is not False and has_file_magic(second)
+    first_magic = not first_directory and first_pattern is not False and has_file_magic(first)
+    second_magic = not second_directory and second_pattern is not False and has_file_magic(second)
+    if first_directory and second_directory:
+        return (declaration_matches(first, second, directory=True)
+                or declaration_matches(second, first, directory=True))
+    if first_directory:
+        return (path_matches(first, second, include_hidden=True, prefix=True) if second_magic
+                else declaration_matches(second, first, directory=True))
+    if second_directory:
+        return (path_matches(second, first, include_hidden=True, prefix=True) if first_magic
+                else declaration_matches(first, second, directory=True))
     if not first_magic and not second_magic:
         return first == second
     if not first_magic:
@@ -156,8 +168,3 @@ def paths_overlap(first, second, *, first_pattern=None, second_pattern=None):
     a, b = prefix(first), prefix(second)
     return a.startswith(b) or b.startswith(a)
 
-
-def declaration_paths(path, *, directory=False):
-    """An exact directory reserves the entire tree, including hidden files."""
-    path = os.path.normpath(path)
-    return (path, os.path.join(glob.escape(path), "**")) if directory else (path,)
