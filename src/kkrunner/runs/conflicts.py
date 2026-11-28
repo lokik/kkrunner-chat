@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
-import glob
 import os
 from dataclasses import dataclass
 
 from kkrunner.targets import LocalTarget, SshTarget
-from kkrunner.files.paths import declaration_paths, local_path_identities, paths_overlap
+from kkrunner.files.paths import local_path_identities, paths_overlap
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.runs.records import RunRecord
 
 
-def _manifest_accesses(record, *, remote=None):
-    """Resolve declared read/write paths on the execution host."""
+@dataclass(frozen=True)
+class FileReference:
+    """An ephemeral filesystem reference, with its declaration semantics."""
+
+    path: str
+    pattern: bool = False
+    directory: bool = False
+
+    def overlaps(self, other):
+        return paths_overlap(
+            self.path, other.path, first_pattern=self.pattern, second_pattern=other.pattern,
+            first_directory=self.directory, second_directory=other.directory,
+        )
+
+
+def _entry_references(record, entries, *, remote):
     files = record.files
     directory = record.execution.directory
-    remote = directory.remote is not None if remote is None else remote
 
     def path(entry):
         if entry is None:
@@ -35,23 +47,25 @@ def _manifest_accesses(record, *, remote=None):
             return None
         return os.path.normpath(value if os.path.isabs(value) else os.path.join(directory.remote if remote else directory.local, value))
 
+    result = set()
+    for entry in entries:
+        target = path(entry)
+        if target is None:
+            continue
+        identities = (target,) if remote else local_path_identities(target)
+        result.update(FileReference(identity, files.is_pattern(entry), entry.kind == "directory")
+                      for identity in identities)
+    return result
+
+
+def _manifest_accesses(record, *, remote=None):
+    """Resolve declared read/write paths on the execution host."""
+    files = record.files
+    directory = record.execution.directory
+    remote = directory.remote is not None if remote is None else remote
+
     def accesses(entries):
-        result = set()
-        for entry in entries:
-            if entry is None:
-                continue
-            target = path(entry)
-            if target is None:
-                continue
-            # Include the spelling and canonical local identity. An alias
-            # may be replaced as a directory entry or opened through its target.
-            identities = (target,) if remote else local_path_identities(target)
-            for identity in identities:
-                result.add((identity, files.is_pattern(entry)))
-                if entry.kind == "directory":
-                    _, descendants = declaration_paths(identity, directory=True)
-                    result.add((descendants, True))
-        return result
+        return _entry_references(record, entries, remote=remote)
 
     caches = tuple(cache.file for cache in files.caches)
     outputs = tuple(entry for entry in (files.stdout, files.stderr, *files.outputs)
@@ -90,14 +104,17 @@ def filesystem_namespace(record):
     return ("unknown",)
 
 
-def referenced_paths(record):
-    """Glob expressions for all execution-filesystem references.
-
-    Concrete names are quoted so consumers can match them as patterns without
-    interpreting their literal metacharacters.
-    """
-    reads, writes = _manifest_accesses(record)
-    return {path if pattern else glob.escape(path) for path, pattern in reads | writes}
+def referenced_paths(record, *, remote=None):
+    """All declared references and captured local versions, without expanding globs."""
+    if remote is None:
+        remote = record.execution.directory.remote is not None
+    references = _entry_references(record, record.files.entries, remote=remote)
+    if not remote:
+        for version in record.files.all_versions:
+            path = os.path.join(record.execution.directory.local, os.fspath(version.path))
+            references.update(FileReference(identity, directory=version.kind == "directory")
+                              for identity in local_path_identities(path))
+    return references
 
 
 def _compare_target_filesystems(left, right):
@@ -109,19 +126,8 @@ def _compare_target_filesystems(left, right):
 
 
 def file_reference_overlaps(path, reference, *, directory=False):
-    """Whether removing a file/directory would affect a declared reference."""
-    path, reference = os.path.normpath(path), os.path.normpath(reference)
-    if paths_overlap(path, reference, first_pattern=False):
-        return True
-    if directory and paths_overlap(os.path.join(glob.escape(path), "**"), reference):
-        return True
-    # A declaration can also reference a containing directory (or its glob).
-    parent = os.path.dirname(path)
-    while parent and parent != path:
-        if paths_overlap(parent, reference, first_pattern=False):
-            return True
-        path, parent = parent, os.path.dirname(parent)
-    return False
+    """Whether removing an exact file or directory would affect a reference."""
+    return FileReference(path, directory=directory).overlaps(reference)
 
 
 @dataclass(frozen=True)
@@ -145,10 +151,10 @@ def _conflicting_accesses(left, right):
             ("write", writes1, "read", reads2),
             ("read", reads1, "write", writes2),
         ):
-            for path1, pattern1 in paths1:
-                for path2, pattern2 in paths2:
-                    if paths_overlap(path1, path2, first_pattern=pattern1, second_pattern=pattern2):
-                        yield FileConflict(namespace, path1, access1, path2, access2)
+            for ref1 in paths1:
+                for ref2 in paths2:
+                    if ref1.overlaps(ref2):
+                        yield FileConflict(namespace, ref1.path, access1, ref2.path, access2)
 
     yield from matches(
         _manifest_accesses(left, remote=False),
