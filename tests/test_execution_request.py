@@ -110,3 +110,21 @@ def test_default_run_store_uses_existing_user_state_directory(tmp_path, monkeypa
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     assert RunStore().directory == tmp_path / "kkrunner" / "runs"
+
+
+
+def test_target_request_normalizes_directory_outputs_before_cleanup(tmp_path):
+    from kkrunner.backends.support.messages import normalize_request
+    from kkrunner.files.availability import prepare_target_outputs
+
+    tree = tmp_path / "results"
+    tree.mkdir()
+    (tree / "old").write_text("stale")
+    request = normalize_request({
+        "argv": ["true"], "directory": str(tmp_path),
+        "output_files": ["results"],
+        "output_directories": ["./results", "results"],
+    })
+    assert request["output_files"] == request["output_directories"] == [str(tree)]
+    prepare_target_outputs(request)
+    assert not tree.exists()

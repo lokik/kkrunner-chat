@@ -26,13 +26,15 @@ def prepare_target_outputs(request):
     import glob
     import os
     import shutil
+    import stat
 
     streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
-    protected_declarations = [
-        *request.get("input_files", ()),
-        *request.get("cache_files", ()),
-        *(glob.escape(path) for path in (request.get("stdin"), request.get("input_file")) if path),
-    ]
+    protected_candidates = [path for path in (request.get("stdin"), request.get("input_file")) if path]
+    for declaration in dict.fromkeys((*request.get("input_files", ()), *request.get("cache_files", ()))):
+        if declaration is not None:
+            protected_candidates.extend(
+                glob.glob(declaration, recursive=True) if glob.has_magic(declaration) else (declaration,)
+            )
     def directory_entry(path):
         # Resolve parent aliases but retain the name of the directory entry.
         path = os.path.abspath(path)
@@ -44,17 +46,16 @@ def prepare_target_outputs(request):
     protected = set()
     protected_inodes = set()
     protected_directories = set()
-    for declaration in protected_declarations:
-        if declaration is None:
+    for candidate in dict.fromkeys(protected_candidates):
+        real = os.path.realpath(candidate)
+        protected.update((real, directory_entry(candidate)))
+        try:
+            info = os.stat(candidate)
+        except FileNotFoundError:
             continue
-        matches = glob.glob(declaration, recursive=True) if glob.has_magic(declaration) else [declaration]
-        for candidate in matches:
-            protected.update((os.path.realpath(candidate), directory_entry(candidate)))
-            if os.path.exists(candidate):
-                info = os.stat(candidate)
-                protected_inodes.add((info.st_dev, info.st_ino))
-                if os.path.isdir(candidate):
-                    protected_directories.add(os.path.realpath(candidate))
+        protected_inodes.add((info.st_dev, info.st_ino))
+        if stat.S_ISDIR(info.st_mode):
+            protected_directories.add(real)
 
     def is_protected(path):
         real = os.path.realpath(path)
@@ -65,10 +66,11 @@ def prepare_target_outputs(request):
         if any(contains(root, name)
                for root in protected_directories for name in (real, entry)):
             return True
-        if os.path.exists(path):
+        try:
             info = os.stat(path)
-            return (info.st_dev, info.st_ino) in protected_inodes
-        return False
+        except FileNotFoundError:
+            return False
+        return (info.st_dev, info.st_ino) in protected_inodes
 
     patterns = request.get("output_files", ())
     directory_outputs = set(request.get("output_directories", ()))

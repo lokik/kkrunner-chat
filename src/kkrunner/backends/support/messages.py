@@ -154,7 +154,7 @@ def normalize_request(request: ExecutionRequest) -> ExecutionRequest:
 
     for name in ("input_file", "stdin", "output_file", "error_file"):
         result[name] = path(request.get(name))
-    for name in ("input_files", "output_files", "cache_files"):
+    for name in ("input_files", "output_files", "output_directories", "cache_files"):
         values = request.get(name, ())
         if not isinstance(values, (list, tuple)):
             raise TypeError(f"{name} must be a list of target paths")

@@ -193,7 +193,7 @@ def test_collision_expands_protected_wildcard_once_for_multiple_outputs(tmp_path
 
     monkeypatch.setattr(glob, "glob", observe_expand)
     with pytest.raises(ValueError, match="conflicts with input/cache"):
-        _prepare_outputs((harmless_output, alias_output), protected_paths=(pattern,))
+        _prepare_outputs((harmless_output, alias_output), protected_paths=(pattern, pattern))
     assert expanded == [os.path.abspath(pattern)]
     assert protected_file.read_bytes() == b"restart"
 
@@ -348,3 +348,43 @@ def test_primary_input_and_stdin_are_literal_during_output_cleanup(tmp_path):
         })
         assert source.read_text() == "input"
         assert not stale.exists()
+
+
+
+def test_missing_literal_primary_or_stdin_still_protects_its_name(tmp_path):
+    import pytest
+
+    for field in ("input_file", "stdin"):
+        source = tmp_path / "input[1].dat"
+        with pytest.raises(ValueError, match="Output stream conflicts"):
+            prepare_target_outputs({
+                "directory": str(tmp_path),
+                field: str(source),
+                "output_file": str(source),
+            })
+        assert not source.exists()
+
+
+def test_input_stat_error_does_not_authorize_output_cleanup(tmp_path, monkeypatch):
+    import os
+    import pytest
+
+    source = tmp_path / "input.dat"
+    source.write_text("input")
+    output = tmp_path / "old.dat"
+    output.write_text("old")
+    original_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if os.fspath(path) == str(source):
+            raise PermissionError("cannot inspect input")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    with pytest.raises(PermissionError, match="cannot inspect input"):
+        prepare_target_outputs({
+            "directory": str(tmp_path),
+            "input_files": [str(source)],
+            "output_files": [str(output)],
+        })
+    assert output.read_text() == "old"
