@@ -233,7 +233,8 @@ def test_fetch_validates_canonical_path_before_explicit_staging(tmp_path):
     assert not (outside / "output.dat").exists()
 
 
-def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path, monkeypatch):
+@pytest.mark.parametrize("query_error", [False, True])
+def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_path, monkeypatch, query_error):
     """A vanished optional DOS must not stop restoration of the main SCF output."""
     from dataclasses import replace
     from kkrunner import RunStore
@@ -273,6 +274,12 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
     record = store.save(record)
     manager = RunManager(store)
     manager.register_client(ExecutionClient(target=SshTarget("loopback")))
+    if query_error:
+        async def expand(self, source, root):
+            if source == str(remote / auxiliary.name):
+                raise PermissionError("cannot inspect auxiliary")
+            return await LocalTarget.expand_files(self, source, root)
+        monkeypatch.setattr(SshTarget, "expand_files", expand)
     update = store.update
     writes = []
 
@@ -288,7 +295,7 @@ def test_missing_historical_auxiliary_does_not_block_other_file_retrieval(tmp_pa
     assert not auxiliary.exists()
     assert restored.files.stdout.availability_state == "available"
     assert restored.files.outputs[0].availability_state == "failed"
-    assert "not retrieved" in restored.files.outputs[0].availability_message
+    assert ("cannot inspect auxiliary" if query_error else "not retrieved") in restored.files.outputs[0].availability_message
 
 
 @pytest.mark.parametrize("concurrent", ["unrelated", "active", "mismatch", "directory", "remote_writer", "remote_reader"])

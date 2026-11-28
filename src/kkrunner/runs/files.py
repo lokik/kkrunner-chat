@@ -157,9 +157,16 @@ class RunFiles:
         planned = {}
         errors = {}
         by_destination = {}
+        try:
+            groups = access.resolve_result_groups(record, missing)
+        except OSError as exc:
+            # A context-level failure affects every requested declaration.
+            groups = dict.fromkeys(missing, exc)
         for path in missing:
             try:
-                entries = access.resolve_result_files(record, (path,))
+                entries = groups.get(path, ())
+                if isinstance(entries, OSError):
+                    raise entries
                 if not entries:
                     raise FileNotFoundError(f"Historical artifact was not retrieved: {path}")
                 for entry in entries:
