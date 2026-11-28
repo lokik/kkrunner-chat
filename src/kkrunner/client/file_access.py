@@ -98,11 +98,11 @@ class FileAccess:
             raise ValueError("Unsupported transport; only local history is available")
         return _run_sync(self._snapshot_file(run, file, destination=destination))
 
-    async def _resolve_result_files(self, run, files):
-        """Read-only discovery: freeze the exact source and destination pairs."""
+    async def _resolve_result_groups(self, run, files):
+        """Read-only discovery: yield exact pairs or an I/O failure for each requested declaration."""
         context = FileContext(self.target, StagingSpec.from_mapping(run.files.mapping))
         if not context.transfers_files:
-            return ()  # No independent target copy exists.
+            return  # No independent target copy exists.
         remote_root = await context._resolved_remote_root()
         declared = {
             entry.local_path: entry for entry in (
@@ -111,31 +111,55 @@ class FileAccess:
             ) if entry is not None
         }
         captured_paths = {os.path.abspath(os.fspath(version.path)) for version in run.files.all_versions}
-        pairs = {}
         for value in files:
-            local = os.path.abspath(os.fspath(value))
-            relative_local_path(local, context.local_root)
-            entry = declared.get(local)
-            remote = entry.remote_path if entry is not None else None
-            if remote is None:
-                remote = context._map_path(local, remote_root)
-            concrete = local in captured_paths or (entry is not None and not run.files.is_pattern(entry))
-            wildcard = not concrete and glob.has_magic(remote)
-            source = glob.escape(remote) if concrete else remote
-            for matched in await self.target.expand_files(source, remote_root):
-                destination = os.fspath(context._unmap_path(matched, remote_root)) if wildcard else local
-                if (entry is not None and entry in run.files.outputs and wildcard
-                        and run.files.output_excluded(matched, remote=True)):
-                    continue
-                # Retain exact historical file identities. A wildcard is
-                # expanded in the persisted mapped namespace, not today's alias.
-                # Resolve the parent, but never follow or replace a final
-                # symlink at the destination (including a dangling one).
-                target = _destination_path(destination)
-                pair = FileEntry(local_path=target, remote_path=matched)
-                previous = pairs.setdefault(target, pair)
-                if previous.remote_path != matched:
-                    raise ValueError(f"Different historical sources map to {target}")
+            pairs = {}
+            try:
+                local = os.path.abspath(os.fspath(value))
+                relative_local_path(local, context.local_root)
+                entry = declared.get(local)
+                remote = entry.remote_path if entry is not None else None
+                if remote is None:
+                    remote = context._map_path(local, remote_root)
+                concrete = local in captured_paths or (entry is not None and not run.files.is_pattern(entry))
+                wildcard = not concrete and glob.has_magic(remote)
+                source = glob.escape(remote) if concrete else remote
+                for matched in await self.target.expand_files(source, remote_root):
+                    destination = os.fspath(context._unmap_path(matched, remote_root)) if wildcard else local
+                    if (entry is not None and entry in run.files.outputs and wildcard
+                            and run.files.output_excluded(matched, remote=True)):
+                        continue
+                    # Retain exact historical file identities. A wildcard is
+                    # expanded in the persisted mapped namespace, not today's alias.
+                    # Resolve the parent, but never follow or replace a final
+                    # symlink at the destination (including a dangling one).
+                    target = _destination_path(destination)
+                    pair = FileEntry(local_path=target, remote_path=matched)
+                    previous = pairs.setdefault(target, pair)
+                    if previous.remote_path != matched:
+                        raise ValueError(f"Different historical sources map to {target}")
+            except OSError as exc:
+                yield value, exc
+            else:
+                yield value, tuple(pairs.values())
+
+    def resolve_result_groups(self, run, files):
+        """Resolve a history selection in one context, retaining per-path errors."""
+        self._validate_target(run)
+
+        async def resolve():
+            return {path: result async for path, result in self._resolve_result_groups(run, files)}
+
+        return _run_sync(resolve())
+
+    async def _resolve_result_files(self, run, files):
+        pairs = {}
+        async for _, result in self._resolve_result_groups(run, files):
+            if isinstance(result, OSError):
+                raise result
+            for entry in result:
+                previous = pairs.setdefault(entry.local_path, entry)
+                if previous.remote_path != entry.remote_path:
+                    raise ValueError(f"Different historical sources map to {entry.local_path}")
         return tuple(pairs.values())
 
     def resolve_result_files(self, run, files):
