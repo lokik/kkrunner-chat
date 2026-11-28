@@ -74,15 +74,15 @@ def submission_marker(run_id):
 
 def _slurm_current_matches(run_id):
     marker = submission_marker(run_id)
-    output = _scheduler_output(("squeue", "--noheader", "--me", "--format=%i|%k|%T|%Z"))
+    output = _scheduler_output(("squeue", "--noheader", "--me", "--format=%i|%k|%Z"))
     matches = []
     for line in output.splitlines():
-        fields = line.split("|", 3)
-        if len(fields) != 4:
+        fields = line.split("|", 2)
+        if len(fields) != 3:
             continue
-        native_id, comment, state, directory = (field.strip() for field in fields)
+        native_id, comment, directory = (field.strip() for field in fields)
         if comment == marker:
-            matches.append((native_id, state, directory))
+            matches.append((native_id, directory))
     return tuple(matches)
 
 
@@ -112,24 +112,22 @@ def _slurm_accounting_matches(run_id, submitted_at):
             "-n",
             "-P",
             f"--starttime={_slurm_time(submitted_at)}",
-            "--format=JobIDRaw,Comment,State,WorkDir,StdOut,StdErr,ExitCode",
+            "--format=JobIDRaw,Comment,WorkDir,StdOut,StdErr",
         )
     )
     matches = []
     for line in output.splitlines():
-        fields = line.rstrip("|").split("|")
-        if len(fields) != 7:
+        fields = line.removesuffix("|").split("|")
+        if len(fields) != 5:
             continue
-        native_id, comment, state, directory, stdout, stderr, exit_code = fields
+        native_id, comment, directory, stdout, stderr = fields
         if comment.strip() == marker:
             matches.append(
                 (
                     native_id.strip(),
-                    state.strip(),
                     directory.strip(),
                     stdout.strip() or None,
                     stderr.strip() or None,
-                    _slurm_exit_code(exit_code.strip()),
                 )
             )
     return tuple(matches)
@@ -187,26 +185,24 @@ def status(native_id: str) -> JobStatus:
 
 
 def recover(run_id, directory, *, submitted_at=None):
-    """Recover an uncertain local Slurm submission from scheduler facts."""
+    """Recover the native identity and file locations of an uncertain submission."""
     matches = _slurm_current_matches(run_id)
     if len(matches) > 1:
         raise RuntimeError(f"Multiple live Slurm jobs carry KKRunner run id {run_id!r}")
     if matches:
-        native_id, state, workdir = matches[0]
+        native_id, workdir = matches[0]
         try:
             details = _slurm_details(native_id)
         except (FileNotFoundError, subprocess.CalledProcessError):
             # The job may have finished between squeue and scontrol.
-            # Recover its terminal facts from accounting instead.
+            # Recover its identity and file locations from accounting instead.
             details = None
         if details:
             return {
                 "native_id": str(native_id),
-                "state": _slurm_state(state),
                 "directory": details.get("WorkDir") or workdir or directory,
                 "stdout": details.get("StdOut"),
                 "stderr": details.get("StdErr"),
-                "return_code": None,
             }
 
     if submitted_at is None or not _slurm_accounting_stores_comments():
@@ -224,15 +220,10 @@ def recover(run_id, directory, *, submitted_at=None):
         raise NotImplementedError(
             "Slurm has no matching job in squeue or accounting yet; submission acceptance is still uncertain"
         )
-    native_id, state, workdir, stdout, stderr, return_code = accounting[0]
-    recovered_state = _slurm_state(state)
-    if recovered_state == RunState.FINISHED and return_code not in (None, 0):
-        recovered_state = RunState.FAILED
+    native_id, workdir, stdout, stderr = accounting[0]
     return {
         "native_id": str(native_id),
-        "state": recovered_state,
         "directory": workdir or directory,
         "stdout": stdout,
         "stderr": stderr,
-        "return_code": return_code,
     }
