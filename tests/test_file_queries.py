@@ -318,13 +318,70 @@ def test_final_cache_versions_batch_expansion_and_digest(tmp_path):
             assert versions[name].digest == file_digest(remote / name)
         assert versions["tree"].path == local / "tree"
         assert versions["tree"].digest == queries.directory_digest(remote / "tree")
-        # Synchronization may inspect individual patterns, but provenance
-        # must not expand them again without capturing their digest.
-        assert not any(root is not None and not digest for _, root, digest in calls)
+        # Discovery freezes membership before collection. Provenance uses
+        # only those exact names, never a new wildcard expansion.
+        assert [(sources, root, digest) for sources, root, digest in calls if root is not None] == [
+            ((str(remote / "*.pot"),), str(remote), False),
+            ((str(remote / "*.cache"),), str(remote), False),
+        ]
         assert any(
-            root == str(remote) and digest
-            and {str(remote / "*.pot"), str(remote / "*.cache"), str(remote / "exact")}.issubset(sources)
+            root is None and digest
+            and set(sources) == {str(remote / name) for name in (*names, "missing")}
             for sources, root, digest in calls
         )
+    finally:
+        session.close()
+
+
+
+def test_missing_cache_policy_preserves_local_copies_without_remote_comparison(tmp_path):
+    from kkrunner import ExecutionSpec, RunState, TaskFile
+    from kkrunner.client import ExecutionClient, StagingSpec
+    from kkrunner.runs.base import RunStatus
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    remote.mkdir()
+    names = ("exact", "member.cache")
+    for root, content in ((local, "local"), (remote, "remote")):
+        for name in names:
+            (root / name).write_text(content)
+        (root / "tree").mkdir()
+        (root / "tree" / "data").write_text(content)
+    calls = []
+    hashes = []
+
+    class Observed(LocalTarget):
+        is_local = False
+        supports_file_transfer = True
+
+        async def query_files(self, sources, *, root=None, digest=False):
+            calls.append((tuple(sources), root, digest))
+            return await super().query_files(sources, root=root, digest=digest)
+
+        async def call(self, operation, *args, **kwargs):
+            if operation.function is queries.directory_digest:
+                hashes.append(args[0])
+            return await super().call(operation, *args, **kwargs)
+
+    spec = ExecutionSpec(
+        ("unused",), directory=local,
+        cache_files=("exact", "*.cache", TaskFile("tree", kind="directory")),
+        staging=StagingSpec(local_root=local, remote_root=remote, input_sync="never", output_sync="missing"),
+    )
+    session = ExecutionClient(target=Observed()).file_session(spec)
+    try:
+        session.prepare_submission()
+        calls.clear()
+        hashes.clear()
+        files = session.finalize(RunStatus(RunState.FINISHED, return_code=0))
+        assert {entry.availability_state for entry in files.artifacts} == {"skipped"}
+        assert {version.path.name for version in files.cache_versions} == {*names, "tree"}
+        assert [sources for sources, root, digest in calls if root is None and not digest] == [
+            (str(remote / "tree"),),
+        ]
+        assert hashes == [str(remote / "tree")]
+        assert all((local / name).read_text() == "local" for name in names)
+        assert (local / "tree" / "data").read_text() == "local"
     finally:
         session.close()
