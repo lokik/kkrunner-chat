@@ -80,7 +80,7 @@ class FileAccess:
             raise ValueError(f"Remote snapshot path is outside mapped root: {remote}")
         # Also reject remote symlinks that escape the mapped filesystem root.
         # query_files checks real path containment without requiring a stable file.
-        observed = await self.target.query_files([normalized], root=root)
+        observed = await self.target.query_files([glob.escape(normalized)], root=root)
         if not observed or observed[0]["status"] == "missing":
             raise FileNotFoundError(normalized)
         if observed[0]["type"] != "file":
