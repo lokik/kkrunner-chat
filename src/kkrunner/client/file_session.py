@@ -6,6 +6,7 @@ Run owns the session and invokes it before and after a distinct Job.
 
 from __future__ import annotations
 
+import glob
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -212,45 +213,30 @@ class FileSession:
             )
 
     async def _prepare_cache_files(self, used, manifest, input_patterns):
-        targets = {}
+        exact = []
         patterns = []
-        pattern_before = {}
-        output_policy = self.context.output_files
         remote_root = manifest.mapping.remote_root
 
         for cache in manifest.caches:
             entry = cache.file
-            local = entry.local_path
-            if has_file_magic(local):
+            if has_file_magic(entry.local_path):
                 patterns.append(entry.remote_path)
-                # Cache patterns use the same transfer logic as inputs,
-                # but an unmatched cache pattern is optional.
                 await self._stage_input_pattern(
                     input_patterns[entry.local_path], used, remote_root, required=False,
                 )
-                continue
+            else:
+                if entry.kind == "directory":
+                    await self._stage_directory(entry, used, required=False)
+                else:
+                    await self._stage_file(entry, used, required=False)
+                # The declaration remains even when no existing cache was staged.
+                exact.append(entry.remote_path)
 
-            # Cache inputs obey precisely the same staging policy as ordinary
-            # inputs, except that a missing local cache is allowed.
-            remote = (
-                await self._stage_directory(entry, used, required=False)
-                if entry.kind == "directory"
-                else await self._stage_file(entry, used, required=False)
-            )
-            if remote is None:
-                # A missing cache need not be uploaded, but remains declared:
-                # the calculation may create it and it must be collected.
-                remote = entry.remote_path
-
-            targets[local] = (remote, None)
-
-        if output_policy != FileSyncPolicy.NEVER and (patterns or targets):
-            # Stage all inputs first, then discover and capture all cache
-            # baselines in one request, including exact paths and globs.
-            exact = {remote for remote, _ in targets.values()}
+        signatures = {}
+        if self.context.output_files != FileSyncPolicy.NEVER and (patterns or exact):
+            # Capture pre-run baselines after staging in one metadata request.
             entries = await self.context.target.query_files(
-                [*patterns, *(remote for remote, _ in targets.values())],
-                root=remote_root,
+                [*patterns, *exact], root=remote_root,
             )
             signatures = {
                 item["path"]: (item["size"], item["mtime_ns"])
@@ -268,10 +254,14 @@ class FileSession:
                     if digest is None:
                         raise ValueError(f"Cannot identify cache directory contents: {entry.remote_path}")
                     signatures[entry.remote_path] = ("directory", digest)
-            targets = {local: (remote, signatures.get(remote)) for local, (remote, _) in targets.items()}
-            pattern_before = {remote: before for remote, before in signatures.items() if remote not in exact}
 
-        return targets, tuple(patterns), pattern_before
+        exact = set(exact)
+        return (
+            *(replace(cache, before=signatures.get(cache.file.remote_path))
+              if cache.file.remote_path in exact else cache for cache in manifest.caches),
+            *(CacheEntry(FileEntry(remote_path=remote), before)
+              for remote, before in signatures.items() if remote not in exact),
+        )
 
     async def _sync_output_entry(self, local, remote, required, *, kind="file"):
         """Synchronize one concrete output and record its availability."""
@@ -627,12 +617,8 @@ class FileSession:
                 await self._stage_file(entry, used, required=required)
 
         inputs = dict(used)
-        cache_targets, cache_patterns, cache_before = await self._prepare_cache_files(
-            used, manifest, input_patterns,
-        )
+        caches = await self._prepare_cache_files(used, manifest, input_patterns)
         staged = {source: target for target, source in used.items()}
-        output_targets = [entry.remote_path for entry in manifest.outputs if not has_file_magic(entry.local_path)]
-        output_patterns = [entry.remote_path for entry in manifest.outputs if has_file_magic(entry.local_path)]
 
         output_target = None if manifest.stdout is None else manifest.stdout.remote_path
         error_target = None if manifest.stderr is None else manifest.stderr.remote_path
@@ -642,24 +628,15 @@ class FileSession:
             transform=lambda args: self._remote_argv(args, staged),
             input_file=input_target, stdin=stdin_target,
             output_file=output_target, error_file=error_target,
-            output_files=(*output_targets, *output_patterns),
+            output_files=(entry.remote_path for entry in manifest.outputs),
             output_directories=(entry.remote_path for entry in manifest.outputs if entry.kind == "directory"),
-            cache_files=(*(remote for remote, _ in cache_targets.values()), *cache_patterns),
-            input_files=used,
+            cache_files=(cache.file.remote_path for cache in manifest.caches),
+            # Target cleanup consumes glob declarations. These staged paths
+            # are already concrete and must not be interpreted a second time.
+            input_files=(glob.escape(target) for target in used),
         )
-        caches = [
-            replace(cache, before=cache_targets[cache.file.local_path][1])
-            if cache.file.local_path in cache_targets else cache
-            for cache in manifest.caches
-        ]
-        caches.extend(CacheEntry(FileEntry(remote_path=remote), before)
-                      for remote, before in cache_before.items())
-        if not self.context.transfers_files:
-            from kkrunner.files.availability import snapshot_file_entries
-            versions = snapshot_file_entries(manifest.input_entries)
-        else:
-            versions = await self._target_input_versions(manifest, inputs)
-        return request, replace(manifest, caches=tuple(caches), input_versions=versions)
+        versions = await self._input_versions(manifest, inputs)
+        return request, replace(manifest, caches=caches, input_versions=versions)
 
     async def _target_versions(self, paths):
         transport = self.context.target
@@ -675,12 +652,18 @@ class FileSession:
                 versions.append(FileVersion(local, fingerprint=None, digest=digest, kind=kind))
         return tuple(versions)
 
-    async def _target_input_versions(self, manifest, inputs):
+    async def _input_versions(self, manifest, inputs):
         directories = {entry.local_path for entry in manifest.input_entries if entry.kind == "directory"}
-        return await self._target_versions({
+        paths = {
             target: (local, "directory" if local in directories else "file")
             for target, local in inputs.items()
-        })
+        }
+        if self.context.transfers_files:
+            return await self._target_versions(paths)
+        # Shared input staging already selected and validated exact members.
+        # Do not expand the original declarations again after synchronization.
+        return tuple(FileVersion.capture(local, kind=kind, require_digest=True)
+                     for local, kind in sorted(paths.values()))
 
     async def _target_cache_versions(self):
         return await self._target_versions({

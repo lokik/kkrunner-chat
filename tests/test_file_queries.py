@@ -258,20 +258,20 @@ def test_cache_preparation_batches_patterns_and_exact_metadata(tmp_path):
         # Patterns need local candidates for input staging even under NEVER.
         for name in ("one.pot", "two.pot", "three.cache"):
             (local / name).write_bytes(b"cache")
-        targets, patterns, before = asyncio.run(
-            files._prepare_cache_files({}, files.submission_footprint()[1])
-        )
+        files.prepare_submission()
+        caches = {cache.file.remote_path: cache.before for cache in files.files.caches}
         assert calls == [
             ((str(remote / "*.pot"), str(remote / "*.cache"), str(remote / "exact"), str(remote / "missing")),
              str(remote)),
         ]
-        assert set(patterns) == {str(remote / "*.pot"), str(remote / "*.cache")}
-        assert before == {
-            str(remote / name): queries.local_file_signature(remote / name)
-            for name in ("one.pot", "two.pot", "three.cache")
+        assert caches == {
+            str(remote / "*.pot"): None,
+            str(remote / "*.cache"): None,
+            str(remote / "exact"): queries.local_file_signature(remote / "exact"),
+            str(remote / "missing"): None,
+            **{str(remote / name): queries.local_file_signature(remote / name)
+               for name in ("one.pot", "two.pot", "three.cache")},
         }
-        assert targets[str(local / "exact")][1] == queries.local_file_signature(remote / "exact")
-        assert targets[str(local / "missing")][1] is None
     finally:
         files.close()
 

@@ -183,3 +183,35 @@ def test_update_with_captured_shared_results_needs_no_download(tmp_path):
     saved = manager.update(record, RunStatus(RunState.FINISHED, return_code=0))
     assert saved.state == RunState.FINISHED
     assert saved.files == files
+
+
+
+def test_shared_input_versions_use_already_selected_pattern_members(tmp_path, monkeypatch):
+    from kkrunner.support import durability
+
+    local = tmp_path / "local"
+    local.mkdir()
+    remote = tmp_path / "remote"
+    remote.symlink_to(local, target_is_directory=True)
+    original = local / "input[1].dat"
+    original.write_text("input")
+    later = local / "input2.dat"
+    sync = durability.sync_file
+
+    def synchronize(path):
+        sync(path)
+        later.write_text("appeared after selection")
+
+    monkeypatch.setattr(durability, "sync_file", synchronize)
+    spec = ExecutionSpec(
+        ("true",), directory=local, input_files=("input*.dat",),
+        staging=StagingSpec(local_root=local, remote_root=remote, shared_filesystem=True),
+    )
+    session = ExecutionClient(target=SharedMount()).file_session(spec)
+    try:
+        session.prepare_submission()
+        assert tuple(version.path for version in session.files.input_versions) == (original,)
+        assert session.files.input_versions[0].is_current()
+        assert later.exists()
+    finally:
+        session.close()

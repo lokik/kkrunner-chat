@@ -332,3 +332,19 @@ def test_local_input_capture_uses_same_members_as_durability_barrier(tmp_path, m
         assert later.exists()
     finally:
         session.close()
+
+
+
+def test_primary_input_and_stdin_are_literal_during_output_cleanup(tmp_path):
+    for field in ("input_file", "stdin"):
+        source = tmp_path / "input[1].dat"
+        stale = tmp_path / "input1.dat"
+        source.write_text("input")
+        stale.write_text("stale")
+        prepare_target_outputs({
+            "directory": str(tmp_path),
+            field: str(source),
+            "output_files": [str(tmp_path / "*.dat")],
+        })
+        assert source.read_text() == "input"
+        assert not stale.exists()
