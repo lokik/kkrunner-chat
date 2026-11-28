@@ -171,6 +171,8 @@ def remote_file_cleanup(paths, root=None, *, expected=None, kinds=None):
     be a directory. Recursive deletion requires the snapshot of every child.
     Unexpected changes cause that directory to be skipped.
     Errors on one target do not interrupt cleanup of other selected targets.
+    Resolve symbolic home paths on the target, retaining the original
+    declaration as the request, confirmation and reply key.
     """
     import os
     import shutil
@@ -212,11 +214,15 @@ def remote_file_cleanup(paths, root=None, *, expected=None, kinds=None):
         result = {"path": given}
         try:
             original = os.fspath(given)
+            if original == "~" or original.startswith("~/"):
+                original = os.path.expanduser(original)
             if not os.path.isabs(original):
                 raise ValueError("Remote cleanup requires absolute paths")
             if ".." in original.split(os.sep):
                 raise ValueError("Parent traversal is not allowed")
             path = os.path.normpath(original)
+            if os.path.dirname(path) == path:
+                raise ValueError("Refusing to clean up the filesystem root")
             if root is not None:
                 relative = os.path.relpath(path, root)
                 if relative in (".", "..") or relative.startswith(".." + os.sep):
@@ -249,13 +255,14 @@ def remote_file_cleanup(paths, root=None, *, expected=None, kinds=None):
                 )
             members = tree(path) if declared_kind == "directory" else []
             result.update(state)
+            result["path"] = given
             result["contents"] = members
             if expected is None:
                 result["status"] = "ok"
             else:
                 confirmed = expected.get(given)
                 # Existing consumers pass a four-number list for regular files.
-                if isinstance(confirmed, list):
+                if isinstance(confirmed, (list, tuple)):
                     confirmed = {
                         "kind": "file", "mtime_ns": confirmed[0],
                         "size": confirmed[1], "device": confirmed[2],
