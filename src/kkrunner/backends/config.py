@@ -38,6 +38,21 @@ class BackendConfig:
         from kkrunner.backends import backend_class
         return backend_class(self.name).execution_mode
 
+    def reference_unavailable_reason(self, capability, backend_id, *, stream_paths=()):
+        """Explain why a saved reference cannot offer a backend action, if known.
+
+        This advisory check does not establish that the job is alive or that
+        the target is reachable. The native operation must verify that itself.
+        """
+        from kkrunner.backends import backend_class
+        if capability not in self.supports:
+            return f"The {self.name} backend does not support {capability.value}."
+        if backend_id is None:
+            return "No saved backend identity"
+        return backend_class(self.name).reference_unavailable_reason(
+            capability, backend_id, stream_paths=stream_paths,
+        )
+
     def create(self):
         from kkrunner.backends import backend_class
         return backend_class(self.name)(**dict(self.options))

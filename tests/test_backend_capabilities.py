@@ -150,3 +150,35 @@ def test_backends_without_receipts_do_not_invoke_acknowledgements(backend, monke
 def test_saved_psij_options_are_validated(options):
     with pytest.raises(ValueError, match="nonempty"):
         BackendConfig("psij", options)
+
+
+@pytest.mark.parametrize("identity,exception", [
+    ("opaque-session", NotImplementedError),
+    ("ps:42:time:42", NotImplementedError),
+    ("direct:0:42:00000000-0000-0000-0000-000000000000", ValueError),
+    ("direct:42:bad:00000000-0000-0000-0000-000000000000", ValueError),
+    ("direct:42:137:bad", ValueError),
+])
+def test_direct_cancel_reference_check_agrees_with_native_validation(identity, exception):
+    config = BackendConfig("direct")
+    assert config.reference_unavailable_reason(BackendCapability.CANCEL, identity)
+    with pytest.raises(exception):
+        DirectBackend.cancel(identity)
+
+
+def test_reference_eligibility_requires_no_backend_instance_or_target_io(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Reference eligibility must not instantiate a backend")
+
+    monkeypatch.setattr(BackendConfig, "create", forbidden)
+    direct = BackendConfig("direct")
+    native = "direct:42:137:00000000-0000-0000-0000-000000000000"
+    assert direct.reference_unavailable_reason(BackendCapability.CANCEL, native) is None
+    assert direct.reference_unavailable_reason(BackendCapability.REATTACH, native)
+    assert direct.reference_unavailable_reason(
+        BackendCapability.REATTACH, "opaque-session", stream_paths=(None, "/work/stderr"),
+    ) is None
+    managed = BackendConfig("psij", {"executor_name": "slurm"})
+    assert managed.reference_unavailable_reason(BackendCapability.REATTACH, "opaque-id") is None
+    assert managed.reference_unavailable_reason(BackendCapability.CANCEL, None)
+    assert BackendConfig("unavailable").reference_unavailable_reason(BackendCapability.CANCEL, "id")

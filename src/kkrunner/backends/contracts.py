@@ -317,6 +317,15 @@ class Backend:
         """Capabilities for validated options, without creating an execution backend."""
         return cls._supports
 
+    @classmethod
+    def reference_unavailable_reason(cls, capability, backend_id, *, stream_paths=()):
+        """Additional backend-specific restrictions on a saved job reference.
+
+        Pure client-side eligibility check; no target I/O or liveness assertion.
+        Stream paths describe saved output available for reattachment.
+        """
+        return None
+
     def __init__(self, **options):
         """Keep backend configuration in one immutable, instance-owned place."""
         self.options = MappingProxyType(self.validate_options(**options))
