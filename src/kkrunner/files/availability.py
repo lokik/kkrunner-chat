@@ -11,8 +11,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from kkrunner.files.versions import FileVersion
+from kkrunner.files.manifest import FileEntry
 from kkrunner.support.durability import sync_file
-from kkrunner.files.paths import expand_local_candidates, has_file_magic
+from kkrunner.files.paths import expand_local_candidates
 from kkrunner.support.decorators import portable
 
 
@@ -136,9 +137,9 @@ def discover_local_files(files, *, include_streams=True, require_outputs=True):
     ]
     # Resolve exact artifacts first, as in remote synchronization. A wildcard
     # should never infer availability from an unresolved exact declaration.
-    for kind, entry in sorted(pending, key=lambda item: has_file_magic(item[1].local_path)):
+    for kind, entry in sorted(pending, key=lambda item: files.is_pattern(item[1])):
         path = entry.local_path
-        if has_file_magic(path):
+        if files.is_pattern(entry):
             matches = tuple(candidate for candidate in expand_local_candidates(path) if os.path.isfile(candidate))
             collected = tuple(
                 concrete for concrete in matches
@@ -233,7 +234,7 @@ def _concrete_result_files(manifests):
     return tuple(paths)
 
 
-def _capturable_entries(entries, *, frozen=False):
+def _capturable_entries(manifest, entries, *, frozen=False):
     """Only versions actually delivered for this run enter its provenance.
 
     A skipped auxiliary output can still exist locally from an earlier run.
@@ -248,20 +249,19 @@ def _capturable_entries(entries, *, frozen=False):
         and entry.availability_state not in ("skipped", "failed")
         and (not frozen or entry.availability_state == "available")
         and (
-            entry.source_pattern is not None
-            or not has_file_magic(entry.local_path)
+            not manifest.is_pattern(entry)
             or (not frozen and entry.availability_state in (None, "pending"))
         )
     )
 
 
-def snapshot_file_entries(entries, *, sync=False):
+def snapshot_file_entries(entries, *, sync=False, is_pattern=FileEntry.is_pattern):
     """Capture concrete local files and declared directory contents."""
     paths = {}
     for entry in entries:
         if entry.local_path is None:
             continue
-        if entry.kind == "file" and entry.source_pattern is None and has_file_magic(entry.local_path):
+        if is_pattern(entry):
             paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,)), "file"))
             continue
         # A published concrete artifact must have a version. If it disappeared
@@ -307,8 +307,13 @@ def capture_result_files(result_files, *, require_outputs=True, cache_versions=N
     cache_entries = tuple(item.file for item in result_files.caches)
     return replace(
         result_files,
-        output_versions=snapshot_file_entries(_capturable_entries(output_entries, frozen=frozen), sync=True),
-        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries, frozen=frozen))
-                        if cache_versions is None else cache_versions),
+        output_versions=snapshot_file_entries(
+            _capturable_entries(result_files, output_entries, frozen=frozen), sync=True,
+            is_pattern=result_files.is_pattern,
+        ),
+        cache_versions=(snapshot_file_entries(
+            _capturable_entries(result_files, cache_entries, frozen=frozen),
+            is_pattern=result_files.is_pattern,
+        ) if cache_versions is None else cache_versions),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )

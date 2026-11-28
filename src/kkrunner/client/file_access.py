@@ -119,10 +119,7 @@ class FileAccess:
             remote = entry.remote_path if entry is not None else None
             if remote is None:
                 remote = context._map_path(local, remote_root)
-            concrete = local in captured_paths or (entry is not None and (
-                entry.source_pattern is not None or entry is run.files.stdin
-                or entry is run.files.stdout or entry is run.files.stderr
-            ))
+            concrete = local in captured_paths or (entry is not None and not run.files.is_pattern(entry))
             wildcard = not concrete and glob.has_magic(remote)
             source = glob.escape(remote) if concrete else remote
             for matched in await self.target.expand_files(source, remote_root):

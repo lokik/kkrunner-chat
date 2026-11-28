@@ -388,3 +388,35 @@ def test_input_stat_error_does_not_authorize_output_cleanup(tmp_path, monkeypatc
             "output_files": [str(output)],
         })
     assert output.read_text() == "old"
+
+
+
+def test_capture_named_stream_does_not_expand_its_name(tmp_path):
+    from kkrunner.files.availability import capture_result_files
+
+    source = tmp_path / "out[1].dat"
+    source.write_text("stream")
+    (tmp_path / "out1.dat").write_text("unrelated")
+    files = FileManifest(stdout=FileEntry(source, availability_state="pending"))
+    captured = capture_result_files(files)
+    assert captured.stdout.availability_state == "available"
+    assert captured.outputs == ()
+    assert tuple(version.path for version in captured.output_versions) == (source,)
+    assert captured.output_versions[0].is_current()
+
+
+def test_local_input_capture_treats_primary_and_stdin_as_literal(tmp_path):
+    from kkrunner import ExecutionSpec
+    from kkrunner.client import ExecutionClient
+
+    source = tmp_path / "input[1].dat"
+    source.write_text("input")
+    (tmp_path / "input1.dat").write_text("unrelated")
+    session = ExecutionClient().file_session(ExecutionSpec(
+        ("true",), directory=tmp_path, input_file=source, stdin=source,
+    ))
+    try:
+        session.prepare_submission()
+        assert tuple(version.path for version in session.files.input_versions) == (source,)
+    finally:
+        session.close()

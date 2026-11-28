@@ -282,3 +282,19 @@ def test_discovered_member_is_not_a_snapshot_declaration(tmp_path):
     manifest = FileManifest(outputs=(member,))
     assert matching_file(manifest, member.local_path) == member
     assert matching_file(manifest, tmp_path / "result1.dat") is None
+
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_named_stream_snapshot_is_literal(tmp_path, remote):
+    manager, run, local, source_root = running_run(tmp_path, remote)
+    name = "stdout[1].log"
+    stream = FileEntry(local / name, source_root / name if remote else None)
+    run = manager.store.update(run, lambda latest: replace(
+        latest, files=replace(latest.files, stdout=stream),
+    ))
+    (source_root / name).write_bytes(b"stream")
+    (source_root / "stdout1.log").write_bytes(b"unrelated")
+    assert manager.snapshot_file(run, name) == b"stream"
+    with pytest.raises(ValueError, match="not a declared"):
+        manager.snapshot_file(run, "stdout1.log")

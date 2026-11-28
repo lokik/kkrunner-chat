@@ -21,8 +21,8 @@ def matching_file(manifest, path):
             return entry
 
     for entry in entries:
-        if entry.source_pattern is not None:
-            continue  # Discovered members have literal names, not patterns.
+        if not manifest.is_pattern(entry):
+            continue
         if entry in manifest.outputs and manifest.output_excluded(path):
             continue
         if path_matches(path, os.path.abspath(entry.local_path)):
@@ -38,7 +38,7 @@ def snapshot_request(manifest, directory, file, destination):
         raise ValueError("Snapshot requires one concrete file, not a wildcard")
     entry = matching_file(manifest, path)
     if has_file_magic(path) and not (
-        entry is not None and entry.source_pattern is not None
+        entry is not None and not manifest.is_pattern(entry)
         and os.path.abspath(entry.local_path) == path
     ):
         raise ValueError("Snapshot requires one concrete file, not a wildcard")

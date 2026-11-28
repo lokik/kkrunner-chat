@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from kkrunner.client.file_access import FileAccess
 from kkrunner.files.availability import file_is_current
 from kkrunner.files.manifest import ArtifactAvailabilityState
-from kkrunner.files.paths import expand_local_candidates, has_file_magic
+from kkrunner.files.paths import expand_local_candidates
 from kkrunner.files.versions import file_digest
 from kkrunner.runs.stores import resolve_record, store_for
 from kkrunner.runs.states import NO_EXECUTION_FAILURES
@@ -42,7 +42,7 @@ def _missing_result_files(result_files, *, include_outputs=True):
                 result_files.stdout, result_files.stderr,
                 *(entry for entry in result_files.outputs if entry.collect and entry.local_path is not None
                   and (result_files.remote_patterns_resolved is not True
-                       or entry.source_pattern is not None or not has_file_magic(entry.local_path))),
+                       or not result_files.is_pattern(entry))),
             )
 
     # Retrieval needs existence, not content identity. Only verify the
@@ -62,13 +62,11 @@ def _missing_result_files(result_files, *, include_outputs=True):
         if entry is not None and entry.kind == "file" and entry.local_path is not None
         and not any(
             os.path.isfile(path) and not (
-                entry in result_files.outputs and entry.source_pattern is None
-                and has_file_magic(entry.local_path) and result_files.output_excluded(path)
+                entry in result_files.outputs and result_files.is_pattern(entry)
+                and result_files.output_excluded(path)
             )
-            for path in ((entry.local_path,) if entry.source_pattern is not None
-                         or entry is result_files.stdin or entry is result_files.stdout
-                         or entry is result_files.stderr
-                         else expand_local_candidates(entry.local_path))
+            for path in (expand_local_candidates(entry.local_path) if result_files.is_pattern(entry)
+                         else (entry.local_path,))
         )
     )
     return _unique(missing)

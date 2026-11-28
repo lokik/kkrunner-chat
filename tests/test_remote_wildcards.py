@@ -458,3 +458,20 @@ def test_literal_cache_member_does_not_exclude_another_output(tmp_path):
     assert (workdir / "cache[1].dat").read_text() == "cache"
     assert "cache1.dat" in {version.path.name for version in run.files.output_versions}
     assert "cache[1].dat" not in {version.path.name for version in run.files.output_versions}
+
+
+
+def test_remote_named_stdout_is_transferred_and_captured_literally(tmp_path):
+    from dataclasses import replace
+
+    client, spec, workdir, _ = _text_run(
+        tmp_path, code="print('literal stream')",
+    )
+    source = workdir / "stdout[1].log"
+    spec = replace(spec, output_file=source, output_files=())
+    (workdir / "stdout1.log").write_text("unrelated")
+    run = _processed_run(client, spec)
+    assert run.run().return_code == 0
+    assert source.read_text() == "literal stream\n"
+    assert (workdir / "stdout1.log").read_text() == "unrelated"
+    assert tuple(version.path for version in run.files.output_versions) == (source,)
