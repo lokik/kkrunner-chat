@@ -72,10 +72,6 @@ def _manifest_accesses(record, *, remote=None):
     return reads - {None}, writes - {None}
 
 
-def _paths_overlap(first, second):
-    return any(paths_overlap(a, b) for a in first for b in second)
-
-
 def filesystem_namespace(record):
     """Identity of the execution filesystem, shared by reservations and cleanup."""
     transport = record.execution.target
@@ -131,51 +127,40 @@ class FileConflict:
     second_access: str
 
 
-def conflicting_files(left: RunRecord, right: RunRecord) -> tuple[FileConflict, ...]:
-    """Describe collisions, including conservative wildcard overlaps.
-
-    Paths refer to the declared files and are not fabricated by a filesystem
-    probe; wildcard-vs-wildcard overlaps can be conservative.
-    """
+def _conflicting_accesses(left, right):
+    """Yield conflicting accesses lazily; both decisions and reports use this rule."""
     def matches(first, second, namespace):
         reads1, writes1 = first
         reads2, writes2 = second
-        result = []
-        for access1, paths1 in (("write", writes1), ("read", reads1)):
-            for access2, paths2 in (("write", writes2), ("read", reads2)):
-                if access1 == access2 == "read":
-                    continue
-                for path1 in sorted(paths1):
-                    for path2 in sorted(paths2):
-                        if paths_overlap(path1, path2):
-                            result.append(FileConflict(
-                                namespace, path1, access1, path2, access2,
-                            ))
-        return result
+        for access1, paths1, access2, paths2 in (
+            ("write", writes1, "write", writes2),
+            ("write", writes1, "read", reads2),
+            ("read", reads1, "write", writes2),
+        ):
+            for path1 in paths1:
+                for path2 in paths2:
+                    if paths_overlap(path1, path2):
+                        yield FileConflict(namespace, path1, access1, path2, access2)
 
-    collisions = matches(
+    yield from matches(
         _manifest_accesses(left, remote=False),
         _manifest_accesses(right, remote=False),
         "local",
     )
     if _compare_target_filesystems(left, right):
-        collisions.extend(matches(
-            _manifest_accesses(left), _manifest_accesses(right),
-            "target",
-        ))
-    return tuple(dict.fromkeys(collisions))
+        yield from matches(
+            _manifest_accesses(left), _manifest_accesses(right), "target",
+        )
+
+
+def conflicting_files(left: RunRecord, right: RunRecord) -> tuple[FileConflict, ...]:
+    """Describe collisions, including conservative wildcard overlaps."""
+    return tuple(sorted(set(_conflicting_accesses(left, right)), key=lambda item: (
+        item.namespace, item.first_access != "write", item.second_access != "write",
+        item.first_path, item.second_path,
+    )))
 
 
 def submission_conflicts(left: RunRecord, right: RunRecord) -> bool:
     """Conservatively exclude overlapping declared read/write operations."""
-
-    def overlaps(first, second):
-        left_reads, left_writes = first
-        right_reads, right_writes = second
-        return _paths_overlap(left_writes, right_reads | right_writes) or _paths_overlap(right_writes, left_reads)
-
-    # Shared target files are also represented by their mapped local paths.
-    if overlaps(_manifest_accesses(left, remote=False), _manifest_accesses(right, remote=False)):
-        return True
-
-    return _compare_target_filesystems(left, right) and overlaps(_manifest_accesses(left), _manifest_accesses(right))
+    return next(_conflicting_accesses(left, right), None) is not None

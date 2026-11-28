@@ -428,3 +428,40 @@ def test_history_listing_uses_latest_state_when_run_moves_during_scan(tmp_path, 
     assert reader.runs(active=active) == tuple(completed)
     assert len(completed) == 1
     assert completed[0].state == RunState.FINISHED
+
+
+
+@pytest.mark.parametrize("first_write,second_write,expected", [
+    (False, False, False), (True, False, True),
+    (False, True, True), (True, True, True),
+])
+@pytest.mark.parametrize("remote", [False, True])
+def test_conflict_decision_and_details_share_access_rules(tmp_path, first_write, second_write, expected, remote):
+    from kkrunner.files.manifest import FileMapping
+    from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
+    from kkrunner.targets import SshTarget
+
+    manager = RunManager(MemoryRunStore())
+    records = []
+    for index, write in enumerate((first_write, second_write)):
+        local = tmp_path / (str(index) if remote else "shared")
+        target_path = "/work/result.dat" if remote else None
+        entry = FileEntry(local / "result.dat", target_path)
+        mapping = FileMapping(local, "/work", input_sync="never") if remote else None
+        files = FileManifest(
+            inputs=() if write else (entry,),
+            outputs=(entry,) if write else (),
+            mapping=mapping,
+        )
+        records.append(manager.new_record(
+            directory=local, files=files,
+            target=SshTarget("cluster") if remote else None,
+            remote_directory="/work" if remote else None,
+        ))
+    left, right = records
+    details = conflicting_files(left, right)
+    assert bool(details) == submission_conflicts(left, right) == expected
+    assert submission_conflicts(right, left) == expected
+    if expected:
+        assert {detail.namespace for detail in details} == {"target" if remote else "local"}
+        assert all(detail.first_access == "write" or detail.second_access == "write" for detail in details)
