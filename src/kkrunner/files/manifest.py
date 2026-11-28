@@ -441,6 +441,13 @@ class FileManifest:
     def output_file(self):
         return self.stdout.local_path if self.stdout is not None else None
 
+    def stream_paths(self, *, remote=False):
+        """Named stdout/stderr paths on the filesystem of the observer."""
+        return tuple(
+            None if entry is None else (entry.remote_path if remote else entry.local_path)
+            for entry in (self.stdout, self.stderr)
+        )
+
     @property
     def input_entries(self):
         return (*((self.input,) if self.input is not None else ()), *self.inputs,

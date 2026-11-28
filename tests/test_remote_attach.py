@@ -236,3 +236,35 @@ def test_remote_attach_does_not_use_existing_local_file_as_observation_offset(tm
     assert parts.files.observation()["stream_offsets"]["out"] == 0
     parts.files.close()
     assert local_output.read_bytes() == b"partial"
+
+
+@pytest.mark.parametrize("role,kind", [("stdout", "out"), ("stderr", "err")])
+def test_remote_only_named_stream_is_replayed_from_start(tmp_path, role, kind):
+    from kkrunner.client.file_session import FileSession
+    from kkrunner.files.manifest import FileEntry
+
+    endpoint = _executor()
+    path = "/remote/calculation/" + role
+    attachment = JobAttachment(
+        ExecutionMetadata(
+            endpoint.target, WorkingDirectory(str(tmp_path), "/remote/calculation"),
+            "opaque-handle", backend=endpoint.backend_config,
+        ),
+        FileManifest(**{role: FileEntry(remote_path=path)}),
+    )
+    session = FileSession.from_attachment(endpoint.target, attachment)
+    try:
+        assert session.spec.is_partial
+        assert session.spec.output_file is None
+        assert session.spec.error_file is None
+        expected_paths = (path, None) if role == "stdout" else (None, path)
+        assert attachment.files.stream_paths(remote=True) == expected_paths
+        assert attachment.files.stream_paths() == (None, None)
+        assert session.observation() == {
+            "stream_paths": expected_paths,
+            "stream_offsets": {
+                key: 0 if key == kind else None for key in ("out", "err")
+            },
+        }
+    finally:
+        session.close()
