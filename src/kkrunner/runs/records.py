@@ -525,15 +525,29 @@ class RunStore:
             records = []
             seen = set()
             for name in sorted(days.keys() | by_day.keys(), reverse=newest):
-                entries = by_day.get(name, [])
+                entries = {record.id: record for record in by_day.get(name, ())}
                 if name in days:
-                    entries.extend(self._records_in_directory(
+                    for record in self._records_in_directory(
                         days[name], newest=newest, on_error=on_error,
-                    ))
-                for record in sorted(entries, key=lambda item: item.created_at, reverse=newest):
-                    # A moving record may be observed in both enumerations.
-                    # Distinguish that race from duplicate persisted identities
-                    # using the normal locked lookup.
+                    ):
+                        if record.id not in entries:
+                            entries[record.id] = record
+                            continue
+                        # The active snapshot preceded the dated snapshot.
+                        # Resolve a moving record before applying the state
+                        # filter or returning it, not after discarding its
+                        # second (potentially terminal) observation.
+                        try:
+                            entries[record.id] = self.get(record.id)
+                        except FileNotFoundError:
+                            del entries[record.id]
+                        except CorruptRunRecord as exc:
+                            if on_error is None:
+                                raise
+                            on_error(exc)
+                for record in sorted(entries.values(), key=lambda item: item.created_at, reverse=newest):
+                    # An identity repeated across different date shards is
+                    # invalid. Check the current persisted locations.
                     if record.id in seen:
                         try:
                             self.get(record.id)
