@@ -233,36 +233,16 @@ class FileAccess:
         paths = tuple(paths)
         if not set(paths).issubset(declared) or len(paths) != len(set(paths)):
             raise ValueError("Only distinct, declared remote manifest paths may be inspected or deleted")
-        # The manifest is the authority: execution.directory.target is not
-        # necessarily the parent of all output files (e.g. TAUDIR under a
-        # separate TAUPATH). The target still rejects symlinks, directories,
-        # non-absolute paths and changed file identities.
-        resolved = tuple(
-            [await self.target.resolve_path(path) for path in paths]
-        )
-        expected_resolved = None if expected is None else {
-            resolved_path: (
-                dict(expected[original_path])
-                if isinstance(expected[original_path], dict)
-                else list(expected[original_path])
-            )
-            for original_path, resolved_path in zip(paths, resolved)
-        }
-        kinds_resolved = {
-            resolved_path: declared[original_path]
-            for original_path, resolved_path in zip(paths, resolved)
-        }
+        # Authorization uses the persisted names. Only the target resolves
+        # those names to filesystem paths; confirmation keys remain unchanged.
         replies = await asyncio.wait_for(
             self.target.call(
                 Operation.standalone(remote_file_cleanup),
-                resolved, expected=expected_resolved, kinds=kinds_resolved,
+                paths, expected=expected, kinds={path: declared[path] for path in paths},
             ),
             timeout=45 if expected is not None else 15,
         )
-        return tuple(
-            {**reply, "path": original_path}
-            for original_path, reply in zip(paths, replies)
-        )
+        return tuple(replies)
 
     def inspect_remote_files(self, run, paths):
         """Retrieve exact remote file identities for a deletion confirmation."""

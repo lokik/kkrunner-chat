@@ -332,3 +332,62 @@ def test_manifest_retains_directory_type_from_task_declaration(tmp_path):
     assert FileManifest(outputs=({"remote_path": "/tmp/legacy"},)).outputs[0].kind == "file"
     with pytest.raises(ValueError, match="kind"):
         TaskFile("invalid", kind="other")
+
+
+def test_endpoint_cleanup_keeps_symbolic_confirmation_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / "result.out"
+    path.write_text("result")
+    symbolic = "~/result.out"
+    absolute = str(path)
+    transport = LoopbackSshTransport()
+    client = ExecutionClient(DirectBackend, target=transport)
+
+    async def no_home_query(self):
+        raise AssertionError("Cleanup must resolve its path inside the target operation")
+
+    monkeypatch.setattr(LoopbackSshTransport, "home_directory", no_home_query)
+    record = SimpleNamespace(
+        execution=SimpleNamespace(target=transport),
+        files=FileManifest(outputs=(
+            FileEntry(remote_path=symbolic),
+            FileEntry(remote_path=absolute, kind="directory"),
+        )),
+    )
+    preview = client.inspect_remote_files(record, (symbolic, absolute))
+    assert [item["path"] for item in preview] == [symbolic, absolute]
+    assert [item["status"] for item in preview] == ["ok", "skipped"]
+    deleted = client.delete_remote_files(record, {symbolic: tuple(_identity(preview[0]))})
+    assert deleted[0]["path"] == symbolic
+    assert deleted[0]["status"] == "deleted"
+    assert not path.exists()
+
+
+def test_endpoint_cleanup_does_not_normalize_away_parent_traversal(tmp_path):
+    path = tmp_path / "result.out"
+    path.write_text("keep")
+    (tmp_path / "nested").mkdir()
+    declared = str(tmp_path / "nested" / ".." / "result.out")
+    transport = LoopbackSshTransport()
+    client = ExecutionClient(DirectBackend, target=transport)
+    record = SimpleNamespace(
+        execution=SimpleNamespace(target=transport),
+        files=FileManifest(outputs=(FileEntry(remote_path=declared),)),
+    )
+    preview = client.inspect_remote_files(record, (declared,))
+    assert preview[0]["status"] == "skipped"
+    assert "Parent traversal" in preview[0]["message"]
+    assert path.read_text() == "keep"
+
+
+def test_cleanup_refuses_filesystem_root_before_walking(monkeypatch):
+    import os
+
+    def unexpected_walk(path):
+        pytest.fail("Cleanup must not enumerate the filesystem root")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", unexpected_walk)
+        reply = remote_file_cleanup(("/",), kinds={"/": "directory"})[0]
+    assert reply["status"] == "skipped"
+    assert "filesystem root" in reply["message"]
