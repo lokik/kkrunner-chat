@@ -89,7 +89,7 @@ def test_portable_output_cleanup_preserves_wildcard_cache(tmp_path):
     stale.write_text("stale")
     request = {
         "output_file": None,
-        "cache_files": [str(tmp_path / "saved*.pot")],
+        "protected_patterns": [str(tmp_path / "saved*.pot")],
         "output_files": [str(tmp_path / "*.pot")],
     }
     payload = json.dumps({"args": [request], "kwargs": {}})

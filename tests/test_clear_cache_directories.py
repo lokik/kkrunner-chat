@@ -12,8 +12,8 @@ from kkrunner.runs.records import RunStore
 def request(root, directory, *, input_file=None):
     return {
         "directory": str(root), "input_file": None if input_file is None else str(input_file),
-        "stdin": None, "input_files": [], "output_file": None,
-        "error_file": None, "cache_files": [], "output_files": [str(directory)],
+        "stdin": None, "protected_files": [], "output_file": None,
+        "error_file": None, "protected_patterns": [], "output_files": [str(directory)],
         "output_directories": [str(directory)],
     }
 

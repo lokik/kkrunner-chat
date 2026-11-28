@@ -29,13 +29,13 @@ def prepare_target_outputs(request):
     import shutil
     import stat
 
+    if "input_files" in request or "cache_files" in request:
+        raise ValueError("Target cleanup requires protected_files and protected_patterns")
     streams = {p for p in (request.get("output_file"), request.get("error_file")) if p}
     protected_candidates = [path for path in (request.get("stdin"), request.get("input_file")) if path]
-    for declaration in dict.fromkeys((*request.get("input_files", ()), *request.get("cache_files", ()))):
-        if declaration is not None:
-            protected_candidates.extend(
-                glob.glob(declaration, recursive=True) if glob.has_magic(declaration) else (declaration,)
-            )
+    protected_candidates.extend(request.get("protected_files", ()))
+    for pattern in dict.fromkeys(request.get("protected_patterns", ())):
+        protected_candidates.extend(glob.glob(pattern, recursive=True))
     def directory_entry(path):
         # Resolve parent aliases but retain the name of the directory entry.
         path = os.path.abspath(path)

@@ -180,7 +180,7 @@ def test_remote_worker_does_not_delete_cache_matched_by_output_glob(tmp_path):
         "directory": str(root),
         "argv": [sys.executable, "-c", "print('done')"],
         "output_files": [str(root / "*.pot")],
-        "cache_files": [str(root / "restart*.pot")],
+        "protected_patterns": [str(root / "restart*.pot")],
     }
     from kkrunner.files.availability import prepare_target_outputs
     prepare_target_outputs(request)

@@ -3,14 +3,15 @@
 from kkrunner.files.availability import discover_local_files, prepare_target_outputs
 
 
-def _prepare_outputs(outputs=(), *, protected_paths=(), stdout=None):
+def _prepare_outputs(outputs=(), *, protected_paths=(), protected_patterns=(), stdout=None):
     """Invoke the single target-side operation used by every backend."""
     return prepare_target_outputs({
         "output_file": None if stdout is None else str(stdout),
         "error_file": None,
         "output_files": [str(p) for p in outputs],
-        "cache_files": [str(p) for p in protected_paths],
-        "input_files": [], "stdin": None, "input_file": None,
+        "protected_files": [str(p) for p in protected_paths],
+        "protected_patterns": [str(p) for p in protected_patterns],
+        "stdin": None, "input_file": None,
     })
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest
 
@@ -73,7 +74,7 @@ def test_clear_outputs_preserves_wildcard_cache_matches(tmp_path):
     output = tmp_path / "result-1.pot"
     cache.write_bytes(b"restart state")
     output.write_bytes(b"stale result")
-    _prepare_outputs((tmp_path / "*.pot",), protected_paths=(tmp_path / "restart-*.pot",))
+    _prepare_outputs((tmp_path / "*.pot",), protected_patterns=(tmp_path / "restart-*.pot",))
     assert cache.read_bytes() == b"restart state"
     assert not output.exists()
 
@@ -116,7 +117,7 @@ def test_protected_output_stream_matches_cache_glob(tmp_path):
     protected = tmp_path / "restart-1.pot"
     protected.write_text("density")
     with pytest.raises(ValueError, match="conflicts with input/cache"):
-        _prepare_outputs(protected_paths=(tmp_path / "restart-*.pot",), stdout=protected)
+        _prepare_outputs(protected_patterns=(tmp_path / "restart-*.pot",), stdout=protected)
 
 
 def test_explicit_output_collision_preserves_protected_file(tmp_path):
@@ -193,7 +194,7 @@ def test_collision_expands_protected_wildcard_once_for_multiple_outputs(tmp_path
 
     monkeypatch.setattr(glob, "glob", observe_expand)
     with pytest.raises(ValueError, match="conflicts with input/cache"):
-        _prepare_outputs((harmless_output, alias_output), protected_paths=(pattern, pattern))
+        _prepare_outputs((harmless_output, alias_output), protected_patterns=(pattern, pattern))
     assert expanded == [os.path.abspath(pattern)]
     assert protected_file.read_bytes() == b"restart"
 
@@ -230,7 +231,7 @@ def test_directory_output_cannot_remove_declared_input_symlink(tmp_path):
     with pytest.raises(ValueError, match="Directory output contains input/cache"):
         prepare_target_outputs({
             "directory": str(tmp_path),
-            "input_files": [str(alias)],
+            "protected_files": [str(alias)],
             "output_files": [str(output)],
             "output_directories": [str(output)],
         })
@@ -384,7 +385,7 @@ def test_input_stat_error_does_not_authorize_output_cleanup(tmp_path, monkeypatc
     with pytest.raises(PermissionError, match="cannot inspect input"):
         prepare_target_outputs({
             "directory": str(tmp_path),
-            "input_files": [str(source)],
+            "protected_files": [str(source)],
             "output_files": [str(output)],
         })
     assert output.read_text() == "old"
