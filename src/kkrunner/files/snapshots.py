@@ -62,15 +62,11 @@ def snapshot_destination(destination):
 def check_destination(manifest, source, destination):
     """Reject destinations in the run's declared file namespace."""
     target = os.path.abspath(os.fspath(destination))
-    originals = (
-        manifest.stdin, *manifest.inputs, manifest.stdout, manifest.stderr,
-        *manifest.outputs, *(c.file for c in manifest.caches),
-    )
     if os.path.realpath(source) == os.path.realpath(target):
         raise ValueError("Snapshot destination overlaps a declared file")
     targets = local_path_identities(target)
-    for entry in originals:
-        if entry is None or entry.local_path is None:
+    for entry in manifest.entries:
+        if entry.local_path is None:
             continue
         pattern = manifest.is_pattern(entry)
         for identity in local_path_identities(entry.local_path):

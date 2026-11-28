@@ -450,3 +450,20 @@ def test_output_glob_excludes_cache_symlink_by_its_declared_name(tmp_path):
     assert {entry.local_path for entry in found.outputs if entry.source_pattern is not None} == {str(result)}
     assert {entry.file.local_path for entry in found.caches if entry.file.source_pattern is not None} == {str(link)}
 
+
+def test_manifest_entries_include_every_role_without_artifact_filtering(tmp_path):
+    stdin = FileEntry(tmp_path / "stdin")
+    source = FileEntry(tmp_path / "input")
+    stdout = FileEntry(tmp_path / "stdout")
+    stderr = FileEntry(tmp_path / "stderr")
+    output = FileEntry(tmp_path / "output")
+    uncollected = FileEntry(tmp_path / "uncollected", collect=False)
+    cache = FileEntry(remote_path="/remote/cache")
+    files = FileManifest(
+        inputs=(source,), stdin=stdin, stdout=stdout, stderr=stderr,
+        outputs=(output, uncollected), caches=(CacheEntry(cache),),
+    )
+    assert files.entries == (source, stdin, output, uncollected, cache, stdout, stderr)
+    assert uncollected not in files.artifacts
+    assert cache not in files.artifacts
+    assert FileManifest().entries == ()

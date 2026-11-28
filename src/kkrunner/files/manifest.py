@@ -444,6 +444,17 @@ class FileManifest:
         return (*self.inputs, *((self.stdin,) if self.stdin is not None else ()))
 
     @property
+    def entries(self):
+        """All manifest entries, including uncollected and remote-only files.
+
+        Unlike artifacts, this view does not filter or deduplicate by local
+        path. Callers that need a namespace rather than collected results
+        must see both sides of every entry.
+        """
+        return (*self.input_entries, *self.outputs, *(cache.file for cache in self.caches),
+                *(entry for entry in (self.stdout, self.stderr) if entry is not None))
+
+    @property
     def input_files(self):
         return tuple(dict.fromkeys(entry.local_path for entry in self.input_entries if entry.local_path is not None))
 
