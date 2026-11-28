@@ -285,7 +285,7 @@ class FileManifest:
     def output_excluded(self, path, *, remote=False):
         """Exclude input/cache namespaces and uncollected outputs from output globs."""
         import os
-        from kkrunner.files.paths import declaration_paths, path_matches
+        from kkrunner.files.paths import declaration_matches
 
         if not remote:
             path = os.path.realpath(path)
@@ -299,15 +299,8 @@ class FileManifest:
                 continue
             if not remote:
                 declared = os.path.realpath(declared)
-            # Discovered cache members and remote-only cache baselines are
-            # concrete names. They do not declare any additional wildcard.
-            if not self.is_pattern(entry) and entry.kind != "directory":
-                if path == declared:
-                    return True
-                continue
-            directory = entry.kind == "directory"
-            if any(path_matches(path, pattern, include_hidden=directory)
-                   for pattern in declaration_paths(declared, directory=directory)):
+            if declaration_matches(path, declared, pattern=self.is_pattern(entry),
+                                   directory=entry.kind == "directory"):
                 return True
         return False
 

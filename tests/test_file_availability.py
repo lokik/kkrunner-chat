@@ -420,3 +420,14 @@ def test_local_input_capture_treats_primary_and_stdin_as_literal(tmp_path):
         assert tuple(version.path for version in session.files.input_versions) == (source,)
     finally:
         session.close()
+
+
+
+def test_output_exclusions_use_literal_directory_identity(tmp_path):
+    directory = tmp_path / "cache[1]"
+    other = tmp_path / "cache1"
+    files = FileManifest(caches=(CacheEntry(FileEntry(directory, kind="directory")),))
+    assert files.output_excluded(directory)
+    assert files.output_excluded(directory / ".hidden" / "data")
+    assert not files.output_excluded(other / "data")
+    assert not files.output_excluded(tmp_path / "cache[1]-other" / "data")
