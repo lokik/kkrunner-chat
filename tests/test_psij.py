@@ -280,16 +280,49 @@ def test_psij_output_preparation_preserves_cache_and_cleans_stale_results(tmp_pa
     assert stderr.read_bytes() == b""
 
 
-def test_cancel_requests_native_job_but_does_not_invent_completion(monkeypatch):
+@pytest.mark.parametrize("immediate", [False, True])
+def test_cancel_observes_existing_native_job(monkeypatch, immediate):
+    from kkrunner.backends.implementations.psij import support
+
+    native = NativeJob()
+    native.update("ACTIVE")
+    cancelled = []
+    attachments = []
+
+    def cancel():
+        cancelled.append(True)
+        if immediate:
+            native.update("CANCELED", 1)
+
+    def attach(identity):
+        attachments.append(identity["native_id"])
+        return native
+
+    monkeypatch.setattr(native, "cancel", cancel)
+    monkeypatch.setattr(operations, "_attach_job", attach)
+    monkeypatch.setattr(support, "_attach_job", attach)
+    facts = PsijBackend.cancel(handle("pbs-1", "pbs"))
+    assert cancelled == [True]
+    assert attachments == ["pbs-1"]
+    assert facts["state"] == ("cancelled" if immediate else "running")
+    assert facts["return_code"] == (1 if immediate else None)
+
+
+def test_slurm_cancel_preserves_scheduler_status_authority(monkeypatch):
     native = NativeJob()
     native.update("ACTIVE")
     monkeypatch.setattr(operations, "_attach_job", lambda identity: native)
-    # The backend observes the native scheduler status after cancellation.
-    monkeypatch.setattr(PsijBackend, "status", staticmethod(lambda identity: {
-        "state": "unknown", "return_code": None, "failure_phase": None, "error": None,
-    }))
-    assert PsijBackend.cancel(handle("pbs-1", "pbs"))["state"] == "unknown"
+    queried = []
+
+    def status(native_id):
+        queried.append(native_id)
+        return JobStatus(RunState.RUNNING)
+
+    monkeypatch.setattr(slurm, "status", status)
+    facts = PsijBackend.cancel(handle("123"))
     assert native.status.state.name == "CANCELED"
+    assert facts["state"] == "running"
+    assert queried == ["123"]
 
 
 @pytest.mark.parametrize(
