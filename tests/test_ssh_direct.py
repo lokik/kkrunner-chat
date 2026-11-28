@@ -277,3 +277,39 @@ def test_remote_file_session_still_rejects_anonymous_named_file_roles(tmp_path, 
     client = ExecutionClient(DirectBackend, target=LoopbackSshTransport())
     with pytest.raises(ValueError, match="Remote execution requires named files"):
         client.file_session(spec)
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_remote_cleanup_protects_missing_optional_input_declaration(tmp_path, kind):
+    from kkrunner import TaskFile
+    from kkrunner.files.availability import prepare_target_outputs
+
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    local.mkdir()
+    output = remote / "results"
+    output.mkdir(parents=True)
+    stale = output / "old.dat"
+    stale.write_text("keep until preflight succeeds")
+    # The concrete optional input is absent on both filesystems and therefore
+    # does not participate in staging. Its declaration remains protected.
+    name = "optional[1]" if kind == "directory" else "optional.dat"
+    missing = output / name
+    spec = ExecutionSpec(
+        ("true",), directory=local,
+        input_files=(TaskFile("results/" + name, kind=kind, optional=True),),
+        output_files=(TaskFile("results", kind="directory"),),
+        staging=StagingSpec(local_root=local, remote_root=remote),
+    )
+    session = ExecutionClient(DirectBackend, target=LoopbackSshTransport()).file_session(spec)
+    try:
+        session.prepare_submission()
+        request = session.prepare_job()
+        assert not missing.exists()
+        assert str(missing) in request["protected_files"]
+        assert not request["protected_patterns"]
+        assert not session.files.input_versions
+        with pytest.raises(ValueError, match="Directory output contains input/cache"):
+            prepare_target_outputs(request)
+        assert stale.read_text() == "keep until preflight succeeds"
+    finally:
+        session.close()
