@@ -78,12 +78,10 @@ def test_remote_manifest_uses_same_declarations_as_local(tmp_path):
     client = ExecutionClient("kkrunner", target=SshTarget("cluster"))
     manifest = asyncio.run(FileContext(client.target, spec.staging).map_manifest(local))
 
-    assert tuple(e.local_path for e in manifest.inputs) == (
-        str(directory / "main.inp"), str(directory / "extra.inp"),
-    )
-    assert tuple(e.remote_path for e in manifest.inputs) == (
-        str(remote / "local" / "main.inp"), str(remote / "local" / "extra.inp"),
-    )
+    assert manifest.input.local_path == str(directory / "main.inp")
+    assert manifest.input.remote_path == str(remote / "local" / "main.inp")
+    assert tuple(e.local_path for e in manifest.inputs) == (str(directory / "extra.inp"),)
+    assert tuple(e.remote_path for e in manifest.inputs) == (str(remote / "local" / "extra.inp"),)
     assert tuple(e.local_path for e in manifest.outputs) == tuple(e.local_path for e in local.outputs)
     assert tuple(e.local_path for e in manifest.outputs) == (
         str(directory / "one.dat"), str(directory / "two.dat"),
