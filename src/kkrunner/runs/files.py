@@ -66,6 +66,8 @@ def _missing_result_files(result_files, *, include_outputs=True):
                 and has_file_magic(entry.local_path) and result_files.output_excluded(path)
             )
             for path in ((entry.local_path,) if entry.source_pattern is not None
+                         or entry is result_files.stdin or entry is result_files.stdout
+                         or entry is result_files.stderr
                          else expand_local_candidates(entry.local_path))
         )
     )
@@ -92,10 +94,18 @@ class RunFiles:
 
     def update_artifact_availability(self, record, path, state, message=None):
         """Persist availability of one artifact without changing the run outcome."""
-        state = ArtifactAvailabilityState(state)
+        return self._update_artifact_availabilities(
+            record, ((path, ArtifactAvailabilityState(state), message),),
+        )
+
+    def _update_artifact_availabilities(self, record, changes):
+        if not changes:
+            return record
 
         def update(latest):
-            files = latest.files.with_file_availability(path, state.value, message)
+            files = latest.files
+            for path, state, message in changes:
+                files = files.with_file_availability(path, state.value, message)
             if files == latest.files:
                 return latest
             return replace(latest, updated_at=datetime.now(timezone.utc).isoformat(), files=files)
@@ -194,10 +204,10 @@ class RunFiles:
                                 if entry.local_path in failures), None)
                 if message is not None:
                     errors[path] = message
-            for path in (*errors, *(path for path in planned if path not in errors)):
-                if path in artifact_paths:
-                    message = errors.get(path)
-                    state = (ArtifactAvailabilityState.AVAILABLE if message is None
-                             else ArtifactAvailabilityState.FAILED)
-                    record = self.update_artifact_availability(record, path, state, message)
-        return record
+            changes = tuple(
+                (path, ArtifactAvailabilityState.FAILED if path in errors
+                 else ArtifactAvailabilityState.AVAILABLE, errors.get(path))
+                for path in dict.fromkeys((*errors, *planned))
+                if path in artifact_paths
+            )
+            return self._update_artifact_availabilities(record, changes)
