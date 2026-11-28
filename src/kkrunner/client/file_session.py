@@ -576,13 +576,11 @@ class FileSession:
         from kkrunner.support.durability import sync_file
 
         used = {}
-        primary = next((entry for entry in manifest.inputs
-                        if entry.local_path == self.input_file), None)
         # Resolve all local source patterns before the first upload. The
         # staging routines below consume only these exact source/target pairs.
         input_patterns = {}
         for entry in (*manifest.inputs, *(cache.file for cache in manifest.caches)):
-            if entry is primary or not manifest.is_pattern(entry):
+            if not manifest.is_pattern(entry):
                 continue
             if entry.local_path not in input_patterns:
                 input_patterns[entry.local_path] = self.context.expand_input(
@@ -601,11 +599,9 @@ class FileSession:
         for path in local_inputs:
             if os.path.isfile(path):
                 sync_file(path)
-        input_target = await self._stage_file(primary, used)
+        input_target = await self._stage_file(manifest.input, used)
         stdin_target = await self._stage_file(manifest.stdin, used)
         for entry in manifest.inputs:
-            if entry is primary:
-                continue
             required = not entry.optional
             if manifest.is_pattern(entry):
                 await self._stage_input_pattern(
@@ -706,7 +702,7 @@ class FileSession:
                 self._flush_declared_handles()
                 versions = snapshot_file_entries(
                     manifest.input_entries, sync=True,
-                    is_pattern=lambda entry: entry.local_path != self.input_file and manifest.is_pattern(entry),
+                    is_pattern=manifest.is_pattern,
                 )
                 return request, replace(manifest, input_versions=versions)
             except OSError as exc:

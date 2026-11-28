@@ -198,3 +198,32 @@ def test_literal_directory_output_still_protects_contained_input(tmp_path):
         prepare_target_outputs(execution_request(spec))
     assert protected.read_text() == "keep"
     assert stale.read_text() == "old"
+
+
+def test_manifest_persists_primary_input_separately_from_auxiliary_inputs(tmp_path):
+    from dataclasses import asdict, replace
+    from kkrunner import TaskFile
+    from kkrunner.files import FileManifest
+
+    auxiliary = ExecutionSpec(
+        ("true",), directory=tmp_path, input_files=("*.dat",),
+    )
+    files = FileManifest.from_spec(auxiliary)
+    assert files.input is None
+    assert files.input_file is None
+    assert files.is_pattern(files.inputs[0])
+    spec = replace(auxiliary, input_file=TaskFile("input[1]", write=True),
+                   input_files=("*.dat", "input[1]"))
+    files = FileManifest.from_spec(spec)
+    primary = str(tmp_path / "input[1]")
+    assert files.input_file == primary
+    assert files.input.write
+    assert len(files.inputs) == 1
+    assert files.input_entries == (files.input, *files.inputs)
+    assert not files.is_pattern(files.input)
+    assert files.is_pattern(files.inputs[0])
+    assert files.output_excluded(primary)
+    assert not files.output_excluded(str(tmp_path / "input1"))
+    restored = FileManifest(**asdict(files))
+    assert restored == files
+    assert restored.input_file == primary

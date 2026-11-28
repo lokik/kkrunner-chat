@@ -21,7 +21,6 @@ from kkrunner.targets import (
     require_persistable_target,
 )
 from kkrunner.files.manifest import FileEntry, FileManifest
-from kkrunner.files.paths import file_path
 from kkrunner.files.versions import FileState
 from kkrunner.runs.base import FailurePhase, RunState, RunStatus
 from kkrunner.runs.conflicts import conflicting_files, submission_conflicts
@@ -462,11 +461,10 @@ class RunManager:
         with self._scoped_reservation(record) as reserved:
             yield
             files = reserved.files
-            primary = file_path(spec.input_file, spec.directory)
             sync_result_files(
                 (files.stdout, files.stderr, *(entry for entry in files.outputs if entry.collect),
                  *(entry for entry in files.input_entries if entry.write)),
-                is_pattern=lambda entry: entry.local_path != primary and files.is_pattern(entry),
+                is_pattern=files.is_pattern,
             )
 
     @contextmanager

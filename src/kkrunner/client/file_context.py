@@ -84,6 +84,7 @@ class FileContext:
         )
         return replace(
             manifest,
+            input=mapped(manifest.input),
             inputs=tuple(mapped(entry) for entry in manifest.inputs),
             outputs=tuple(mapped(entry) for entry in manifest.outputs),
             caches=tuple(replace(cache, file=mapped(cache.file)) for cache in manifest.caches),
