@@ -310,8 +310,7 @@ def test_recover_live_submission_exposes_native_job_and_files(monkeypatch, tmp_p
     def scheduler_recover(run_id, directory, *, submitted_at=None):
         calls.append((run_id, directory, submitted_at))
         return {
-            "native_id": "456", "state": RunState.RUNNING,
-            "return_code": None, "directory": directory,
+            "native_id": "456", "directory": directory,
             "stdout": str(tmp_path / "run.out"), "stderr": str(tmp_path / "run.err"),
         }
     monkeypatch.setattr(slurm, "recover", scheduler_recover)
@@ -320,7 +319,8 @@ def test_recover_live_submission_exposes_native_job_and_files(monkeypatch, tmp_p
     })
     assert calls == [("run-456", str(tmp_path), None)]
     assert decode_handle(reply["remote_id"])["native_id"] == "456"
-    assert reply["state"] == "running"
+    assert "state" not in reply
+    assert "return_code" not in reply
     assert reply["output_file"] == str(tmp_path / "run.out")
     assert reply["error_file"] == str(tmp_path / "run.err")
 
@@ -348,33 +348,33 @@ def test_slurm_live_recovery(monkeypatch, tmp_path):
     def output(argv):
         calls.append(tuple(argv))
         if argv[0] == "squeue":
-            return "123|" + slurm.submission_marker("run-1") + "|RUNNING|" + str(tmp_path) + "\n"
+            return "123|" + slurm.submission_marker("run-1") + "|" + str(tmp_path) + "\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             return "JobId=123 WorkDir=" + str(tmp_path) + " StdOut=" + str(tmp_path / "run.out") + " StdErr=" + str(tmp_path / "run.err")
         raise AssertionError(argv)
     monkeypatch.setattr(slurm, "_scheduler_output", output)
     facts = slurm.recover("run-1", str(tmp_path))
     assert facts["native_id"] == "123"
-    assert facts["state"] == RunState.RUNNING
+    assert facts["directory"] == str(tmp_path)
     assert facts["stdout"] == str(tmp_path / "run.out")
     assert calls[0][0] == "squeue"
 
 
-@pytest.mark.parametrize("exit_code,expected", ((0, RunState.FINISHED), (7, RunState.FAILED)))
-def test_slurm_accounting_recovers_terminal_status(monkeypatch, tmp_path, exit_code, expected):
+@pytest.mark.parametrize("stderr", ["err", ""])
+def test_slurm_accounting_recovers_identity_and_files(monkeypatch, tmp_path, stderr):
     def output(argv):
         if argv[0] == "squeue":
             return ""
         if argv[:3] == ("scontrol", "show", "config"):
             return "AccountingStoreFlags = job_comment,job_env\n"
         if argv[0] == "sacct":
-            return "456|" + slurm.submission_marker("run-2") + "|COMPLETED|" + str(tmp_path) + "|out|err|" + str(exit_code) + ":0|\n"
+            return "456|" + slurm.submission_marker("run-2") + "|" + str(tmp_path) + "|out|" + stderr + "|\n"
         raise AssertionError(argv)
     monkeypatch.setattr(slurm, "_scheduler_output", output)
     facts = slurm.recover("run-2", str(tmp_path), submitted_at="2026-10-13T08:00:00+02:00")
     assert facts["native_id"] == "456"
-    assert facts["state"] == expected
-    assert facts["return_code"] == exit_code
+    assert facts == {"native_id": "456", "directory": str(tmp_path),
+                     "stdout": "out", "stderr": stderr or None}
 
 
 def test_slurm_accounting_absence_is_not_proof_of_no_submission(monkeypatch, tmp_path):
@@ -394,7 +394,7 @@ def test_slurm_accounting_absence_is_not_proof_of_no_submission(monkeypatch, tmp
 def test_slurm_recovery_rejects_ambiguous_live_jobs(monkeypatch, tmp_path):
     marker = slurm.submission_marker("duplicate")
     monkeypatch.setattr(slurm, "_scheduler_output", lambda argv:
-                        "123|" + marker + "|RUNNING|/one\n124|" + marker + "|PENDING|/two\n")
+                        "123|" + marker + "|/one\n124|" + marker + "|/two\n")
     with pytest.raises(RuntimeError, match="Multiple live Slurm jobs"):
         slurm.recover("duplicate", str(tmp_path))
 
@@ -403,19 +403,19 @@ def test_slurm_recovery_handles_job_disappearing_before_details(monkeypatch, tmp
     marker = slurm.submission_marker("run-race")
     def output(argv):
         if argv[0] == "squeue":
-            return "123|" + marker + "|RUNNING|" + str(tmp_path) + "\n"
+            return "123|" + marker + "|" + str(tmp_path) + "\n"
         if argv[:4] == ("scontrol", "--oneliner", "show", "job"):
             raise subprocess.CalledProcessError(1, argv)
         if argv[:3] == ("scontrol", "show", "config"):
             return "AccountingStoreFlags = job_comment\n"
         if argv[0] == "sacct":
-            return "123|" + marker + "|COMPLETED|" + str(tmp_path) + "|out|err|0:0|\n"
+            return "123|" + marker + "|" + str(tmp_path) + "|out|err|\n"
         raise AssertionError(argv)
     monkeypatch.setattr(slurm, "_scheduler_output", output)
     facts = slurm.recover("run-race", str(tmp_path),
                           submitted_at="2026-10-13T08:00:00+02:00")
-    assert facts["state"] is RunState.FINISHED
-    assert facts["return_code"] == 0
+    assert facts == {"native_id": "123", "directory": str(tmp_path),
+                     "stdout": "out", "stderr": "err"}
 
 
 def test_slurm_status_nonzero_completion_is_failed(monkeypatch):
