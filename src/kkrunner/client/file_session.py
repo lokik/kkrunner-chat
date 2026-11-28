@@ -702,7 +702,7 @@ class FileSession:
             value.flush()
 
     async def _prepare_async(self):
-        from kkrunner.files.availability import snapshot_file_entries, sync_result_files
+        from kkrunner.files.availability import snapshot_file_entries
 
         self.spec.require_complete()
         if self.is_local:
@@ -717,8 +717,8 @@ class FileSession:
             request = execution_request(declaration)
             try:
                 self._flush_declared_handles()
-                sync_result_files(manifest.input_files)
-                return request, replace(manifest, input_versions=snapshot_file_entries(manifest.input_entries))
+                versions = snapshot_file_entries(manifest.input_entries, sync=True)
+                return request, replace(manifest, input_versions=versions)
             except OSError as exc:
                 raise SubmissionNotStarted(str(exc)) from exc
 

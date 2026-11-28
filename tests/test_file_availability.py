@@ -302,3 +302,33 @@ def test_missing_unpublished_input_can_still_be_omitted_from_snapshot(tmp_path):
     from kkrunner.files.availability import snapshot_file_entries
 
     assert snapshot_file_entries((FileEntry(tmp_path / "optional", optional=True),)) == ()
+
+
+
+def test_local_input_capture_uses_same_members_as_durability_barrier(tmp_path, monkeypatch):
+    from kkrunner import ExecutionSpec
+    from kkrunner.client import ExecutionClient
+    from kkrunner.files import availability
+
+    original = tmp_path / "input-first.dat"
+    original.write_text("first")
+    later = tmp_path / "input-later.dat"
+    sync = availability.sync_file
+    synced = []
+
+    def synchronize(path):
+        sync(path)
+        synced.append(path)
+        later.write_text("not selected during preparation")
+
+    monkeypatch.setattr(availability, "sync_file", synchronize)
+    session = ExecutionClient().file_session(ExecutionSpec(
+        ("true",), directory=tmp_path, input_files=("input-*.dat",),
+    ))
+    try:
+        session.prepare_submission()
+        assert tuple(version.path for version in session.files.input_versions) == (original,)
+        assert synced == [str(original)]
+        assert later.exists()
+    finally:
+        session.close()
