@@ -277,9 +277,17 @@ def snapshot_file_entries(entries, *, sync=False, is_pattern=FileEntry.is_patter
     return tuple(versions)
 
 
-def sync_result_files(manifests):
-    """Flush existing files selected by manifest paths before submission."""
-    for path in _concrete_result_files(manifests):
+def sync_result_files(entries, *, is_pattern=FileEntry.is_pattern):
+    """Flush existing regular files without reinterpreting concrete names."""
+    paths = {}
+    for entry in entries:
+        if entry is None or entry.local_path is None or entry.kind != "file":
+            continue
+        if is_pattern(entry):
+            paths.update(dict.fromkeys(_concrete_result_files((entry.local_path,))))
+        elif os.path.isfile(entry.local_path):
+            paths[os.path.abspath(entry.local_path)] = None
+    for path in paths:
         sync_file(path)
 
 
