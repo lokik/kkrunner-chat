@@ -121,7 +121,11 @@ class PsijBackend(Backend, ManagedOperations):
             raise ValueError("Not a PSI/J job reference")
         job = _attach_job(handle)
         job.cancel()
-        return PsijBackend.status(remote_id)
+        facts = job_status(handle, native=job.status, attached=True)
+        return status_reply(
+            facts.state, facts.return_code,
+            failure_phase=facts.failure_phase, error=facts.message,
+        )
 
     @staticmethod
     def acknowledge(remote_id: str) -> AcknowledgeReply:
