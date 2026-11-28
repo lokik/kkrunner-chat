@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import RunManager, RunState, RunStore
 from kkrunner.backends import BackendConfig
 from kkrunner.backends.contracts import BackendCapability, UnsupportedCapability
@@ -18,7 +19,8 @@ def stored(manager, directory, *, state=RunState.UNKNOWN, backend="kkrunner"):
         target=LocalTarget(), metadata={"test": {"task": "SCF"}},
     )
     return manager.transition(
-        record, state=state, execution=record.execution.submitted("opaque-42"),
+        record, state=state, file_state=RunFileState.DONE if state.is_terminal else RunFileState.WAITING,
+        execution=record.execution.submitted("opaque-42"),
     )
 
 
@@ -103,14 +105,14 @@ def test_cancellation_connection_error_preserves_unknown(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.parametrize("state", [RunState.FINISHING, RunState.DOWNLOADING, RunState.POSTPROCESSING])
-def test_cancel_after_native_exit_does_not_contact_backend(tmp_path, monkeypatch, state):
+@pytest.mark.parametrize("file_state", [RunFileState.WAITING, RunFileState.COLLECTING, RunFileState.POSTPROCESSING])
+def test_cancel_after_native_exit_does_not_contact_backend(tmp_path, monkeypatch, file_state):
     manager = RunManager(RunStore(tmp_path / "runs"))
-    record = stored(manager, tmp_path, state=state)
+    record = stored(manager, tmp_path, state=RunState.FINISHED)
+    record = manager.store.update(record, lambda current: replace(current, file_state=file_state))
     monkeypatch.setattr(manager, "client_for",
                         lambda _: pytest.fail("Native execution has already ended"))
-    with pytest.raises(RuntimeError, match="Execution has finished"):
-        manager.cancel(record.id)
+    assert manager.cancel(record.id) == record
     assert manager.store.get(record.id) == record
 
 

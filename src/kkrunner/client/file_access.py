@@ -1,4 +1,4 @@
-"""Snapshots, retrieval and cleanup of declared files on a target."""
+"""Backend-independent snapshots, retrieval and cleanup on a filesystem target."""
 
 import asyncio
 import glob
@@ -6,6 +6,7 @@ import os
 import posixpath
 from dataclasses import replace
 from functools import partial
+from subprocess import SubprocessError
 
 from kkrunner.client.file_context import FileContext
 from kkrunner.files.paths import relative_local_path
@@ -24,6 +25,8 @@ def _destination_path(path):
 
 
 class FileAccess:
+    """File operations requiring only a target and a manifest, never a backend."""
+
     def __init__(self, target):
         self.target = target
 
@@ -52,10 +55,10 @@ class FileAccess:
         session = None
         try:
             session = FileSession.from_attachment(
-                self.target, replace(run, files=run.files.retry_failed_artifacts()),
+                self.target, run,
             )
             return await session.finalize_async(status, on_resolved=on_resolved), None
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (OSError, SubprocessError, RuntimeError, ValueError) as exc:
             # A session that failed to initialize has no partial state yet.
             files = run.files.fail_pending_artifacts(str(exc)) if session is None else session.files
             return files, exc
@@ -171,8 +174,6 @@ class FileAccess:
 
     def fetch_result_files(self, run, files, *, destinations=None, verify=None):
         """Convenience for caller-coordinated retrieval outside a RunManager."""
-        from dataclasses import replace
-
         entries = self.resolve_result_files(run, files)
         if destinations is not None:
             targets = {_destination_path(path): _destination_path(target)

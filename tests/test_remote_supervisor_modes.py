@@ -520,7 +520,7 @@ def test_spool_failure_releases_other_backpressured_channel(tmp_path, monkeypatc
     asyncio.run(check())
 
 
-def test_exited_process_with_open_output_pipe_reports_finishing(tmp_path, monkeypatch):
+def test_exited_process_with_open_output_pipe_reports_native_exit_and_pending_output(tmp_path, monkeypatch):
     from kkrunner.backends import SupervisedBackend
     from kkrunner.backends.implementations.supervised import mailbox
     from kkrunner.remote.handles import encode_handle
@@ -554,10 +554,15 @@ def test_exited_process_with_open_output_pipe_reports_finishing(tmp_path, monkey
             })
 
             async def finishing():
-                while SupervisedBackend.status(remote_id)["state"] != "finishing":
+                while True:
+                    facts = SupervisedBackend.status(remote_id)
+                    if facts["state"] == "finished":
+                        return facts
                     await asyncio.sleep(.01)
 
-            await asyncio.wait_for(finishing(), 5)
+            facts = await asyncio.wait_for(finishing(), 5)
+            assert facts["return_code"] == 0
+            assert facts["output_pending"] is True
             assert not task.done()
             assert mailbox.read_outcome(spec["receipt_id"]) is None
             release.touch()

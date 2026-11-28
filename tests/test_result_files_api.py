@@ -1,5 +1,6 @@
 """Public result-file terminology and client ownership."""
 
+from kkrunner import RunFileState
 from kkrunner.client import ExecutionClient, LocalTarget, SshTarget
 from kkrunner.backends import PsijBackend
 from kkrunner.files import FileManifest, FileState
@@ -112,7 +113,7 @@ def test_local_history_retrieval_does_not_change_missing_artifact_metadata(tmp_p
     store = RunStore(tmp_path / "runs")
     manager = RunManager(store)
     record = manager.new_record(directory=tmp_path, target=LocalTarget(), files=files)
-    record = manager.transition(record, state=RunState.FINISHED, return_code=0,
+    record = manager.transition(record, state=RunState.FINISHED, file_state=RunFileState.DONE, return_code=0,
                                 execution=record.execution.submitted("historical"))
     output.unlink()
 

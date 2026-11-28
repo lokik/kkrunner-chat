@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.runs import DuplicateSubmissionError
 from kkrunner import ExecutionSpec, RunManager, RunStore
 from kkrunner.files import FileEntry, FileManifest, FileMapping
@@ -83,7 +84,7 @@ def test_harmless_observation_does_not_steal_processing_claim(tmp_path):
     record = manager.new_record(
         directory=tmp_path, processing_required=True, files=FileManifest(stdout=FileEntry(str(output)))
     )
-    record = manager.complete(record, state=RunState.POSTPROCESSING, return_code=0, artifacts_available=True)
+    record = manager.complete(record, state=RunState.FINISHED, file_state=RunFileState.POSTPROCESSING, return_code=0, artifacts_available=True)
 
     def process(outcome):
         manager.transition(manager.store.get(record.id), message="Independent observation")
@@ -140,7 +141,7 @@ def test_reservation_rejects_record_changed_before_atomic_activation(tmp_path, m
     def change_before_update(record, updater):
         # A separate history writer does not take the submission lock.
         # Publish a newer state just before the reservation's atomic update.
-        peer.update(record, lambda latest: replace(latest, state=RunState.FAILED))
+        peer.update(record, lambda latest: replace(latest, state=RunState.FAILED, file_state=RunFileState.DONE))
         return update(record, updater)
 
     monkeypatch.setattr(store, "update", change_before_update)

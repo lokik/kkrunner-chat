@@ -63,11 +63,16 @@ class PreparedExecution(TypedDict):
     use_stdin: bool
 
 
-class StatusReply(TypedDict):
+class _StatusFacts(TypedDict):
     state: str
     return_code: Optional[int]
     failure_phase: Optional[str]
     error: Optional[str]
+
+
+class StatusReply(_StatusFacts, total=False):
+    output_pending: bool
+    file_error: str
 
 
 class ObservationReply(StatusReply, total=False):
@@ -167,11 +172,17 @@ def normalize_request(request: ExecutionRequest) -> ExecutionRequest:
 def status_reply(
     state: RunState, return_code: Optional[int] = None, *,
     failure_phase: Optional[str] = None, error: Optional[str] = None,
+    output_pending: bool = False, file_error: Optional[str] = None,
 ) -> StatusReply:
     """Encode pure backend facts without adding client Run information."""
-    return {
+    reply = {
         "state": state.value,
         "return_code": return_code,
         "failure_phase": failure_phase.value if isinstance(failure_phase, Enum) else failure_phase,
         "error": error,
     }
+    if output_pending:
+        reply["output_pending"] = True
+    if file_error is not None:
+        reply["file_error"] = file_error
+    return reply

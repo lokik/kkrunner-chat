@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kkrunner._version import __version__
-    from kkrunner.execution import MpiSpec, RunState
+    from kkrunner.execution import MpiSpec, RunFileState, RunState
     from kkrunner.backends import DirectBackend, SupervisedBackend, PsijBackend
     from kkrunner.client import ExecutionClient, StagingSpec
     from kkrunner.targets import Target, LocalTarget, SshTarget
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ExecutionOutcome", "ExecutionSpec", "ProcessingPending",
-    "Run", "RunManager", "RunState", "RunStore", "MemoryRunStore", "TaskFile", "__version__",
+    "Run", "RunManager", "RunState", "RunFileState", "RunStore", "MemoryRunStore", "TaskFile", "__version__",
     "run", "submit", "ExecutionClient", "StagingSpec", "MpiSpec", "Target", "LocalTarget", "SshTarget",
     "DirectBackend", "SupervisedBackend", "PsijBackend", "ProjectRepository", "ProjectRunManager",
 ]
@@ -37,7 +37,7 @@ def __getattr__(name):
     ):
         from .runs import base
         value = getattr(base, name)
-    elif name in ("RunState", "MpiSpec"):
+    elif name in ("RunState", "RunFileState", "MpiSpec"):
         from . import execution
         value = getattr(execution, name)
     elif name in ("run", "submit"):

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.files import ArtifactAvailabilityState, FileEntry, FileManifest
 from kkrunner.runs import FailurePhase
 from kkrunner import RunState, RunStore
@@ -21,77 +22,33 @@ def _record(tmp_path):
         metadata={"test": {"task": "DOS"}},
         processing_required=False,
     )
-    record = manager.transition(record, state=RunState.DOWNLOADING)
+    record = manager.transition(record, state=RunState.RUNNING, file_state=RunFileState.WAITING)
     return (manager, record)
 
 
-@pytest.mark.parametrize(
-    "requested_state, return_code, phase, backend_error, transfer_error, artifacts_available, expected_state, expected_phase",
-    [
-        pytest.param(
-            RunState.FINISHED,
-            0,
-            None,
-            None,
-            "SFTP connection lost",
-            True,
-            RunState.FAILED,
-            FailurePhase.DOWNLOAD,
-            id="successful-backend-failed-transfer",
-        ),
-        pytest.param(
-            RunState.FAILED,
-            17,
-            FailurePhase.EXECUTION,
-            "SPR-KKR returned 17",
-            "diagnostic files unavailable",
-            False,
-            RunState.FAILED,
-            FailurePhase.EXECUTION,
-            id="execution-failure-overrides-transfer-error",
-        ),
-        pytest.param(
-            RunState.CANCELLED,
-            None,
-            None,
-            None,
-            "download interrupted",
-            False,
-            RunState.CANCELLED,
-            None,
-            id="cancellation-preserves-outcome",
-        ),
-    ],
-)
-def test_backend_outcome_and_transfer_availability_are_independent(
-    tmp_path,
-    requested_state,
-    return_code,
-    phase,
-    backend_error,
-    transfer_error,
-    artifacts_available,
-    expected_state,
-    expected_phase,
-):
+@pytest.mark.parametrize("state,code,phase", [
+    (RunState.FINISHED, 0, None),
+    (RunState.FAILED, 17, FailurePhase.EXECUTION),
+    (RunState.CANCELLED, None, None),
+])
+def test_backend_outcome_and_transfer_availability_are_independent(tmp_path, state, code, phase):
     manager, record = _record(tmp_path)
-    failed_files = record.files.with_file_availability(str(tmp_path / "run.out"), "failed", transfer_error)
+    failed_files = record.files.with_file_availability(
+        str(tmp_path / "run.out"), "failed", "SFTP connection lost",
+    )
     saved = manager.complete(
-        record,
-        state=requested_state,
-        return_code=return_code,
-        failure_phase=phase,
-        message=backend_error,
-        artifacts_available=artifacts_available,
-        files=failed_files,
+        record, state=state, return_code=code, failure_phase=phase,
+        message="native outcome", artifacts_available=True, files=failed_files,
     )
     assert manager.store.get(record.id) == saved
-    assert saved.state is expected_state
-    assert saved.failure_phase is expected_phase
-    assert saved.return_code == return_code
-    assert saved.message == (transfer_error if expected_phase is FailurePhase.DOWNLOAD else backend_error)
+    assert saved.state is state
+    assert saved.failure_phase is phase
+    assert saved.return_code == code
+    assert saved.message == "native outcome"
+    assert saved.file_state is RunFileState.FAILED
+    assert saved.file_failure_phase is FailurePhase.DOWNLOAD
+    assert saved.file_message == "SFTP connection lost"
     assert saved.files.availability_state == ArtifactAvailabilityState.FAILED
-    assert saved.files.availability_message == transfer_error
     assert saved.files.captured_at is None
 
 
@@ -107,47 +64,55 @@ def test_successful_run_captures_available_files(tmp_path):
     assert len(saved.files.output_versions) == 1
 
 
-def test_resume_download_rejects_execution_failure_and_nonzero_code(tmp_path):
+def test_collect_files_rejects_run_with_unrelated_file_failure(tmp_path):
     manager, record = _record(tmp_path)
     bad = manager.complete(
-        record, state=RunState.FAILED, return_code=17, failure_phase=FailurePhase.EXECUTION, artifacts_available=False
+        record, state=RunState.FAILED, return_code=17, failure_phase=FailurePhase.EXECUTION,
+        file_state=RunFileState.FAILED, file_failure_phase=FailurePhase.ARTIFACTS,
+        artifacts_available=False,
     )
     with pytest.raises(ValueError, match="Only failed downloads"):
-        manager.resume_download(bad.id)
+        manager.collect_files(bad.id)
 
 
-def test_retry_failed_download_preserves_backend_then_captures_clean_snapshot(tmp_path):
+def test_retry_failed_download_preserves_backend_then_captures_clean_snapshot(tmp_path, monkeypatch):
     manager, initial = _record(tmp_path)
     output = tmp_path / "run.out"
     output.write_bytes(b"partial")
     initial = manager.transition(
-        initial, state=RunState.DOWNLOADING, execution=initial.execution.submitted("existing-backend")
+        initial, state=RunState.FINISHED, file_state=RunFileState.COLLECTING, execution=initial.execution.submitted("existing-backend")
     )
     failed_files = initial.files.with_file_availability(str(output), "failed", "interrupted transfer")
     failed = manager.complete(
         initial,
-        state=RunState.FAILED,
+        state=RunState.FINISHED,
         return_code=0,
-        failure_phase=FailurePhase.DOWNLOAD,
-        message="interrupted transfer",
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.DOWNLOAD,
+        file_message="interrupted transfer",
         files=failed_files,
         artifacts_available=False,
     )
-    resumed = manager.resume_download(initial.id)
-    assert resumed.state is RunState.DOWNLOADING
-    assert resumed.execution == failed.execution
-    assert resumed.execution.backend_id == "existing-backend"
-    assert resumed.files.stdout.availability_state == "pending"
-    assert resumed.files.stdout.availability_message is None
-    assert resumed.finished_at is None
-    assert resumed.failure_phase is None
-    assert output.read_bytes() == b"partial"
-    assert manager.store.get(initial.id) == resumed
-    output.write_bytes(b"complete")
-    available = resumed.files.with_file_availability(str(output), "available")
-    complete = manager.complete(
-        resumed, state=RunState.FINISHED, return_code=0, files=available, artifacts_available=True
-    )
+    from kkrunner.client.file_access import FileAccess
+
+    async def collect(self, resumed, status, *, on_resolved=None):
+        assert resumed.state is RunState.FINISHED
+        assert resumed.file_state is RunFileState.COLLECTING
+        assert resumed.execution == failed.execution
+        assert resumed.files.stdout.availability_state == "pending"
+        assert resumed.files.stdout.availability_message is None
+        assert resumed.finished_at is None
+        assert resumed.file_failure_phase is None
+        assert output.read_bytes() == b"partial"
+        assert manager.store.get(initial.id) == resumed
+        with pytest.raises(RuntimeError, match="live client"):
+            manager.collect_files(resumed)
+        output.write_bytes(b"complete")
+        from kkrunner.files.availability import snapshot_result_files
+        return snapshot_result_files(resumed.files.with_file_availability(str(output), "available")), None
+
+    monkeypatch.setattr(FileAccess, "collect_ended_files_async", collect)
+    complete = manager.collect_files(initial.id)
     assert complete.state is RunState.FINISHED
     assert complete.files.failed_artifacts == ()
     assert complete.files.captured_at is not None
@@ -155,7 +120,7 @@ def test_retry_failed_download_preserves_backend_then_captures_clean_snapshot(tm
     assert manager.output_file_is_current(complete)
 
 
-def test_resume_download_retains_previously_available_artifacts(tmp_path):
+def test_collect_files_retains_previously_available_artifacts(tmp_path, monkeypatch):
     manager = RunManager(RunStore(tmp_path / "runs"))
     output = tmp_path / "stdout"
     other = tmp_path / "other"
@@ -173,15 +138,25 @@ def test_resume_download_retains_previously_available_artifacts(tmp_path):
         processing_required=True,
     )
     record = manager.transition(
-        record, state=RunState.DOWNLOADING, execution=record.execution.submitted("existing-backend")
+        record, state=RunState.FINISHED, file_state=RunFileState.COLLECTING, execution=record.execution.submitted("existing-backend")
     )
     manager.complete(
-        record, state=RunState.FAILED, return_code=0, failure_phase=FailurePhase.DOWNLOAD, artifacts_available=False
+        record, state=RunState.FINISHED, return_code=0, file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.DOWNLOAD, artifacts_available=False
     )
-    retried = manager.resume_download(record.id)
-    assert retried.files.stdout.availability_state == "available"
-    assert retried.files.outputs[0].availability_state == "pending"
-    assert retried.files.outputs[0].availability_message is None
+    from kkrunner.client.file_access import FileAccess
+
+    async def collect(self, retried, status, *, on_resolved=None):
+        assert retried.files.stdout.availability_state == "available"
+        assert retried.files.outputs[0].availability_state == "pending"
+        assert retried.files.outputs[0].availability_message is None
+        output.write_text("already available")
+        other.write_text("retrieved")
+        from kkrunner.files.availability import snapshot_result_files
+        return snapshot_result_files(retried.files.with_file_availability(str(other), "available")), None
+
+    monkeypatch.setattr(FileAccess, "collect_ended_files_async", collect)
+    assert manager.collect_files(record.id).file_state == RunFileState.READY
 
 
 
@@ -305,6 +280,7 @@ def test_completion_failure_phase_follows_file_transfer_capability(tmp_path, mod
         target=target, files=files,
     )
     saved = manager.complete(record, state=RunState.FINISHED, return_code=0, files=files)
-    assert saved.state == RunState.FAILED
-    assert saved.failure_phase == expected_phase
-    assert saved.message == "output unavailable"
+    assert saved.state == RunState.FINISHED
+    assert saved.file_state == RunFileState.FAILED
+    assert saved.file_failure_phase == expected_phase
+    assert saved.file_message == "output unavailable"

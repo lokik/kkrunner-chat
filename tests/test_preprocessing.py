@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionSpec, RunManager, RunState, RunStore, TaskFile
 from kkrunner.client import ExecutionClient
 from kkrunner.runs import DuplicateSubmissionError
@@ -26,9 +27,9 @@ def test_preprocessing_reserves_generated_input_before_writing(tmp_path):
     competitor = client.create_run(competitor_spec, tracked=other)
 
     def preprocess():
-        assert run.state == RunState.PREPROCESSING
-        assert run.record.state == RunState.PREPROCESSING
-        assert other.refresh((run.record,))[0].state == RunState.PREPROCESSING
+        assert run.file_state == RunFileState.PREPROCESSING
+        assert run.record.file_state == RunFileState.PREPROCESSING
+        assert other.refresh((run.record,))[0].file_state == RunFileState.PREPROCESSING
         assert not input_file.exists()
         with pytest.raises(DuplicateSubmissionError):
             competitor.run()
@@ -57,9 +58,10 @@ def test_preprocessing_failure_never_submits_and_releases_reservation(tmp_path):
     with pytest.raises(ValueError, match="invalid input"):
         run.run()
     assert run.backend_id is None
-    assert run.state == RunState.FAILED
+    assert run.state == RunState.NEW
     record = manager.store.get(run.id)
-    assert record.failure_phase == FailurePhase.PREPROCESSING
+    assert record.file_state == RunFileState.FAILED
+    assert record.file_failure_phase == FailurePhase.PREPROCESSING
     assert record.files.captured_at is None
     assert record.files.stdout.availability_state == "skipped"
     assert not (tmp_path / "out").exists()
@@ -73,10 +75,11 @@ def test_orphan_preprocessing_is_recovered_without_backend_query(tmp_path):
     record = manager.new_record(directory=tmp_path)
     with manager.store.observation_lock(record):
         reserved = manager.reserve(record, preprocessing=True)
-        assert manager.refresh((reserved,))[0].state == RunState.PREPROCESSING
+        assert manager.refresh((reserved,))[0].file_state == RunFileState.PREPROCESSING
     recovered = manager.refresh((reserved,))[0]
-    assert recovered.state == RunState.FAILED
-    assert recovered.failure_phase == FailurePhase.PREPROCESSING
+    assert recovered.state == RunState.NEW
+    assert recovered.file_state == RunFileState.FAILED
+    assert recovered.file_failure_phase == FailurePhase.PREPROCESSING
     assert recovered.execution.backend_id is None
 
 
@@ -94,7 +97,7 @@ def test_memory_preprocessing_conflicts_with_disk_without_disk_history(tmp_path)
 
     def preprocess():
         assert run.record.store is memory
-        assert run.state == RunState.PREPROCESSING
+        assert run.file_state == RunFileState.PREPROCESSING
         assert not disk.runs()
         with pytest.raises(DuplicateSubmissionError):
             competitor.run()
@@ -145,8 +148,8 @@ def test_staging_of_preprocessed_run_does_not_appear_as_native_submission(tmp_pa
     prepare = run._file_session.prepare_submission_async
 
     async def observe():
-        assert run.record.state == RunState.PREPROCESSING
-        assert other.refresh((run.record,))[0].state == RunState.PREPROCESSING
+        assert run.record.file_state == RunFileState.PREPROCESSING
+        assert other.refresh((run.record,))[0].file_state == RunFileState.PREPROCESSING
         return await prepare()
 
     monkeypatch.setattr(run._file_session, "prepare_submission_async", observe)
@@ -161,7 +164,7 @@ def test_save_only_refresh_tolerates_completed_reservation(tmp_path):
     proposed = manager.new_record(directory=tmp_path, files=FileManifest.from_spec(spec))
     with manager.preprocessing_reservation(spec):
         active = manager.conflicts(proposed)
-        assert manager.refresh(active)[0].state == RunState.PREPROCESSING
+        assert manager.refresh(active)[0].file_state == RunFileState.PREPROCESSING
         assert manager.refresh() == ()
     # The scoped reservation has been discarded, not moved to history.
     assert manager.refresh(active) == ()
@@ -184,8 +187,10 @@ def test_live_preprocessing_cannot_be_manually_overridden(tmp_path, memory):
         assert manager.conflicts(proposed) == (reserved,)
         with pytest.raises(DuplicateSubmissionError):
             manager.reserve(proposed)
-        manager.complete(reserved, state=RunState.FINISHED)
-        assert not manager.conflicts(proposed)
+        with pytest.raises(RuntimeError, match="live client"):
+            manager.complete(reserved, state=RunState.FINISHED)
+        assert manager.conflicts(proposed) == (reserved,)
+    manager.complete(reserved, state=RunState.FINISHED)
     assert not manager.conflicts(proposed)
     manager.reserve(proposed)
 
@@ -212,12 +217,12 @@ def test_staging_failure_is_preprocessing_even_without_callback(tmp_path, monkey
         (sys.executable, "-c", "pass"), directory=tmp_path,
     ), tracked=manager)
     async def reject():
-        assert run.record.state == RunState.PREPROCESSING
+        assert run.record.file_state == RunFileState.PREPROCESSING
         raise OSError("staging failed")
     monkeypatch.setattr(run._file_session, "prepare_submission_async", reject)
     with pytest.raises(OSError, match="staging failed"):
         run.run()
-    assert run.record.failure_phase == FailurePhase.PREPROCESSING
+    assert run.record.file_failure_phase == FailurePhase.PREPROCESSING
 
 
 @pytest.mark.parametrize("outcome", ["success", "processing", "parser-error", "preprocessing-error", "cleanup-error"])
@@ -237,12 +242,12 @@ def test_terminal_publication_follows_actual_resource_cleanup(tmp_path, outcome)
 
         def detach(self):
             current = manager.store.get(run.id)
-            assert not current.state.is_terminal
-            assert not run.state.is_terminal
+            assert current.is_active
+            assert not run.file_state.is_terminal
             assert other.conflicts(proposed) == (current,)
             if outcome != "preprocessing-error":
                 assert (tmp_path / "out").read_text().strip() == "result"
-            seen.append(current.state)
+            seen.append(current.file_state)
             if outcome == "cleanup-error":
                 raise OSError("cleanup error")
 
@@ -267,7 +272,9 @@ def test_terminal_publication_follows_actual_resource_cleanup(tmp_path, outcome)
         run.run()
     assert len(seen) == 1
     current = manager.store.get(run.id)
-    assert current.state == (RunState.FAILED if outcome.endswith("-error") else RunState.FINISHED)
+    assert current.state == (RunState.NEW if outcome == "preprocessing-error" else RunState.FINISHED)
+    assert current.file_state == (RunFileState.FAILED if outcome.endswith("-error") else
+                                  RunFileState.POSTPROCESSED if outcome == "processing" else RunFileState.DONE)
     assert not other.conflicts(proposed)
     if outcome != "preprocessing-error":
         assert current.files.output_versions
@@ -285,9 +292,11 @@ def test_backend_terminal_observation_cannot_finish_live_run(tmp_path):
     active = manager.transition(record, state=RunState.RUNNING,
                                 execution=record.execution.submitted("job"))
     with manager.store.observation_lock(active):
-        assert manager.update(active, RunStatus(RunState.FINISHED, return_code=0)) == active
-        assert manager.update(active, RunStatus(RunState.CANCELLED)) == active
-        assert manager.store.get(active.id) == active
+        ended = manager.update(active, RunStatus(RunState.FINISHED, return_code=0))
+        assert ended.state == RunState.FINISHED
+        assert ended.file_state == active.file_state
+        assert manager.update(active, RunStatus(RunState.CANCELLED)) == ended
+        assert manager.store.get(active.id) == ended
 
 
 def test_attachment_cannot_open_files_owned_by_another_client(tmp_path, monkeypatch):
@@ -317,7 +326,7 @@ def test_cleanup_error_is_visible_to_completion_callback(tmp_path):
             raise OSError("cleanup error")
 
     def completed(result):
-        seen.append((run.state, run.record.state, run.failure_phase))
+        seen.append((run.state, run.record.file_state, run.file_failure_phase))
         done.set()
 
     run = ExecutionClient().create_run(ExecutionSpec((sys.executable, "-c", "pass"), directory=tmp_path), tracked=manager,
@@ -326,7 +335,7 @@ def test_cleanup_error_is_visible_to_completion_callback(tmp_path):
     with pytest.raises(OSError, match="cleanup error"):
         run.run()
     assert done.is_set()
-    assert seen == [(RunState.FAILED, RunState.FAILED, FailurePhase.ARTIFACTS)]
+    assert seen == [(RunState.FINISHED, RunFileState.FAILED, FailurePhase.ARTIFACTS)]
     with pytest.raises(OSError, match="cleanup error"):
         run.wait()
 
@@ -340,7 +349,7 @@ def test_memory_run_can_delete_owned_temporary_files_on_completion(tmp_path):
 
     class Resource:
         def close(self):
-            assert not manager.store.get(run.id).state.is_terminal
+            assert manager.store.get(run.id).is_active
             assert output.read_text().strip() == "result"
             output.unlink()
 
@@ -389,7 +398,7 @@ def test_rejected_run_does_not_flush_or_close_borrowed_file(tmp_path, role):
             run.close()
             assert not stream.closed
             assert path.read_text() == "original"
-            manager.complete(reserved, state=RunState.FAILED)
+        manager.complete(reserved, state=RunState.FAILED)
 
 
 def test_unbound_project_manager_can_reserve_save_only_files(tmp_path):
@@ -443,7 +452,7 @@ def test_save_only_does_not_recover_conflicting_abandoned_preprocessing(tmp_path
             pytest.fail("Conflicting preprocessing must not be entered")
     assert disk.get(abandoned.id) == abandoned
     assert not save.store.runs()
-    assert persistent.refresh((abandoned,))[0].state == RunState.FAILED
+    assert persistent.refresh((abandoned,))[0].file_state == RunFileState.FAILED
     with save.preprocessing_reservation(spec):
         (tmp_path / "input").write_text("prepared")
 

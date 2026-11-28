@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.runs import ExecutionMetadata, RunRecord, WorkingDirectory
 from kkrunner import ExecutionSpec, RunState
 from kkrunner.backends import SupervisedBackend
@@ -48,7 +49,7 @@ def _spec(tmp_path, command=None, *, out="out.txt", err="err.txt"):
 def _record(tmp_path, backend_id, *, stdout=True, stderr=True):
     return RunRecord(
         id=RUN_ID,
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), backend_id, backend=BackendConfig("kkrunner")),

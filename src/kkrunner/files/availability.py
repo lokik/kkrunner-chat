@@ -201,12 +201,10 @@ def local_manifest(files, status):
         elif published:
             exists = os.path.isfile(entry.local_path)
             state, message = (
-                ("available", None)
-                if exists
-                else (
-                    "failed",
-                    "Published output file is missing",
-                )
+                ("available", None) if exists else
+                ("failed", "Published output file is missing")
+                if status.state == RunState.FINISHED and status.return_code == 0
+                else ("skipped", None)
             )
         else:
             state, message = "skipped", None
@@ -231,7 +229,7 @@ def _concrete_result_files(manifests):
     return tuple(paths)
 
 
-def _capturable_entries(entries, *, frozen=False):
+def _capturable_entries(entries):
     """Only versions actually delivered for this run enter its provenance.
 
     A skipped auxiliary output can still exist locally from an earlier run.
@@ -243,13 +241,8 @@ def _capturable_entries(entries, *, frozen=False):
         for entry in entries
         if entry is not None and entry.local_path is not None
         and entry.collect
-        and entry.availability_state not in ("skipped", "failed")
-        and (not frozen or entry.availability_state == "available")
-        and (
-            entry.source_pattern is not None
-            or not has_file_magic(entry.local_path)
-            or (not frozen and entry.availability_state in (None, "pending"))
-        )
+        and entry.availability_state == "available"
+        and (entry.source_pattern is not None or not has_file_magic(entry.local_path))
     )
 
 
@@ -295,18 +288,26 @@ def file_is_current(result_files, path, versions):
 
 
 def capture_result_files(result_files, *, require_outputs=True, cache_versions=None):
-    """Capture published outputs and caches, retaining submission-time inputs."""
+    """Discover and capture existing local artifacts for an explicit import."""
     if result_files is None or result_files.captured_at is not None:
         return result_files
-    frozen = result_files.remote_patterns_resolved is not None
-    if not frozen:
+    if result_files.remote_patterns_resolved is None:
         result_files = discover_local_files(result_files, require_outputs=require_outputs)
+    return snapshot_result_files(result_files, cache_versions=cache_versions)
+
+
+def snapshot_result_files(result_files, *, cache_versions=None):
+    """Capture resolved artifacts without discovering declarations again."""
+    if result_files.captured_at is not None or result_files.failed_artifacts:
+        return result_files
+    # Only the concrete entries selected by discovery or transfer belong to
+    # this calculation, regardless of which filesystem they came from.
     output_entries = (result_files.stdout, result_files.stderr, *result_files.outputs)
     cache_entries = tuple(item.file for item in result_files.caches)
     return replace(
         result_files,
-        output_versions=snapshot_file_entries(_capturable_entries(output_entries, frozen=frozen), sync=True),
-        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries, frozen=frozen))
+        output_versions=snapshot_file_entries(_capturable_entries(output_entries), sync=True),
+        cache_versions=(snapshot_file_entries(_capturable_entries(cache_entries))
                         if cache_versions is None else cache_versions),
         captured_at=datetime.now(timezone.utc).isoformat(),
     )

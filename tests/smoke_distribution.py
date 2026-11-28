@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 import kkrunner
-from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState
+from kkrunner import ExecutionSpec, ProcessingPending, Run, RunState, RunFileState
 from kkrunner.backends import DirectBackend, SupervisedBackend
 from kkrunner.client import ExecutionClient, SshTarget, StagingSpec
 from kkrunner.projects import ProjectRunManager, ProjectRepository
@@ -47,10 +47,10 @@ try:
     run.run()
 except ProcessingPending:
     pass
-assert manager.store.get(run.id).state == RunState.POSTPROCESSING
+assert manager.store.get(run.id).state == RunState.FINISHED
+assert manager.store.get(run.id).file_state == RunFileState.READY
 restarted = ProjectRunManager(project_repository=projects, project=project)
-attached = restarted.attach(run.id, process_result=lambda outcome: int(Path(outcome.output_file).read_text()))
-assert attached.wait() == 43
+assert restarted.retry_postprocessing(run.id, lambda outcome: int(Path(outcome.output_file).read_text())) == 43
 assert restarted.store.get(run.id).state == RunState.FINISHED
 
 local, remote = root / "local", root / "remote"

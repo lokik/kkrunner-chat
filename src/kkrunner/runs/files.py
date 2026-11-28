@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
+from subprocess import SubprocessError
 
 from kkrunner.client.file_access import FileAccess
 from kkrunner.files.availability import file_is_current
@@ -16,6 +17,7 @@ from kkrunner.files.manifest import ArtifactAvailabilityState
 from kkrunner.files.paths import expand_local_candidates, has_file_magic
 from kkrunner.files.versions import file_digest
 from kkrunner.runs.stores import resolve_record, store_for
+from kkrunner.execution import RunState
 from kkrunner.runs.states import NO_EXECUTION_FAILURES
 from kkrunner.support.async_utils import run_coro_sync
 
@@ -85,16 +87,18 @@ class RunFiles:
 
     def output_file_is_current(self, run):
         record = resolve_record(run, self.store)
-        if record.failure_phase in NO_EXECUTION_FAILURES:
+        if record.state == RunState.NEW or record.failure_phase in NO_EXECUTION_FAILURES:
             return False
         files = record.files
         return file_is_current(files, files.output_file, files.output_versions)
 
     def update_artifact_availability(self, record, path, state, message=None):
-        """Persist availability of one artifact without changing the run outcome."""
+        """Record availability of historical artifacts, not live transfer progress."""
         state = ArtifactAvailabilityState(state)
 
         def update(latest):
+            if latest.is_active and latest.files.captured_at is None:
+                raise RuntimeError("Uncaptured file progress belongs to the collection owner")
             files = latest.files.with_file_availability(path, state.value, message)
             if files == latest.files:
                 return latest
@@ -110,21 +114,25 @@ class RunFiles:
         files or affect persistent artifact metadata.
         """
         record = resolve_record(run, self.store)
-        if record.execution.backend_id is None:
-            raise RuntimeError(f"Run {record.id} has not been submitted")
+        if record.execution.backend_id is None and record.files.captured_at is None:
+            raise RuntimeError(f"Run {record.id} has not been submitted and has no captured artifacts")
         return FileAccess(record.execution.target).snapshot_file(record, file, destination=destination)
 
     def retrieve_result_files(self, record, *, reserve):
         """Restore files of the current record under its caller's history ownership."""
-        if not record.state.is_terminal:
+        if record.is_active or not record.state.is_terminal:
             raise RuntimeError(f"Run {record.id} is not finished")
 
         if not record.execution.target.transfers_files(shared_filesystem=record.files.shared_filesystem):
             return record  # There is no separate target copy to restore.
-        if record.execution.backend_id is None or not record.execution.target.available:
+        if not record.execution.target.available:
+            return record
+        if record.execution.backend_id is None and record.files.captured_at is None:
+            # An uncaptured declaration alone does not establish that the job
+            # published files. Captured digests do, without a backend identity.
             return record
         missing = _missing_result_files(
-            record.files, include_outputs=record.failure_phase not in NO_EXECUTION_FAILURES,
+            record.files, include_outputs=record.state != RunState.NEW and record.failure_phase not in NO_EXECUTION_FAILURES,
         )
         if not missing:
             return record
@@ -168,7 +176,7 @@ class RunFiles:
                         if prior != version.digest:
                             raise ValueError(f"Conflicting historical versions map to {entry.local_path}")
                 planned[path] = entries
-            except OSError as exc:
+            except (OSError, SubprocessError) as exc:
                 errors[path] = str(exc)
 
         async def restore():
@@ -181,7 +189,7 @@ class RunFiles:
                 try:
                     if not await access.download_result_file(entry, verify=verify):
                         raise FileExistsError(f"Historical artifact was not retrieved: {path} already exists")
-                except (OSError, RuntimeError) as exc:
+                except (OSError, SubprocessError, RuntimeError) as exc:
                     failures[path] = str(exc)
             return failures
 

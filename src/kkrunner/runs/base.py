@@ -110,6 +110,7 @@ class ExecutionOutcome:
     input_file: Any = None
     error_file: Any = None
     return_code: Optional[int] = None
+    state: RunState = RunState.UNKNOWN
 
 
 class ExecutionResources:
@@ -162,6 +163,8 @@ class RunStatus:
     return_code: Optional[int] = None
     message: Optional[str] = None
     failure_phase: Optional[FailurePhase] = None
+    output_pending: bool = False
+    file_error: Optional[str] = None
 
     @classmethod
     def from_job_status(cls, status, *, backend_id=None, execution=None, files=None):
@@ -170,6 +173,7 @@ class RunStatus:
             state=status.state, backend_id=backend_id, execution=execution, files=files,
             return_code=status.return_code, message=status.message,
             failure_phase=None if status.failure_phase is None else status.failure_phase.value,
+            output_pending=status.output_pending, file_error=status.file_error,
         )
 
     def __post_init__(self):

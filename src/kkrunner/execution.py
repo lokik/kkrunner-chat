@@ -13,16 +13,12 @@ class MpiNotFoundWarning(UserWarning):
 
 
 class RunState(str, Enum):
-    """Single authoritative lifecycle state of one calculation run."""
+    """Native execution state, independent of client file processing."""
 
     NEW = "new"
-    PREPROCESSING = "preprocessing"
     SUBMITTING = "submitting"
     QUEUED = "queued"
     RUNNING = "running"
-    FINISHING = "finishing"
-    DOWNLOADING = "downloading"
-    POSTPROCESSING = "postprocessing"
     FINISHED = "finished"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -34,8 +30,43 @@ class RunState(str, Enum):
         return self in (RunState.FINISHED, RunState.FAILED, RunState.CANCELLED)
 
 
+def merge_terminal_outcome(current, code, observed, observed_code):
+    """Refine a confirmed exit without erasing stronger native evidence.
+
+    A liveness-only FINISHED may acquire the real outcome later. Confirmed
+    cancellation is retained when the actual exit code arrives.
+    """
+    if not observed.is_terminal or code is not None:
+        return current, code
+    if current == RunState.CANCELLED:
+        return current, observed_code
+    if observed == RunState.CANCELLED or (
+        current == RunState.FINISHED and observed_code is not None
+    ):
+        return observed, observed_code
+    return current, observed_code if current == observed else code
+
+
+class RunFileState(str, Enum):
+    """Client file ownership and processing, independent of execution."""
+
+    NEW = "new"
+    PREPROCESSING = "preprocessing"
+    WAITING = "waiting"
+    COLLECTING = "collecting"
+    READY = "ready"
+    POSTPROCESSING = "postprocessing"
+    POSTPROCESSED = "postprocessed"
+    DONE = "done"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self):
+        return self in (self.POSTPROCESSED, self.DONE, self.FAILED)
+
+
 class FailurePhase(str, Enum):
-    """Phase in which a run entered :attr:`RunState.FAILED`."""
+    """Diagnostic phase of native execution or client file failure."""
 
     PREPROCESSING = "preprocessing"
     SUBMISSION = "submission"

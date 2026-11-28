@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.files.manifest import FileSyncPolicy
 from kkrunner.backends import SupervisedBackend
 from kkrunner.client import ExecutionClient, StagingSpec, SshTarget, LocalTarget
@@ -642,10 +643,11 @@ def test_remote_preparation_failure_has_one_classification(tmp_path, preflight):
 
     with pytest.raises(SubmissionNotStarted, match="Local input file"):
         runner.submit()
-    assert runner.failure_phase == FailurePhase.PREPROCESSING
-    assert "Local input file" in runner.failure_message
+    assert runner.file_failure_phase == FailurePhase.PREPROCESSING
+    assert "Local input file" in runner.file_message
     assert runner.backend_id is None
-    assert runner.state == RunState.FAILED
+    assert runner.state == RunState.NEW
+    assert runner.file_state == RunFileState.FAILED
     with pytest.raises(RuntimeError, match="already submitted"):
         runner.submit()
     with pytest.raises(SubmissionNotStarted, match="Local input file"):

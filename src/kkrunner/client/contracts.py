@@ -56,8 +56,9 @@ class BackendExecution(Protocol):
     """One backend execution bound to a location, without client persistence.
 
     Acceptance and completion return backend facts. An opaque reference is
-    not a promise of reattachment. status() may return the live call's last
-    facts when the backend cannot query execution independently.
+    not a promise of reattachment. snapshot is the last invocation reply,
+    not a merged client state. status() may return that reply when the
+    backend cannot query execution independently. Job merges observations.
     """
 
     ref: Optional[JobRef]

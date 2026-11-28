@@ -2,6 +2,7 @@ from subprocess import CalledProcessError
 from threading import Event
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.runs import DuplicateSubmissionError, FailurePhase, RunStatus
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.run_parts import RunParts
@@ -143,10 +144,10 @@ def test_submit_persists_submitting_before_backend_call(tmp_path):
     "return_code, expected_state, expected_phase",
     [
         pytest.param(0, RunState.FINISHED, None, id="postprocess-success"),
-        pytest.param(7, RunState.FAILED, FailurePhase.EXECUTION, id="skip-processing-on-failure"),
+        pytest.param(7, RunState.FAILED, FailurePhase.EXECUTION, id="postprocess-failure"),
     ],
 )
-def test_completion_postprocesses_only_successful_execution(tmp_path, return_code, expected_state, expected_phase):
+def test_completion_postprocesses_native_outcomes(tmp_path, return_code, expected_state, expected_phase):
     manager = _manager(tmp_path)
     executor = _Executor()
     processed = []
@@ -160,10 +161,12 @@ def test_completion_postprocesses_only_successful_execution(tmp_path, return_cod
     executor.runners[0].finish(return_code)
     result = run.wait()
     assert result.return_code == return_code
-    assert processed == ([result] if return_code == 0 else [])
+    assert processed == [result]
+    assert result.state == expected_state
     stored = manager.store.get(run.id)
     assert stored.state == expected_state
     assert stored.failure_phase == expected_phase
+    assert stored.file_state == RunFileState.POSTPROCESSED
     if return_code == 0:
         assert stored.finished_at is not None
     else:
@@ -306,7 +309,9 @@ def test_refresh_uses_assigned_identity_without_preliminary_store_read(tmp_path,
     )
     stale = manager.transition(record, state=RunState.RUNNING,
                                execution=record.execution.submitted("native"))
-    current = manager.transition(stale, state=RunState.POSTPROCESSING, return_code=0)
+    current = manager.complete(stale, state=RunState.FINISHED,
+                               file_state=RunFileState.POSTPROCESSING, return_code=0,
+                               artifacts_available=True)
     status = executor.status_async
     get = manager.store.get
     reads = []

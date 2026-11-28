@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionSpec, Run, RunState
 from kkrunner.client.run_parts import RunParts
 from kkrunner.backends import DirectBackend, SupervisedBackend
@@ -177,8 +178,9 @@ def test_run_reports_file_session_close_error_without_changing_native_outcome(tm
     assert job.state is RunState.FINISHED
     assert job.return_code == 0
     assert job.failure_phase is None
-    assert run.state is RunState.FAILED
-    assert run.failure_phase is FailurePhase.ARTIFACTS
+    assert run.state is RunState.FINISHED
+    assert run.file_state is RunFileState.FAILED
+    assert run.file_failure_phase is FailurePhase.ARTIFACTS
     assert output.close_calls == 1
 
 

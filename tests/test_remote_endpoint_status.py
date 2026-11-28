@@ -2,6 +2,7 @@
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import RunState
 from kkrunner.backends.contracts import RecoveryDisposition
 from kkrunner.client.contracts import JobAttachment
@@ -15,7 +16,7 @@ def _run(native_id, *, backend="psij"):
     transport = SshTarget("cluster")
     return RunRecord(
         id=native_id or "unconfirmed",
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(transport, WorkingDirectory("/local/case", "/work/case"), native_id, backend=BackendConfig(backend)),

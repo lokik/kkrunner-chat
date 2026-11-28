@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from kkrunner import RunManager, RunState, RunStore, ExecutionSpec
+from kkrunner import RunFileState, RunManager, RunState, RunStore, ExecutionSpec
 from kkrunner.files import FileManifest
 from kkrunner.runs import CorruptRunRecord
 from kkrunner.runs import records as records_module
@@ -18,7 +18,8 @@ def _record(store, directory, name, state, created):
             ExecutionSpec(argv=(), directory=directory, output_file=name + ".out"),
         ),
     )
-    return replace(record, state=state, created_at=created, updated_at=created)
+    return replace(record, state=state, file_state=RunFileState.DONE if state.is_terminal else RunFileState.WAITING,
+                   created_at=created, updated_at=created)
 
 
 def _records(store):
@@ -59,13 +60,13 @@ def test_lifecycle_moves_single_record_and_preserves_history_order(tmp_path):
     assert not history_path.exists()
     assert peer.runs() == (running, newer)
     assert peer.runs(newest=True, limit=1) == (newer,)
-    finished = store.update(running, lambda current: replace(current, state=RunState.FINISHED))
+    finished = store.update(running, lambda current: replace(current, state=RunState.FINISHED, file_state=RunFileState.DONE))
     assert _records(store) == {history_path, store.directory / "2025-01-02" / "newer.json"}
     assert peer.get(running.id) == finished
     assert peer.runs(active=True) == ()
     assert peer.runs(active=False) == (finished, newer)
     with peer.submission_lock():
-        resumed = peer.update(finished, lambda current: replace(current, state=RunState.DOWNLOADING))
+        resumed = peer.update(finished, lambda current: replace(current, file_state=RunFileState.COLLECTING))
     assert active_path.is_file()
     assert not history_path.exists()
     assert store.get(running.id) == resumed
@@ -114,7 +115,7 @@ def test_interrupted_archiving_keeps_terminal_record_readable(tmp_path, monkeypa
             raise OSError("interrupted archive")
         patch.setattr(store, "_move_record", interrupt)
         with pytest.raises(OSError, match="interrupted archive"):
-            store.update(running, lambda current: replace(current, state=RunState.FINISHED))
+            store.update(running, lambda current: replace(current, state=RunState.FINISHED, file_state=RunFileState.DONE))
     peer = RunStore(store.directory)
     finished = peer.get(running.id)
     assert finished.state == RunState.FINISHED
@@ -136,12 +137,12 @@ def test_interrupted_reopening_does_not_hide_active_reservation(tmp_path, monkey
             raise OSError("interrupted reopening")
         patch.setattr(records_module, "durable_write_json", interrupt)
         with store.submission_lock(), pytest.raises(OSError, match="interrupted reopening"):
-            store.update(finished, lambda current: replace(current, state=RunState.DOWNLOADING))
+            store.update(finished, lambda current: replace(current, file_state=RunFileState.COLLECTING))
     peer = RunStore(store.directory)
     assert peer.get(finished.id) == finished
     assert peer.runs(active=True) == ()
     assert peer.runs(active=False) == (finished,)
     with peer.submission_lock():
-        resumed = peer.update(finished, lambda current: replace(current, state=RunState.DOWNLOADING))
+        resumed = peer.update(finished, lambda current: replace(current, file_state=RunFileState.COLLECTING))
     assert store.runs(active=True) == (resumed,)
     assert len(_records(peer)) == 1

@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner.client import StagingSpec, ExecutionClient, SshTarget
 from kkrunner.client.contracts import JobAttachment
 from kkrunner.client.file_context import FileContext
@@ -70,7 +71,7 @@ def test_attach_restores_typed_manifest_without_sync_dictionary(tmp_path, monkey
     context = FileContext(endpoint.target, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="test-manifest",
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(endpoint.target, WorkingDirectory(str(local), str(remote)), "opaque-id"),
@@ -154,7 +155,7 @@ def test_attach_does_not_open_or_create_output_paths(tmp_path):
     context = FileContext(endpoint.target, StagingSpec(local_root=local, remote_root=remote))
     run = RunRecord(
         id="stream-open-failure",
-        state=RunState.RUNNING,
+        state=RunState.RUNNING, file_state=RunFileState.WAITING,
         created_at="2026-10-13T08:00:00+00:00",
         updated_at="2026-10-13T08:00:00+00:00",
         execution=ExecutionMetadata(endpoint.target, WorkingDirectory(str(local), str(remote)), "remote-id"),

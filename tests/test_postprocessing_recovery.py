@@ -1,9 +1,12 @@
 """Durable completion and retry ownership without application result readers."""
 
 from threading import Event
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from kkrunner import RunFileState
+from kkrunner.runs import RunStatus
 from kkrunner import ExecutionOutcome, RunState, RunStore
 from kkrunner.runs import FailurePhase
 from kkrunner.client import ExecutionClient
@@ -111,9 +114,10 @@ def test_result_processor_failure_is_postprocessing_failure(tmp_path):
     with pytest.raises(ValueError, match="result parsing failed"):
         run.run()
     record = store.get(run.id)
-    assert record.state == RunState.FAILED
-    assert record.failure_phase == FailurePhase.POSTPROCESSING
-    assert record.message == "result parsing failed"
+    assert record.state == RunState.FINISHED
+    assert record.file_state == RunFileState.FAILED
+    assert record.file_failure_phase == FailurePhase.POSTPROCESSING
+    assert record.file_message == "result parsing failed"
     assert record.finished_at is not None
 
 
@@ -130,9 +134,10 @@ def test_retry_without_processor_preserves_failed_result(tmp_path, processor):
         files=FileManifest(stdout=FileEntry(str(output))),
     )
     failed = manager.complete(
-        record, state=RunState.FAILED, return_code=0,
-        failure_phase=FailurePhase.POSTPROCESSING,
-        message="original parser error", artifacts_available=True,
+        record, state=RunState.FINISHED, return_code=0,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.POSTPROCESSING,
+        file_message="original parser error", artifacts_available=True,
         execution=record.execution.submitted("native"),
     )
     with pytest.raises(TypeError, match="callable result processor"):
@@ -160,24 +165,24 @@ def test_retry_does_not_overwrite_concurrent_record_update(tmp_path, during_retr
     )
     failed = manager.complete(
         record,
-        state=RunState.FAILED,
+        state=RunState.FINISHED,
         return_code=0,
-        failure_phase=FailurePhase.POSTPROCESSING,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.POSTPROCESSING,
         artifacts_available=True,
     )
 
     def concurrent_change(outcome):
         current = manager.store.get(failed.id)
         if during_retry == "refreshed":
-            manager.transition(current, state=RunState.POSTPROCESSING, message="external refresh")
+            manager.update(current, RunStatus(RunState.FAILED, return_code=7))
         else:
-            manager.complete(
-                current,
-                state=RunState.FINISHED if during_retry == "finished" else RunState.FAILED,
-                return_code=0,
-                message="external terminal update",
-                failure_phase=None if during_retry == "finished" else FailurePhase.POSTPROCESSING,
-            )
+            with pytest.raises(RuntimeError, match="live client"):
+                manager.complete(
+                    current, state=RunState.FINISHED,
+                    file_state=RunFileState.POSTPROCESSED if during_retry == "finished" else RunFileState.FAILED,
+                    return_code=0,
+                )
         return outcome
 
     # A competing observer cannot replace the processing owner's state,
@@ -205,24 +210,28 @@ def test_retry_exception_does_not_overwrite_concurrent_completion(tmp_path):
     )
     failed = manager.complete(
         record,
-        state=RunState.FAILED,
+        state=RunState.FINISHED,
         return_code=0,
-        failure_phase=FailurePhase.POSTPROCESSING,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.POSTPROCESSING,
         artifacts_available=True,
     )
 
     def interrupted(outcome):
-        manager.complete(
-            manager.store.get(failed.id), state=RunState.FINISHED, return_code=0, message="external success"
-        )
+        with pytest.raises(RuntimeError, match="live client"):
+            manager.complete(
+                manager.store.get(failed.id), state=RunState.FINISHED, return_code=0,
+                file_state=RunFileState.POSTPROCESSED,
+            )
         raise ValueError("parser error")
 
     with pytest.raises(ValueError, match="parser error"):
         manager.retry_postprocessing(failed.id, interrupted)
     current = manager.store.get(failed.id)
-    assert current.state == RunState.FAILED
-    assert current.failure_phase == FailurePhase.POSTPROCESSING
-    assert current.message == "parser error"
+    assert current.state == RunState.FINISHED
+    assert current.file_state == RunFileState.FAILED
+    assert current.file_failure_phase == FailurePhase.POSTPROCESSING
+    assert current.file_message == "parser error"
 
 
 @pytest.mark.parametrize("input_change", ("overwritten", "missing"))
@@ -253,9 +262,10 @@ def test_postprocessing_retry_accepts_unchanged_output_with_stale_input(tmp_path
         source.write_bytes(b"changed input")
     failed = manager.complete(
         prepared,
-        state=RunState.FAILED,
+        state=RunState.FINISHED,
         return_code=0,
-        failure_phase=FailurePhase.POSTPROCESSING,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.POSTPROCESSING,
         artifacts_available=True,
     )
     assert failed.files.output_versions
@@ -291,8 +301,9 @@ def test_historical_retry_releases_global_locks_before_file_validation(tmp_path,
     manifest = FileManifest(stdout=FileEntry(str(output)))
     record = manager.new_record(directory=tmp_path, files=manifest, processing_required=True)
     failed = manager.complete(
-        record, state=RunState.FAILED, return_code=0,
-        failure_phase=FailurePhase.POSTPROCESSING, artifacts_available=True,
+        record, state=RunState.FINISHED, return_code=0,
+        file_state=RunFileState.FAILED,
+        file_failure_phase=FailurePhase.POSTPROCESSING, artifacts_available=True,
         execution=record.execution.submitted("original"),
     )
 
@@ -320,9 +331,112 @@ def test_historical_retry_releases_global_locks_before_file_validation(tmp_path,
         future = pool.submit(manager.retry_postprocessing, failed, lambda outcome: "parsed")
         try:
             assert validating.wait(5)
-            assert disk.get(record.id).state == RunState.POSTPROCESSING
+            assert disk.get(record.id).file_state == RunFileState.POSTPROCESSING
             pool.submit(reserve_other).result(timeout=3)
         finally:
             release.set()
         assert future.result(timeout=5) == "parsed"
     assert disk.get(record.id).state == RunState.FINISHED
+
+
+def test_retry_cannot_commit_success_after_last_moment_artifact_failure(tmp_path, monkeypatch):
+    from kkrunner.files import FileEntry, FileManifest, ArtifactAvailabilityState
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    output = tmp_path / "out"
+    output.write_text("answer")
+    record = manager.complete(manager.new_record(directory=tmp_path, processing_required=True,
+        files=FileManifest(stdout=FileEntry(str(output)))),
+        state=RunState.FINISHED, return_code=0, artifacts_available=True)
+    transition = manager._commit
+
+    def change_before_commit(record, **kwargs):
+        if kwargs.get("file_state") == RunFileState.POSTPROCESSED:
+            manager.update_artifact_availability(
+                record, output, ArtifactAvailabilityState.FAILED, "late artifact failure",
+            )
+        return transition(record, **kwargs)
+
+    monkeypatch.setattr(manager, "_commit", change_before_commit)
+    with pytest.raises(OSError, match="late artifact failure"):
+        manager.retry_postprocessing(record, lambda outcome: "parsed")
+    saved = manager.store.get(record.id)
+    assert saved.state == RunState.FINISHED
+    assert saved.file_state == RunFileState.FAILED
+    assert saved.file_failure_phase == FailurePhase.POSTPROCESSING
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_processing_reservation_protects_reads_not_original_producer(tmp_path, shared):
+    from dataclasses import replace
+    from kkrunner import MemoryRunStore
+    from kkrunner.files import FileEntry, FileManifest, FileMapping
+    from kkrunner.runs import DuplicateSubmissionError
+    from kkrunner.runs.conflicts import referenced_paths
+    from kkrunner.targets import SshTarget
+
+    manager = RunManager(MemoryRunStore())
+    peer = RunManager(manager.store)
+    target = SshTarget("cluster")
+    original_root = tmp_path / "old"
+    original_root.mkdir()
+    output = original_root / "part-one.dat"
+    output.write_text("answer")
+    manifest = FileManifest(
+        outputs=(FileEntry(original_root / "part-*.dat", "/work/part-*.dat"),),
+        mapping=FileMapping(original_root, "/work", shared_filesystem=shared),
+    )
+    manifest = manifest.with_file_availability(
+        output, "available", remote_path="/work/part-one.dat",
+        source_pattern=str(original_root / "part-*.dat"),
+    )
+    manifest = manifest.with_file_availability(original_root / "part-*.dat", "available")
+    manifest = replace(manifest, remote_patterns_resolved=True)
+    record = manager.new_record(
+        directory=original_root, remote_directory="/work", target=target,
+        processing_required=True, files=manifest,
+    )
+    failed = manager.complete(
+        record, state=RunState.FINISHED, return_code=0, artifacts_available=True,
+        file_state=RunFileState.FAILED, file_failure_phase=FailurePhase.POSTPROCESSING,
+    )
+    assert failed.files.output_versions[0].path == output
+
+    # A new producer using the original remote workspace but a different
+    # local workspace can coexist unless that workspace is shared storage.
+    other_root = tmp_path / "new"
+    remote_writer = peer.new_record(
+        directory=other_root, remote_directory="/work", target=target,
+        files=FileManifest(
+            outputs=(FileEntry(other_root / output.name, "/work/part-one.dat"),),
+            mapping=FileMapping(other_root, "/work", shared_filesystem=shared),
+        ),
+    )
+    if not shared:
+        peer.reserve(remote_writer)
+
+    def process(outcome):
+        current = manager.store.get(failed.id)
+        assert current.file_state == RunFileState.POSTPROCESSING
+        assert "/work/part-one.dat" in referenced_paths(current)
+        reader = peer.new_record(directory=original_root, files=FileManifest(
+            inputs=(FileEntry(output),),
+        ))
+        peer.reserve(reader)
+        writer = peer.new_record(directory=original_root, files=FileManifest(
+            outputs=(FileEntry(output),),
+        ))
+        with pytest.raises(DuplicateSubmissionError):
+            peer.reserve(writer)
+        if shared:
+            with pytest.raises(DuplicateSubmissionError):
+                peer.reserve(remote_writer)
+        # A local wildcard declaration no longer reserves files that were
+        # never collected for this run.
+        peer.reserve(peer.new_record(directory=original_root, files=FileManifest(
+            outputs=(FileEntry(original_root / "part-later.dat"),),
+        )))
+        return output.read_text()
+
+    assert manager.retry_postprocessing(failed, process) == "answer"
+    assert manager.store.get(failed.id).file_state == RunFileState.POSTPROCESSED

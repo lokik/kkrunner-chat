@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionSpec, Run, RunState, RunStore
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.contracts import JobRef, JobStatus
@@ -40,7 +41,7 @@ def _run(tmp_path, *, manager=None, client=None, record=None, callback=None):
             directory=tmp_path, target=client.target, backend=client.backend_config,
         )
         record = manager.transition(
-            record, state=RunState.RUNNING,
+            record, state=RunState.RUNNING, file_state=RunFileState.WAITING,
             execution=record.execution.submitted("backend-job"),
         )
     parts = client.create_run_parts(spec)
@@ -76,49 +77,34 @@ def test_reading_state_does_not_write_to_store(tmp_path, monkeypatch):
     def unexpected_transition(*args, **kwargs):
         raise AssertionError("Reading state must not persist anything")
 
-    monkeypatch.setattr(manager, "transition", unexpected_transition)
+    monkeypatch.setattr(manager.store, "update", unexpected_transition)
     assert run.state == RunState.RUNNING
     assert run.record.state == RunState.RUNNING
 
 
-def test_finalization_is_once_even_when_wait_is_repeated(tmp_path, monkeypatch):
-    run, job, manager, client = _run(tmp_path)
+def test_finalization_is_once_even_when_wait_is_repeated(tmp_path):
     completed = []
-    original = manager.transition
-
-    def record_completion(*args, **kwargs):
-        if kwargs["state"].is_terminal:
-            completed.append(kwargs["state"])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(manager, "transition", record_completion)
+    run, job, manager, client = _run(tmp_path, callback=completed.append)
     job.finish(RunState.FINISHED)
     result = run.wait()
+    saved = manager.store.get(run.id)
+    assert saved.state == RunState.FINISHED
+    assert saved.file_state == RunFileState.DONE
     assert run.wait() is result
-    asyncio.run(run._sync_completion())
-    assert manager.store.get(run.id).state == RunState.FINISHED
-    assert completed == [RunState.FINISHED]
+    assert manager.store.get(run.id) == saved
+    assert completed == [result]
     assert client._test_acknowledgements == [run.id]
 
 
-def test_unknown_observation_does_not_finalize_execution(tmp_path, monkeypatch):
+def test_unknown_observation_does_not_finalize_execution(tmp_path):
     run, job, manager, client = _run(tmp_path)
-    completed = []
-    original = manager.transition
-
-    def record_completion(*args, **kwargs):
-        if kwargs["state"].is_terminal:
-            completed.append(kwargs["state"])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(manager, "transition", record_completion)
     job.finish(RunState.UNKNOWN, "scheduler disconnected")
     run.wait()
-    asyncio.run(run._sync_completion())
     stored = manager.store.get(run.id)
     assert stored.state == RunState.UNKNOWN
     assert stored.message == "scheduler disconnected"
-    assert completed == []
+    assert stored.file_state == RunFileState.WAITING
+    assert stored.finished_at is None
     assert client._test_acknowledgements == []
 
 
@@ -190,9 +176,11 @@ def test_tracked_run_publishes_finalization_after_native_exit(tmp_path, monkeypa
         future = pool.submit(run.wait)
         try:
             assert entered.wait(5), "Native completion was not observed"
-            assert run.state == RunState.DOWNLOADING
+            assert run.state == terminal
+            assert run.file_state == RunFileState.COLLECTING
             stored = manager.store.get(run.id)
-            assert stored.state == RunState.DOWNLOADING
+            assert stored.state == terminal
+            assert stored.file_state == RunFileState.COLLECTING
             assert stored.return_code == (0 if terminal == RunState.FINISHED else None)
             assert stored.finished_at is None
         finally:
@@ -217,18 +205,44 @@ def test_refresh_is_authoritative_while_original_observer_is_running(tmp_path, m
         future = pool.submit(run.wait)
         try:
             assert entered.wait(5)
-            for state in (RunState.FINISHING, RunState.UNKNOWN, RunState.FINISHING, RunState.FINISHED):
+            for state in (RunState.RUNNING, RunState.UNKNOWN, RunState.RUNNING, RunState.FINISHED):
                 monkeypatch.setattr(client, "status_async", AsyncMock(side_effect=lambda *records: tuple(
                     RunStatus(state, backend_id=record.execution.backend_id,
                               return_code=0 if state == RunState.FINISHED else None)
                     for record in records
                 )))
-                expected = RunState.FINISHING if state == RunState.FINISHED else state
+                expected = state
                 assert run.refresh() == expected
                 assert run.record.state == expected
                 assert run.state == expected
-                assert not run.record.state.is_terminal
+                assert run.record.is_active
+                assert run.record.file_state == RunFileState.WAITING
         finally:
             job.finish(RunState.FINISHED)
         future.result(timeout=5)
     assert run.state == RunState.FINISHED
+
+
+def test_result_ack_does_not_hold_file_ownership(tmp_path, monkeypatch):
+    run, job, manager, client = _run(tmp_path)
+    entered, release = Event(), Event()
+
+    async def acknowledge(record):
+        assert manager.store.get(record.id).file_state == RunFileState.DONE
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+
+    monkeypatch.setattr(client, "acknowledge_async", acknowledge)
+    job.finish(RunState.FINISHED)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run.wait)
+        try:
+            assert entered.wait(5)
+            # Completion is already committed and an unrelated network
+            # acknowledgement must not retain the client's file lock.
+            lock = manager.store.observation_lock(run.record)
+            assert lock.acquire(blocking=False)
+            lock.release()
+        finally:
+            release.set()
+        assert future.result(timeout=5).state == RunState.FINISHED

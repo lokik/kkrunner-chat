@@ -93,3 +93,83 @@ def test_shared_filesystem_reserves_local_producer_paths(tmp_path):
     other_mount = replace(remote, id="other", execution=replace(
         remote.execution, target=SshTarget("second")))
     assert submission_conflicts(remote, other_mount)
+
+
+@pytest.mark.parametrize("policy", ["never", "changed"])
+def test_collection_reserves_remote_reads_and_local_transfers(tmp_path, policy):
+    from kkrunner import RunFileState, RunState
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    target = SshTarget("cluster")
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    record = manager.new_record(
+        directory=source, remote_directory="/work", target=target,
+        files=FileManifest(
+            inputs=(FileEntry(source / "inp", "/work/inp"),),
+            outputs=(FileEntry(source / "out", "/work/out"),
+                     FileEntry(source / "scratch", "/work/scratch", collect=False)),
+            mapping=FileMapping(source, "/work", output_sync=policy),
+        ),
+    )
+    collecting = replace(record, state=RunState.FINISHED, file_state=RunFileState.COLLECTING)
+
+    def remote(path, *, write):
+        entry = FileEntry(destination / path, "/work/" + path)
+        return manager.new_record(
+            directory=destination, remote_directory="/work", target=target,
+            files=FileManifest(
+                mapping=FileMapping(destination, "/work", input_sync="never"),
+                **({"outputs": (entry,)} if write else {"inputs": (entry,)}),
+            ),
+        )
+
+    # The producer is no longer using its target inputs or uncollected scratch.
+    for path in ("inp", "scratch"):
+        assert submission_conflicts(record, remote(path, write=True))
+        assert not submission_conflicts(collecting, remote(path, write=True))
+        assert not conflicting_files(collecting, remote(path, write=True))
+
+    assert not submission_conflicts(collecting, remote("out", write=False))
+    assert submission_conflicts(collecting, remote("out", write=True))
+    assert any(item.first_access == "read" and item.namespace == "target"
+               for item in conflicting_files(collecting, remote("out", write=True)))
+
+    def local(path, *, write):
+        entry = FileEntry(source / path)
+        return manager.new_record(
+            directory=source,
+            files=FileManifest(**({"outputs": (entry,)} if write else {"inputs": (entry,)})),
+        )
+
+    assert submission_conflicts(collecting, local("out", write=False)) == (policy != "never")
+    assert submission_conflicts(collecting, local("out", write=True))
+    assert submission_conflicts(collecting, local("inp", write=True))
+    assert not submission_conflicts(collecting, local("scratch", write=True))
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_local_collection_reads_published_files(tmp_path, shared):
+    from kkrunner import RunFileState, RunState
+
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    output = FileEntry(tmp_path / "out", "/work/out" if shared else None)
+    if shared:
+        record = manager.new_record(
+            directory=tmp_path, remote_directory="/work", target=SshTarget("cluster"),
+            files=FileManifest(outputs=(output,), mapping=FileMapping(tmp_path, "/work", shared_filesystem=True)),
+        )
+    else:
+        record = manager.new_record(directory=tmp_path, files=FileManifest(outputs=(output,)))
+    collecting = replace(record, state=RunState.FINISHED, file_state=RunFileState.COLLECTING)
+    reader = manager.new_record(directory=tmp_path, files=FileManifest(inputs=(FileEntry(tmp_path / "out"),)))
+    writer = manager.new_record(directory=tmp_path, files=FileManifest(outputs=(FileEntry(tmp_path / "out"),)))
+    assert not submission_conflicts(collecting, reader)
+    assert submission_conflicts(collecting, writer)
+    if shared:
+        other = manager.new_record(
+            directory=tmp_path / "other", remote_directory="/work", target=SshTarget("cluster"),
+            files=FileManifest(outputs=(FileEntry(tmp_path / "other/out", "/work/out"),),
+                               mapping=FileMapping(tmp_path / "other", "/work", shared_filesystem=True)),
+        )
+        assert submission_conflicts(collecting, other)

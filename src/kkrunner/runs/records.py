@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from kkrunner.runs.stores import RunStoreProtocol
 
 from kkrunner.files.manifest import FileManifest
-from kkrunner.runs.base import FailurePhase, RunState
+from kkrunner.execution import FailurePhase, RunFileState, RunState
 from kkrunner.runs.metadata import freeze_metadata
 from kkrunner.runs.model import ExecutionMetadata
 from kkrunner.support.durability import (
@@ -24,7 +24,7 @@ from kkrunner.support.durability import (
 )
 from kkrunner.support.file_locks import FileLock
 
-_RUN_RECORD_SCHEMA_VERSION = 1
+_RUN_RECORD_SCHEMA_VERSION = 2
 
 
 class ActiveRunDeletionError(RuntimeError):
@@ -62,6 +62,9 @@ class RunRecord:
     updated_at: str
     execution: ExecutionMetadata
     files: FileManifest
+    file_state: RunFileState
+    file_failure_phase: Optional[FailurePhase] = None
+    file_message: Optional[str] = None
     finished_at: Optional[str] = None
     return_code: Optional[int] = None
     message: Optional[str] = None
@@ -114,11 +117,21 @@ class RunRecord:
             raise TypeError("files must describe a FileManifest")
         if not isinstance(self.state, RunState):
             object.__setattr__(self, "state", RunState(self.state))
-        if self.failure_phase is not None and not isinstance(self.failure_phase, FailurePhase):
-            object.__setattr__(self, "failure_phase", FailurePhase(self.failure_phase))
+        object.__setattr__(self, "file_state", RunFileState(self.file_state))
+        if self.file_message is not None and not isinstance(self.file_message, str):
+            raise TypeError("file_message must be a string or None")
+        for name in ("failure_phase", "file_failure_phase"):
+            phase = getattr(self, name)
+            if phase is not None:
+                object.__setattr__(self, name, FailurePhase(phase))
         if type(self.schema_version) is not int or self.schema_version != _RUN_RECORD_SCHEMA_VERSION:
             raise ValueError(f"unsupported schema version {self.schema_version}; expected {_RUN_RECORD_SCHEMA_VERSION}")
 
+
+    @property
+    def is_active(self):
+        """The record still owns a calculation/file reservation."""
+        return not self.file_state.is_terminal
 
     @property
     def key(self):
@@ -195,7 +208,7 @@ class RunStore:
 
     def _path(self, record):
         directory = (self.directory / self._bucket(record.created_at)
-                     if record.state.is_terminal else self._active_directory)
+                     if not record.is_active else self._active_directory)
         return directory / f"{record.id}.json"
 
     def _move_record(self, source, destination):
@@ -216,7 +229,7 @@ class RunStore:
                     continue
                 with FileLock(self._run_lock_path(path.stem)):
                     record = self._decode(path)
-                    if record.state.is_terminal:
+                    if not record.is_active:
                         continue
                     destination = self._path(record)
                     if destination.exists():
@@ -275,7 +288,11 @@ class RunStore:
                 raise TypeError("Run record must be a JSON object")
             version = data.get("schema_version")
             if version != _RUN_RECORD_SCHEMA_VERSION:
-                raise ValueError(f"unsupported schema version {version!r}; expected {_RUN_RECORD_SCHEMA_VERSION}")
+                raise ValueError(
+                    f"unsupported schema version {version!r}; expected {_RUN_RECORD_SCHEMA_VERSION}. "
+                    "Finish or recover existing runs with their original KKRunner version, "
+                    "then explicitly archive the old store or select a new empty store."
+                )
             # Earlier records stored a redundant client processing token.
             # It has no bearing on the durable execution or artifact identity.
             data.pop("processing_attempt", None)
@@ -306,7 +323,7 @@ class RunStore:
         destination = self._path(record)
         path = destination
         if previous_path is not None and previous_path != destination:
-            if record.state.is_terminal:
+            if not record.is_active:
                 # Publish terminal state before removing the active entry.
                 # A crash can leave a terminal record in active/, never an
                 # active reservation hidden in the dated history.
@@ -359,7 +376,7 @@ class RunStore:
             try:
                 previous_path = self._path_for_id(record.id)
             except FileNotFoundError:
-                if record.state != RunState.NEW:
+                if record.state != RunState.NEW or record.file_state != RunFileState.NEW:
                     raise
                 latest = replace(record, store=self)
                 previous_path = None
@@ -432,7 +449,7 @@ class RunStore:
         with self._lock, FileLock(self._run_lock_path(run_id)):
             path = self._path_for_id(run_id)
             record = replace(self._decode(path), store=self)
-            if not record.state.is_terminal and not force:
+            if record.is_active and not force:
                 raise ActiveRunDeletionError(
                     f"Run {run_id!r} is {record.state.value}; its process may "
                     "still be active. Use force=True to forget it without "
@@ -510,7 +527,7 @@ class RunStore:
             if active is True and migrated:
                 records = tuple(record for record in self._records_in_directory(
                     self._active_directory, newest=newest, on_error=on_error,
-                ) if not record.state.is_terminal)
+                ) if record.is_active)
                 return records[:limit]
 
             # Terminal entries can remain in active/ after an interrupted move.
@@ -545,9 +562,9 @@ class RunStore:
                             on_error(exc)
                         continue
                     seen.add(record.id)
-                    if active is True and record.state.is_terminal:
+                    if active is True and not record.is_active:
                         continue
-                    if active is False and not record.state.is_terminal:
+                    if active is False and record.is_active:
                         continue
                     records.append(record)
                     if limit is not None and len(records) >= limit:

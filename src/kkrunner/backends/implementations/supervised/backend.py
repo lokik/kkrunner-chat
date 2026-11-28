@@ -108,17 +108,25 @@ class SupervisedBackend(Backend, ManagedOperations):
         if outcome is None:
             active = Path(handle["socket_path"]).with_name("active")
             try:
-                state = RunState(active.read_text())
+                facts = json.loads(active.read_text())
             except FileNotFoundError:
-                state = None
-            if state is not None and ProcessIdentity.from_dict(handle["identity"]).is_running():
-                return status_reply(state)
+                facts = None
+            running = ProcessIdentity.from_dict(handle["identity"]).is_running()
+            if facts is not None and running:
+                return facts
             # Completion may have been published while checking liveness.
             outcome = _process_outcome(handle["receipt_id"])
             if outcome is None:
-                return status_reply(RunState.UNKNOWN)
-        state, return_code, failure_phase, error = outcome
-        return status_reply(state, return_code, failure_phase=failure_phase, error=error)
+                if running:
+                    return status_reply(RunState.UNKNOWN)
+                error = "Supervisor exited without an available output receipt"
+                if facts is not None and facts.get("output_pending"):
+                    return dict(facts, output_pending=False, file_error=error)
+                # The receipt may already have been acknowledged. Only a
+                # client awaiting publication can interpret its absence.
+                return status_reply(RunState.UNKNOWN, file_error=error)
+        state, return_code, failure_phase, error, file_error = outcome
+        return status_reply(state, return_code, failure_phase=failure_phase, error=error, file_error=file_error)
 
     @staticmethod
     def cancel(remote_id: str, timeout: float = 1.0) -> StatusReply:
@@ -200,7 +208,7 @@ class SupervisedBackend(Backend, ManagedOperations):
             # A completed supervisor has removed its transient socket. Replay
             # declared spools once, without the historical polling lifecycle.
             facts = SupervisedBackend.status(remote_id)
-            if not RunState(facts["state"]).is_terminal:
+            if not RunState(facts["state"]).is_terminal or facts.get("output_pending"):
                 raise
             if not output:
                 return facts

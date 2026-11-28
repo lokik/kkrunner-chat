@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from kkrunner import RunState, RunStore
-from kkrunner.client import ExecutionClient, LocalTarget, SshTarget
+from kkrunner import RunFileState, RunState, RunStore
+from kkrunner.client import ExecutionClient, FileAccess, LocalTarget, SshTarget
 from kkrunner.backends import SupervisedBackend
 from kkrunner.backends.config import BackendConfig
 from kkrunner.files.manifest import CacheEntry, FileEntry, FileManifest, FileMapping
@@ -242,8 +242,7 @@ def test_snapshot_does_not_depend_on_execution_backend(tmp_path, monkeypatch):
     monkeypatch.setattr(other.client_pool, "for_config",
                         lambda *args: pytest.fail("Snapshots must not reconstruct a backend"))
     assert other.snapshot_file(historical, "result.dat") == b"partial output"
-    client = ExecutionClient(target=historical.execution.target)
-    assert client.snapshot_file(historical, "result.dat") == b"partial output"
+    assert FileAccess(historical.execution.target).snapshot_file(historical, "result.dat") == b"partial output"
 
 
 
@@ -282,3 +281,18 @@ def test_discovered_member_is_not_a_snapshot_declaration(tmp_path):
     manifest = FileManifest(outputs=(member,))
     assert matching_file(manifest, member.local_path) == member
     assert matching_file(manifest, tmp_path / "result1.dat") is None
+
+
+def test_captured_snapshot_without_native_identity(tmp_path):
+    from kkrunner.files.availability import capture_result_files
+
+    manager, run, local, _ = running_run(tmp_path)
+    (local / "result.dat").write_bytes(b"captured result")
+    historical = replace(
+        run, state=RunState.FINISHED, file_state=RunFileState.DONE,
+        execution=replace(run.execution, backend_id=None, backend=BackendConfig("removed-backend")),
+        files=capture_result_files(run.files),
+    )
+    reader = RunManager(RunStore(tmp_path / "imported"))
+    historical = reader.store.save(historical)
+    assert reader.snapshot_file(historical, "result.dat") == b"captured result"

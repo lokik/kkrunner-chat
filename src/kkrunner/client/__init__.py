@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kkrunner.client.execution_client import ExecutionClient
+    from kkrunner.client.file_access import FileAccess
     from kkrunner.client.contracts import (
         JobAttachment,
         JobProtocol,
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
     from kkrunner.targets import LocalTarget, SshTarget, Target
 
 __all__ = [
-    "ExecutionClient", "StagingSpec",
+    "ExecutionClient", "FileAccess", "StagingSpec",
     "ClientPool", "JobAttachment", "JobProtocol",
     "SubmissionContext", "LocalTarget",
     "SshTarget", "Target", "default_client_pool",
@@ -24,6 +25,8 @@ __all__ = [
 def __getattr__(name):
     if name == "ExecutionClient":
         from .execution_client import ExecutionClient as value
+    elif name == "FileAccess":
+        from .file_access import FileAccess as value
     elif name == "StagingSpec":
         from .staging import StagingSpec as value
     elif name in ("JobAttachment", "JobProtocol", "SubmissionContext"):

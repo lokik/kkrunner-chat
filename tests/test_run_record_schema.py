@@ -6,10 +6,10 @@ import pytest
 from kkrunner.runs import CorruptRunRecord, ExecutionMetadata, RunRecord, WorkingDirectory
 from kkrunner.targets import LocalTarget
 from kkrunner.files import FileManifest
-from kkrunner import RunState, RunStore
+from kkrunner import RunFileState, RunState, RunStore
 
 
-@pytest.mark.parametrize("schema_version", [0, 2, 3, 4, 5])
+@pytest.mark.parametrize("schema_version", [0, 1, 3, 4, 5])
 def test_only_current_run_record_schema_is_supported(tmp_path, schema_version):
     store = RunStore(tmp_path / "runs")
     created_at = "2026-10-17T12:34:56+00:00"
@@ -40,6 +40,7 @@ def test_current_schema_round_trips_with_one_execution_identity(tmp_path, backen
     record = RunRecord(
         id="record",
         state=RunState.RUNNING,
+        file_state=RunFileState.WAITING,
         created_at=created_at,
         updated_at=created_at,
         execution=ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path)), backend_id),
@@ -50,7 +51,8 @@ def test_current_schema_round_trips_with_one_execution_identity(tmp_path, backen
     store.save(record)
     loaded = store.get(record.id)
     assert loaded == record
-    assert loaded.schema_version == 1
+    assert loaded.schema_version == 2
+    assert loaded.file_state is RunFileState.WAITING
     assert loaded.execution.backend_id == backend_id
     for obsolete in (
         "backend_state",
@@ -85,6 +87,7 @@ def test_run_store_rejects_duplicate_id_across_date_shards(tmp_path):
     old = RunRecord(
         id="same-id",
         state=RunState.RUNNING,
+        file_state=RunFileState.WAITING,
         created_at=created,
         updated_at=created,
         execution=ExecutionMetadata(LocalTarget(), WorkingDirectory(str(tmp_path))),

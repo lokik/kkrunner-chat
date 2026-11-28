@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
-from threading import Event, Lock
+from threading import Event, RLock
 
 from kkrunner.backends.contracts import SubmissionNotStarted, job_status_from_facts
 from kkrunner.client.contracts import BackendExecution, OutputSubscription
+from kkrunner.execution import merge_terminal_outcome
 from kkrunner.runs.base import (
     FailurePhase, OutputObservers, RunState,
 )
@@ -27,7 +28,7 @@ class Job:
         self.spec = spec
         self.callback = callback
         self._state = RunState.NEW
-        self._lock = Lock()
+        self._lock = RLock()
         self._settled = False
         self._exception = None
         self._callback_exception = None
@@ -43,6 +44,8 @@ class Job:
         self._output_requested = None
         self._output_error = None
         self._return_code = None
+        self._output_pending = False
+        self._file_error = None
         self._apply_status(execution.snapshot)
 
     @property
@@ -89,26 +92,43 @@ class Job:
         return self._exception
 
     def status(self):
-        return job_status_from_facts(
-            self._state, return_code=self.return_code,
-            failure_phase=self.failure_phase, message=self.failure_message,
-        )
+        with self._lock:
+            return job_status_from_facts(
+                self._state, return_code=self.return_code,
+                failure_phase=self.failure_phase, message=self.failure_message,
+                output_pending=self._output_pending, file_error=self._file_error,
+            )
 
     def refresh_status(self):
-        self._apply_status(_run_sync(self.execution.status()), refresh=True)
-        return self.status()
-
-    def _apply_status(self, status, *, refresh=False):
+        before = self.status()
+        observed = _run_sync(self.execution.status())
         with self._lock:
-            # A status query may return after the stream has delivered the
-            # authoritative terminal outcome. Only the observer can refine
-            # such an outcome, e.g. supply the Direct process's exit code.
-            if self._state.is_terminal and (
-                refresh or not status.state.is_terminal or self._return_code is not None
-                or (self._state == RunState.CANCELLED
-                    and status.state == RunState.FINISHED and status.return_code is None)
-            ):
-                return
+            if observed.state.is_terminal or observed.file_error is not None or self.status() == before:
+                self._apply_status(observed)
+            return self.status()
+
+    def _apply_status(self, status):
+        with self._lock:
+            if self._state.is_terminal:
+                # Publication is independent of the native exit. A late
+                # receipt can settle publication without relabeling the exit.
+                if self._output_pending and (
+                    (status.state.is_terminal and not status.output_pending)
+                    or (status.state == RunState.UNKNOWN and status.file_error is not None)
+                ):
+                    self._output_pending = False
+                    self._file_error = status.file_error
+                state, code = merge_terminal_outcome(
+                    self._state, self._return_code, status.state, status.return_code,
+                )
+                if (state, code) == (self._state, self._return_code):
+                    return
+                if state != status.state:
+                    self._return_code = code
+                    return
+            else:
+                self._output_pending = status.output_pending
+                self._file_error = status.file_error
             self._state = status.state
             self._return_code = status.return_code
             phase = status.failure_phase
@@ -340,10 +360,9 @@ class Job:
             future.set_result(result)
 
     def _confirm_cancellation(self, status):
-        # A confirmed cancellation is execution evidence, unlike acceptance
-        # of a control message. A later liveness-only FINISHED must not erase
-        # it. An already observed native exit code remains authoritative.
-        if status is not None and status.state == RunState.CANCELLED:
+        # A cancel request can discover that execution has already ended.
+        # Acceptance of the request alone is not proof of termination.
+        if status is not None and (status.state.is_terminal or status.file_error is not None):
             self._apply_status(status)
 
     def cancel(self):

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from kkrunner import RunFileState
 from kkrunner import ExecutionSpec, RunState, TaskFile
 from kkrunner.client import ExecutionClient, LocalTarget, StagingSpec
 from kkrunner.files.manifest import FileManifest
@@ -157,8 +158,9 @@ def test_shared_finished_status_uses_local_artifacts_and_snapshot(tmp_path, monk
         execution=missing.execution.submitted("shared-job"),
     )
     failed = manager.refresh((missing,))[0]
-    assert failed.state == RunState.FAILED
-    assert failed.failure_phase == FailurePhase.ARTIFACTS
+    assert failed.state == RunState.FINISHED
+    assert failed.file_state == RunFileState.FAILED
+    assert failed.file_failure_phase == FailurePhase.ARTIFACTS
 
 
 def test_update_with_captured_shared_results_needs_no_download(tmp_path):
