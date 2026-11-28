@@ -458,6 +458,11 @@ class FileManifest:
                 *(entry for entry in (self.stdout, self.stderr) if entry is not None))
 
     @property
+    def concrete_entries(self):
+        """Exact pathname declarations and discovered members, not glob declarations."""
+        return tuple(entry for entry in self.entries if not self.is_pattern(entry))
+
+    @property
     def input_files(self):
         return tuple(dict.fromkeys(entry.local_path for entry in self.input_entries if entry.local_path is not None))
 

@@ -217,7 +217,7 @@ class FileAccess:
         if not self.target.transfers_files(shared_filesystem=run.files.shared_filesystem):
             raise ValueError("Remote-file cleanup requires a separate target filesystem")
         declared = {}
-        for entry in run.files.entries:
+        for entry in run.files.concrete_entries:
             if entry.remote_path is None:
                 continue
             previous = declared.setdefault(entry.remote_path, entry.kind)
