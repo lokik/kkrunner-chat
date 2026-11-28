@@ -1663,3 +1663,26 @@ def test_uncaptured_stream_history_restores_literal_name(tmp_path, role):
         assert getattr(restored.files, role).availability_state == "available"
     else:
         assert restored == record
+
+
+
+def test_historical_retrieval_with_literal_mapped_root(tmp_path):
+    from kkrunner import RunStore
+    from kkrunner.runs import RunManager
+
+    local, remote = tmp_path / "local", tmp_path / "remote[1]"
+    local.mkdir()
+    remote.mkdir()
+    output = local / "result[1].dat"
+    (remote / output.name).write_text("historical")
+    manager = RunManager(RunStore(tmp_path / "runs"))
+    record = manager.new_record(
+        directory=local, remote_directory=remote, target=SshTarget("loopback"),
+        files=FileManifest(stdout=FileEntry(output, remote / output.name),
+                           mapping=FileMapping(local, remote)),
+    )
+    record = manager.transition(record, state=RunState.FAILED,
+                                execution=record.execution.submitted("historical"))
+    restored = manager.retrieve_result_files(record)
+    assert output.read_text() == "historical"
+    assert restored.files.stdout.availability_state == "available"

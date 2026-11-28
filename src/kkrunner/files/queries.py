@@ -50,7 +50,9 @@ def query_files(sources, *, root=None, digest=False):
                 raise ValueError(f"File pattern {source!r} is outside source root {root}") from exc
             if relative == os.pardir or relative.startswith(os.pardir + os.sep):
                 raise ValueError(f"File pattern {source!r} is outside source root {root}")
-            matches = sorted(glob.glob(pattern, recursive=True)) if glob.has_magic(pattern) else [pattern]
+            # The root is a concrete directory, not part of the glob.
+            rooted_pattern = os.path.join(glob.escape(os.fspath(absolute_root)), relative)
+            matches = sorted(glob.glob(rooted_pattern, recursive=True)) if glob.has_magic(relative) else [pattern]
             paths.extend(os.path.abspath(match) for match in matches)
         paths = list(dict.fromkeys(paths))
 
