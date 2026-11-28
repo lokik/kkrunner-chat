@@ -461,3 +461,33 @@ def test_untracked_preprocessing_does_not_create_run_history(tmp_path):
     assert run.run().return_code == 0
     assert output.read_text().strip() == "prepared"
     assert run.record is None
+
+
+def test_save_only_sync_uses_file_declaration_roles(tmp_path, monkeypatch):
+    from kkrunner import MemoryRunStore
+    from kkrunner.files import availability
+
+    manager = RunManager(MemoryRunStore())
+    spec = ExecutionSpec(
+        argv=(), directory=tmp_path,
+        input_file=TaskFile("input[1]", write=True),
+        output_file="stdout[1].log",
+        output_files=("*.aux", TaskFile("tree[1]", kind="directory")),
+    )
+    synchronized = []
+    real_sync = availability.sync_file
+
+    def observe(path):
+        synchronized.append(str(path))
+        real_sync(path)
+
+    monkeypatch.setattr(availability, "sync_file", observe)
+    with manager.preprocessing_reservation(spec):
+        for name in ("input[1]", "input1", "stdout[1].log", "stdout1.log", "one.aux", "two.aux"):
+            (tmp_path / name).write_text(name)
+        (tmp_path / "tree[1]").mkdir()
+        (tmp_path / "tree1").write_text("unrelated regular file")
+    assert set(synchronized) == {
+        str(tmp_path / name) for name in ("input[1]", "stdout[1].log", "one.aux", "two.aux")
+    }
+    assert len(synchronized) == 4
