@@ -794,19 +794,17 @@ class FileSession:
 
     @property
     def stream_paths(self):
-        return (
-            None if self._files.stdout is None else (self._files.stdout.local_path if self.is_local else self._files.stdout.remote_path),
-            None if self._files.stderr is None else (self._files.stderr.local_path if self.is_local else self._files.stderr.remote_path),
-        )
+        return self._files.stream_paths(remote=not self.is_local)
 
     def observation(self):
         """A new observer replays named streams independently of local files."""
+        paths = self.stream_paths
         return {
             "stream_offsets": {
-                "out": None if self.spec.is_partial and self.spec.output_file is None else 0,
-                "err": None if self.spec.is_partial and self.spec.error_file is None else 0,
+                kind: None if self.spec.is_partial and path is None else 0
+                for kind, path in zip(("out", "err"), paths)
             },
-            "stream_paths": self.stream_paths,
+            "stream_paths": paths,
         }
 
     async def _synchronize(self, *, required):
