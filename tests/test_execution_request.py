@@ -150,3 +150,51 @@ def test_local_cleanup_protects_literal_directory_inputs_and_cache(tmp_path):
     assert not stale.exists()
     for name in ("input[1]", "cache[1]"):
         assert (tmp_path / name / "data.dat").read_text() == name
+
+
+@pytest.mark.parametrize("name", ["results[1]", "results*"])
+def test_directory_output_cleanup_uses_exact_declared_name(tmp_path, name):
+    from kkrunner import TaskFile
+    from kkrunner.backends.support.messages import normalize_request
+    from kkrunner.files.availability import prepare_target_outputs, discover_local_files
+    from kkrunner.files.manifest import FileManifest
+
+    output = tmp_path / name
+    other = tmp_path / "results1"
+    for tree in (output, other):
+        tree.mkdir()
+        (tree / "data").write_text("old")
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        output_files=(TaskFile(name, kind="directory"),),
+    )
+    prepare_target_outputs(normalize_request(execution_request(spec)))
+    assert not output.exists()
+    assert (other / "data").read_text() == "old"
+    output.mkdir()
+    (output / "data").write_text("new")
+    found = discover_local_files(FileManifest.from_spec(spec))
+    assert len(found.outputs) == 1
+    assert found.outputs[0].local_path == str(output)
+    assert found.outputs[0].availability_state == "available"
+
+
+def test_literal_directory_output_still_protects_contained_input(tmp_path):
+    from kkrunner import TaskFile
+    from kkrunner.files.availability import prepare_target_outputs
+
+    output = tmp_path / "results[1]"
+    output.mkdir()
+    protected = output / "input.dat"
+    protected.write_text("keep")
+    stale = tmp_path / "stale"
+    stale.write_text("old")
+    spec = ExecutionSpec(
+        ("true",), directory=tmp_path,
+        input_file=str(protected),
+        output_files=(str(stale), TaskFile("results[1]", kind="directory")),
+    )
+    with pytest.raises(ValueError, match="Directory output contains input/cache"):
+        prepare_target_outputs(execution_request(spec))
+    assert protected.read_text() == "keep"
+    assert stale.read_text() == "old"
