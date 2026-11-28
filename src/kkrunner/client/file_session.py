@@ -282,7 +282,7 @@ class FileSession:
         )
         return tuple(entry for entry in entries if entry.collect
                      and entry.local_path is not None and entry.remote_path is not None
-                     and entry.source_pattern is None and has_file_magic(entry.remote_path))
+                     and self._files.is_pattern(entry))
 
     async def _resolve_result_patterns(self, required, on_resolved):
         """Freeze all remote output/cache glob members before any download."""
@@ -340,7 +340,7 @@ class FileSession:
         concrete = tuple(entry for entry in entries
                          if entry is not None and entry.collect and entry.kind == "file"
                          and entry.local_path is not None and entry.remote_path is not None
-                         and (entry.source_pattern is not None or not has_file_magic(entry.remote_path)))
+                         and not self._files.is_pattern(entry))
         transport = self.context.target
         policy = self.context.output_files
         compare = kind == "output" or policy == FileSyncPolicy.NEVER
@@ -421,7 +421,7 @@ class FileSession:
                              and entry.remote_path is not None and entry.local_path is not None)
         seen_remote = set()
         for entry in declarations:
-            if has_file_magic(entry.remote_path) or entry.remote_path in seen_remote:
+            if self._files.is_pattern(entry) or entry.remote_path in seen_remote:
                 continue
             seen_remote.add(entry.remote_path)
             # A completed transfer belongs to this run even if its remote
@@ -433,7 +433,7 @@ class FileSession:
                 kind=entry.kind,
             )
 
-        patterns = [entry for entry in declarations if has_file_magic(entry.remote_path)]
+        patterns = [entry for entry in declarations if self._files.is_pattern(entry)]
         if patterns:
             await self._sync_patterns(
                 patterns, kind="output", required=required, seen_remote=seen_remote,
@@ -548,7 +548,7 @@ class FileSession:
             entry = cache.file
             if entry.remote_path is None or entry.local_path is None or entry.source_pattern is not None:
                 continue
-            if has_file_magic(entry.remote_path):
+            if self._files.is_pattern(entry):
                 patterns.append(entry)
             else:
                 exact.add(entry.remote_path)
@@ -670,7 +670,7 @@ class FileSession:
             entry.remote_path: (entry.local_path, entry.kind)
             for cache in self._files.caches
             if (entry := cache.file).remote_path is not None and entry.local_path is not None
-            and (entry.source_pattern is not None or not has_file_magic(entry.remote_path))
+            and not self._files.is_pattern(entry)
         })
 
     def _flush_declared_handles(self):
@@ -700,7 +700,10 @@ class FileSession:
             request = execution_request(declaration)
             try:
                 self._flush_declared_handles()
-                versions = snapshot_file_entries(manifest.input_entries, sync=True)
+                versions = snapshot_file_entries(
+                    manifest.input_entries, sync=True,
+                    is_pattern=lambda entry: entry.local_path != self.input_file and manifest.is_pattern(entry),
+                )
                 return request, replace(manifest, input_versions=versions)
             except OSError as exc:
                 raise SubmissionNotStarted(str(exc)) from exc

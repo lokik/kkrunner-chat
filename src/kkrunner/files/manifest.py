@@ -63,6 +63,14 @@ class FileEntry:
             raise ValueError("An availability error belongs to a failed file")
 
 
+    def is_pattern(self):
+        """Whether the entry itself declares a glob, independently of its role."""
+        from kkrunner.files.paths import has_file_magic
+
+        return (self.local_path is not None and self.source_pattern is None
+                and self.kind == "file" and has_file_magic(self.local_path))
+
+
 @dataclass(frozen=True)
 class CacheEntry:
     """Cache identity and its pre-execution remote signature."""
@@ -270,6 +278,10 @@ class FileManifest:
     def shared_filesystem(self):
         return self.mapping is not None and self.mapping.shared_filesystem
 
+    def is_pattern(self, entry):
+        """Whether this entry declares a glob rather than a concrete pathname."""
+        return entry.is_pattern() and entry not in (self.stdin, self.stdout, self.stderr)
+
     def output_excluded(self, path, *, remote=False):
         """Exclude input/cache namespaces and uncollected outputs from output globs."""
         import os
@@ -289,7 +301,7 @@ class FileManifest:
                 declared = os.path.realpath(declared)
             # Discovered cache members and remote-only cache baselines are
             # concrete names. They do not declare any additional wildcard.
-            if entry.source_pattern is not None or entry.local_path is None or entry is self.stdin:
+            if not self.is_pattern(entry) and entry.kind != "directory":
                 if path == declared:
                     return True
                 continue
