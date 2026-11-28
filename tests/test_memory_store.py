@@ -402,3 +402,29 @@ def test_first_unchanged_update_creates_record_in_either_store(store, tmp_path):
     assert store.update(record, lambda current: current) == record
     assert store.get(record.id) == record
     assert store.update(record, lambda current: current) == record
+
+
+
+@pytest.mark.parametrize("active", [None, False])
+def test_history_listing_uses_latest_state_when_run_moves_during_scan(tmp_path, monkeypatch, active):
+    directory = tmp_path / "runs"
+    reader = RunStore(directory)
+    writer = RunStore(directory)
+    manager = RunManager(writer)
+    running = manager.transition(
+        manager.new_record(directory=tmp_path), state=RunState.RUNNING,
+    )
+    enumerate_records = reader._records_in_directory
+    completed = []
+
+    def observe(directory, **kwargs):
+        records = enumerate_records(directory, **kwargs)
+        if directory == reader._active_directory:
+            assert records == [running]
+            completed.append(manager.transition(running, state=RunState.FINISHED, return_code=0))
+        return records
+
+    monkeypatch.setattr(reader, "_records_in_directory", observe)
+    assert reader.runs(active=active) == tuple(completed)
+    assert len(completed) == 1
+    assert completed[0].state == RunState.FINISHED
